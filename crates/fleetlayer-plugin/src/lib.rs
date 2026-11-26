@@ -196,6 +196,40 @@ fn truncate(s: &str) -> &str {
     }
 }
 
+/// Connect a peer over message frames rather than a byte stream (a WebSocket's text frames): each frame is one
+/// JSON-RPC message. `incoming` yields the frames that arrive; frames to send go to `outgoing`. The peer's task ends
+/// when `incoming` closes.
+pub fn connect_frames<H: Handler>(
+    mut incoming: mpsc::Receiver<String>,
+    outgoing: mpsc::Sender<String>,
+    handler: Arc<H>,
+) -> (Peer, tokio::task::JoinHandle<()>) {
+    let (ours, theirs) = tokio::io::duplex(1 << 20);
+    let (their_read, mut their_write) = tokio::io::split(theirs);
+    // Frames in: one line each. JSON never needs a raw newline (inside strings it's escaped), so any is whitespace.
+    let inbound = tokio::spawn(async move {
+        while let Some(frame) = incoming.recv().await {
+            let line = frame.replace(['\n', '\r'], " ");
+            if their_write.write_all(line.as_bytes()).await.is_err() || their_write.write_all(b"\n").await.is_err() {
+                break;
+            }
+        }
+        let _ = their_write.shutdown().await;
+    });
+    // Lines out: one frame each.
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(their_read).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if outgoing.send(line).await.is_err() {
+                break;
+            }
+        }
+        inbound.abort();
+    });
+    let (r, w) = tokio::io::split(ours);
+    connect(r, w, handler)
+}
+
 /// Serve a plugin on stdin and stdout until the node closes stdin. Log to stderr, never stdout.
 pub async fn serve_stdio<H: Handler>(handler: Arc<H>) {
     let (_peer, task) = connect(tokio::io::stdin(), tokio::io::stdout(), handler);
@@ -273,6 +307,18 @@ mod tests {
         if let Err(e) = r {
             assert_eq!(e.code, code::CLOSED);
         }
+    }
+
+    #[tokio::test]
+    async fn peers_talk_over_frames() {
+        let (a_out, b_in) = mpsc::channel(16);
+        let (b_out, a_in) = mpsc::channel(16);
+        let (a, _) = connect_frames(a_in, a_out, Arc::new(Echo));
+        let (_b, _) = connect_frames(b_in, b_out, Arc::new(Echo));
+        let v: Value = a.request("echo", &json!({"text": "two\nlines"})).await.unwrap();
+        assert_eq!(v, json!({"text": "two\nlines"}));
+        let v: Value = a.request("ask_back", &json!({})).await.unwrap();
+        assert_eq!(v, json!({"back": true}));
     }
 
     #[tokio::test]

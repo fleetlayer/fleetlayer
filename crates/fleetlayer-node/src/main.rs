@@ -4,6 +4,7 @@
 
 mod config;
 mod deliver;
+mod link;
 mod local;
 mod plugins;
 mod sessions;
@@ -43,6 +44,7 @@ pub struct Node {
     pub plugins: Vec<Arc<PluginHandle>>,
     pub registry: sessions::Registry,
     pub deliveries: deliver::Deliveries,
+    pub link: link::Link,
 }
 
 impl Node {
@@ -93,10 +95,20 @@ async fn run(cfg: NodeConfig) -> anyhow::Result<()> {
         plugins: cfg.plugins.iter().cloned().map(PluginHandle::new).collect(),
         registry: sessions::Registry::default(),
         deliveries: deliver::Deliveries::default(),
+        link: link::Link::default(),
     });
     tracing::info!(node = %node.name, machine = %node.machine, plugins = node.plugins.len(), "fleetlayer-node starting");
     for p in &node.plugins {
         tokio::spawn(plugins::supervise(node.clone(), p.clone()));
+    }
+    match cfg.control.clone() {
+        Some(mut control) => {
+            if let Ok(rest) = control.token_file.strip_prefix("~") {
+                control.token_file = config::home().join(rest);
+            }
+            tokio::spawn(link::run(node.clone(), control));
+        }
+        None => tracing::info!("no control: section in node.yaml, so this node works on its own"),
     }
     let socket = cfg.socket();
     tokio::select! {

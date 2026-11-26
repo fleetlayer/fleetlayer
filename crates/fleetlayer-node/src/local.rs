@@ -16,6 +16,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use fleetlayer_plugin::{Handler, Peer, answer, params};
 use fleetlayer_protocol::ext::{self, From};
+use fleetlayer_protocol::link as l;
 use fleetlayer_protocol::rpc::RpcError;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -58,6 +59,28 @@ struct Send {
     caller: Option<Caller>,
 }
 
+#[derive(Debug, Deserialize)]
+struct SubscribeArgs {
+    channel: String,
+    subject: Option<String>,
+    /// `<tab>@<node>`; the calling session when absent.
+    target: Option<String>,
+    caller: Option<Caller>,
+}
+
+impl Local {
+    /// The session the caller says it runs in, if this node knows it.
+    async fn caller(&self, c: Option<&Caller>) -> Option<crate::sessions::Session> {
+        let c = c?;
+        if let Some(id) = &c.session_id
+            && let Some(s) = self.node.registry.get(id).await
+        {
+            return Some(s);
+        }
+        self.node.registry.by_address(c.address.as_deref()?).await
+    }
+}
+
 #[async_trait]
 impl Handler for Local {
     async fn request(&self, _peer: &Peer, method: &str, p: Value) -> Result<Value, RpcError> {
@@ -69,6 +92,7 @@ impl Handler for Local {
                     plugins.push(p.status().await);
                 }
                 answer(&json!({
+                    "control": node.link.state().await,
                     "node": node.name,
                     "machine": node.machine,
                     "user": node.user,
@@ -76,25 +100,35 @@ impl Handler for Local {
                     "plugins": plugins,
                 }))
             }
+            "node/fleet" | "node/subscriptions" | "node/subscribe" | "node/unsubscribe" => {
+                let peer =
+                    node.link.peer().await.ok_or_else(|| {
+                        RpcError::not_here(format!("{} isn't linked to a control plane now", node.name))
+                    })?;
+                let (m, p) = match method {
+                    "node/fleet" => (l::method::FLEET, json!({})),
+                    "node/subscriptions" => (l::method::SUBSCRIPTIONS, json!({})),
+                    _ => {
+                        let s: SubscribeArgs = params(p)?;
+                        let target = match s.target {
+                            Some(t) => t,
+                            None => {
+                                let c = self.caller(s.caller.as_ref()).await.ok_or_else(|| {
+                                    RpcError::refused("run this from a session, or say which one with --target")
+                                })?;
+                                format!("{}@{}", c.tab().unwrap_or(&c.session_id), node.name)
+                            }
+                        };
+                        let m = if method == "node/subscribe" { l::method::SUBSCRIBE } else { l::method::UNSUBSCRIBE };
+                        (m, json!({"channel": s.channel, "subject": s.subject, "target": target}))
+                    }
+                };
+                peer.request::<_, Value>(m, &p).await
+            }
             "node/sessions" => answer(&json!({"node": node.name, "sessions": node.registry.all().await})),
             ext::method::MESSAGE_SEND => {
                 let s: Send = params(p)?;
-                let caller = match &s.caller {
-                    Some(c) => {
-                        let by_id = match &c.session_id {
-                            Some(id) => node.registry.get(id).await,
-                            None => None,
-                        };
-                        match by_id {
-                            Some(s) => Some(s),
-                            None => match &c.address {
-                                Some(a) => node.registry.by_address(a).await,
-                                None => None,
-                            },
-                        }
-                    }
-                    None => None,
-                };
+                let caller = self.caller(s.caller.as_ref()).await;
                 let from = match &caller {
                     Some(c) => From {
                         label: format!("{} ({})", c.tab().unwrap_or(&c.session_id), node.name),

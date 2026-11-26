@@ -3,6 +3,9 @@
 //!
 //! ```yaml
 //! name: laptop            # the name the control plane knows this node by
+//! control:
+//!   url: wss://control.example.com/v1/link
+//!   token_file: ~/.config/fleetlayer/node-token
 //! plugins:
 //!   - name: herdr
 //!     command: fleetlayer-herdr
@@ -26,6 +29,17 @@ pub struct NodeConfig {
     pub socket: Option<PathBuf>,
     #[serde(default)]
     pub plugins: Vec<PluginConfig>,
+    /// The control plane to link to. Without it the node works on its own machine only.
+    pub control: Option<ControlConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ControlConfig {
+    /// The control plane's link URL: `wss://…/v1/link` (or `ws://` on a private network).
+    pub url: String,
+    /// A file holding this node's token (from `fleetlayer-control node add`), mode 0600.
+    pub token_file: PathBuf,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

@@ -93,17 +93,25 @@ pub async fn send(
     caller: Option<&Session>,
 ) -> Result<Delivered, RpcError> {
     let (name, target_node) = parse_address(to);
+    let reply_to = caller.and_then(|c| c.tab().map(|t| format!("{t}@{}", node.name)));
+    let rendered = render_message(&from, text, reply_to.as_deref());
     if let Some(n) = target_node
         && n != node.name
     {
-        return Err(RpcError::not_here(format!(
-            "{to} is on another node ({n}); messages between nodes go through the control plane, which this node \
-             isn't linked to yet"
-        )));
+        let peer = node.link.peer().await.ok_or_else(|| {
+            RpcError::not_here(format!(
+                "{to} is on another node ({n}), and this node isn't linked to a control plane now"
+            ))
+        })?;
+        let req = fleetlayer_protocol::link::SendRequest {
+            to: to.into(),
+            delivery_id: node.deliveries.new_id(&node.name),
+            from,
+            text: rendered,
+        };
+        return peer.request_within(fleetlayer_protocol::link::method::SEND, &req, Duration::from_secs(12)).await;
     }
     let session = resolve(node, name).await?;
-    let reply_to = caller.and_then(|c| c.tab().map(|t| format!("{t}@{}", node.name)));
-    let rendered = render_message(&from, text, reply_to.as_deref());
     let d = Deliver {
         session_id: session.session_id.clone(),
         address: session.meta.address.clone().unwrap_or_default(),
