@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Fleetlayer's Rust builds, tests and lints run on docspring-dev, the home server, not on a laptop or the small agents
+# VM: Rust target/ folders grow to tens of GB. Each command copies the checkout there first
+# (/opt/code/fleetlayer/checkouts/<name>, with its own target/), then runs cargo pinned to CPUs 0-23 under nice, which
+# leaves 8 cores for the CI jobs that also run there.
+#
+#   scripts/on-dev fmt | check [args] | clippy [args] | test [args] | build [args]
+#       cargo fmt --check; cargo check; clippy --all-targets -D warnings; cargo test; cargo build.
+#   scripts/on-dev lock     update Cargo.lock there (after changing dependencies) and copy it back
+#   scripts/on-dev sync     only copy the checkout there
+#   scripts/on-dev clean    delete this checkout's copy and target/ there
+#
+# The checkout is the one the current directory is in (the main one or a worktree); its name there is its directory's.
+#
+# The build host comes from $FLEETLAYER_DEV_HOST, or from .dev-host at the checkout's root (gitignored): an SSH host
+# with Rust (rustup) and rsync.
+set -euo pipefail
+dir=$(git rev-parse --show-toplevel)
+host=${FLEETLAYER_DEV_HOST:-$(cat "$dir/.dev-host" 2>/dev/null || true)}
+[ -n "$host" ] || { echo "scripts/on-dev: set FLEETLAYER_DEV_HOST or write the build host to .dev-host" >&2; exit 2; }
+remote_root=/opt/code/fleetlayer/checkouts
+name=$(basename "$dir")
+remote=$remote_root/$name
+
+die() { echo "scripts/on-dev: $*" >&2; exit 1; }
+usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+[ $# -gt 0 ] || usage
+cmd=$1; shift
+
+sync() {
+  ssh "$host" "mkdir -p '$remote'"
+  rsync -a --no-owner --no-group --delete-after --filter=':- .gitignore' --exclude=.git "$dir/" "$host:$remote/"
+}
+
+# One remote command, quoted for the remote shell, with the toolchain on PATH and the CPUs pinned.
+run() {
+  local quoted
+  printf -v quoted '%q ' "$@"
+  local status
+  set +e
+  ssh "$host" "cd '$remote' && export PATH=\$HOME/.cargo/bin:\$PATH && nice -n 10 taskset -c 0-23 $quoted" 2>&1 |
+    grep --line-buffered -v setlocale
+  status=${PIPESTATUS[0]}
+  set -e
+  return "$status"
+}
+
+case $cmd in
+  sync) sync ;;
+  fmt) sync; run cargo fmt --all --check ;;
+  check) sync; run cargo check -q --locked -j 24 --workspace --all-targets "$@" ;;
+  clippy) sync; run cargo clippy -q --locked -j 24 --workspace --all-targets "$@" -- -D warnings ;;
+  build) sync; run cargo build -q --locked -j 24 "$@" ;;
+  test) sync; run cargo test -q --locked -j 24 --workspace "$@" ;;
+  lock) sync; run cargo update -q "$@"; rsync -a "$host:$remote/Cargo.lock" "$dir/Cargo.lock" ;;
+  clean) ssh "$host" "rm -rf '$remote'" ;;
+  *) die "unknown command $cmd" ;;
+esac
