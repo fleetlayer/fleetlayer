@@ -9,6 +9,7 @@ mod keys;
 mod link;
 mod local;
 mod plugins;
+mod readings;
 mod service;
 mod sessions;
 mod sync;
@@ -70,6 +71,7 @@ pub struct Node {
     pub identity: age::x25519::Identity,
     pub sync: sync::Sync,
     pub opt_ins: tools::OptIns,
+    pub readings: readings::Readings,
 }
 
 impl Node {
@@ -158,6 +160,7 @@ async fn run(cfg: NodeConfig) -> anyhow::Result<()> {
         identity: key,
         sync: sync::Sync::default(),
         opt_ins: tools::OptIns::default(),
+        readings: readings::Readings::default(),
     });
     tracing::info!(node = %node.name, machine = %node.machine, plugins = node.plugins.len(), "fleetlayer-node starting");
     for p in &node.plugins {

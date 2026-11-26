@@ -30,7 +30,9 @@ cmd=$1; shift
 
 sync() {
   ssh "$host" "mkdir -p '$remote'"
-  rsync -a --no-owner --no-group --delete-after --filter=':- .gitignore' --exclude=.git "$dir/" "$host:$remote/"
+  # By content, with fresh times on what changed: a copied timestamp can be older than the last build, and cargo
+  # would then skip recompiling the file.
+  rsync -rlpD --checksum --delete-after --filter=':- .gitignore' --exclude=.git "$dir/" "$host:$remote/"
 }
 
 # One remote command, quoted for the remote shell, with the toolchain on PATH and the CPUs pinned.

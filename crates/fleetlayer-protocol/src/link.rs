@@ -39,6 +39,13 @@ pub mod method {
     /// Control plane → node (notification): a target that missed a bundle is back; publish it again for it.
     /// `{bundle, node}`.
     pub const SYNC_WANTED: &str = "link/sync_wanted";
+    /// Node → control plane (notification): readings its plugins published. `{readings}`.
+    pub const READINGS: &str = "link/readings";
+    /// Node → control plane: the reading kinds this node's plugins want, replacing its earlier list. `{kinds}` →
+    /// `{readings}` (the newest of each it may read).
+    pub const READING_SUBSCRIBE: &str = "link/reading_subscribe";
+    /// Control plane → node (notification): new readings of kinds it subscribed to. `{readings}`.
+    pub const READING_UPDATE: &str = "link/reading_update";
     /// Control plane → node: deliver to one of its sessions. `DeliverRequest` → `Delivered`.
     pub const DELIVER: &str = "link/deliver";
 }

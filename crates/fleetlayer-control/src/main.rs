@@ -15,6 +15,7 @@ mod db;
 mod hooks;
 mod link;
 mod policy;
+mod readings;
 mod route;
 mod streams;
 mod summaries;

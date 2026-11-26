@@ -345,6 +345,16 @@ impl Handler for FromPlugin {
     async fn request(&self, peer: &Peer, method: &str, p: Value) -> Result<Value, RpcError> {
         match method {
             ext::method::PING => Ok(json!({})),
+            ext::method::READING_SUBSCRIBE => {
+                self.grant("reading.subscribe")?;
+                crate::readings::subscribe(&self.node, self.plugin.name(), &p).await
+            }
+            ext::method::READING_PUBLISH => {
+                // Accepted as a request too.
+                self.grant("reading.publish")?;
+                crate::readings::publish(&self.node, &p).await;
+                Ok(json!({}))
+            }
             ext::method::SESSIONS_SUBSCRIBE => {
                 self.grant("sessions.watch")?;
                 let mut changes = self.node.registry.subscribe();
@@ -427,6 +437,13 @@ impl Handler for FromPlugin {
                 }
             }
             ext::method::SESSIONS_CHANGED => relist_soon(node, plugin).await,
+            ext::method::READING_PUBLISH => {
+                if !plugin.config.granted("reading.publish") {
+                    tracing::warn!(plugin = plugin.name(), "reading.publish isn't granted in node.yaml; dropping");
+                    return;
+                }
+                crate::readings::publish(&node, &p).await;
+            }
             ext::method::SUMMARY_PUBLISH => {
                 if !plugin.config.granted("summary.publish") {
                     tracing::warn!(plugin = plugin.name(), "summary.publish isn't granted in node.yaml; dropping");

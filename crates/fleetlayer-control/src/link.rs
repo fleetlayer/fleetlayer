@@ -34,6 +34,8 @@ pub struct NodeConn {
 #[derive(Default)]
 pub struct Links {
     pub nodes: Mutex<HashMap<(String, String), NodeConn>>,
+    /// The reading kinds each linked node subscribed to.
+    pub reading_kinds: Mutex<HashMap<(String, String), Vec<String>>>,
     next: AtomicU64,
 }
 
@@ -130,6 +132,7 @@ async fn run(app: Arc<App>, (tenant, name): (String, String), socket: WebSocket)
     let mut nodes = app.links.nodes.lock().await;
     if nodes.get(&(tenant.clone(), name.clone())).is_some_and(|c| c.conn == conn) {
         nodes.remove(&(tenant.clone(), name.clone()));
+        app.links.reading_kinds.lock().await.remove(&(tenant.clone(), name.clone()));
     }
     tracing::info!(node = %name, "node unlinked");
 }
@@ -300,6 +303,20 @@ impl Handler for FromNode {
                 }
                 answer(&json!({"results": results}))
             }
+            l::method::READING_SUBSCRIBE => {
+                let kinds: Vec<String> =
+                    serde_json::from_value(p["kinds"].clone()).map_err(RpcError::invalid_params)?;
+                app.links.reading_kinds.lock().await.insert((tenant.to_string(), self.node.clone()), kinds.clone());
+                let me = self.me();
+                let mut out = vec![];
+                for r in crate::readings::latest(&app.db, tenant, &kinds).await.map_err(RpcError::internal)? {
+                    let src = r["node"].as_str().unwrap_or_default().to_string();
+                    if src == self.node || crate::authz::may_read(app, tenant, &me, &format!("-@{src}")).await {
+                        out.push(r);
+                    }
+                }
+                answer(&json!({"readings": out}))
+            }
             l::method::TOOL_OPEN => {
                 let t: l::ToolOpen = params(p)?;
                 let caller = format!("{}@{}", t.caller, self.node);
@@ -407,6 +424,10 @@ impl Handler for FromNode {
                 Ok(s) => db::remove_session(db, tenant, node, &s.session_id).await,
                 Err(e) => Err(e.into()),
             },
+            l::method::READINGS => {
+                let readings = p["readings"].as_array().cloned().unwrap_or_default();
+                crate::readings::publish(&self.app, tenant, node, readings).await
+            }
             l::method::SUMMARY => {
                 match serde_json::from_value::<fleetlayer_protocol::summary::SummaryEvent>(p["event"].clone()) {
                     Ok(e) => crate::summaries::store(db, tenant, node, &e).await,

@@ -83,3 +83,7 @@ solved, and where the knowledge lives now. These become Fleetlayer's guides.
   (`usage: { claude: false }` in its node.yaml, since quietdeck 37c7e31; it keeps Codex), or the plugin waits (its
   `claude.coordinator` reading says so); a rotator's own coordinator is asked to step down. Sessions need rotator
   0.7.6 or later to leave the plugin's coordinator alone. 26 Nov 2026.
+- **Syncing a checkout to a build server with `rsync -a` can make cargo skip a changed file.** It copies the local
+  modification time, which can be older than the server's last build, so the build uses stale code and reports
+  errors about things that exist. `scripts/on-dev` now syncs by content (`--checksum`) with fresh times on changed
+  files. Found 26 Nov 2026.

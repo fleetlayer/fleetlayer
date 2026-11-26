@@ -158,6 +158,7 @@ async fn connect_once(node: &Arc<Node>, cfg: &ControlConfig) -> anyhow::Result<(
     let mut changes = node.registry.subscribe();
     push_all(node, &peer).await;
     node.link.flush(&peer).await;
+    crate::readings::resubscribe(node, &peer).await;
     let pusher = {
         let (node, peer) = (node.clone(), peer.clone());
         tokio::spawn(async move {
@@ -226,6 +227,10 @@ impl Handler for FromControl {
     }
 
     async fn notification(&self, _peer: &Peer, method: &str, p: Value) {
+        if method == l::method::READING_UPDATE {
+            crate::readings::update(&self.node, &p).await;
+            return;
+        }
         if method == l::method::SYNC_WANTED
             && let (Some(bundle), Some(node)) = (p["bundle"].as_str(), p["node"].as_str())
         {
