@@ -30,6 +30,15 @@ pub fn credentials_file(slot: &str, home: Option<&str>) -> Option<String> {
     Some(format!("{nfc}/.credentials.json"))
 }
 
+/// The environment that points a `claude` child at a slot's sign-in (and its config, for a sign-in run there).
+pub fn slot_env(slot: &str) -> Vec<(String, String)> {
+    if slot.is_empty() {
+        vec![("CLAUDE_SECURESTORAGE_CONFIG_DIR".into(), String::new())]
+    } else {
+        vec![("CLAUDE_SECURESTORAGE_CONFIG_DIR".into(), slot.into()), ("CLAUDE_CONFIG_DIR".into(), slot.into())]
+    }
+}
+
 /// The keychain account Claude Code files its items under: `$USER` when it's a plain name.
 pub fn keychain_user(user: Option<&str>) -> String {
     match user {

@@ -75,6 +75,7 @@ impl Layout {
                 let text = std::fs::read_to_string(dir.join(MARKER)).ok()?;
                 let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
                 Some(Managed {
+                    number: if dir == self.default_dir { 1 } else { slot_number(&self.pattern, &dir)? },
                     slot: self.key_of(&dir),
                     account_uuid: v["accountUuid"].as_str().unwrap_or_default().into(),
                     email: v["email"].as_str().unwrap_or_default().into(),
@@ -87,6 +88,8 @@ impl Layout {
 /// A slot this plugin wrote.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Managed {
+    /// The account's number, the rotator's ID for it: 1 for the default slot.
+    pub number: u32,
     /// As Claude Code names it (`Layout::key`).
     pub slot: String,
     pub account_uuid: String,
@@ -161,12 +164,19 @@ pub fn apply(layout: &Layout, store: &dyn Store, accounts: &[Account]) -> anyhow
 
 /// Whether `dir` is a slot directory under `pattern` (its name fits the pattern with a number for `{slot}`).
 fn matches_pattern(pattern: &str, dir: &Path) -> bool {
-    let Some(name) = dir.file_name().and_then(|n| n.to_str()) else { return false };
-    let Some(last) = Path::new(pattern).file_name().and_then(|n| n.to_str()) else { return false };
-    let Some((pre, post)) = last.split_once("{slot}") else { return false };
-    name.strip_prefix(pre)
-        .and_then(|r| r.strip_suffix(post))
-        .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+    slot_number(pattern, dir).is_some()
+}
+
+/// The number in a slot directory's name under `pattern`.
+fn slot_number(pattern: &str, dir: &Path) -> Option<u32> {
+    let name = dir.file_name()?.to_str()?;
+    let last = Path::new(pattern).file_name()?.to_str()?;
+    let (pre, post) = last.split_once("{slot}")?;
+    let n = name.strip_prefix(pre)?.strip_suffix(post)?;
+    if n.is_empty() || !n.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    n.parse().ok()
 }
 
 #[cfg(test)]
@@ -278,5 +288,6 @@ mod tests {
         assert_eq!(m.iter().map(|m| m.account_uuid.as_str()).collect::<Vec<_>>(), vec!["uuid-1", "uuid-2", "uuid-3"]);
         assert_eq!(m[0].slot, "", "the default slot is named by the empty string");
         assert_eq!(m[1].slot, d.path().join("slot-2").display().to_string());
+        assert_eq!(m.iter().map(|m| m.number).collect::<Vec<_>>(), vec![1, 2, 3]);
     }
 }

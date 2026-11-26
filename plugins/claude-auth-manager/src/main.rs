@@ -14,6 +14,7 @@
 //!   It also checks that each managed slot's token works (`health.rs`), as the `claude.token_health` reading.
 
 mod claude;
+mod coordinator;
 mod health;
 mod slots;
 mod store;
@@ -67,12 +68,27 @@ struct Config {
     targets: Vec<String>,
 }
 
-#[derive(Default)]
 struct Plugin {
     layout: Mutex<Option<slots::Layout>>,
     store: Mutex<Option<Arc<dyn store::Store>>>,
-    /// Wakes the token checks after a bundle is applied.
-    applied: Arc<tokio::sync::Notify>,
+    /// Bumps after each bundle is applied: the token checks and the coordinator's accounts follow it.
+    applied: tokio::sync::watch::Sender<u64>,
+    /// The coordinator serving the rotator's API, once it holds the lock.
+    coordinator: coordinator::Slot,
+    /// This node's name.
+    node: Mutex<String>,
+}
+
+impl Default for Plugin {
+    fn default() -> Self {
+        Plugin {
+            layout: Mutex::default(),
+            store: Mutex::default(),
+            applied: tokio::sync::watch::channel(0).0,
+            coordinator: coordinator::Slot::default(),
+            node: Mutex::default(),
+        }
+    }
 }
 
 /// Claude Code: the configured path, else `claude` on PATH, else where its installers put it.
@@ -130,7 +146,28 @@ impl Handler for Shared {
                     *self.0.layout.lock().await = Some(layout.clone());
                     *self.0.store.lock().await = Some(store.clone());
                     let claude = health::Claude { bin: find_claude(&home, config.claude.as_deref()) };
-                    tokio::spawn(health_loop(peer.clone(), layout, store, claude, self.0.applied.clone()));
+                    *self.0.node.lock().await = node.node.clone();
+                    let env = coordinator::NodeEnv {
+                        rotator_dir: coordinator::rotator_dir(&home),
+                        home: home.clone(),
+                        claude: PathBuf::from(&claude.bin),
+                        node: node.node.clone(),
+                    };
+                    tokio::spawn(coordinator::run_node(
+                        peer.clone(),
+                        env,
+                        layout.clone(),
+                        self.0.applied.subscribe(),
+                        self.0.coordinator.clone(),
+                    ));
+                    tokio::spawn(health_loop(
+                        peer.clone(),
+                        layout,
+                        store,
+                        claude,
+                        self.0.applied.subscribe(),
+                        self.0.coordinator.clone(),
+                    ));
                 }
                 if publishes {
                     let file = config
@@ -179,7 +216,7 @@ impl Handler for Shared {
                     serde_json::from_str(&item.content).map_err(RpcError::invalid_params)?;
                 match slots::apply(&layout, store.as_ref(), &accounts) {
                     Ok(r) => {
-                        self.0.applied.notify_one();
+                        self.0.applied.send_modify(|v| *v += 1);
                         tracing::info!(
                             version = a.version,
                             written = r.written,
@@ -195,6 +232,20 @@ impl Handler for Shared {
             _ => Err(RpcError::method_not_found(method)),
         }
     }
+
+    async fn notification(&self, _peer: &Peer, method: &str, p: Value) {
+        if method != ext::method::READING_UPDATE {
+            return;
+        }
+        let Ok(update) = serde_json::from_value::<ext::Readings>(p) else {
+            tracing::warn!("a reading update that isn't readings");
+            return;
+        };
+        if let Some(c) = coordinator::current(&self.0.coordinator) {
+            let node = self.0.node.lock().await.clone();
+            coordinator::take_readings(&c, &node, &update.readings);
+        }
+    }
 }
 
 /// Check each managed slot's token when it's due (`health::due`), and publish a `claude.token_health` reading for each
@@ -204,7 +255,8 @@ async fn health_loop(
     layout: slots::Layout,
     store: Arc<dyn store::Store>,
     claude: health::Claude,
-    applied: Arc<tokio::sync::Notify>,
+    mut applied: tokio::sync::watch::Receiver<u64>,
+    coordinator: coordinator::Slot,
 ) {
     let mut history = health::History::new();
     tokio::time::sleep(Duration::from_secs(20)).await;
@@ -233,6 +285,9 @@ async fn health_loop(
                 } else {
                     tracing::warn!(account = %m.email, error = ?outcome.error, "token check failed");
                 }
+                if let Some(c) = coordinator::current(&coordinator) {
+                    c.token_checked(&m.account_uuid, outcome.ok, outcome.error.as_deref());
+                }
                 readings.push(health::reading(m, &outcome, &v, now));
                 history.insert(
                     m.slot.clone(),
@@ -246,7 +301,7 @@ async fn health_loop(
         }
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_secs(600)) => {}
-            _ = applied.notified() => {}
+            _ = applied.changed() => {}
         }
     }
 }

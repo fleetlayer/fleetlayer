@@ -214,6 +214,7 @@ mod tests {
     #[test]
     fn readings_are_keyed_by_account_and_carry_no_token() {
         let m = Managed {
+            number: 2,
             slot: "/h/.claude/accounts/2".into(),
             account_uuid: "uuid-2".into(),
             email: "a@example.com".into(),

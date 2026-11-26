@@ -50,6 +50,18 @@ never touches a slot someone signed into by hand.
   after each Claude Code upgrade, a day after its last check and an hour after a failed one, and straight after a
   bundle is applied. Separate from applying: `applied: true` only says the write worked. The control plane can alert
   on `ok: false` and on a reading that stops coming.
-- The node half serves the rotator's coordinator API on its socket (`GET /state` long polls, `POST /readings`), merging
-  readings from every node with what local sessions post, with a version that only goes up (starting at the clock in
-  milliseconds) and a `startedAt`. It needs rotator 0.7.5 or later, which handles a restarted coordinator.
+- The node half serves the rotator's coordinator API on its socket (`coordinator.sock` in `~/.claude/account-rotator`,
+  `GET /state` long polls, `POST /readings`), moved from Quietdeck's usage module (`src/coordinator/`, API 0.7.1). It
+  runs in **borrow mode**: nothing is polled, refreshed or signed in, since setup tokens can't read usage or profiles.
+  Its accounts are the managed slots (the rotator's ID is the slot number); add, remove and sign-in answer 409.
+  Readings sessions post are published as `claude.usage` keyed by account UUID, `data` the coordinator's reading shape
+  `{fiveHour?, sevenDay?, models?, at, source}`; readings from elsewhere (the hub's polls, other nodes' sessions) come
+  in by subscription and the newest whole reading wins, keeping model weeks. A token a session saw rejected, or a
+  failed `token_health` check, shows the account as not working until a response or a passing check says otherwise; an
+  account that leaves the bundle goes once its sessions have moved off. The version starts at the clock in
+  milliseconds. It needs rotator 0.7.6 or later (which leaves `/hello` name `fleetlayer-claude-auth-manager` alone and
+  handles a restarted coordinator). A rotator's own coordinator holding `coordinator.lock` is asked to shut down;
+  Quietdeck's node holding it is waited for (turn its Claude part off where this plugin runs), and a
+  `claude.coordinator` reading says which.
+- The hub can run the same coordinator in its normal (polling) mode against its own sign-in directory
+  (`Coordinator::new`), publishing what it polls as `claude.usage` with `source: poll`.
