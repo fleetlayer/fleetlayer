@@ -201,7 +201,7 @@ A message from another session, a webhook or the runner reaches a session throug
   "address":"w1-3",
   "deliveryId":"d_01JD…",
   "kind":"message",
-  "from":{"name":"ci@agents","node":"server-alice","sessionId":"…"},
+  "from":{"name":"ci@server-alice","node":"server-alice","sessionId":"…"},
   "text":"CI failed on branch fix-login: …"
 }}
 ```
