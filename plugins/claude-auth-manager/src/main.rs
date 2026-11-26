@@ -84,6 +84,8 @@ struct HubSection {
     #[serde(default)]
     trusted_proxies: Vec<std::net::IpAddr>,
     heartbeat: Option<hub::Heartbeat>,
+    /// Shown under the login box: where this deployment keeps the login key ("1Password: vault/item"). Never the key.
+    login_hint: Option<String>,
 }
 
 struct Plugin {
@@ -200,6 +202,7 @@ impl Handler for Shared {
                         login_file: expand(&home, &h.login_file).into(),
                         trusted_proxies: h.trusted_proxies.clone(),
                         heartbeat: h.heartbeat.clone(),
+                        login_hint: h.login_hint.clone(),
                     })
                     .map_err(|e| RpcError::refused(format!("the hub: {e}")))?;
                     tokens_file.get_or_insert_with(|| hub.tokens_file());

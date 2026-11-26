@@ -91,6 +91,7 @@ plugins:
         listen: 10.0.0.5:7660                         # behind a private HTTPS proxy, never the internet
         login_file: /etc/claudehub/login              # at least 32 random characters, 0600
         trusted_proxies: [10.0.0.2]                   # whose X-Forwarded-For is believed
+        login_hint: "1Password: infra/claude-hub-login" # optional, shown under the login box; never the key
         heartbeat:                                    # optional, Gatus external-endpoint style
           url: https://status.example/api/v1/endpoints/claude-hub/external
           token_file: /etc/claudehub/heartbeat-token

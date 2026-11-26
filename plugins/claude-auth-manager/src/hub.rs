@@ -75,6 +75,8 @@ pub struct HubConfig {
     pub listen: SocketAddr,
     pub login_file: PathBuf,
     pub trusted_proxies: Vec<IpAddr>,
+    /// Shown under the login box: where this deployment keeps its login key (never the key or its file's path).
+    pub login_hint: Option<String>,
     pub heartbeat: Option<Heartbeat>,
 }
 
@@ -764,13 +766,32 @@ async fn healthz(State(hub): Ctx) -> impl IntoResponse {
 }
 
 const LOGIN_HTML: &str = r#"<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
-<title>Claude hub</title><style>body{font:16px system-ui;max-width:28rem;margin:4rem auto;padding:0 1rem}
-input,button{font:inherit;padding:.5rem;width:100%;box-sizing:border-box;margin:.25rem 0}</style>
-<h1>Claude hub</h1><form method=post action=/login><input type=password name=login autocomplete=current-password
-placeholder="Login value" autofocus><button>Sign in</button></form><p>{msg}</p>"#;
+<title>Claude hub</title><style>body{font:16px system-ui;max-width:30rem;margin:4rem auto;padding:0 1rem;line-height:1.45}
+input,button{font:inherit;padding:.5rem;width:100%;box-sizing:border-box;margin:.25rem 0}.hint{color:#666;font-size:.9em}
+.msg{color:#b91c1c}@media (prefers-color-scheme:dark){body{background:#111;color:#ddd}.hint{color:#999}.msg{color:#f87171}}</style>
+<h1>Claude hub</h1>
+<p>This hub holds your fleet's Claude sign-ins and sends each account's setup token to your machines, sealed.</p>
+<p>To open it, paste the hub's own login key: the long random value set up with the hub. Signing in to your Claude
+accounts comes next, on the following page.</p>
+<form method=post action=/login><label for=login>Hub login key</label>
+<input type=password id=login name=login autocomplete=current-password autofocus><button>Open the hub</button></form>
+{hint}<p class=msg>{msg}</p>"#;
 
-async fn login_page() -> Html<String> {
-    Html(LOGIN_HTML.replace("{msg}", ""))
+fn esc(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+fn login_html(hub: &Hub, msg: &str) -> Html<String> {
+    let hint = hub
+        .cfg
+        .login_hint
+        .as_deref()
+        .map_or(String::new(), |h| format!("<p class=hint>Where the key is: {}</p>", esc(h)));
+    Html(LOGIN_HTML.replace("{hint}", &hint).replace("{msg}", msg))
+}
+
+async fn login_page(State(hub): Ctx) -> Html<String> {
+    login_html(&hub, "")
 }
 
 #[derive(Deserialize)]
@@ -786,13 +807,12 @@ async fn login(
 ) -> Response {
     let ip = client_ip(peer.ip(), &headers, &hub.cfg.trusted_proxies);
     if hub.locked_out(ip).await {
-        return (StatusCode::TOO_MANY_REQUESTS, Html(LOGIN_HTML.replace("{msg}", "Too many tries: wait 15 minutes.")))
-            .into_response();
+        return (StatusCode::TOO_MANY_REQUESTS, login_html(&hub, "Too many tries: wait 15 minutes.")).into_response();
     }
     if !hub.check_login(&f.login) {
         hub.failed(ip).await;
         tracing::warn!(%ip, "a failed hub login");
-        return (StatusCode::UNAUTHORIZED, Html(LOGIN_HTML.replace("{msg}", "That isn't it."))).into_response();
+        return (StatusCode::UNAUTHORIZED, login_html(&hub, "That isn't the hub's login key.")).into_response();
     }
     let sid = new_id();
     hub.sessions.lock().await.insert(sid.clone(), Instant::now());
@@ -899,7 +919,11 @@ button{font:inherit;padding:.35rem .7rem;cursor:pointer}.warn{color:#b45309;font
 @media (prefers-color-scheme:dark){body{background:#111;color:#ddd}td,th{border-color:#333}#flow{border-color:#444}}
 </style>
 <h1>Claude hub</h1>
-<p>Sign each account in once a month, and make its setup token once a year. Tokens go to every machine, sealed.</p>
+<p>Each account needs two things, so it has two buttons:</p>
+<ul><li><b>Sign in</b>: the account's normal sign-in. The hub uses it only to read the account's usage. Redo it about
+once a month; the hub warns a few days before it runs out.</li>
+<li><b>Make setup token</b>: the token your machines get, sealed, for their agents to use. It lasts a year.</li></ul>
+<p>Both open Claude's sign-in page: sign in as that account, then paste the code it shows back here.</p>
 <div id=flow><p id=fstate></p><p id=furl></p>
 <p><input id=code placeholder="Paste the code from the sign-in page"> <button onclick=paste()>Send</button></p></div>
 <table><thead><tr><th>#</th><th>Account</th><th>Sign-in</th><th>Setup token</th><th></th></tr></thead><tbody id=rows></tbody></table>
@@ -966,9 +990,13 @@ mod tests {
             login_file: d.path().join("login"),
             trusted_proxies: vec![],
             heartbeat: None,
+            login_hint: None,
         })
         .unwrap();
         assert!(hub.check_login(&"x".repeat(40)));
+        let page = login_html(&hub, "").0;
+        assert!(!page.contains("Where the key is"), "no hint unless configured");
+        assert!(!page.contains(&"x".repeat(40)), "never the key");
         assert!(!hub.check_login("nope"));
         let ip: IpAddr = "192.0.2.1".parse().unwrap();
         for _ in 0..5 {
@@ -990,6 +1018,7 @@ mod tests {
             login_file: d.path().join("login"),
             trusted_proxies: vec![],
             heartbeat: None,
+            login_hint: None,
         })
         .unwrap();
         let mut s = Store::default();
