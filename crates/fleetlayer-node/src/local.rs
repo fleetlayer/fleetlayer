@@ -95,6 +95,8 @@ impl Handler for Local {
                     "control": node.link.state().await,
                     "health": crate::heartbeat::health(node, node.has_control).await,
                     "node": node.name,
+                    "publicKey": node.public_key,
+                    "keyFingerprint": crate::keys::fingerprint(&node.public_key),
                     "machine": node.machine,
                     "user": node.user,
                     "version": env!("CARGO_PKG_VERSION"),

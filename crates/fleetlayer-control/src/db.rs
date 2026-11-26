@@ -59,7 +59,7 @@ pub async fn enrol(db: &Db, tenant: &str, name: &str) -> anyhow::Result<String> 
     let token = format!("fln_{}", new_secret());
     sqlx::query(
         "INSERT INTO nodes (tenant, name, token_hash, created_at) VALUES (?, ?, ?, ?)
-         ON CONFLICT (tenant, name) DO UPDATE SET token_hash = excluded.token_hash",
+         ON CONFLICT (tenant, name) DO UPDATE SET token_hash = excluded.token_hash, public_key = NULL",
     )
     .bind(tenant)
     .bind(name)
@@ -79,6 +79,31 @@ pub async fn node_for_token(db: &Db, token: &str) -> anyhow::Result<Option<(Stri
     let row =
         sqlx::query("SELECT tenant, name FROM nodes WHERE token_hash = ?").bind(hash(token)).fetch_optional(db).await?;
     Ok(row.map(|r| (r.get(0), r.get(1))))
+}
+
+/// Record a node's public key the first time; afterwards, only the same key is accepted. Err names the mismatch.
+pub async fn check_key(db: &Db, tenant: &str, name: &str, key: &str) -> anyhow::Result<Result<(), String>> {
+    let row = sqlx::query("SELECT public_key FROM nodes WHERE tenant = ? AND name = ?")
+        .bind(tenant)
+        .bind(name)
+        .fetch_one(db)
+        .await?;
+    match row.get::<Option<String>, _>(0) {
+        None => {
+            sqlx::query("UPDATE nodes SET public_key = ? WHERE tenant = ? AND name = ?")
+                .bind(key)
+                .bind(tenant)
+                .bind(name)
+                .execute(db)
+                .await?;
+            Ok(Ok(()))
+        }
+        Some(k) if k == key => Ok(Ok(())),
+        Some(k) => Ok(Err(format!(
+            "node {name} presented a different key than the one it enrolled with ({k}); if it was rebuilt, enrol it \
+             again with fleetlayer-control node add {name}"
+        ))),
+    }
 }
 
 pub async fn node_seen(
@@ -112,11 +137,12 @@ pub struct NodeRow {
     pub version: Option<String>,
     pub created_at: i64,
     pub last_seen_at: Option<i64>,
+    pub public_key: Option<String>,
 }
 
 pub async fn nodes(db: &Db, tenant: &str) -> anyhow::Result<Vec<NodeRow>> {
     let rows = sqlx::query(
-        "SELECT name, machine, user_name, version, created_at, last_seen_at FROM nodes WHERE tenant = ? ORDER BY name",
+        "SELECT name, machine, user_name, version, created_at, last_seen_at, public_key FROM nodes WHERE tenant = ? ORDER BY name",
     )
     .bind(tenant)
     .fetch_all(db)
@@ -130,6 +156,7 @@ pub async fn nodes(db: &Db, tenant: &str) -> anyhow::Result<Vec<NodeRow>> {
             version: r.get(3),
             created_at: r.get(4),
             last_seen_at: r.get(5),
+            public_key: r.get(6),
         })
         .collect())
 }
@@ -495,7 +522,15 @@ mod tests {
         let db = open_memory().await.unwrap();
         let t1 = enrol(&db, DEFAULT_TENANT, "laptop").await.unwrap();
         assert_eq!(node_for_token(&db, &t1).await.unwrap(), Some(("default".into(), "laptop".into())));
+        assert_eq!(check_key(&db, DEFAULT_TENANT, "laptop", "age1a").await.unwrap(), Ok(()));
+        assert_eq!(check_key(&db, DEFAULT_TENANT, "laptop", "age1a").await.unwrap(), Ok(()));
+        assert!(check_key(&db, DEFAULT_TENANT, "laptop", "age1b").await.unwrap().is_err());
         let t2 = enrol(&db, DEFAULT_TENANT, "laptop").await.unwrap();
+        assert_eq!(
+            check_key(&db, DEFAULT_TENANT, "laptop", "age1b").await.unwrap(),
+            Ok(()),
+            "enrolling again resets the key"
+        );
         assert_eq!(node_for_token(&db, &t1).await.unwrap(), None);
         assert!(node_for_token(&db, &t2).await.unwrap().is_some());
         assert!(enrol(&db, DEFAULT_TENANT, "bad name").await.is_err());

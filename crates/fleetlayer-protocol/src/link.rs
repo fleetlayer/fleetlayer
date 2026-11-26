@@ -42,6 +42,10 @@ pub struct Hello {
     pub version: String,
     pub machine: String,
     pub user: String,
+    /// The node's age X25519 public key (`age1…`), for secrets sealed to it. The control plane keeps the first one it
+    /// sees and refuses a different one until the node is enrolled again.
+    #[serde(default, rename = "publicKey", skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

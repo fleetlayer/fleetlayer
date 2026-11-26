@@ -167,6 +167,12 @@ impl Handler for FromNode {
                         h.protocol
                     )));
                 }
+                if let Some(key) = &h.public_key {
+                    db::check_key(&app.db, tenant, &self.node, key)
+                        .await
+                        .map_err(RpcError::internal)?
+                        .map_err(RpcError::refused)?;
+                }
                 db::node_seen(&app.db, tenant, &self.node, &h.machine, &h.user, &h.version)
                     .await
                     .map_err(RpcError::internal)?;

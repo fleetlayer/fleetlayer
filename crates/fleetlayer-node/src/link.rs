@@ -125,6 +125,7 @@ async fn connect_once(node: &Arc<Node>, cfg: &ControlConfig) -> anyhow::Result<(
         version: env!("CARGO_PKG_VERSION").into(),
         machine: node.machine.clone(),
         user: node.user.clone(),
+        public_key: Some(node.public_key.clone()),
     };
     let welcome: Welcome = peer.request(l::method::HELLO, &hello).await.map_err(|e| anyhow::anyhow!("{e}"))?;
     if welcome.node != node.name {

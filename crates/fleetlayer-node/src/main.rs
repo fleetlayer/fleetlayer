@@ -5,6 +5,7 @@
 mod config;
 mod deliver;
 mod heartbeat;
+mod keys;
 mod link;
 mod local;
 mod plugins;
@@ -63,6 +64,8 @@ pub struct Node {
     /// The control plane link's settings (token path expanded), for tool streams.
     pub control: Option<config::ControlConfig>,
     pub tools: Vec<tools::ToolConfig>,
+    /// This node's age public key (`age1…`).
+    pub public_key: String,
 }
 
 impl Node {
@@ -128,6 +131,7 @@ async fn run(cfg: NodeConfig) -> anyhow::Result<()> {
     for p in &cfg.plugins {
         anyhow::ensure!(names.insert(p.name.clone()), "two plugins are called {} in node.yaml", p.name);
     }
+    let key = keys::load_or_create(&config::config_dir().join("node-key"))?;
     let node = Arc::new(Node {
         name: cfg.name(),
         machine: cfg.machine(),
@@ -146,6 +150,7 @@ async fn run(cfg: NodeConfig) -> anyhow::Result<()> {
             c
         }),
         tools: cfg.tools.clone(),
+        public_key: key.to_public().to_string(),
     });
     tracing::info!(node = %node.name, machine = %node.machine, plugins = node.plugins.len(), "fleetlayer-node starting");
     for p in &node.plugins {
