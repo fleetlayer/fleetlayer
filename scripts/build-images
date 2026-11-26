@@ -7,28 +7,32 @@
 #
 #   scripts/build-images [--wait] [<commit>]    defaults to HEAD; the commit must be committed
 #
-# The build host comes from .dev-host or $FLEETLAYER_DEV_HOST, the registry from .registry or $FLEETLAYER_REGISTRY.
+# The build host comes from .dev-host or $FLEETLAYER_DEV_HOST, the registry from .registry or $FLEETLAYER_REGISTRY, and
+# the Docker config holding the registry login (on the build host) from .docker-config or $FLEETLAYER_DOCKER_CONFIG
+# (default: Docker's own).
 set -euo pipefail
 dir=$(git rev-parse --show-toplevel)
 host=${FLEETLAYER_DEV_HOST:-$(cat "$dir/.dev-host" 2>/dev/null || true)}
 registry=${FLEETLAYER_REGISTRY:-$(cat "$dir/.registry" 2>/dev/null || true)}
+docker_config=${FLEETLAYER_DOCKER_CONFIG:-$(cat "$dir/.docker-config" 2>/dev/null || true)}
+push_env=${docker_config:+DOCKER_CONFIG=$docker_config }
 [ -n "$host" ] && [ -n "$registry" ] || { echo "scripts/build-images: set the build host and the registry (see the top of this file)" >&2; exit 2; }
 wait=
 if [ "${1:-}" = --wait ]; then wait=1; shift; fi
 sha=$(git rev-parse --short=7 "${1:-HEAD}")
 root=/opt/code/fleetlayer/images
 git archive "$sha" | ssh "$host" "mkdir -p $root/src && cd $root/src && find . -mindepth 1 -maxdepth 1 ! -name target -exec rm -rf {} + && tar -x -m -C ." 2>&1 | grep -v setlocale || true
-ssh "$host" "SHA=$sha R=$registry/fleetlayer ROOT=$root bash -s" > /dev/null 2>&1 <<'REMOTE' &
+ssh "$host" "SHA=$sha R=$registry/fleetlayer ROOT=$root PUSH='$push_env' bash -s" > /dev/null 2>&1 <<'REMOTE' &
 cd $ROOT/src
 rm -f $ROOT/$SHA.status
 nohup sh -c "
 DOCKER_BUILDKIT=1 docker build -f deploy/Dockerfile -t $R/control:$SHA . > $ROOT/$SHA.log 2>&1 &&
 docker run --rm $R/control:$SHA --help > /dev/null 2>&1 &&
-docker push $R/control:$SHA >> $ROOT/$SHA.log 2>&1 &&
+$PUSH docker push $R/control:$SHA >> $ROOT/$SHA.log 2>&1 &&
 docker run --rm -v $ROOT/src:/src -v fleetlayer-cargo-registry:/usr/local/cargo/registry -w /src rust:1.99.1-bookworm sh -c 'cargo build --release --locked -j 8 -p fleetlayer-cli -p fleetlayer-node -p fleetlayer-herdr -p fleetlayer-claude-code && rm -rf dist && mkdir dist && cp target/release/fleetlayer target/release/fleetlayer-node target/release/fleetlayer-herdr target/release/fleetlayer-claude-code dist/' >> $ROOT/$SHA.log 2>&1 &&
 cd dist && printf 'FROM scratch\nCOPY fleetlayer fleetlayer-node fleetlayer-herdr fleetlayer-claude-code /\n' > Dockerfile.node-bin &&
 DOCKER_BUILDKIT=1 docker build --platform linux/amd64 -f Dockerfile.node-bin -t $R/node-bin:$SHA . >> $ROOT/$SHA.log 2>&1 &&
-docker push $R/node-bin:$SHA >> $ROOT/$SHA.log 2>&1
+$PUSH docker push $R/node-bin:$SHA >> $ROOT/$SHA.log 2>&1
 echo done \$? > $ROOT/$SHA.status" < /dev/null > /dev/null 2>&1 &
 REMOTE
 sleep 5
