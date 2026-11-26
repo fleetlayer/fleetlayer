@@ -1,0 +1,28 @@
+[package]
+name = "fleetlayer-summaries"
+description = "fleetlayer-summaries: summaries of every agent session on this machine, as Markdown files, published to the control plane"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+fleetlayer-protocol.workspace = true
+fleetlayer-plugin.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["preserve_order"] }
+jiff.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+async-trait = "0.1.92"
+regex = "1.13.2"
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

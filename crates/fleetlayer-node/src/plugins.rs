@@ -118,6 +118,7 @@ impl PluginHandle {
             (r.action.is_some(), "action"),
             (r.sync_target.is_some(), "sync_target"),
             (r.sync_source.is_some(), "sync_source"),
+            (r.observer.is_some(), "observer"),
         ] {
             if set {
                 roles.push(name);
@@ -341,9 +342,35 @@ impl FromPlugin {
 
 #[async_trait]
 impl Handler for FromPlugin {
-    async fn request(&self, _peer: &Peer, method: &str, p: Value) -> Result<Value, RpcError> {
+    async fn request(&self, peer: &Peer, method: &str, p: Value) -> Result<Value, RpcError> {
         match method {
             ext::method::PING => Ok(json!({})),
+            ext::method::SESSIONS_SUBSCRIBE => {
+                self.grant("sessions.watch")?;
+                let mut changes = self.node.registry.subscribe();
+                let (node, peer) = (self.node.clone(), peer.clone());
+                tokio::spawn(async move {
+                    use tokio::sync::broadcast::error::RecvError;
+                    while !peer.is_closed() {
+                        let update = match changes.recv().await {
+                            Ok(crate::sessions::Change::Reset) | Err(RecvError::Lagged(_)) => {
+                                json!({"change": "reset", "sessions": node.registry.all().await})
+                            }
+                            Ok(c) => serde_json::to_value(&c).unwrap_or_default(),
+                            Err(RecvError::Closed) => return,
+                        };
+                        peer.notify(ext::method::SESSIONS_UPDATE, &update);
+                    }
+                });
+                // Messages session managers type in by themselves (herdr's auto-continue), which aren't the person's.
+                let mut own = vec![];
+                for p in &self.node.plugins {
+                    if let Some(sm) = p.roles().await.session_manager {
+                        own.extend(sm.own_messages);
+                    }
+                }
+                answer(&json!({"sessions": self.node.registry.all().await, "ownMessages": own}))
+            }
             ext::method::LOG => {
                 tracing::info!(
                     plugin = self.plugin.name(),
@@ -392,6 +419,15 @@ impl Handler for FromPlugin {
                 }
             }
             ext::method::SESSIONS_CHANGED => relist_soon(node, plugin).await,
+            ext::method::SUMMARY_PUBLISH => {
+                if !plugin.config.granted("summary.publish") {
+                    tracing::warn!(plugin = plugin.name(), "summary.publish isn't granted in node.yaml; dropping");
+                    return;
+                }
+                if let Some(event) = p.get("event") {
+                    node.link.send_or_hold(fleetlayer_protocol::link::method::SUMMARY, json!({"event": event})).await;
+                }
+            }
             ext::method::LOG => {
                 tracing::info!(
                     plugin = plugin.name(),

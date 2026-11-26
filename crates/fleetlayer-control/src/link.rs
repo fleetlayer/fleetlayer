@@ -197,6 +197,16 @@ impl Handler for FromNode {
             l::method::SUBSCRIPTIONS => {
                 answer(&json!({"subscriptions": db::subscriptions(&app.db, tenant).await.map_err(RpcError::internal)?}))
             }
+            l::method::SUMMARIES_SEARCH => {
+                let q = p["q"].as_str().unwrap_or_default();
+                let limit = p["limit"].as_i64().unwrap_or(20).clamp(1, 200);
+                let hits = match p["session"].as_str() {
+                    Some(s) => crate::summaries::timeline(&app.db, tenant, s, limit).await,
+                    None => crate::summaries::search(&app.db, tenant, q, limit).await,
+                }
+                .map_err(RpcError::internal)?;
+                answer(&json!({"summaries": hits}))
+            }
             l::method::FLEET => {
                 let mut fleet = crate::api::fleet(app, tenant).await.map_err(RpcError::internal)?;
                 // A node sees the sessions it may message (and its own).
@@ -233,6 +243,12 @@ impl Handler for FromNode {
                 Ok(s) => db::remove_session(db, tenant, node, &s.session_id).await,
                 Err(e) => Err(e.into()),
             },
+            l::method::SUMMARY => {
+                match serde_json::from_value::<fleetlayer_protocol::summary::SummaryEvent>(p["event"].clone()) {
+                    Ok(e) => crate::summaries::store(db, tenant, node, &e).await,
+                    Err(e) => Err(e.into()),
+                }
+            }
             _ => Ok(()),
         };
         if let Err(e) = r {

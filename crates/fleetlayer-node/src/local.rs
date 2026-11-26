@@ -101,6 +101,13 @@ impl Handler for Local {
                     "plugins": plugins,
                 }))
             }
+            "node/summaries" => {
+                let peer =
+                    node.link.peer().await.ok_or_else(|| {
+                        RpcError::not_here(format!("{} isn't linked to a control plane now", node.name))
+                    })?;
+                peer.request::<_, Value>(l::method::SUMMARIES_SEARCH, &p).await
+            }
             "node/fleet" | "node/subscriptions" | "node/subscribe" | "node/unsubscribe" => {
                 let peer =
                     node.link.peer().await.ok_or_else(|| {

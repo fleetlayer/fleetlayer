@@ -12,6 +12,7 @@ mod db;
 mod hooks;
 mod link;
 mod route;
+mod summaries;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -268,6 +269,7 @@ async fn serve(app: Arc<App>, listen: SocketAddr, hooks_listen: SocketAddr) -> a
         .route("/v1/events", get(api::get_events))
         .route("/v1/subscriptions", get(api::get_subscriptions))
         .route("/v1/endpoints", get(api::get_endpoints))
+        .route("/v1/summaries", get(api::get_summaries))
         .with_state(app.clone());
     let hooks = hooks::router(app);
     let api_listener = tokio::net::TcpListener::bind(listen).await?;

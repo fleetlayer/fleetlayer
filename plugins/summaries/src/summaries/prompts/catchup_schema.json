@@ -1,0 +1,1 @@
+{"type": "object", "properties": {"catchup": {"type": "string"}}, "required": ["catchup"]}

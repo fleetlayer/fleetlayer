@@ -1,0 +1,139 @@
+{
+ "home/.claude/projects/-Users-sam-code-app/11111111-2222-3333-4444-555555555555.jsonl": {
+  "agent": "claude",
+  "session_id": "11111111-2222-3333-4444-555555555555",
+  "cwd": "/Users/sam/code/app",
+  "skip": null,
+  "end": 11686,
+  "events": [
+   {
+    "kind": "human",
+    "text": "Pick up sc-1234: the invoice export times out for big accounts.",
+    "end": 2146
+   },
+   {
+    "kind": "assistant",
+    "text": "Reading the export job first.",
+    "end": 3274
+   },
+   {
+    "kind": "tool",
+    "text": "Bash: Run the export job spec",
+    "end": 4684
+   },
+   {
+    "kind": "tool",
+    "text": "Edit ~/code/app/app/jobs/export.rb",
+    "end": 4684
+   },
+   {
+    "kind": "tool",
+    "text": "mcp__executor__call: {\"calls\": [{\"path\": \"tools.shortcut.getStory\", \"input\": {\"id\": 1234}}], \"note\": \"x\"}",
+    "end": 4684
+   },
+   {
+    "kind": "assistant",
+    "text": "The migration is done. The migration is done. The migration is done. The migration is done. The migration is done. The migration is done. The migration is done. The migration is done. The migration is done. The migration is done. The migration is done. The migration is done. The migration is done. The migration is done. The migration is done. The migration is done. The migration is done. The migration is done. The migration is done. The migration is done.",
+    "end": 7835
+   },
+   {
+    "kind": "human",
+    "text": "here is the screenshot\n[image attached]",
+    "end": 10247
+   },
+   {
+    "kind": "human",
+    "text": "/pr-review 1388",
+    "end": 10759
+   },
+   {
+    "kind": "assistant",
+    "text": "Opened PR #1388.",
+    "end": 11595
+   },
+   {
+    "kind": "tool",
+    "text": "Skill pr-review 1388",
+    "end": 11595
+   },
+   {
+    "kind": "tool",
+    "text": "SendMessage to ci: PR 1388 is up",
+    "end": 11595
+   },
+   {
+    "kind": "tool",
+    "text": "Agent: Review the export change",
+    "end": 11595
+   }
+  ],
+  "is_real": true,
+  "condensed": "[Tue 03 Nov 09:00] USER: Pick up sc-1234: the invoice export times out for big accounts.\n[Tue 03 Nov 09:00] AGENT: Reading the export job first.\n  · Bash: Run the export job spec\n  · Edit ~/code/app/app/jobs/export.rb\n  · mcp__executor__call: {\"calls\": [{\"path\": \"tools.shortcut.getStory\", \"input\": {\"id\": 1234}}], \"note\": \"x\"}\n[Tue 03 Nov 09:21] AGENT: The migration is done. The migration is done. The migration is done. The migration is done. The migration is done. The migration is done. The migration is done. The migration is done. The migration is done. The migration is done. The migration is done. The migration is done. The migration is done. The migration is done. The migration is done. The migration is done. The migration is done. The migration is done. The migration is done. The migration is done.\n[Tue 03 Nov 14:05] USER: here is the screenshot\n[image attached]\n[Tue 03 Nov 14:06] USER: /pr-review 1388\n[Tue 03 Nov 14:07] AGENT: Opened PR #1388.\n  · Skill pr-review 1388\n  · SendMessage to ci: PR 1388 is up\n  · Agent: Review the export change",
+  "condensed_small": "[Tue 03 Nov 09:00] USER: Pick up sc-1234: the invoice export times out for big accounts.\n  [… 5 earlier lines left out …]\n[Tue 03 Nov 14:05] USER: here is the screenshot\n[image attached]\n[Tue 03 Nov 14:06] USER: /pr-review 1388\n[Tue 03 Nov 14:07] AGENT: Opened PR #1388."
+ },
+ "home/.claude/projects/-private-tmp-work/99999999-0000-0000-0000-000000000001.jsonl": {
+  "agent": "claude",
+  "session_id": "99999999-0000-0000-0000-000000000001",
+  "cwd": "/Users/sam/code/app",
+  "skip": "headless run (sdk-cli)",
+  "end": 340,
+  "events": [],
+  "is_real": false,
+  "condensed": "",
+  "condensed_small": ""
+ },
+ "home/.codex/sessions/2026/11/03/rollout-2026-11-03T15-00-00-019a0000-1111-7222-8333-944444444444.jsonl": {
+  "agent": "codex",
+  "session_id": "019a0000-1111-7222-8333-944444444444",
+  "cwd": "/Users/sam/code/tools",
+  "skip": null,
+  "end": 1913,
+  "events": [
+   {
+    "kind": "human",
+    "text": "Add a --json flag to the export CLI.",
+    "end": 911
+   },
+   {
+    "kind": "tool",
+    "text": "shell: {\"command\":[\"rg\",\"--json\",\"src\"]}",
+    "end": 1337
+   },
+   {
+    "kind": "tool",
+    "text": "apply_patch: *** Begin Patch *** Update File: src/cli.rs *** End Patch",
+    "end": 1714
+   },
+   {
+    "kind": "assistant",
+    "text": "Added --json; the tests pass.",
+    "end": 1913
+   }
+  ],
+  "is_real": true,
+  "condensed": "[Tue 03 Nov 15:00] USER: Add a --json flag to the export CLI.\n  · shell: {\"command\":[\"rg\",\"--json\",\"src\"]}\n  · apply_patch: *** Begin Patch *** Update File: src/cli.rs *** End Patch\n[Tue 03 Nov 15:00] AGENT: Added --json; the tests pass.",
+  "condensed_small": "[Tue 03 Nov 15:00] USER: Add a --json flag to the export CLI.\n  · shell: {\"command\":[\"rg\",\"--json\",\"src\"]}\n  · apply_patch: *** Begin Patch *** Update File: src/cli.rs *** End Patch\n[Tue 03 Nov 15:00] AGENT: Added --json; the tests pass."
+ },
+ "home/.codex/sessions/2026/11/03/rollout-2026-11-03T15-10-00-019a0000-1111-7222-8333-955555555555.jsonl": {
+  "agent": "codex",
+  "session_id": "019a0000-1111-7222-8333-955555555555",
+  "cwd": "/x",
+  "skip": "codex exec run (a review a Claude session started)",
+  "end": 334,
+  "events": [],
+  "is_real": false,
+  "condensed": "",
+  "condensed_small": ""
+ },
+ "home/.codex/sessions/2026/11/03/rollout-2026-11-03T15-20-00-019a0000-1111-7222-8333-966666666666.jsonl": {
+  "agent": "codex",
+  "session_id": "019a0000-1111-7222-8333-966666666666",
+  "cwd": "/x",
+  "skip": "codex exec run (a review a Claude session started)",
+  "end": 196,
+  "events": [],
+  "is_real": false,
+  "condensed": "",
+  "condensed_small": ""
+ }
+}

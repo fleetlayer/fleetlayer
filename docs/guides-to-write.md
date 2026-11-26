@@ -25,3 +25,11 @@ solved, and where the knowledge lives now. These become Fleetlayer's guides.
   '*@triage-node' --to 'inbox@main' allow`, then `--from '*@triage-node' --to '*' deny`, or set `acl default deny`
   and list what's allowed. A node sees only the sessions it may message, and subscribes only its own. Where it
   lives: `crates/fleetlayer-control/src/acl.rs`.
+- **A browser MCP server started by launchd can't find Chrome's profile.** macOS doesn't let a launchd-spawned process
+  read Chrome's profile folders, so Playwright MCP's extension mode fails with "Playwright Extension not found". Fix:
+  set `PLAYWRIGHT_MCP_EXECUTABLE_PATH` to Chrome's binary and pass `--profile-dir-name Default`. Six sessions at once
+  each got their own tab group with no cross-talk; navigation over an SSH tunnel takes 0.5-1 s. Found by the
+  homeserver session, 26 Nov 2026. Fleetlayer's node will hit the same thing when it starts the server.
+- **Stopping test processes with `pkill -f` can kill your own shell**: the pattern matches the shell's own command
+  line. Use a bracket (`pkill -f 'bin/[f]leetlayer-node'`), and never `pkill -x fleetlayer-node` on a machine where the
+  node runs as a service.

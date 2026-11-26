@@ -22,15 +22,44 @@ use crate::sessions::Change;
 
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
+/// Notifications held while the link is down (summaries), sent in order when it's back. The oldest go first when
+/// it's full: the plugin's files keep everything anyway.
+const HOLD_LIMIT: usize = 5000;
+
 #[derive(Default)]
 pub struct Link {
     peer: Mutex<Option<Peer>>,
     last_error: Mutex<Option<String>>,
+    held: Mutex<std::collections::VecDeque<(String, Value)>>,
 }
 
 impl Link {
     pub async fn peer(&self) -> Option<Peer> {
         self.peer.lock().await.clone().filter(|p| !p.is_closed())
+    }
+
+    /// Send a notification to the control plane now, or hold it until the link is back.
+    pub async fn send_or_hold(&self, method: &str, params: Value) {
+        if let Some(peer) = self.peer().await
+            && peer.notify(method, &params)
+        {
+            return;
+        }
+        let mut held = self.held.lock().await;
+        if held.len() == HOLD_LIMIT {
+            held.pop_front();
+        }
+        held.push_back((method.to_string(), params));
+    }
+
+    async fn flush(&self, peer: &Peer) {
+        let mut held = self.held.lock().await;
+        while let Some((m, p)) = held.pop_front() {
+            if !peer.notify(&m, &p) {
+                held.push_front((m, p));
+                return;
+            }
+        }
     }
 
     pub async fn state(&self) -> Value {
@@ -113,6 +142,7 @@ async fn connect_once(node: &Arc<Node>, cfg: &ControlConfig) -> anyhow::Result<(
     // The whole list first, then every change. A watcher that falls behind sends the whole list again.
     let mut changes = node.registry.subscribe();
     push_all(node, &peer).await;
+    node.link.flush(&peer).await;
     let pusher = {
         let (node, peer) = (node.clone(), peer.clone());
         tokio::spawn(async move {

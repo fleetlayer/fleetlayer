@@ -17,6 +17,12 @@ pub mod method {
     pub const SESSION_RENAMED: &str = "_fleetlayer.dev/session/renamed";
     pub const SESSIONS_CHANGED: &str = "_fleetlayer.dev/sessions/changed";
     pub const SESSIONS_QUERY: &str = "_fleetlayer.dev/sessions/query";
+    /// Plugin → node: follow this node's sessions. Answers the current list; changes follow as
+    /// `SESSIONS_UPDATE` notifications.
+    pub const SESSIONS_SUBSCRIBE: &str = "_fleetlayer.dev/sessions/subscribe";
+    pub const SESSIONS_UPDATE: &str = "_fleetlayer.dev/sessions/update";
+    /// Plugin → node: a summary event (`crate::summary::SummaryEvent`), for the control plane.
+    pub const SUMMARY_PUBLISH: &str = "_fleetlayer.dev/summary/publish";
     pub const HARNESS_TRANSCRIPT: &str = "_fleetlayer.dev/harness/transcript";
     pub const MESSAGE_SEND: &str = "_fleetlayer.dev/message/send";
     pub const EVENT_PUBLISH: &str = "_fleetlayer.dev/event/publish";
@@ -92,6 +98,9 @@ pub struct Roles {
     pub sync_target: Option<SyncRole>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync_source: Option<SyncRole>,
+    /// It follows sessions and reports on them (summaries), with no other role.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observer: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

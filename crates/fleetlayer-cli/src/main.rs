@@ -40,6 +40,19 @@ enum Command {
     Unsubscribe(SubscribeArgs),
     /// Every subscription in the fleet.
     Subscriptions,
+    /// Search session summaries across the fleet, or show one session's timeline with --session.
+    Summaries {
+        /// Words to search for.
+        query: Vec<String>,
+        /// A session ID: its timeline, newest first.
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long, default_value_t = 10)]
+        limit: i64,
+        /// Show each summary's paragraph too.
+        #[arg(long)]
+        long: bool,
+    },
     /// Messages between sessions.
     Msg {
         #[command(subcommand)]
@@ -200,10 +213,11 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 for s in mine.filter(|s| s["ended"].is_null()) {
                     let m = &s["meta"];
                     println!(
-                        "  {:<24} {:<8} {}",
+                        "  {:<24} {:<8} {:<8} {}",
                         format!("{}@{name}", m["tab"].as_str().unwrap_or("-")),
                         m["harness"].as_str().unwrap_or("?"),
-                        m["status"].as_str().unwrap_or("unknown")
+                        m["status"].as_str().unwrap_or("unknown"),
+                        s["summary"]["sentence"].as_str().unwrap_or("")
                     );
                 }
             }
@@ -240,6 +254,27 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                     None => s["channel"].as_str().unwrap_or("?").to_string(),
                 };
                 println!("{on:<40} {}", s["target"].as_str().unwrap_or("?"));
+            }
+        }
+        Command::Summaries { query, session, limit, long } => {
+            let args = json!({"q": query.join(" "), "session": session, "limit": limit});
+            let v: Value = peer.request("node/summaries", &args).await?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&v)?);
+                return Ok(());
+            }
+            for s in v["summaries"].as_array().into_iter().flatten() {
+                let when = s["activityTo"].as_i64().and_then(|ms| jiff::Timestamp::from_millisecond(ms).ok());
+                println!(
+                    "{}  {}@{}  {}",
+                    when.map(|t| t.strftime("%Y-%m-%d %H:%M").to_string()).unwrap_or_default(),
+                    s["tab"].as_str().unwrap_or("-"),
+                    s["node"].as_str().unwrap_or("?"),
+                    s["sentence"].as_str().unwrap_or("")
+                );
+                if long && let Some(p) = s["paragraph"].as_str().filter(|p| !p.is_empty()) {
+                    println!("    {}\n", p.replace('\n', "\n    "));
+                }
             }
         }
         Command::Msg { command: Msg::Send { to, text } } => {

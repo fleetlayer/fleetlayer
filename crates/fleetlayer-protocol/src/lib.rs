@@ -4,11 +4,13 @@
 //! - [`acp`]: the part of the Agent Client Protocol (v1) Fleetlayer uses.
 //! - [`ext`]: Fleetlayer's extensions: method names, `_meta` keys and their payloads.
 //! - [`link`]: the node's link to the control plane.
+//! - [`summary`]: session summaries.
 
 pub mod acp;
 pub mod ext;
 pub mod link;
 pub mod rpc;
+pub mod summary;
 
 /// The version of Fleetlayer's extensions this crate speaks (`protocol` in `fleetlayer.dev/node` and
 /// `fleetlayer.dev/plugin`).

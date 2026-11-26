@@ -1,0 +1,1 @@
+{"isSidechain": true, "userType": "external", "entrypoint": "cli", "cwd": "/Users/sam/code/app", "sessionId": "11111111-2222-3333-4444-555555555555", "version": "2.1.329", "gitBranch": "main", "type": "user", "agentId": "a1", "timestamp": "2026-11-02T20:01:00Z", "message": {"content": "Subagent task text"}}

@@ -1,0 +1,1 @@
+{"type": "object", "properties": {"status": {"type": "string", "enum": ["update", "no_change"]}, "page": {"type": "string"}, "paragraph": {"type": "string"}, "sentence": {"type": "string"}}, "required": ["status"]}

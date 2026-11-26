@@ -22,6 +22,10 @@ pub mod method {
     pub const SUBSCRIPTIONS: &str = "link/subscriptions";
     /// Node → control plane: every node and session in the fleet.
     pub const FLEET: &str = "link/fleet";
+    /// Node → control plane (notification): `SummaryPush` without the node (the link knows it).
+    pub const SUMMARY: &str = "link/summary";
+    /// Node → control plane: search summaries. `{q, limit?}` → `{summaries: [...]}`.
+    pub const SUMMARIES_SEARCH: &str = "link/summaries_search";
     /// Control plane → node: deliver to one of its sessions. `DeliverRequest` → `Delivered`.
     pub const DELIVER: &str = "link/deliver";
 }

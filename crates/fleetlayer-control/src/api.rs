@@ -46,11 +46,15 @@ pub async fn fleet(app: &App, tenant: &str) -> anyhow::Result<Value> {
             v
         })
         .collect();
+    let latest = crate::summaries::latest(&app.db, tenant).await?;
     let sessions: Vec<Value> = db::sessions(&app.db, tenant)
         .await?
         .into_iter()
         .map(|(node, mut s)| {
             s["node"] = json!(node);
+            if let Some(l) = s["sessionId"].as_str().and_then(|id| latest.get(id)) {
+                s["summary"] = l.clone();
+            }
             s
         })
         .collect();
@@ -75,6 +79,29 @@ pub async fn get_subscriptions(State(app): State<Arc<App>>, headers: HeaderMap) 
 pub async fn get_endpoints(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
     guard(&app, &headers)?;
     Ok(Json(json!({"endpoints": db::endpoints(&app.db, DEFAULT_TENANT).await.map_err(internal)?})))
+}
+
+#[derive(serde::Deserialize)]
+pub struct SummaryQuery {
+    q: Option<String>,
+    session: Option<String>,
+    limit: Option<i64>,
+}
+
+/// `GET /v1/summaries?q=words` searches; `?session=<id>` is one session's timeline.
+pub async fn get_summaries(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<SummaryQuery>,
+) -> ApiResult {
+    guard(&app, &headers)?;
+    let limit = q.limit.unwrap_or(20).clamp(1, 200);
+    let hits = match &q.session {
+        Some(s) => crate::summaries::timeline(&app.db, DEFAULT_TENANT, s, limit).await,
+        None => crate::summaries::search(&app.db, DEFAULT_TENANT, q.q.as_deref().unwrap_or_default(), limit).await,
+    }
+    .map_err(internal)?;
+    Ok(Json(json!({"summaries": hits})))
 }
 
 /// `/healthz`: ok when the database answers, with the number of linked nodes.
