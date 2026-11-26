@@ -33,3 +33,7 @@ solved, and where the knowledge lives now. These become Fleetlayer's guides.
 - **Stopping test processes with `pkill -f` can kill your own shell**: the pattern matches the shell's own command
   line. Use a bracket (`pkill -f 'bin/[f]leetlayer-node'`), and never `pkill -x fleetlayer-node` on a machine where the
   node runs as a service.
+- **macOS Local Network privacy can block the node's first links.** On macOS 15+, a launchd-started binary that isn't
+  Apple's dialling a LAN address gets "No route to host (os error 65)" until Local Network access is allowed. The
+  node retries with backoff, so it usually links once the person allows the prompt. If a fresh install keeps failing
+  that way, check System Settings > Privacy & Security > Local Network. Seen installing the first Mac node, 26 Nov 2026.
