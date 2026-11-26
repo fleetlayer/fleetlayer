@@ -96,6 +96,37 @@ pub struct Managed {
     pub email: String,
 }
 
+/// The entry with its Claude sign-in (`claudeAiOauth`) replaced, or taken out with None, and everything else Claude
+/// Code keeps there left as it was: the same item holds the MCP servers' OAuth sign-ins (`mcpOAuth`), which replacing
+/// the whole item once wiped.
+pub fn with_sign_in(existing: Option<&str>, sign_in: Option<serde_json::Value>) -> String {
+    let mut entry = existing
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(t).ok())
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({}));
+    let obj = entry.as_object_mut().expect("an object");
+    match sign_in {
+        Some(s) => {
+            obj.insert("claudeAiOauth".into(), s);
+        }
+        None => {
+            obj.remove("claudeAiOauth");
+        }
+    }
+    entry.to_string()
+}
+
+/// Take a slot's Claude sign-in out, keeping the rest of its entry; remove the entry only when nothing else is left.
+fn clear_sign_in(store: &dyn Store, key: &str) -> anyhow::Result<()> {
+    match store.read(key)? {
+        Some(text) => {
+            let rest = with_sign_in(Some(&text), None);
+            if rest == "{}" { store.remove(key) } else { store.write(key, &rest) }
+        }
+        None => Ok(()),
+    }
+}
+
 fn slot_path(pattern: &str, slot: u32) -> PathBuf {
     PathBuf::from(pattern.replace("{slot}", &slot.to_string()))
 }
@@ -122,13 +153,14 @@ pub fn apply(layout: &Layout, store: &dyn Store, accounts: &[Account]) -> anyhow
         // The hub manages every slot: a sign-in made by hand here is replaced (it expires; the token lasts a year).
         let key = layout.key(a.slot);
         let marker = dir.join(MARKER);
-        let entry = serde_json::json!({"claudeAiOauth": {
+        let sign_in = serde_json::json!({
             "accessToken": a.token,
             "expiresAt": expires.as_millisecond(),
             "scopes": ["user:inference"],
             "subscriptionType": "max",
-        }});
-        store.write(&key, &serde_json::to_string(&entry)?)?;
+        });
+        let entry = with_sign_in(store.read(&key)?.as_deref(), Some(sign_in));
+        store.write(&key, &entry)?;
         write_0600(
             &marker,
             serde_json::json!({"accountUuid": a.account_uuid, "email": a.email}).to_string().as_bytes(),
@@ -140,7 +172,7 @@ pub fn apply(layout: &Layout, store: &dyn Store, accounts: &[Account]) -> anyhow
     // The default slot, when this plugin wrote it and account 1 left the bundle (or default_slot was turned off).
     let default_wanted = layout.default_slot && accounts.iter().any(|a| a.slot == 1);
     if !default_wanted && layout.default_dir.join(MARKER).exists() {
-        store.remove("")?;
+        clear_sign_in(store, "")?;
         let _ = std::fs::remove_file(layout.default_dir.join(MARKER));
         out.removed += 1;
     }
@@ -150,7 +182,7 @@ pub fn apply(layout: &Layout, store: &dyn Store, accounts: &[Account]) -> anyhow
         for e in rd.flatten() {
             let dir = e.path();
             if dir.join(MARKER).exists() && !wanted.contains(&dir) && matches_pattern(pattern, &dir) {
-                store.remove(&layout.key_of(&dir))?;
+                clear_sign_in(store, &layout.key_of(&dir))?;
                 let _ = std::fs::remove_file(dir.join(MARKER));
                 out.removed += 1;
             }
@@ -245,9 +277,35 @@ mod tests {
         let r = apply(&pattern, &files(d.path()), &[acct(4)]).unwrap();
         assert_eq!(r.removed, 2);
         assert!(!d.path().join("slot-2/.credentials.json").exists());
-        assert!(!d.path().join("slot-3/.credentials.json").exists());
+        let left = std::fs::read_to_string(d.path().join("slot-3/.credentials.json")).unwrap();
+        assert_eq!(left, r#"{"hand":true}"#, "what else the entry held stays; only the Claude sign-in goes");
         assert!(d.path().join("slot-4/.credentials.json").exists());
         assert!(apply(&pattern, &files(d.path()), &[Account { token: "nope".into(), ..acct(5) }]).is_err());
+    }
+
+    #[test]
+    fn writing_a_slot_keeps_the_mcp_sign_ins_beside_it() {
+        let d = tempfile::tempdir().unwrap();
+        let l = layout(d.path(), true);
+        std::fs::create_dir_all(d.path().join(".claude")).unwrap();
+        let hand =
+            r#"{"claudeAiOauth":{"accessToken":"hand","refreshToken":"r"},"mcpOAuth":{"notion":{"accessToken":"n"}}}"#;
+        std::fs::write(d.path().join(".claude/.credentials.json"), hand).unwrap();
+        apply(&l, &files(d.path()), &[acct(1)]).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(d.path().join(".claude/.credentials.json")).unwrap())
+                .unwrap();
+        assert_eq!(v["claudeAiOauth"]["accessToken"], "sk-ant-oat01-test1");
+        assert!(v["claudeAiOauth"].get("refreshToken").is_none(), "the hand sign-in is replaced whole");
+        assert_eq!(v["mcpOAuth"]["notion"]["accessToken"], "n", "MCP sign-ins stay");
+        // Account 1 leaves: the Claude sign-in goes, the MCP sign-ins stay.
+        apply(&layout(d.path(), false), &files(d.path()), &[]).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(d.path().join(".claude/.credentials.json")).unwrap())
+                .unwrap();
+        assert!(v.get("claudeAiOauth").is_none());
+        assert_eq!(v["mcpOAuth"]["notion"]["accessToken"], "n");
+        assert_eq!(with_sign_in(Some("not json"), None), "{}");
     }
 
     #[test]
