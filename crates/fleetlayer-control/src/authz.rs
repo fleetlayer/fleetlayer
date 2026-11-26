@@ -111,6 +111,18 @@ pub async fn check(app: &App, tenant: &str, who: &str, verb: &str, target: &str)
             (ok, "a version 1 rule".to_string())
         }
     };
+    // Fail closed: nothing goes ahead without its entry in the audit log.
+    let entry = crate::audit::Entry {
+        decision: if allowed { "allowed" } else { "denied" }.into(),
+        subject: who.into(),
+        verb: verb.into(),
+        target: target.into(),
+        reason: because.clone(),
+    };
+    if let Err(e) = app.audit.record(&app.db, tenant, entry).await {
+        tracing::error!("the audit log can't be written, so refusing {who} {verb} {target}: {e}");
+        return Err(RpcError::refused("the control plane's audit log can't be written now, so nothing is allowed"));
+    }
     if allowed {
         return Ok(());
     }

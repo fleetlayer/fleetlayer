@@ -3,8 +3,9 @@
 Status (26 November 2026): version 2's first phase is built: the Cedar engine and the policy file (groups, deny,
 only, allow, `except`, default), `acl apply`, `explain`, `test`, `show`, `log` and `unapply`, read rules on the fleet
 view, summaries and subscriptions, untrusted marking, rate limits, audit rules, and a check that every request the
-control plane serves is classified; `acl suggest`; per-tool rules for shared MCP servers. Next: the tamper-evident
-audit log, then approvals (on by default) and justifications. Without a version 2 policy, version 1's ordered rules still decide.
+control plane serves is classified; `acl suggest`; per-tool rules for shared MCP servers. The tamper-evident audit log
+(HMAC chain, optional anchors, counted repeats, `audit verify` and `audit tail`). Next: approvals (on by default) and
+justifications. Without a version 2 policy, version 1's ordered rules still decide.
 
 Agents act on what they read. An agent that reads email, issue trackers, web pages or public submissions can be
 steered by whoever wrote them (prompt injection), and every other agent it can reach inherits that risk. Fleetlayer's

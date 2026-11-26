@@ -143,7 +143,8 @@ impl Audit {
 
     /// Write an anchor for the newest row into `dir`.
     pub async fn anchor(&self, db: &Db, dir: &Path) -> anyhow::Result<Option<PathBuf>> {
-        let Some(r) = sqlx::query("SELECT seq, hash FROM audit_log ORDER BY seq DESC LIMIT 1").fetch_optional(db).await?
+        let Some(r) =
+            sqlx::query("SELECT seq, hash FROM audit_log ORDER BY seq DESC LIMIT 1").fetch_optional(db).await?
         else {
             return Ok(None);
         };
@@ -196,13 +197,7 @@ pub async fn verify(audit: &Audit, db: &Db, anchors: Option<&Path>) -> anyhow::R
     let mut last_seq = 0;
     for r in &rows {
         let seq: i64 = r.get(1);
-        let e = Entry {
-            decision: r.get(3),
-            subject: r.get(4),
-            verb: r.get(5),
-            target: r.get(6),
-            reason: r.get(7),
-        };
+        let e = Entry { decision: r.get(3), subject: r.get(4), verb: r.get(5), target: r.get(6), reason: r.get(7) };
         let (stored_prev, stored): (String, String) = (r.get(9), r.get(10));
         if seq != last_seq + 1 {
             report.push(format!("row {seq}: rows {}..{} are missing", last_seq + 1, seq - 1));
@@ -226,12 +221,17 @@ pub async fn verify(audit: &Audit, db: &Db, anchors: Option<&Path>) -> anyhow::R
         format!(
             "Audit chain: {} rows checked, {}",
             rows.len(),
-            if audit.keyed() { "HMAC recomputed with the key" } else { "no key: plain SHA-256, which someone able to edit the database could recompute" }
+            if audit.keyed() {
+                "HMAC recomputed with the key"
+            } else {
+                "no key: plain SHA-256, which someone able to edit the database could recompute"
+            }
         ),
     );
     match anchors {
         Some(dir) => {
-            let mut files: Vec<PathBuf> = std::fs::read_dir(dir)?.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| is_anchor(p)).collect();
+            let mut files: Vec<PathBuf> =
+                std::fs::read_dir(dir)?.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| is_anchor(p)).collect();
             files.sort();
             let mut prev_text: Option<String> = None;
             for f in &files {
@@ -249,7 +249,8 @@ pub async fn verify(audit: &Audit, db: &Db, anchors: Option<&Path>) -> anyhow::R
                         ok = false;
                     }
                 }
-                let want_prev = prev_text.as_ref().map(|t| hex::encode(Sha256::digest(t.as_bytes()))).unwrap_or_default();
+                let want_prev =
+                    prev_text.as_ref().map(|t| hex::encode(Sha256::digest(t.as_bytes()))).unwrap_or_default();
                 if a["prev_anchor_sha256"].as_str() != Some(want_prev.as_str()) {
                     report.push(format!("{}: doesn't follow the anchor before it", f.display()));
                     ok = false;
@@ -260,7 +261,11 @@ pub async fn verify(audit: &Audit, db: &Db, anchors: Option<&Path>) -> anyhow::R
             if let Some(Ok(a)) = prev_text.as_deref().map(serde_json::from_str::<serde_json::Value>) {
                 let anchored = a["seq"].as_i64().unwrap_or(0);
                 if last_seq > anchored {
-                    report.push(format!("rows {}..{} were written after the latest anchor and aren't anchored yet", anchored + 1, last_seq));
+                    report.push(format!(
+                        "rows {}..{} were written after the latest anchor and aren't anchored yet",
+                        anchored + 1,
+                        last_seq
+                    ));
                 }
             }
         }
@@ -297,7 +302,13 @@ mod tests {
     use super::*;
 
     fn e(decision: &str, target: &str) -> Entry {
-        Entry { decision: decision.into(), subject: "a@x".into(), verb: "message".into(), target: target.into(), reason: "r".into() }
+        Entry {
+            decision: decision.into(),
+            subject: "a@x".into(),
+            verb: "message".into(),
+            target: target.into(),
+            reason: "r".into(),
+        }
     }
 
     #[tokio::test]

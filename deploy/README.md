@@ -38,6 +38,8 @@ for liveness and readiness, and for an uptime check.
 | `FLEETLAYER_CONTROL_LISTEN` | `0.0.0.0:7600` | |
 | `FLEETLAYER_CONTROL_HOOKS_LISTEN` | `0.0.0.0:7601` | |
 | `FLEETLAYER_CONTROL_ADMIN_TOKEN_FILE` | unset | A file holding the admin token (mount a secret). The API also takes tokens made with `token add` |
+| `FLEETLAYER_CONTROL_AUDIT_KEY_FILE` | unset | The audit log's HMAC key, at least 32 characters (mount a secret; keep a copy outside the cluster, since verifying needs it). Unset: plain SHA-256 chain |
+| `FLEETLAYER_CONTROL_AUDIT_ANCHOR_DIR` | unset | Optional: a directory outside the database (another volume, a git checkout) for hourly anchors |
 | `FLEETLAYER_LOG` | `info` | tracing filter |
 
 ### Admin commands
@@ -48,6 +50,8 @@ Run inside the container (`kubectl exec … -- fleetlayer-control <command>`), a
 - `endpoint add --label <l> --channel <c>`: a webhook endpoint; prints `/hooks/<id>/<secret>` once. `endpoint list`.
 - `token add <name> [--scope read|admin]`: an API token for a program that reads the fleet (`read`: every GET and
   catch-ups); prints it once. `token list`, `token remove <name>`.
+- `audit verify` (exits non-zero on any break) and `audit tail [--denied]`: the tamper-evident log of every access
+  decision. Run `audit verify` on a schedule (an hourly CronJob with the same key) and alert when it fails.
 - `acl apply <file> [--check]`: make the access rules match a YAML file exactly (example: `deploy/examples/acl.yaml`),
   printing what changed; running it again changes nothing. Keep the file in git and apply it on every start (an init
   container), so the agents the rules limit can't change them. `acl list|add|remove|default|check` for inspection.

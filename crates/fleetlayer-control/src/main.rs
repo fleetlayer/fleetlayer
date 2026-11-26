@@ -8,6 +8,7 @@
 
 mod acl;
 mod api;
+mod audit;
 mod authz;
 mod db;
 mod hooks;
@@ -50,6 +51,17 @@ enum Command {
         /// A file holding the admin token for the read API. Without one, the API refuses every call.
         #[arg(long, env = "FLEETLAYER_CONTROL_ADMIN_TOKEN_FILE")]
         admin_token_file: Option<PathBuf>,
+        /// A file holding the audit log's HMAC key (kept outside the database). Without one the chain is plain SHA-256.
+        #[arg(long, env = "FLEETLAYER_CONTROL_AUDIT_KEY_FILE")]
+        audit_key_file: Option<PathBuf>,
+        /// A directory outside the database for hourly audit anchors (another disk, a git checkout). Optional.
+        #[arg(long, env = "FLEETLAYER_CONTROL_AUDIT_ANCHOR_DIR")]
+        audit_anchor_dir: Option<PathBuf>,
+    },
+    /// The audit log of access decisions.
+    Audit {
+        #[command(subcommand)]
+        command: AuditCommand,
     },
     /// Enrol, list and remove nodes.
     Node {
@@ -102,6 +114,25 @@ enum Command {
         target: Option<String>,
         #[arg(long)]
         none: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum AuditCommand {
+    /// Check the chain (and anchors). Exits non-zero on any break.
+    Verify {
+        #[arg(long, env = "FLEETLAYER_CONTROL_AUDIT_KEY_FILE")]
+        key_file: Option<PathBuf>,
+        #[arg(long, env = "FLEETLAYER_CONTROL_AUDIT_ANCHOR_DIR")]
+        anchors: Option<PathBuf>,
+    },
+    /// The newest decisions.
+    Tail {
+        #[arg(long, default_value_t = 30)]
+        limit: i64,
+        /// Only refusals.
+        #[arg(long)]
+        denied: bool,
     },
 }
 
@@ -227,6 +258,7 @@ pub struct App {
     pub admin_token_hash: Option<String>,
     pub streams: streams::Streams,
     pub authz: authz::Authz,
+    pub audit: audit::Audit,
 }
 
 #[tokio::main]
@@ -242,7 +274,8 @@ async fn main() -> anyhow::Result<()> {
     let db = db::open(&cli.db).await?;
     let t = DEFAULT_TENANT;
     match cli.command {
-        Command::Serve { listen, hooks_listen, admin_token_file } => {
+        Command::Serve { listen, hooks_listen, admin_token_file, audit_key_file, audit_anchor_dir } => {
+            let audit_key = read_key(audit_key_file.as_deref())?;
             let admin_token_hash = match admin_token_file {
                 Some(f) => Some(db::hash(std::fs::read_to_string(&f)?.trim())),
                 None => None,
@@ -254,7 +287,12 @@ async fn main() -> anyhow::Result<()> {
                 admin_token_hash,
                 streams: streams::Streams::default(),
                 authz: authz::Authz::default(),
+                audit: audit::Audit::new(audit_key.clone()),
             });
+            if audit_key.is_none() {
+                tracing::warn!("no --audit-key-file: the audit log is chained with plain SHA-256, not an HMAC");
+            }
+            tokio::spawn(audit::run(app.clone(), audit_anchor_dir));
             serve(app, listen, hooks_listen).await
         }
         Command::Node { command: NodeCommand::Add { name } } => {
@@ -309,6 +347,43 @@ async fn main() -> anyhow::Result<()> {
         Command::SummariesDelete { node, session } => {
             let n = summaries::delete(&db, t, &node, &session).await?;
             println!("Deleted {n} records of {session} published by {node}.");
+            Ok(())
+        }
+        Command::Audit { command: AuditCommand::Verify { key_file, anchors } } => {
+            let a = audit::Audit::new(read_key(key_file.as_deref())?);
+            let (report, ok) = audit::verify(&a, &db, anchors.as_deref()).await?;
+            for l in &report {
+                println!("{l}");
+            }
+            anyhow::ensure!(ok, "the audit log failed verification");
+            Ok(())
+        }
+        Command::Audit { command: AuditCommand::Tail { limit, denied } } => {
+            use sqlx::Row;
+            let rows = sqlx::query(
+                "SELECT seq, at, decision, subject, verb, target, reason, count FROM audit_log
+                 WHERE (? = 0 OR decision = 'denied') ORDER BY seq DESC LIMIT ?",
+            )
+            .bind(denied as i64)
+            .bind(limit)
+            .fetch_all(&db)
+            .await?;
+            for r in rows.iter().rev() {
+                let at = jiff::Timestamp::from_millisecond(r.get(1))
+                    .map(|t| t.strftime("%Y-%m-%d %H:%M:%S").to_string())
+                    .unwrap_or_default();
+                let count: i64 = r.get(7);
+                println!(
+                    "{:>6} {at} {:<7} {} {} {}{}  ({})",
+                    r.get::<i64, _>(0),
+                    r.get::<String, _>(2),
+                    r.get::<String, _>(3),
+                    r.get::<String, _>(4),
+                    r.get::<String, _>(5),
+                    if count > 1 { format!(" ×{count}") } else { String::new() },
+                    r.get::<String, _>(6)
+                );
+            }
             Ok(())
         }
         Command::Tools { limit } => {
@@ -520,6 +595,17 @@ async fn main() -> anyhow::Result<()> {
             }
             db::set_fallback(&db, t, &channel, target.as_deref()).await
         }
+    }
+}
+
+fn read_key(path: Option<&std::path::Path>) -> anyhow::Result<Option<Vec<u8>>> {
+    match path {
+        Some(p) => {
+            let k = std::fs::read_to_string(p).map_err(|e| anyhow::anyhow!("reading {}: {e}", p.display()))?;
+            anyhow::ensure!(k.trim().len() >= 32, "{}: the audit key should be at least 32 characters", p.display());
+            Ok(Some(k.trim().as_bytes().to_vec()))
+        }
+        None => Ok(None),
     }
 }
 
