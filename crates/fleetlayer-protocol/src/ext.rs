@@ -207,8 +207,21 @@ impl SessionMeta {
         macro_rules! take {
             ($($f:ident),*) => { $( if update.$f.is_some() { self.$f = update.$f.clone(); } )* };
         }
-        take!(harness, address, named, workspace, tab, status, status_changed_at, running, human_attached, open_url,
-            opens_in, resume_command, deliverable);
+        take!(
+            harness,
+            address,
+            named,
+            workspace,
+            tab,
+            status,
+            status_changed_at,
+            running,
+            human_attached,
+            open_url,
+            opens_in,
+            resume_command,
+            deliverable
+        );
     }
 }
 
@@ -396,17 +409,24 @@ mod tests {
     #[test]
     fn session_meta_updates_merge_only_what_they_set() {
         let mut m: SessionMeta =
-            serde_json::from_value(json!({"harness":"claude","tab":"planning","status":"working","running":true})).unwrap();
+            serde_json::from_value(json!({"harness":"claude","tab":"planning","status":"working","running":true}))
+                .unwrap();
         m.merge(&serde_json::from_value(json!({"status":"idle"})).unwrap());
         assert_eq!(m.status, Some(Status::Idle));
         assert_eq!(m.tab.as_deref(), Some("planning"));
-        assert_eq!(serde_json::to_value(&m).unwrap(), json!({"harness":"claude","tab":"planning","status":"idle","running":true}));
+        assert_eq!(
+            serde_json::to_value(&m).unwrap(),
+            json!({"harness":"claude","tab":"planning","status":"idle","running":true})
+        );
     }
 
     #[test]
     fn how_a_session_ended_serializes_as_the_spec_says() {
         let h = How::AgentExited { final_status: Some(Status::Done), terminal_closed: false };
-        assert_eq!(serde_json::to_value(h).unwrap(), json!({"kind":"agent_exited","finalStatus":"done","terminalClosed":false}));
+        assert_eq!(
+            serde_json::to_value(h).unwrap(),
+            json!({"kind":"agent_exited","finalStatus":"done","terminalClosed":false})
+        );
         assert_eq!(serde_json::to_value(How::TabClosed).unwrap(), json!({"kind":"tab_closed"}));
     }
 

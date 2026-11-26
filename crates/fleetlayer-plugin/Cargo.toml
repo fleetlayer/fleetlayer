@@ -1,6 +1,6 @@
 [package]
 name = "fleetlayer-plugin"
-description = "Write a Fleetlayer plugin in Rust: the stdio JSON-RPC loop and typed handlers"
+description = "Write a Fleetlayer plugin in Rust: a JSON-RPC peer over stdio (or any stream) with typed handlers. The node uses the same peer."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,8 +8,12 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+fleetlayer-protocol.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+async-trait = "0.1.92"
 
 [lints]
 workspace = true

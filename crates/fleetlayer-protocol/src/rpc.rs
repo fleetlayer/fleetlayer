@@ -39,7 +39,13 @@ impl Message {
     }
 
     pub fn request(id: i64, method: &str, params: Value) -> Message {
-        Message { jsonrpc: "2.0".into(), id: Some(id.into()), method: Some(method.into()), params: Some(params), ..Default::default() }
+        Message {
+            jsonrpc: "2.0".into(),
+            id: Some(id.into()),
+            method: Some(method.into()),
+            params: Some(params),
+            ..Default::default()
+        }
     }
 
     pub fn notification(method: &str, params: Value) -> Message {
@@ -85,6 +91,10 @@ pub mod code {
     pub const NOT_HERE: i64 = -32010;
     /// Fleetlayer: understood, and won't do it. The message says why, in a sentence a person can read.
     pub const REFUSED: i64 = -32011;
+    /// Fleetlayer: the session runs, but can't take input now (blocked on a permission prompt or a question).
+    pub const BUSY: i64 = -32012;
+    /// Fleetlayer: this plugin has no way in for this session; the node may try another.
+    pub const NO_CHANNEL: i64 = -32013;
     /// Fleetlayer: the other side went away before answering.
     pub const CLOSED: i64 = -32099;
 }
@@ -117,9 +127,11 @@ mod tests {
 
     #[test]
     fn messages_say_what_they_are() {
-        let m: Message = serde_json::from_value(json!({"jsonrpc":"2.0","id":1,"method":"session/list","params":{}})).unwrap();
+        let m: Message =
+            serde_json::from_value(json!({"jsonrpc":"2.0","id":1,"method":"session/list","params":{}})).unwrap();
         assert_eq!(m.kind(), Kind::Request { id: &json!(1), method: "session/list" });
-        let m: Message = serde_json::from_value(json!({"jsonrpc":"2.0","method":"session/update","params":{}})).unwrap();
+        let m: Message =
+            serde_json::from_value(json!({"jsonrpc":"2.0","method":"session/update","params":{}})).unwrap();
         assert_eq!(m.kind(), Kind::Notification { method: "session/update" });
         let m: Message = serde_json::from_value(json!({"jsonrpc":"2.0","id":"a","result":null})).unwrap();
         // A null result deserializes as None: still a response, because it has an id and no method.

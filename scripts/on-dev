@@ -6,6 +6,7 @@
 #
 #   scripts/on-dev fmt | check [args] | clippy [args] | test [args] | build [args]
 #       cargo fmt --check; cargo check; clippy --all-targets -D warnings; cargo test; cargo build.
+#   scripts/on-dev format   run cargo fmt there and copy the formatted sources back
 #   scripts/on-dev lock     update Cargo.lock there (after changing dependencies) and copy it back
 #   scripts/on-dev sync     only copy the checkout there
 #   scripts/on-dev clean    delete this checkout's copy and target/ there
@@ -23,7 +24,7 @@ name=$(basename "$dir")
 remote=$remote_root/$name
 
 die() { echo "scripts/on-dev: $*" >&2; exit 1; }
-usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 [ $# -gt 0 ] || usage
 cmd=$1; shift
 
@@ -52,6 +53,7 @@ case $cmd in
   clippy) sync; run cargo clippy -q --locked -j 24 --workspace --all-targets "$@" -- -D warnings ;;
   build) sync; run cargo build -q --locked -j 24 "$@" ;;
   test) sync; run cargo test -q --locked -j 24 --workspace "$@" ;;
+  format) sync; run cargo fmt --all; rsync -a --no-owner --no-group --exclude=target --include='*/' --include='*.rs' --exclude='*' "$host:$remote/" "$dir/" ;;
   lock) sync; run cargo update -q "$@"; rsync -a "$host:$remote/Cargo.lock" "$dir/Cargo.lock" ;;
   clean) ssh "$host" "rm -rf '$remote'" ;;
   *) die "unknown command $cmd" ;;
