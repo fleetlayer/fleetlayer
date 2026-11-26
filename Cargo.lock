@@ -1062,7 +1062,7 @@ checksum = "5905ec755cc8386d7928353e4d356d2be3e89e81e5ca01fe630a1ca4d08dc175"
 
 [[package]]
 name = "fleetlayer-claude-auth-manager"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1081,7 +1081,7 @@ dependencies = [
 
 [[package]]
 name = "fleetlayer-claude-code"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "fleetlayer-plugin",
@@ -1100,7 +1100,7 @@ dependencies = [
 
 [[package]]
 name = "fleetlayer-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1115,7 +1115,7 @@ dependencies = [
 
 [[package]]
 name = "fleetlayer-control"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1144,7 +1144,7 @@ dependencies = [
 
 [[package]]
 name = "fleetlayer-files"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1162,7 +1162,7 @@ dependencies = [
 
 [[package]]
 name = "fleetlayer-herdr"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1180,7 +1180,7 @@ dependencies = [
 
 [[package]]
 name = "fleetlayer-node"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "age",
  "anyhow",
@@ -1207,7 +1207,7 @@ dependencies = [
 
 [[package]]
 name = "fleetlayer-plugin"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "fleetlayer-protocol",
@@ -1219,7 +1219,7 @@ dependencies = [
 
 [[package]]
 name = "fleetlayer-protocol"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "jiff 1.0.3",
  "serde",
@@ -1228,7 +1228,7 @@ dependencies = [
 
 [[package]]
 name = "fleetlayer-summaries"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "fleetlayer-plugin",
