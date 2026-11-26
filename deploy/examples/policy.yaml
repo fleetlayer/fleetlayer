@@ -27,8 +27,9 @@ deny:
 only:
   - who: group:restricted
     can: read
-    to: []
-    why: no fleet view, summaries or catch-ups of other sessions
+    to: ["*@agents-claudehub"]
+    why: no fleet view, summaries or catch-ups of other sessions; only the Claude hub's readings (account usage), which
+      their account rotators need
   - who: "*@agents-talira"
     can: message
     to: ["*@agents", "*@nathans-mac", "*@agents-talira-worker"]

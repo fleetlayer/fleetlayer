@@ -37,3 +37,6 @@
 - { from: "-@nathans-mac", can: attach, to: "planning@agents", expect: allow }
 - { from: "quietdeck triage@agents-triage", can: attach, to: "planning@agents", expect: deny }
 - { from: "talira worker@agents-talira-worker", can: attach, to: "talira@nathans-mac", expect: deny }
+# Restricted agents see the Claude hub's readings and nothing else of other nodes.
+- { from: "quietdeck triage@agents-triage", can: read, to: "-@agents-claudehub", expect: allow }
+- { from: "quietdeck triage@agents-triage", can: read, to: "-@agents", expect: deny }

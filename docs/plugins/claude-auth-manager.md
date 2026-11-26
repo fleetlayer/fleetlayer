@@ -23,6 +23,21 @@ person controls. The control plane never holds them; it only relays them sealed 
 - A setup token can't read profile or usage (403), so the target learns nothing from it: every bundle item carries
   what the slot and rotator need.
 
+## What a setup token can't do
+
+A setup token has only the `user:inference` scope. Sessions that use one run Claude normally but lose what needs a
+full claude.ai sign-in: claude.ai connectors (gone from `claude mcp list`), and very likely artifacts, Remote Control
+and cloud sessions, since the profile endpoint refuses the token. That's the default here, and the right choice for a
+fleet that runs several accounts across several machines and uses its own replacements (a shared browser over
+Fleetlayer, a phone relay for remote control).
+
+For people who need those features, a second mode is planned, not built: the hub as the only thing that ever
+refreshes each normal sign-in, sending every node the fresh short-lived access token (full scopes, no refresh token)
+after each refresh. Tested so far: a session uses an entry with no refresh token as long as the server accepts it, and
+re-reads the slot after a 401. Still to test: whether a refresh revokes the previous access token at once. The cost:
+every node depends on the hub around the clock (an access token lasts about 8 hours), and each sign-in is redone
+monthly.
+
 ## The tokens bundle
 
 `claude-auth-manager/tokens`, secret. Items: one per account,
