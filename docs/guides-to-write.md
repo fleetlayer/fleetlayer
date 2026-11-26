@@ -53,3 +53,6 @@ solved, and where the knowledge lives now. These become Fleetlayer's guides.
 - **Don't let a node summarise another user's sessions.** Archive or RAG syncs can mirror one Unix user's Claude
   transcripts into another's `~/.claude/projects`. The summaries plugin now skips sessions whose recorded cwd is
   outside its own user's home; any tool that reads transcripts needs the same check.
+- **launchctl bootstrap right after bootout can fail** with "Bootstrap failed: 5: Input/output error": bootout returns
+  before launchd has unloaded the service. `fleetlayer-node install` now waits until `launchctl print` no longer finds
+  it, then bootstraps, retrying once. Found by the homeserver session installing the Mac node (1 in 3 runs).

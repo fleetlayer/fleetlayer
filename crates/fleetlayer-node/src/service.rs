@@ -75,9 +75,22 @@ pub fn install(home: &Path, config: &Path, start: bool) -> anyhow::Result<()> {
     }
     if cfg!(target_os = "macos") {
         let domain = format!("gui/{}", uid());
-        // Replace a loaded copy, so a reinstall picks up a new binary or PATH.
-        let _ = Command::new("launchctl").args(["bootout", &format!("{domain}/{LABEL}")]).output();
-        run(Command::new("launchctl").args(["bootstrap", &domain]).arg(&file))?;
+        let service = format!("{domain}/{LABEL}");
+        // Replace a loaded copy, so a reinstall picks up a new binary or PATH. bootout returns before launchd has
+        // finished unloading, and bootstrapping too soon fails with "5: Input/output error": wait until it's gone
+        // (up to 10 s), and retry the bootstrap once.
+        let _ = Command::new("launchctl").args(["bootout", &service]).output();
+        for _ in 0..20 {
+            let loaded = Command::new("launchctl").args(["print", &service]).output().is_ok_and(|o| o.status.success());
+            if !loaded {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        if run(Command::new("launchctl").args(["bootstrap", &domain]).arg(&file)).is_err() {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            run(Command::new("launchctl").args(["bootstrap", &domain]).arg(&file))?;
+        }
         println!("Started. Logs: {}", values.log.display());
     } else {
         run(Command::new("systemctl").args(["--user", "daemon-reload"]))?;
