@@ -34,13 +34,16 @@ never touches a slot someone signed into by hand.
   so **on macOS the node runs as a per-user LaunchAgent**, never a LaunchDaemon.
 - **Linux:** `<slot>/.credentials.json`, mode 0600.
 - The entry has no refresh token; Claude Code uses it as it is and leaves it alone.
-- Replacing a token under a running session is untested; until it is, assume a new token reaches only new sessions,
-  or sessions the rotator moves to another slot and back.
+- **Replacing a token under a running session works** (tested 26 November 2026). A session keeps the token it holds
+  in memory while that token works; once it's rejected (401), the session reads the slot again on its retry and
+  carries on with the new one, so nobody sees a failure. Still untested: how fast revoking a setup token takes
+  effect.
 
 ## Readings
 
 - Kind `claude.usage`, keyed by account UUID, each with its own `at` and reset times. Sessions report the five-hour
-  and seven-day figures from response headers as they work; only the hub's polling has the per-model weeks, which go
+  and seven-day figures from response headers as they work, setup-token sessions included (seen in Claude Code's
+  `rate_limit_event`; not yet confirmed through the rotator's `$.session.usage().rateLimits`); only the hub's polling has the per-model weeks, which go
   stale while the hub sleeps.
 - Kind `claude.token_health`: the node half runs `claude -p` from each token slot after each Claude Code upgrade and
   daily (seconds, one request each), separately from applying the bundle.
