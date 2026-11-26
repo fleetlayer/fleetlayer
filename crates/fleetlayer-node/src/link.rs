@@ -187,6 +187,7 @@ impl Handler for FromControl {
     async fn request(&self, _peer: &Peer, method: &str, p: Value) -> Result<Value, RpcError> {
         match method {
             ext::method::PING => Ok(json!({})),
+            l::method::SYNC_DELIVER => crate::sync::deliver(&self.node, params(p)?).await,
             l::method::TOOL_SERVE => crate::tools::serve(self.node.clone(), params(p)?).await,
             l::method::CATCHUP => {
                 self.node.ask_observer(ext::method::SUMMARY_CATCHUP, &p, Duration::from_secs(480)).await
@@ -207,6 +208,14 @@ impl Handler for FromControl {
                 answer(&crate::deliver::deliver(&self.node, &session, &d).await?)
             }
             _ => Err(RpcError::method_not_found(method)),
+        }
+    }
+
+    async fn notification(&self, _peer: &Peer, method: &str, p: Value) {
+        if method == l::method::SYNC_WANTED
+            && let (Some(bundle), Some(node)) = (p["bundle"].as_str(), p["node"].as_str())
+        {
+            crate::sync::wanted(&self.node, bundle, node).await;
         }
     }
 }

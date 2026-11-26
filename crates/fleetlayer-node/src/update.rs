@@ -26,8 +26,14 @@ use sha2::{Digest, Sha256};
 use crate::Node;
 
 const REPO: &str = "fleetlayer/fleetlayer";
-pub const BINARIES: &[&str] =
-    &["fleetlayer", "fleetlayer-node", "fleetlayer-herdr", "fleetlayer-claude-code", "fleetlayer-summaries"];
+pub const BINARIES: &[&str] = &[
+    "fleetlayer",
+    "fleetlayer-node",
+    "fleetlayer-herdr",
+    "fleetlayer-claude-code",
+    "fleetlayer-summaries",
+    "fleetlayer-files",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "snake_case")]

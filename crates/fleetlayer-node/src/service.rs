@@ -42,11 +42,26 @@ fn uid() -> String {
     nix::unistd::getuid().to_string()
 }
 
+/// The path the service should run: the `fleetlayer-node` on PATH (a symlink an upgrade repoints, such as
+/// `~/.local/bin/fleetlayer-node`) when it is this binary, so an upgrade that swaps symlinks reaches the service; else
+/// this binary's own path.
+fn stable_bin() -> anyhow::Result<PathBuf> {
+    let me = std::env::current_exe()?.canonicalize()?;
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join("fleetlayer-node");
+        if candidate.canonicalize().is_ok_and(|c| c == me) {
+            return Ok(candidate);
+        }
+    }
+    Ok(me)
+}
+
 pub fn install(home: &Path, config: &Path, start: bool) -> anyhow::Result<()> {
     // Check the config now, or the service would restart forever on a typo.
     crate::config::NodeConfig::load(config)?;
     let values = Values {
-        bin: std::env::current_exe()?.canonicalize()?,
+        bin: stable_bin()?,
         path: std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into()),
         log: home.join("Library/Logs/fleetlayer-node.log"),
     };

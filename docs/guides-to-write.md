@@ -37,3 +37,12 @@ solved, and where the knowledge lives now. These become Fleetlayer's guides.
   Apple's dialling a LAN address gets "No route to host (os error 65)" until Local Network access is allowed. The
   node retries with backoff, so it usually links once the person allows the prompt. If a fresh install keeps failing
   that way, check System Settings > Privacy & Security > Local Network. Seen installing the first Mac node, 26 Nov 2026.
+- **The browser over an SSH bridge (the interim before Fleetlayer's shared tools).** From the homeserver session's
+  build, 26 Nov 2026: OpenSSH's `AllowTcpForwarding no` also refuses Unix-socket remote forwards, so use
+  `AllowTcpForwarding remote` with `PermitListen none`; a socket created in a setgid directory inherits its group;
+  macOS TCC stops a launchd process reading Chrome's profile (set `PLAYWRIGHT_MCP_EXECUTABLE_PATH`); each connection
+  opens with a `name<TAB>token` line. Sources: the homeserver repo's `ansible/roles/agents_vm/tasks/browser_tunnel.yml`,
+  `scripts/browser-mcp/`, and `docs/services/agents-vm.md` ("Browser tunnel").
+- **After upgrading by hand, rerun `fleetlayer-node install` if the service runs a versioned path.** Since 26 Nov the
+  installer writes the `PATH` symlink (`~/.local/bin/fleetlayer-node`) when it points at the running binary, so
+  swapping symlinks reaches the service; older installs wrote the versioned path and kept running the old binary.

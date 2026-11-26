@@ -11,6 +11,7 @@ mod local;
 mod plugins;
 mod service;
 mod sessions;
+mod sync;
 mod tools;
 mod update;
 
@@ -66,6 +67,8 @@ pub struct Node {
     pub tools: Vec<tools::ToolConfig>,
     /// This node's age public key (`age1…`).
     pub public_key: String,
+    pub identity: age::x25519::Identity,
+    pub sync: sync::Sync,
 }
 
 impl Node {
@@ -151,6 +154,8 @@ async fn run(cfg: NodeConfig) -> anyhow::Result<()> {
         }),
         tools: cfg.tools.clone(),
         public_key: key.to_public().to_string(),
+        identity: key,
+        sync: sync::Sync::default(),
     });
     tracing::info!(node = %node.name, machine = %node.machine, plugins = node.plugins.len(), "fleetlayer-node starting");
     for p in &node.plugins {

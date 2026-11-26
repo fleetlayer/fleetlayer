@@ -176,6 +176,24 @@ impl Handler for FromNode {
                 db::node_seen(&app.db, tenant, &self.node, &h.machine, &h.user, &h.version)
                     .await
                     .map_err(RpcError::internal)?;
+                // Bundles this node missed while offline: ask each source to seal a fresh copy.
+                let (app2, tenant2, me) = (app.clone(), tenant.to_string(), self.node.clone());
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    let rows = sqlx::query("SELECT bundle, source FROM sync_pending WHERE tenant = ? AND target = ?")
+                        .bind(&tenant2)
+                        .bind(&me)
+                        .fetch_all(&app2.db)
+                        .await
+                        .unwrap_or_default();
+                    for r in rows {
+                        use sqlx::Row;
+                        let (bundle, source): (String, String) = (r.get(0), r.get(1));
+                        if let Some(peer) = app2.links.peer(&tenant2, &source).await {
+                            peer.notify(l::method::SYNC_WANTED, &json!({"bundle": bundle, "node": me}));
+                        }
+                    }
+                });
                 answer(&Welcome { node: self.node.clone() })
             }
             l::method::SEND => {
@@ -202,6 +220,66 @@ impl Handler for FromNode {
             }
             l::method::SUBSCRIPTIONS => {
                 answer(&json!({"subscriptions": db::subscriptions(&app.db, tenant).await.map_err(RpcError::internal)?}))
+            }
+            l::method::SYNC_PUBLISH => {
+                let s: l::SyncPublishSealed = params(p)?;
+                let mut results = vec![];
+                for copy in s.copies {
+                    let target = format!("sync:{}@{}", s.bundle, copy.node);
+                    let from = format!("-@{}", self.node);
+                    let allowed =
+                        crate::acl::allowed(&app.db, tenant, &from, &target).await.map_err(RpcError::internal)?;
+                    let r = if !allowed {
+                        Err(format!("{} may not send {} to {} (access control)", self.node, s.bundle, copy.node))
+                    } else {
+                        match app.links.peer(tenant, &copy.node).await {
+                            None => {
+                                sqlx::query(
+                                    "INSERT INTO sync_pending (tenant, bundle, source, target, version, since) VALUES (?, ?, ?, ?, ?, ?)
+                                     ON CONFLICT (tenant, bundle, target) DO UPDATE SET source = excluded.source, version = excluded.version",
+                                )
+                                .bind(tenant)
+                                .bind(&s.bundle)
+                                .bind(&self.node)
+                                .bind(&copy.node)
+                                .bind(s.version as i64)
+                                .bind(crate::db::now_ms())
+                                .execute(&app.db)
+                                .await
+                                .map_err(RpcError::internal)?;
+                                Err(format!("node {} is offline; it gets this version when it's back", copy.node))
+                            }
+                            Some(peer) => {
+                                let d = l::SyncDeliver {
+                                    bundle: s.bundle.clone(),
+                                    version: s.version,
+                                    from: self.node.clone(),
+                                    sealed: copy.sealed,
+                                };
+                                match peer
+                                    .request_within::<_, Value>(l::method::SYNC_DELIVER, &d, Duration::from_secs(60))
+                                    .await
+                                {
+                                    Ok(v) if v["applied"].as_bool() == Some(true) || v["reason"].is_string() => {
+                                        let _ = sqlx::query(
+                                            "DELETE FROM sync_pending WHERE tenant = ? AND bundle = ? AND target = ?",
+                                        )
+                                        .bind(tenant)
+                                        .bind(&s.bundle)
+                                        .bind(&copy.node)
+                                        .execute(&app.db)
+                                        .await;
+                                        Ok(())
+                                    }
+                                    Ok(v) => Err(v["error"].as_str().unwrap_or("not applied").to_string()),
+                                    Err(e) => Err(e.message),
+                                }
+                            }
+                        }
+                    };
+                    results.push(l::TargetResult { target: copy.node, ok: r.is_ok(), error: r.err() });
+                }
+                answer(&json!({"results": results}))
             }
             l::method::TOOL_OPEN => {
                 let t: l::ToolOpen = params(p)?;

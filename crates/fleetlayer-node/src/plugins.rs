@@ -389,6 +389,10 @@ impl Handler for FromPlugin {
                 let d = crate::deliver::send(&self.node, &m.to, &m.text, from, None).await?;
                 answer(&d)
             }
+            ext::method::SYNC_PUBLISH => {
+                self.grant("sync.publish")?;
+                crate::sync::publish(&self.node, self.plugin.name(), params(p)?).await
+            }
             ext::method::SESSIONS_QUERY => {
                 self.grant("sessions.query")?;
                 answer(&json!({"sessions": self.node.registry.all().await}))

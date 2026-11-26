@@ -32,6 +32,13 @@ pub mod method {
     pub const TOOL_OPEN: &str = "link/tool_open";
     /// Control plane → node: start a shared tool for a caller and connect it to stream `streamId`. `ToolServe` → `{}`.
     pub const TOOL_SERVE: &str = "link/tool_serve";
+    /// Node → control plane: sealed bundles for other nodes. `SyncPublishSealed` → `{results: [TargetResult]}`.
+    pub const SYNC_PUBLISH: &str = "link/sync_publish";
+    /// Control plane → node: a sealed bundle for this node. `SyncDeliver` → `{applied}`.
+    pub const SYNC_DELIVER: &str = "link/sync_deliver";
+    /// Control plane → node (notification): a target that missed a bundle is back; publish it again for it.
+    /// `{bundle, node}`.
+    pub const SYNC_WANTED: &str = "link/sync_wanted";
     /// Control plane → node: deliver to one of its sessions. `DeliverRequest` → `Delivered`.
     pub const DELIVER: &str = "link/deliver";
 }
@@ -121,6 +128,31 @@ pub struct ToolServe {
     pub tool: String,
     /// `<tab>@<node>` of the caller.
     pub caller: String,
+}
+
+/// One bundle, sealed to each target node's key by the publishing node. The control plane relays each copy and keeps
+/// none of them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncPublishSealed {
+    pub bundle: String,
+    pub version: u64,
+    pub copies: Vec<SealedCopy>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SealedCopy {
+    pub node: String,
+    /// An ASCII-armored age file holding the items as JSON, readable only with that node's key.
+    pub sealed: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncDeliver {
+    pub bundle: String,
+    pub version: u64,
+    /// The publishing node.
+    pub from: String,
+    pub sealed: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
