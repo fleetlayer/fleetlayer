@@ -50,6 +50,13 @@ node leaves that alone.
 - **macOS:** the login keychain item `Claude Code-credentials-<first 8 hex of sha256(NFC slot path)>`, account `$USER`,
   written through `security -i` so the token never appears in a process list. This needs the login keychain unlocked,
   so **on macOS the node runs as a per-user LaunchAgent**, never a LaunchDaemon.
+  Claude Code 2.1.332 writes its own items the same way (`security -i`, `add-generic-password -U -a <user> -s <item>
+  -X <hex>`), so writing with `-U` over an item Claude Code made needs no dialog. Keep `-U`: deleting and adding again
+  leaves a moment with no item, and a session reading then takes the account as signed out. Claude Code splits a
+  sign-in longer than 4032 characters (the limit of `security -i`'s input) into a second item (`-a`/`-b`) with a
+  pointer in the main one; a setup-token entry is far shorter. It also takes `.storage-write.lock` in its config
+  directory before writing, which this plugin doesn't, so a write that lands as a session refreshes the same slot
+  could be lost (unlikely: setup-token slots never refresh).
 - **Linux:** `<slot>/.credentials.json`, mode 0600.
 - The entry has no refresh token; Claude Code uses it as it is and leaves it alone.
 - **Replacing a token under a running session works** (tested 26 November 2026). A session keeps the token it holds
