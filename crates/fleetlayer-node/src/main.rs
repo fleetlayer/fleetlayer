@@ -64,6 +64,27 @@ impl Node {
     pub fn plugin(&self, name: &str) -> Option<&Arc<PluginHandle>> {
         self.plugins.iter().find(|p| p.name() == name)
     }
+
+    /// Ask the running observer plugins (summaries) until one answers `method`.
+    pub async fn ask_observer(
+        &self,
+        method: &str,
+        params: &serde_json::Value,
+        timeout: std::time::Duration,
+    ) -> Result<serde_json::Value, fleetlayer_protocol::rpc::RpcError> {
+        for p in &self.plugins {
+            if p.roles().await.observer.is_none() {
+                continue;
+            }
+            if let Some(peer) = p.peer().await {
+                match peer.request_within(method, params, timeout).await {
+                    Err(e) if e.code == fleetlayer_protocol::rpc::code::METHOD_NOT_FOUND => continue,
+                    other => return other,
+                }
+            }
+        }
+        Err(fleetlayer_protocol::rpc::RpcError::not_here(format!("no summaries plugin runs on {}", self.name)))
+    }
 }
 
 #[tokio::main]

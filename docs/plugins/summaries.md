@@ -16,6 +16,25 @@ summary goes to two places:
   searches the fleet, `fleetlayer summaries --session <id>` shows a timeline, and `fleetlayer fleet` shows each
   session's latest one-liner. `publish: sentence` sends only the one-liner, `publish: none` nothing.
 
+## Reading them
+
+- `GET /v1/fleet`: each session carries `summary: {sentence, paragraph, page, lastActivity}` from its newest record.
+- `GET /v1/summaries?session=<id>`: the session's whole timeline, oldest first, every record with its period,
+  activity times, `writtenAt`, tab, dir and `origin` (`node`, or `claude_summarizer` for imported history).
+- `GET /v1/summaries?q=<words>`: full-text search, best match first.
+- `GET /v1/summaries?mentions=<text>`: the sessions whose summaries mention that exact text (an ID such as `sc-1234`,
+  a PR number, a Sentry short ID), with the newest mentioning record of each. `fleetlayer summaries --mentions`.
+- `POST /v1/sessions/<id>/catchup`: "since your last message", from the session's node. Answers at once from the
+  node's cache (with `stale: true` and a new one started when the transcript has grown), else waits while it's
+  written.
+- These take a bearer token: `fleetlayer-control token add <name> --scope read`.
+
+## Importing claude-summarizer's history
+
+Once per machine: `fleetlayer summaries --import <claude-summarizer output dir>`. Every Markdown update becomes a
+record (`origin: claude_summarizer`), written as a file and published, and claude-summarizer's byte offsets are
+adopted so nothing it summarised is summarised again.
+
 ## Setup
 
 ```yaml

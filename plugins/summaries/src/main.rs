@@ -136,6 +136,28 @@ impl Handler for Shared {
                 })
             }
             ext::method::PING => Ok(json!({})),
+            ext::method::SUMMARY_CATCHUP => {
+                let id = p["sessionId"].as_str().ok_or_else(|| RpcError::invalid_params("sessionId"))?.to_string();
+                let guard = plugin.handle.lock().await;
+                let handle =
+                    guard.as_ref().ok_or_else(|| RpcError::refused("the summaries engine isn't running yet"))?;
+                let c = handle
+                    .catchup(summaries::CatchupRequest { session_id: id, transcript: None })
+                    .await
+                    .map_err(|e| RpcError::refused(e.to_string()))?;
+                answer(&c)
+            }
+            ext::method::SUMMARY_IMPORT => {
+                let dir = p["dir"].as_str().ok_or_else(|| RpcError::invalid_params("dir"))?;
+                let guard = plugin.handle.lock().await;
+                let handle =
+                    guard.as_ref().ok_or_else(|| RpcError::refused("the summaries engine isn't running yet"))?;
+                let n = handle
+                    .import_claude_summarizer(PathBuf::from(dir))
+                    .await
+                    .map_err(|e| RpcError::refused(e.to_string()))?;
+                answer(&json!({"records": n}))
+            }
             _ => Err(RpcError::method_not_found(method)),
         }
     }

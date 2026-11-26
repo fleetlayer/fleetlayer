@@ -140,6 +140,61 @@ pub async fn remove_node(db: &Db, tenant: &str, name: &str) -> anyhow::Result<bo
     Ok(n.rows_affected() > 0)
 }
 
+// ---------------------------------------------------------------- API tokens
+
+/// Add an API token (`read` or `admin`): returns it, shown once. Adding a name again replaces its token.
+pub async fn add_token(db: &Db, tenant: &str, name: &str, scope: &str) -> anyhow::Result<String> {
+    anyhow::ensure!(valid_name(name), "a token name is letters, digits, - and _");
+    anyhow::ensure!(scope == "read" || scope == "admin", "a scope is read or admin");
+    let token = format!("flt_{}", new_secret());
+    sqlx::query(
+        "INSERT INTO api_tokens (tenant, name, token_hash, scope, created_at) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT (tenant, name) DO UPDATE SET token_hash = excluded.token_hash, scope = excluded.scope",
+    )
+    .bind(tenant)
+    .bind(name)
+    .bind(hash(&token))
+    .bind(scope)
+    .bind(now_ms())
+    .execute(db)
+    .await?;
+    Ok(token)
+}
+
+/// The tenant and scope of an API token.
+pub async fn token_scope(db: &Db, token: &str) -> anyhow::Result<Option<(String, String)>> {
+    let row = sqlx::query("SELECT tenant, scope FROM api_tokens WHERE token_hash = ?")
+        .bind(hash(token))
+        .fetch_optional(db)
+        .await?;
+    Ok(row.map(|r| (r.get(0), r.get(1))))
+}
+
+pub async fn tokens(db: &Db, tenant: &str) -> anyhow::Result<Vec<(String, String, i64)>> {
+    let rows = sqlx::query("SELECT name, scope, created_at FROM api_tokens WHERE tenant = ? ORDER BY name")
+        .bind(tenant)
+        .fetch_all(db)
+        .await?;
+    Ok(rows.into_iter().map(|r| (r.get(0), r.get(1), r.get(2))).collect())
+}
+
+pub async fn remove_token(db: &Db, tenant: &str, name: &str) -> anyhow::Result<bool> {
+    let r =
+        sqlx::query("DELETE FROM api_tokens WHERE tenant = ? AND name = ?").bind(tenant).bind(name).execute(db).await?;
+    Ok(r.rows_affected() > 0)
+}
+
+/// The node a session was last seen on.
+pub async fn session_node(db: &Db, tenant: &str, session_id: &str) -> anyhow::Result<Option<String>> {
+    let row =
+        sqlx::query("SELECT node FROM sessions WHERE tenant = ? AND session_id = ? ORDER BY updated_at DESC LIMIT 1")
+            .bind(tenant)
+            .bind(session_id)
+            .fetch_optional(db)
+            .await?;
+    Ok(row.map(|r| r.get(0)))
+}
+
 // ---------------------------------------------------------------- sessions
 
 /// Replace a node's sessions with the list it pushed.

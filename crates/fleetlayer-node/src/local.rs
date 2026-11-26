@@ -101,6 +101,9 @@ impl Handler for Local {
                     "plugins": plugins,
                 }))
             }
+            "node/summaries_import" => {
+                node.ask_observer(ext::method::SUMMARY_IMPORT, &p, std::time::Duration::from_secs(600)).await
+            }
             "node/summaries" => {
                 let peer =
                     node.link.peer().await.ok_or_else(|| {

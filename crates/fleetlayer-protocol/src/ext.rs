@@ -23,6 +23,10 @@ pub mod method {
     pub const SESSIONS_UPDATE: &str = "_fleetlayer.dev/sessions/update";
     /// Plugin → node: a summary event (`crate::summary::SummaryEvent`), for the control plane.
     pub const SUMMARY_PUBLISH: &str = "_fleetlayer.dev/summary/publish";
+    /// Node → summaries plugin: a session's catch-up. `{sessionId}` → `crate::summary::Catchup`.
+    pub const SUMMARY_CATCHUP: &str = "_fleetlayer.dev/summary/catchup";
+    /// Node → summaries plugin: import claude-summarizer's history. `{dir}` → `{records}`.
+    pub const SUMMARY_IMPORT: &str = "_fleetlayer.dev/summary/import";
     pub const HARNESS_TRANSCRIPT: &str = "_fleetlayer.dev/harness/transcript";
     pub const MESSAGE_SEND: &str = "_fleetlayer.dev/message/send";
     pub const EVENT_PUBLISH: &str = "_fleetlayer.dev/event/publish";

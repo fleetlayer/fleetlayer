@@ -200,9 +200,12 @@ impl Handler for FromNode {
             l::method::SUMMARIES_SEARCH => {
                 let q = p["q"].as_str().unwrap_or_default();
                 let limit = p["limit"].as_i64().unwrap_or(20).clamp(1, 200);
-                let hits = match p["session"].as_str() {
-                    Some(s) => crate::summaries::timeline(&app.db, tenant, s, limit).await,
-                    None => crate::summaries::search(&app.db, tenant, q, limit).await,
+                let hits = if let Some(s) = p["session"].as_str() {
+                    crate::summaries::timeline(&app.db, tenant, s, p["limit"].as_i64().unwrap_or(10_000)).await
+                } else if let Some(m) = p["mentions"].as_str() {
+                    crate::summaries::mentions(&app.db, tenant, m, limit).await
+                } else {
+                    crate::summaries::search(&app.db, tenant, q, limit).await
                 }
                 .map_err(RpcError::internal)?;
                 answer(&json!({"summaries": hits}))

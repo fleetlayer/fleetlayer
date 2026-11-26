@@ -26,6 +26,8 @@ pub mod method {
     pub const SUMMARY: &str = "link/summary";
     /// Node → control plane: search summaries. `{q, limit?}` → `{summaries: [...]}`.
     pub const SUMMARIES_SEARCH: &str = "link/summaries_search";
+    /// Control plane → node: a session's catch-up from its summaries plugin. `{sessionId}` → `Catchup`.
+    pub const CATCHUP: &str = "link/catchup";
     /// Control plane → node: deliver to one of its sessions. `DeliverRequest` → `Delivered`.
     pub const DELIVER: &str = "link/deliver";
 }

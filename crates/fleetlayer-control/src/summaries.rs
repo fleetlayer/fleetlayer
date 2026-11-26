@@ -73,7 +73,7 @@ async fn store_record(db: &Db, tenant: &str, node: &str, r: &SummaryRecord) -> a
 macro_rules! columns {
     () => {
         "s.node, s.session_id, s.period_kind, s.period_key, s.agent, s.activity_from, s.activity_to, \
-         s.sentence, s.paragraph, s.page, s.tab, s.dir"
+         s.sentence, s.paragraph, s.page, s.tab, s.dir, s.written_at, s.origin"
     };
 }
 
@@ -84,6 +84,7 @@ fn row_json(r: &sqlx::sqlite::SqliteRow) -> Value {
         "agent": r.get::<String, _>(4), "activityFrom": r.get::<i64, _>(5), "activityTo": r.get::<i64, _>(6),
         "sentence": r.get::<String, _>(7), "paragraph": r.get::<String, _>(8), "page": r.get::<String, _>(9),
         "tab": r.get::<Option<String>, _>(10), "dir": r.get::<Option<String>, _>(11),
+        "writtenAt": r.get::<i64, _>(12), "origin": r.get::<String, _>(13),
     })
 }
 
@@ -112,12 +113,12 @@ pub async fn search(db: &Db, tenant: &str, q: &str, limit: i64) -> anyhow::Resul
     Ok(rows.iter().map(row_json).collect())
 }
 
-/// A session's timeline, newest first.
+/// A session's timeline, oldest first: every record.
 pub async fn timeline(db: &Db, tenant: &str, session_id: &str, limit: i64) -> anyhow::Result<Vec<Value>> {
     let rows = sqlx::query(concat!(
         "SELECT ",
         columns!(),
-        " FROM summaries s WHERE s.tenant = ? AND s.session_id = ? ORDER BY s.activity_to DESC LIMIT ?"
+        " FROM summaries s WHERE s.tenant = ? AND s.session_id = ? ORDER BY s.activity_from, s.activity_to LIMIT ?"
     ))
     .bind(tenant)
     .bind(session_id)
@@ -127,10 +128,35 @@ pub async fn timeline(db: &Db, tenant: &str, session_id: &str, limit: i64) -> an
     Ok(rows.iter().map(row_json).collect())
 }
 
-/// The newest one-liner and last activity of every session that has one.
+/// Sessions whose summaries mention `text` exactly (an ID such as `sc-1234`, a PR number, a Sentry short ID), with the
+/// newest mentioning record of each, newest first.
+pub async fn mentions(db: &Db, tenant: &str, text: &str, limit: i64) -> anyhow::Result<Vec<Value>> {
+    if text.trim().is_empty() {
+        return Ok(vec![]);
+    }
+    let pattern = format!("%{}%", text.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+    let rows = sqlx::query(concat!(
+        "SELECT ",
+        columns!(),
+        " FROM summaries s WHERE s.tenant = ?1
+           AND (s.sentence LIKE ?2 ESCAPE '\\' OR s.paragraph LIKE ?2 ESCAPE '\\' OR s.page LIKE ?2 ESCAPE '\\')
+           AND s.activity_to = (SELECT MAX(t.activity_to) FROM summaries t WHERE t.tenant = s.tenant
+                                AND t.session_id = s.session_id
+                                AND (t.sentence LIKE ?2 ESCAPE '\\' OR t.paragraph LIKE ?2 ESCAPE '\\' OR t.page LIKE ?2 ESCAPE '\\'))
+         ORDER BY s.activity_to DESC LIMIT ?3"
+    ))
+    .bind(tenant)
+    .bind(pattern)
+    .bind(limit)
+    .fetch_all(db)
+    .await?;
+    Ok(rows.iter().map(row_json).collect())
+}
+
+/// The newest record's three tiers and the last activity of every session that has one.
 pub async fn latest(db: &Db, tenant: &str) -> anyhow::Result<std::collections::HashMap<String, Value>> {
     let rows = sqlx::query(
-        "SELECT s.session_id, s.sentence, s.activity_to, a.last_activity FROM summaries s
+        "SELECT s.session_id, s.sentence, s.activity_to, a.last_activity, s.paragraph, s.page FROM summaries s
          LEFT JOIN session_activity a ON a.tenant = s.tenant AND a.session_id = s.session_id
          WHERE s.tenant = ? AND s.activity_to = (SELECT MAX(activity_to) FROM summaries t
                                                  WHERE t.tenant = s.tenant AND t.session_id = s.session_id)",
@@ -143,7 +169,8 @@ pub async fn latest(db: &Db, tenant: &str) -> anyhow::Result<std::collections::H
         .map(|r| {
             let id: String = r.get(0);
             let last = r.get::<Option<i64>, _>(3).unwrap_or(r.get(2));
-            (id, json!({"sentence": r.get::<String, _>(1), "lastActivity": last}))
+            let (paragraph, page): (String, String) = (r.get(4), r.get(5));
+            (id, json!({"sentence": r.get::<String, _>(1), "paragraph": paragraph, "page": page, "lastActivity": last}))
         })
         .collect())
 }
@@ -185,5 +212,16 @@ mod tests {
         assert_eq!(search(&db, t, "control plane", 10).await.unwrap().len(), 2, "the page is searched too");
         assert!(search(&db, t, "\"; DROP", 10).await.unwrap().is_empty());
         assert_eq!(latest(&db, t).await.unwrap()["s1"]["sentence"], "Built and tested the summaries plugin.");
+        assert_eq!(latest(&db, t).await.unwrap()["s1"]["page"], "Details about the control plane.");
+        let tl = timeline(&db, t, "s1", 10).await.unwrap();
+        assert_eq!(tl[0]["sentence"], "Wrote the protocol draft.", "oldest first");
+        assert_eq!(tl[0]["origin"], "node");
+        store(&db, t, "agents", &rec("s2", "03", "Fixed sc-1234 and sc-12345.")).await.unwrap();
+        store(&db, t, "agents", &rec("s2", "04", "Shipped sc-1234.")).await.unwrap();
+        let m = mentions(&db, t, "sc-1234", 10).await.unwrap();
+        assert_eq!(m.len(), 1, "one per session");
+        assert_eq!(m[0]["sentence"], "Shipped sc-1234.", "the newest mention");
+        assert!(mentions(&db, t, "sc-9", 10).await.unwrap().is_empty());
+        assert!(mentions(&db, t, "100%", 10).await.unwrap().is_empty(), "% is literal");
     }
 }

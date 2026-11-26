@@ -71,6 +71,11 @@ enum Command {
         #[arg(long)]
         subject: Option<String>,
     },
+    /// API tokens for programs that read the control plane.
+    Token {
+        #[command(subcommand)]
+        command: TokenCommand,
+    },
     /// Access control: who may message whom (and which sessions a node sees).
     Acl {
         #[command(subcommand)]
@@ -82,6 +87,20 @@ enum Command {
         target: Option<String>,
         #[arg(long)]
         none: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum TokenCommand {
+    /// Add a token and print it (shown once). `read`: every GET and catch-ups; `admin`: everything.
+    Add {
+        name: String,
+        #[arg(long, default_value = "read")]
+        scope: String,
+    },
+    List,
+    Remove {
+        name: String,
     },
 }
 
@@ -221,6 +240,24 @@ async fn main() -> anyhow::Result<()> {
             );
             Ok(())
         }
+        Command::Token { command } => match command {
+            TokenCommand::Add { name, scope } => {
+                println!("{}", db::add_token(&db, t, &name, &scope).await?);
+                eprintln!("Token {name} ({scope}) added. It isn't shown again.");
+                Ok(())
+            }
+            TokenCommand::List => {
+                for (name, scope, created) in db::tokens(&db, t).await? {
+                    let at = jiff::Timestamp::from_millisecond(created).map(|t| t.to_string()).unwrap_or_default();
+                    println!("{name:<24} {scope:<6} {at}");
+                }
+                Ok(())
+            }
+            TokenCommand::Remove { name } => {
+                anyhow::ensure!(db::remove_token(&db, t, &name).await?, "no token {name}");
+                Ok(())
+            }
+        },
         Command::Acl { command } => match command {
             AclCommand::List => {
                 for r in acl::rules(&db, t).await? {
@@ -270,6 +307,7 @@ async fn serve(app: Arc<App>, listen: SocketAddr, hooks_listen: SocketAddr) -> a
         .route("/v1/subscriptions", get(api::get_subscriptions))
         .route("/v1/endpoints", get(api::get_endpoints))
         .route("/v1/summaries", get(api::get_summaries))
+        .route("/v1/sessions/{id}/catchup", axum::routing::post(api::post_catchup))
         .with_state(app.clone());
     let hooks = hooks::router(app);
     let api_listener = tokio::net::TcpListener::bind(listen).await?;

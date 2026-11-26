@@ -186,6 +186,9 @@ impl Handler for FromControl {
     async fn request(&self, _peer: &Peer, method: &str, p: Value) -> Result<Value, RpcError> {
         match method {
             ext::method::PING => Ok(json!({})),
+            l::method::CATCHUP => {
+                self.node.ask_observer(ext::method::SUMMARY_CATCHUP, &p, Duration::from_secs(480)).await
+            }
             l::method::DELIVER => {
                 let r: DeliverRequest = params(p)?;
                 let session = crate::deliver::resolve(&self.node, &r.name).await?;

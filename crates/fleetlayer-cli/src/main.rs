@@ -52,6 +52,12 @@ enum Command {
         /// Show each summary's paragraph too.
         #[arg(long)]
         long: bool,
+        /// Sessions whose summaries mention this exact text (an ID such as sc-1234), newest mention each.
+        #[arg(long)]
+        mentions: Option<String>,
+        /// Import claude-summarizer's history from this directory (once per machine).
+        #[arg(long)]
+        import: Option<String>,
     },
     /// Messages between sessions.
     Msg {
@@ -256,8 +262,15 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 println!("{on:<40} {}", s["target"].as_str().unwrap_or("?"));
             }
         }
-        Command::Summaries { query, session, limit, long } => {
-            let args = json!({"q": query.join(" "), "session": session, "limit": limit});
+        Command::Summaries { query, session, limit, long, mentions, import } => {
+            if let Some(dir) = import {
+                let v: Value = peer
+                    .request_within("node/summaries_import", &json!({"dir": dir}), std::time::Duration::from_secs(620))
+                    .await?;
+                println!("Imported {} records.", v["records"]);
+                return Ok(());
+            }
+            let args = json!({"q": query.join(" "), "session": session, "limit": limit, "mentions": mentions});
             let v: Value = peer.request("node/summaries", &args).await?;
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&v)?);

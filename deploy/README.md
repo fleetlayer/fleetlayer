@@ -24,7 +24,7 @@ Two parts:
 
 | Port | Serves | Exposure |
 |---|---|---|
-| 7600 | `GET /healthz`, the node links (`GET /v1/link`, a WebSocket), the read API (`/v1/fleet`, `/v1/events`, `/v1/subscriptions`, `/v1/endpoints`) | Private network only, through an HTTPS ingress that passes WebSocket upgrades through unbuffered, with long idle timeouts (the link pings every 30 s) |
+| 7600 | `GET /healthz`, the node links (`GET /v1/link`, a WebSocket), the API (`GET /v1/fleet`, `/v1/events`, `/v1/subscriptions`, `/v1/endpoints`, `/v1/summaries`; `POST /v1/sessions/<id>/catchup`) | Private network only, through an HTTPS ingress that passes WebSocket upgrades through unbuffered, with long idle timeouts (the link pings every 30 s) |
 | 7601 | `GET /healthz` and `POST /hooks/<endpoint id>/<secret>`, nothing else | Public, through a tunnel whose ingress sends only `^/hooks/` here and answers everything else with 404 |
 
 Health: `GET /healthz` on 7600 answers `{"ok":true,"linkedNodes":N}` once the database answers, 503 otherwise. Use it
@@ -37,7 +37,7 @@ for liveness and readiness, and for an uptime check.
 | `FLEETLAYER_CONTROL_DB` | `/data/control.db` | SQLite, WAL mode; migrations run at start-up |
 | `FLEETLAYER_CONTROL_LISTEN` | `0.0.0.0:7600` | |
 | `FLEETLAYER_CONTROL_HOOKS_LISTEN` | `0.0.0.0:7601` | |
-| `FLEETLAYER_CONTROL_ADMIN_TOKEN_FILE` | unset | A file holding the read API's admin token (mount a secret). Unset: the read API refuses every call |
+| `FLEETLAYER_CONTROL_ADMIN_TOKEN_FILE` | unset | A file holding the admin token (mount a secret). The API also takes tokens made with `token add` |
 | `FLEETLAYER_LOG` | `info` | tracing filter |
 
 ### Admin commands
@@ -46,6 +46,9 @@ Run inside the container (`kubectl exec … -- fleetlayer-control <command>`), a
 
 - `node add <name>`: enrol a node; prints its token once. `node list`, `node remove <name>`.
 - `endpoint add --label <l> --channel <c>`: a webhook endpoint; prints `/hooks/<id>/<secret>` once. `endpoint list`.
+- `token add <name> [--scope read|admin]`: an API token for a program that reads the fleet (`read`: every GET and
+  catch-ups); prints it once. `token list`, `token remove <name>`.
+- `acl list|add|remove|default|check`: access control between sessions.
 - `subscribe <channel> <tab>@<node> [--subject s]`, `unsubscribe …`, `fallback <channel> <tab>@<node>|--none`.
 
 ### Backups
