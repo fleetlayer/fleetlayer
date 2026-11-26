@@ -97,6 +97,14 @@ pub async fn delete(db: &Db, tenant: &str, node: &str, session_id: &str) -> anyh
         .bind(session_id)
         .execute(db)
         .await?;
+    // A tombstone, so programs following the feed drop their copies too.
+    sqlx::query("INSERT INTO summary_tombstones (tenant, node, session_id, written_at) VALUES (?, ?, ?, ?)")
+        .bind(tenant)
+        .bind(node)
+        .bind(session_id)
+        .bind(crate::db::now_ms())
+        .execute(db)
+        .await?;
     Ok(r.rows_affected())
 }
 
@@ -125,16 +133,37 @@ pub async fn search(db: &Db, tenant: &str, q: &str, limit: i64) -> anyhow::Resul
     Ok(rows.iter().map(row_json).collect())
 }
 
-/// Every record written after `after` (a record's `cursor`, `<writtenAt ms>:<rowid>`), oldest first: the feed a
-/// program follows to keep its own copy. A bare `<writtenAt ms>` means everything written at or after that moment. A
-/// replaced record gets a new `writtenAt`, so it comes round again.
+/// A feed position: records sort before tombstones written in the same millisecond, then by id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Pos {
+    written: i64,
+    tomb: bool,
+    id: i64,
+}
+
+impl Pos {
+    /// `<writtenAt>:<id>` (a record), `<writtenAt>:t<id>` (a tombstone), or a bare `<writtenAt>` (inclusive: just
+    /// before anything written then).
+    fn parse(s: &str) -> anyhow::Result<Pos> {
+        Ok(match s.split_once(':') {
+            Some((w, rest)) => match rest.strip_prefix('t') {
+                Some(id) => Pos { written: w.parse()?, tomb: true, id: id.parse()? },
+                None => Pos { written: w.parse()?, tomb: false, id: rest.parse()? },
+            },
+            None => Pos { written: s.parse()?, tomb: false, id: -1 },
+        })
+    }
+}
+
+/// Every record and tombstone written after `after` (an item's `cursor`), oldest first: the feed a program follows
+/// to keep its own copy. A tombstone is `{deleted: true, node, sessionId, period: {kind, key} | null, cursor}`; a null
+/// period means every record of that session from that node. A bare `<writtenAt ms>` is inclusive. A replaced record
+/// gets a new `writtenAt`, so it comes round again.
 pub async fn feed(db: &Db, tenant: &str, after: &str, limit: i64) -> anyhow::Result<Vec<Value>> {
-    let (written, rowid) = match after.split_once(':') {
-        Some((w, r)) => (w.parse::<i64>()?, r.parse::<i64>()?),
-        // A bare time is inclusive: records written at that moment come again (an upsert makes repeats harmless),
-        // so two records sharing a writtenAt are never split across pages and lost.
-        None => (after.parse::<i64>()?, -1),
-    };
+    let a = Pos::parse(after)?;
+    // Records strictly after the cursor: later writtenAt, or the same writtenAt and (the cursor is a record with a
+    // lower id).
+    let rec_id_after = if a.tomb { i64::MAX } else { a.id };
     let rows = sqlx::query(concat!(
         "SELECT ",
         columns!(),
@@ -142,12 +171,39 @@ pub async fn feed(db: &Db, tenant: &str, after: &str, limit: i64) -> anyhow::Res
          ORDER BY s.written_at, s.rowid LIMIT ?4"
     ))
     .bind(tenant)
-    .bind(written)
-    .bind(rowid)
+    .bind(a.written)
+    .bind(rec_id_after)
     .bind(limit)
     .fetch_all(db)
     .await?;
-    Ok(rows.iter().map(row_json).collect())
+    let tomb_id_after = if a.tomb { a.id } else { -1 };
+    let tombs = sqlx::query(
+        "SELECT id, node, session_id, period_kind, period_key, written_at FROM summary_tombstones
+         WHERE tenant = ?1 AND (written_at > ?2 OR (written_at = ?2 AND id > ?3)) ORDER BY written_at, id LIMIT ?4",
+    )
+    .bind(tenant)
+    .bind(a.written)
+    .bind(tomb_id_after)
+    .bind(limit)
+    .fetch_all(db)
+    .await?;
+    let mut items: Vec<(Pos, Value)> =
+        rows.iter().map(|r| (Pos { written: r.get(12), tomb: false, id: r.get(14) }, row_json(r))).collect();
+    for t in &tombs {
+        let (id, written): (i64, i64) = (t.get(0), t.get(5));
+        let period = match (t.get::<Option<String>, _>(3), t.get::<Option<String>, _>(4)) {
+            (Some(kind), Some(key)) => json!({"kind": kind, "key": key}),
+            _ => Value::Null,
+        };
+        items.push((
+            Pos { written, tomb: true, id },
+            json!({"deleted": true, "node": t.get::<String, _>(1), "sessionId": t.get::<String, _>(2),
+                   "period": period, "writtenAt": written, "cursor": format!("{written}:t{id}")}),
+        ));
+    }
+    items.sort_by_key(|(p, _)| *p);
+    items.truncate(limit.max(0) as usize);
+    Ok(items.into_iter().map(|(_, v)| v).collect())
 }
 
 /// A session's timeline, oldest first: every record.
@@ -218,7 +274,7 @@ mod tests {
     use fleetlayer_protocol::summary::{AgentKind, RecordOrigin};
 
     fn rec(id: &str, hour: &str, sentence: &str) -> SummaryEvent {
-        let t: jiff::Timestamp = format!("2026-11-26T{hour}:00:00Z").parse().unwrap();
+        let t: jiff::Timestamp = format!("2026-01-02T{hour}:00:00Z").parse().unwrap();
         SummaryEvent::Summary(SummaryRecord {
             session_id: id.into(),
             agent: AgentKind::Claude,
@@ -268,6 +324,15 @@ mod tests {
         assert_eq!(first_two.len() + rest.len(), 4);
         assert_ne!(first_two[1]["cursor"], rest[0]["cursor"]);
         assert!(feed(&db, t, "bad", 10).await.is_err());
+        // A deletion appears in the feed after the records, as a tombstone.
+        let end = all[3]["cursor"].as_str().unwrap().to_string();
+        assert_eq!(delete(&db, t, "agents", "s2").await.unwrap(), 2);
+        let after = feed(&db, t, &end, 10).await.unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0]["deleted"], true);
+        assert_eq!(after[0]["sessionId"], "s2");
+        assert!(after[0]["period"].is_null());
+        assert!(feed(&db, t, after[0]["cursor"].as_str().unwrap(), 10).await.unwrap().is_empty(), "nothing after it");
         let last = all[3]["writtenAt"].as_i64().unwrap().to_string();
         assert!(!feed(&db, t, &last, 10).await.unwrap().is_empty(), "a bare time is inclusive");
     }

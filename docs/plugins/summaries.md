@@ -28,7 +28,9 @@ summary goes to two places:
   written after the cursor, oldest first, with `nextCursor`. A cursor is `<writtenAt ms>:<rowid>` (each record carries
   its own `cursor`) and pages exactly; a bare `<writtenAt ms>` is inclusive, so records sharing that moment come again
   and an upsert by (node, session, period) absorbs them. A replaced record gets a new `writtenAt` and comes round
-  again.
+  again. Deletions come through the feed too, in order: `{deleted: true, node, sessionId, period: {kind, key} | null,
+  cursor}`, where a null period means every record of that session from that node (`fleetlayer-control
+  summaries-delete`). A tombstone's cursor is `<writtenAt>:t<id>`.
 - `POST /v1/sessions/<id>/catchup`: "since your last message", from the session's node. Answers at once from the
   node's cache (with `stale: true` and a new one started when the transcript has grown), else waits while it's
   written.
