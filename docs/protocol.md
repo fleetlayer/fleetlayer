@@ -124,8 +124,11 @@ When the harness's ID arrives, the plugin sends `_fleetlayer.dev/session/renamed
 the session to its real ID.
 
 A session's `tab` is its **human address**: people and agents write `<tab>@<node>` (`planning@laptop`), and the node
-or control plane resolves that to a session, answering "ambiguous" when several match. `sessionId` is the stable
-address. Plugins never resolve names.
+or control plane resolves that to a session, answering "ambiguous" when several match. The node can be left out when
+the tab name is unique: a bare `planning` goes to a running session of that name on the sender's own node, else to the
+one running session of that name on any other linked node; several anywhere answer "ambiguous" with the candidates,
+none answer `-32014` with names that contain it (only names the sender may read). `sessionId` is the stable address.
+Plugins never resolve names.
 
 ### Listing: `session/list` (ACP)
 

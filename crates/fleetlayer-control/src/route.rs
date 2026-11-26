@@ -20,6 +20,69 @@ pub fn split_target(target: &str) -> Option<(&str, &str)> {
     (!name.is_empty() && !node.is_empty()).then_some((name, node))
 }
 
+/// A running session's tab and node from a stored session.
+fn running_tab(node: &str, s: &serde_json::Value) -> Option<(String, String)> {
+    let running = s["ended"].is_null() && s["meta"]["running"].as_bool().unwrap_or(true);
+    let tab = s["meta"]["tab"].as_str()?;
+    running.then(|| (tab.to_string(), node.to_string()))
+}
+
+/// The one session on a linked node (other than the sender's, which looked already) whose tab is `name`, as
+/// `<tab>@<node>`. Several answer `refused` with the candidates; none answer `no such`, with up to three running tabs
+/// containing the name. Only names the sender may read are ever shown.
+pub async fn resolve_anywhere(
+    app: &App,
+    tenant: &str,
+    from: &str,
+    from_node: &str,
+    name: &str,
+) -> Result<String, RpcError> {
+    let mut running = vec![];
+    for (node, data) in crate::db::sessions(&app.db, tenant).await.map_err(RpcError::internal)? {
+        if node == from_node || app.links.peer(tenant, &node).await.is_none() {
+            continue;
+        }
+        if let Some(t) = running_tab(&node, &data) {
+            running.push(t);
+        }
+    }
+    let mut exact = vec![];
+    let mut near = vec![];
+    let want = name.to_lowercase();
+    for (tab, node) in running {
+        let target = format!("{tab}@{node}");
+        if tab == name {
+            exact.push(target);
+        } else if tab.to_lowercase().contains(&want) && crate::authz::may_read(app, tenant, from, &target).await {
+            near.push(target);
+        }
+    }
+    exact.sort();
+    exact.dedup();
+    match exact.len() {
+        1 => Ok(exact.remove(0)),
+        0 => {
+            near.sort();
+            near.dedup();
+            near.truncate(3);
+            Err(RpcError::no_such(&format!("no session named '{name}' on any node"), near))
+        }
+        _ => {
+            let mut shown = vec![];
+            for t in &exact {
+                if crate::authz::may_read(app, tenant, from, t).await {
+                    shown.push(t.clone());
+                }
+            }
+            Err(RpcError::refused(format!(
+                "{name} is ambiguous: {} sessions have that name{}; add @<node>",
+                exact.len(),
+                if shown.is_empty() { String::new() } else { format!(" ({})", shown.join(", ")) }
+            )))
+        }
+    }
+}
+
 /// Up to three known node names that contain `node` (or that it contains), in any case.
 pub fn suggest_nodes(known: &[String], node: &str) -> Vec<String> {
     let want = node.to_lowercase();
@@ -51,8 +114,11 @@ pub async fn deliver(app: &App, tenant: &str, target: &str, mut d: DeliverReques
 }
 
 /// A message from a session (or plugin) on `from_node` to a session on another node. The sending node rendered it.
-pub async fn send(app: &App, tenant: &str, from_node: &str, s: SendRequest) -> Result<Delivered, RpcError> {
+pub async fn send(app: &App, tenant: &str, from_node: &str, mut s: SendRequest) -> Result<Delivered, RpcError> {
     let from = format!("{}@{from_node}", s.from.name.as_deref().unwrap_or("-"));
+    if !s.to.contains('@') {
+        s.to = resolve_anywhere(app, tenant, &from, from_node, &s.to).await?;
+    }
     crate::authz::check_why(app, tenant, &from, "message", &s.to, s.justification.as_deref()).await?;
     crate::authz::within_limits(app, tenant, &from, &s.to).await?;
     let _ = crate::acl::log_message(&app.db, tenant, &from, &s.to).await;
@@ -154,6 +220,16 @@ pub async fn publish(app: &App, tenant: &str, e: Event, source: &str) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stored_sessions_give_running_tabs() {
+        let s = serde_json::json!({"sessionId": "a", "meta": {"tab": "planning", "running": true}});
+        assert_eq!(running_tab("mac", &s), Some(("planning".into(), "mac".into())));
+        let stopped = serde_json::json!({"sessionId": "b", "meta": {"tab": "x", "running": false}});
+        assert_eq!(running_tab("mac", &stopped), None);
+        let ended = serde_json::json!({"sessionId": "c", "meta": {"tab": "y"}, "ended": {"how": "tab_closed"}});
+        assert_eq!(running_tab("mac", &ended), None);
+    }
 
     #[test]
     fn a_wrong_node_name_gets_suggestions() {

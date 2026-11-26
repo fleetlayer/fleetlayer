@@ -53,6 +53,14 @@ pub fn parse_address(to: &str) -> (&str, Option<&str>) {
     }
 }
 
+fn suggestions(e: &RpcError) -> Vec<String> {
+    e.data
+        .as_ref()
+        .and_then(|d| d["suggestions"].as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .unwrap_or_default()
+}
+
 /// Up to three running tabs whose names contain `name`, in any case, as `<tab>@<node>`.
 pub fn suggest(sessions: &[Session], name: &str, node: &str) -> Vec<String> {
     let want = name.to_lowercase();
@@ -136,7 +144,34 @@ pub async fn send(
         };
         return peer.request_within(fleetlayer_protocol::link::method::SEND, &req, Duration::from_secs(12)).await;
     }
-    let session = resolve(node, name).await?;
+    let session = match resolve(node, name).await {
+        Ok(s) => s,
+        // A bare name no session here has: the control plane looks on the other nodes (a unique tab anywhere wins).
+        Err(e) if e.code == code::NO_SUCH && target_node.is_none() => {
+            let Some(peer) = node.link.peer().await else { return Err(e) };
+            let req = fleetlayer_protocol::link::SendRequest {
+                to: name.into(),
+                delivery_id: node.deliveries.new_id(&node.name),
+                from,
+                text: rendered,
+                justification: why,
+            };
+            return match peer
+                .request_within(fleetlayer_protocol::link::method::SEND, &req, Duration::from_secs(12))
+                .await
+            {
+                Err(far) if far.code == code::NO_SUCH => {
+                    // Both lists of suggestions: this node's and the others'.
+                    let mut all = suggestions(&e);
+                    all.extend(suggestions(&far));
+                    all.truncate(3);
+                    Err(RpcError::no_such(&format!("no session named '{name}' here or on any other node"), all))
+                }
+                other => other,
+            };
+        }
+        Err(e) => return Err(e),
+    };
     let d = Deliver {
         session_id: session.session_id.clone(),
         address: session.meta.address.clone().unwrap_or_default(),
