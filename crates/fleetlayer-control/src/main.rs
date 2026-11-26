@@ -167,6 +167,15 @@ enum AclCommand {
         #[arg(long)]
         policy: PathBuf,
     },
+    /// Suggest the smallest `only` rules that allow what each subject actually did (messages and tool connections).
+    Suggest {
+        /// How far back to look, in days.
+        #[arg(long, default_value_t = 7)]
+        days: i64,
+        /// One rule per session rather than per node.
+        #[arg(long)]
+        per_session: bool,
+    },
     /// Print the stored version 2 policy.
     Show,
     /// Remove the version 2 policy, so the version 1 rules decide again.
@@ -437,6 +446,33 @@ async fn main() -> anyhow::Result<()> {
                 }
                 println!("{} of {} cases pass.", list.len() - failures.len(), list.len());
                 anyhow::ensure!(failures.is_empty(), "{} case(s) failed", failures.len());
+                Ok(())
+            }
+            AclCommand::Suggest { days, per_session } => {
+                use sqlx::Row;
+                let since = db::now_ms() - days * 86_400_000;
+                let mut seen: Vec<(String, String, String)> = vec![];
+                for r in sqlx::query("SELECT from_subject, to_subject FROM message_log WHERE tenant = ? AND at >= ?")
+                    .bind(t)
+                    .bind(since)
+                    .fetch_all(&db)
+                    .await?
+                {
+                    seen.push((r.get(0), "message".into(), r.get(1)));
+                }
+                for r in sqlx::query(
+                    "SELECT DISTINCT caller, tool, server_node FROM tool_connections WHERE tenant = ? AND opened_at >= ?
+                     AND (outcome IS NULL OR outcome NOT LIKE 'refused%')",
+                )
+                .bind(t)
+                .bind(since)
+                .fetch_all(&db)
+                .await?
+                {
+                    let (caller, tool, node): (String, String, String) = (r.get(0), r.get(1), r.get(2));
+                    seen.push((caller, "use_tool".into(), format!("tool:{tool}@{node}")));
+                }
+                print!("{}", policy::suggest(&seen, !per_session));
                 Ok(())
             }
             AclCommand::Unapply => {

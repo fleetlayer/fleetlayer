@@ -360,6 +360,33 @@ fn uid(kind: &str, id: &str) -> EntityUid {
     )
 }
 
+// ---------------------------------------------------------------- suggestions
+
+/// The smallest `only` rules that allow what each subject did: `observed` is (subject, verb, target). Subjects are
+/// grouped by node (`*@node`) when `by_node`, so a rule covers the node's sessions together.
+pub fn suggest(observed: &[(String, String, String)], by_node: bool) -> String {
+    let mut by: BTreeMap<(String, String), std::collections::BTreeSet<String>> = BTreeMap::new();
+    for (who, verb, target) in observed {
+        let who = if by_node {
+            who.rsplit_once('@').map_or(who.clone(), |(_, node)| format!("*@{node}"))
+        } else {
+            who.clone()
+        };
+        by.entry((who, verb.clone())).or_default().insert(target.clone());
+    }
+    if by.is_empty() {
+        return "# Nothing observed in that time.\n".into();
+    }
+    let mut out = String::from(
+        "# Suggested from what each subject did; review before adding them under only: (or audit: only:).\nonly:\n",
+    );
+    for ((who, verb), targets) in by {
+        let list: Vec<String> = targets.iter().map(|t| format!("{t:?}")).collect();
+        out.push_str(&format!("  - who: {who:?}\n    can: {verb}\n    to: [{}]\n", list.join(", ")));
+    }
+    out
+}
+
 // ---------------------------------------------------------------- tests of a policy
 
 /// One expected decision, for `acl test`.
@@ -519,6 +546,26 @@ audit:
         .unwrap();
         assert!(!p.decide("inbox@triage", "start", "x@laptop", false).unwrap().allowed);
         assert!(p.decide("plugin:runner@triage", "start", "x@laptop", false).unwrap().allowed);
+    }
+
+    #[test]
+    fn suggestions_list_what_each_subject_did() {
+        let seen = vec![
+            ("inbox@triage".to_string(), "message".to_string(), "billing@laptop".to_string()),
+            ("inbox@triage".to_string(), "message".to_string(), "ci@laptop".to_string()),
+            ("other@triage".to_string(), "message".to_string(), "ci@laptop".to_string()),
+            ("ci@laptop".to_string(), "use_tool".to_string(), "tool:browser@laptop".to_string()),
+        ];
+        let by_node = suggest(&seen, true);
+        assert!(
+            by_node.contains("who: \"*@triage\"\n    can: message\n    to: [\"billing@laptop\", \"ci@laptop\"]"),
+            "{by_node}"
+        );
+        assert!(by_node.contains("can: use_tool\n    to: [\"tool:browser@laptop\"]"));
+        // The suggestion parses as rules.
+        let p = Compiled::parse(&format!("version: 2\ndefault: allow\n{by_node}")).unwrap();
+        assert!(!p.decide("x@triage", "message", "finances@laptop", false).unwrap().allowed);
+        assert!(suggest(&[], true).starts_with("# Nothing"));
     }
 
     #[test]
