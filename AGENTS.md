@@ -37,6 +37,12 @@ Fleetlayer is "a small set of components you can run, and a large set of guides 
 with what you already use". Every setup step or footgun others will hit goes into `docs/guides-to-write.md` in the
 same change: what it is, how it was solved, and where the knowledge lives now.
 
+## Releases
+
+Deployers get one release per set of features: a version tag (`v0.2.0`) with release notes, not every build. Each
+release can mean a backup and a rollout for them. A tag outside that rhythm only for an urgent security fix or a bug
+that breaks someone's work, and say which it is.
+
 ## Git
 
 Commit and push only when Nathan asks. Quote commit hashes only from git output, after committing.
