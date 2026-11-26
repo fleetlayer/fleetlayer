@@ -101,14 +101,27 @@ managers, machines that sleep.
   `attach` decide who. A shell inside a herdr pane carries `HERDR_SOCKET_PATH`, which beats `HERDR_SESSION`: unset it
   to reach a named test session. Design: docs/protocol.md ("Terminals").
 - **Replacing Claude Code's built-in "dangerous command" prompts with your own hooks, so unattended agents never
-  block.** Even with permissions skipped, Claude Code can stop at a built-in safety prompt (an `rm` on a path built
-  from a variable, for example), and an agent nobody watches sits there all night (it happened to a worker agent).
-  The fix has two halves: a fast `PreToolUse` hook that refuses the risky command at once and puts the safe rewrite in
-  its reason (quote the variable, check it's set with `${DIR:?}`), so the agent corrects itself and carries on; and
-  `CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS=1` in the session manager's service environment, so sessions in
-  bypass mode never stop at Claude Code's own prompt. The hook has to answer in milliseconds and never ask: a hook that
-  prompts is the same trap. Where it lives now: the author's home-server setup; verify the variable's exact behaviour
-  against the Claude Code version when writing the guide.
+  block** (Claude Code 2.1.332, Linux).
+  - The trap: Claude Code's own Bash check, "Dangerous rm operation on possibly-empty variable path" (also `rmdir`,
+    and variables inside command substitutions or derived ones), asks even under `--dangerously-skip-permissions`, and
+    "cannot be auto-allowed by permission rules". An agent nobody watches waits forever (a worker agent sat all night
+    on `rm -f $C/$ID.json`, `$C` from a sourced file, in a forked subagent).
+  - The switch: `CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS=1` lifts those prompts (found by reading the
+    binary; no public docs). It works only in bypass mode (`--dangerously-skip-permissions` or `defaultMode:
+    bypassPermissions`), outside child sessions (`CLAUDE_CODE_CHILD_SESSION`), with no `ask` or `deny` rules touching
+    removals, no `PermissionRequest` hook and no managed settings; otherwise it logs that it "has no effect". Set it in
+    the real environment where `claude` starts (the session manager's service unit), not settings.json's `env` (the
+    binary drops it from children's environment), check with `/proc/<pid>/environ`, and restart each session.
+  - The guard that makes that safe: a `PreToolUse` hook on Bash (exit 2, the reason on stderr) refuses any `rm` or
+    `rmdir` whose target uses a variable unless every variable is a `${NAME:?}` guard, set to a literal earlier in the
+    same command, or `HOME`/`TMPDIR`; command substitutions and unquoted variables always; `${C:-/tmp}` isn't a guard.
+    Recursive deletes stay inside the session's directory and `/tmp`. The refusal gives the fix ("Rewrite it with a
+    guard on every variable, e.g. "${C:?}"/"${ID:?}".json, or use a literal path"), so the agent retries at once.
+    About 18 ms a call (`python3 -I`, standard library only).
+  - The lesson: the hook must be at least as strict as Claude Code's prompt on the same command shapes, or the looser
+    cases fall through to the prompt and hang. A hook must answer fast and never ask. Pair the switch with the hook, so
+    nothing is deleted unchecked.
+  - Where it lives now: the author's home-server setup (the guard script and the session manager's unit).
 - **Setup tokens can't use claude.ai features.** A `claude setup-token` token has only the inference scope: claude.ai
   connectors disappear, and very likely artifacts, Remote Control and cloud sessions. Fine for a fleet with its own
   replacements; say so before people switch. Where it lives: docs/plugins/claude-auth-manager.md ("What a setup token
