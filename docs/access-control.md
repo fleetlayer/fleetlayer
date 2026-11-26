@@ -129,8 +129,8 @@ the action is refused: the control plane fails closed. Entries are chained, each
 previous entry's hash, and every hour an anchor (the latest entry's position and hash, and the previous anchor's hash)
 is written to write-once storage (S3 Object Lock, or B2 with Object Lock), so changing, reordering or deleting
 anchored entries can be detected. `fleetlayer-control audit verify` checks the chain and the anchors. Repeats of the
-same denial within a minute are written as one entry with a count, so a looping agent can't flood the log. This is
-Rack Gateway's design, which passed a SOC 2 audit.
+same denial within a minute are written as one entry with a count, so a looping agent can't flood the log. This
+follows Rack Gateway's audit log, built for SOC 2.
 
 ## Tools at the level of their own tools
 
