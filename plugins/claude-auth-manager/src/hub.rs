@@ -231,17 +231,26 @@ pub fn latest_message(text: &str) -> Option<String> {
         })
 }
 
-/// A setup token in what `claude setup-token` printed. A terminal UI can wrap it across lines, so line breaks and the
-/// box's border characters inside it are dropped.
+/// A setup token in the screen `claude setup-token` drew (read through a terminal emulator 200 columns wide, so the
+/// token sits whole on one line). It ends at the first character that can't be in a token: never joined to the line
+/// under it, which once glued "Store this token securely" onto every token. None until the whole token is on screen.
 pub fn find_token(text: &str) -> Option<String> {
     let clean = strip_ansi(text);
-    let i = clean.find("sk-ant-oat01-")?;
-    let tok: String = clean[i..]
-        .chars()
-        .filter(|c| !matches!(c, '\n' | '\r' | '│' | ' '))
-        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-        .collect();
-    (tok.len() > 40).then_some(tok)
+    let i = clean.find(TOKEN_PREFIX)?;
+    let rest = &clean[i..];
+    let tok: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
+    // Followed by something that isn't part of it (the end of the line), and long enough to be whole.
+    let ended = rest.len() > tok.len();
+    (ended && plausible_token(&tok)).then_some(tok)
+}
+
+const TOKEN_PREFIX: &str = "sk-ant-oat01-";
+
+/// The shape of a setup token: the prefix and 80 to 200 URL-safe characters (108 in all as of Claude Code 2.1.332).
+pub fn plausible_token(t: &str) -> bool {
+    t.strip_prefix(TOKEN_PREFIX).is_some_and(|rest| {
+        (80..=200).contains(&rest.len()) && rest.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    })
 }
 
 /// The client's address: from `X-Forwarded-For` only when the connection comes from a trusted proxy (the right-most
@@ -488,6 +497,18 @@ impl Hub {
                     tokio::time::sleep(Duration::from_millis(500)).await;
                     let token = find_token(&output.lock().unwrap());
                     if let Some(token) = token {
+                        // Kept and sent only once it works: one small request with the token alone.
+                        *state.lock().unwrap() = "running".into();
+                        let checked = crate::health::Claude { bin: hub.cfg.claude.display().to_string() }
+                            .check_token(&token)
+                            .await;
+                        if !checked.ok {
+                            let why = checked.error.unwrap_or_default();
+                            tracing::warn!(slot, "the setup token Claude Code printed doesn't work: {why}");
+                            *state.lock().unwrap() =
+                                format!("failed: the token Claude Code printed doesn't work ({why}). Start again.");
+                            break;
+                        }
                         let mut store = hub.store.lock().await;
                         let a = store.accounts.entry(slot).or_default();
                         a.token = Some(token);
@@ -1007,9 +1028,16 @@ mod tests {
     fn urls_and_tokens_are_found_in_terminal_output() {
         let out = "Opening browser…\nIf the browser didn't open, visit:\n\u{1b}]8;;https://claude.ai/oauth/authorize?abc123\u{7}x\nPaste code here if prompted > ";
         assert_eq!(find_url(out).as_deref(), Some("https://claude.ai/oauth/authorize?abc123"));
-        let screen = "\u{1b}[2K│ Your token: sk-ant-oat01-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789\n│ -_tail │\n";
-        let t = find_token(screen).unwrap();
-        assert!(t.starts_with("sk-ant-oat01-AbCd"));
+        // The screen setup-token draws: the token, then a blank line and "Store this token securely".
+        let body = "A".repeat(60) + "-_" + &"b".repeat(33);
+        let token = format!("sk-ant-oat01-{body}");
+        let screen = format!(
+            "Your OAuth token (valid for 1 year):\n\n{token}\n\nStore this token securely. You won't be able to see it again.\n"
+        );
+        assert_eq!(find_token(&screen).as_deref(), Some(token.as_str()), "the token alone, not the line under it");
+        assert_eq!(find_token(&format!("{token}\nStore")).as_deref(), Some(token.as_str()));
+        assert!(find_token(&token).is_none(), "not until something follows it: it may still be arriving");
+        assert!(find_token("sk-ant-oat01-short\n").is_none());
         assert!(find_token("no token here").is_none());
         let rejected = "visit:\nhttps://claude.ai/oauth/authorize?x\nPaste code here if prompted > That doesn't look like the full code.\n";
         assert_eq!(latest_message(rejected).as_deref(), Some("That doesn't look like the full code."));

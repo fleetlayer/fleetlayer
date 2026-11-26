@@ -134,6 +134,16 @@ impl Claude {
     /// 2.1.332 on macOS and Linux: a broken token in the slot gives the 401, no token gives "Not logged in"). The default
     /// slot keeps Claude Code's own config directory, since that's where its sign-in is found.
     pub async fn check(&self, slot: &str) -> Outcome {
+        self.check_with(Some(slot), None).await
+    }
+
+    /// The same request with a token given directly (`CLAUDE_CODE_OAUTH_TOKEN`), before it's stored anywhere: the hub
+    /// checks each setup token Claude Code prints before keeping or sending it.
+    pub async fn check_token(&self, token: &str) -> Outcome {
+        self.check_with(None, Some(token)).await
+    }
+
+    async fn check_with(&self, slot: Option<&str>, token: Option<&str>) -> Outcome {
         let dir = scratch_dir();
         if let Err(e) = std::fs::create_dir_all(&dir) {
             return Outcome { ok: false, error: Some(format!("making {}: {e}", dir.display())) };
@@ -151,10 +161,20 @@ impl Claude {
             "--setting-sources",
             "project",
         ]);
-        if slot.is_empty() {
-            c.env_remove("CLAUDE_SECURESTORAGE_CONFIG_DIR").env_remove("CLAUDE_CONFIG_DIR");
-        } else {
-            c.env("CLAUDE_SECURESTORAGE_CONFIG_DIR", slot).env("CLAUDE_CONFIG_DIR", &dir);
+        match (slot, token) {
+            (_, Some(t)) => {
+                // Nothing stored is read: the token alone, and a scratch config.
+                c.env("CLAUDE_CODE_OAUTH_TOKEN", t)
+                    .env("CLAUDE_CONFIG_DIR", &dir)
+                    .env("CLAUDE_SECURESTORAGE_CONFIG_DIR", &dir);
+            }
+            (Some(""), None) => {
+                c.env_remove("CLAUDE_SECURESTORAGE_CONFIG_DIR").env_remove("CLAUDE_CONFIG_DIR");
+            }
+            (Some(s), None) => {
+                c.env("CLAUDE_SECURESTORAGE_CONFIG_DIR", s).env("CLAUDE_CONFIG_DIR", &dir);
+            }
+            (None, None) => {}
         }
         let out = tokio::time::timeout(TIMEOUT, c.output()).await;
         let _ = std::fs::remove_dir_all(&dir);
