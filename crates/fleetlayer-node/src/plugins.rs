@@ -382,9 +382,13 @@ impl Handler for FromPlugin {
             ext::method::MESSAGE_SEND => {
                 self.grant("message.send")?;
                 let m: MessageSend = params(p)?;
+                // A plugin is its own sender, `plugin:<name>@<node>` to access control: rules can give a plugin that
+                // runs only approved actions (a runner) more reach than the agent on the same node.
                 let from = ext::From {
                     label: format!("plugin {} ({})", self.plugin.name(), self.node.name),
-                    ..Default::default()
+                    name: Some(format!("plugin:{}", self.plugin.name())),
+                    node: Some(self.node.name.clone()),
+                    session_id: None,
                 };
                 let d = crate::deliver::send(&self.node, &m.to, &m.text, from, None).await?;
                 answer(&d)

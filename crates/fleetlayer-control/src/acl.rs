@@ -142,6 +142,36 @@ pub async fn remove(db: &Db, tenant: &str, id: i64) -> anyhow::Result<bool> {
     Ok(r.rows_affected() > 0)
 }
 
+/// How long a session may answer a session that messaged it, whatever the rules say.
+pub const REPLY_WINDOW_MS: i64 = 24 * 3600 * 1000;
+
+/// Record that `from` messaged `to`.
+pub async fn log_message(db: &Db, tenant: &str, from: &str, to: &str) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO message_log (tenant, from_subject, to_subject, at) VALUES (?, ?, ?, ?)
+         ON CONFLICT (tenant, from_subject, to_subject) DO UPDATE SET at = excluded.at",
+    )
+    .bind(tenant)
+    .bind(from)
+    .bind(to)
+    .bind(now_ms())
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+/// Whether `from` is answering: `to` messaged `from` within the reply window. Subjects are compared as the sender
+/// was recorded (`<name>@<node>`), so a session addressed by its tab replies to the tab that wrote.
+pub async fn replying(db: &Db, tenant: &str, from: &str, to: &str) -> anyhow::Result<bool> {
+    let row = sqlx::query("SELECT at FROM message_log WHERE tenant = ? AND from_subject = ? AND to_subject = ?")
+        .bind(tenant)
+        .bind(to)
+        .bind(from)
+        .fetch_optional(db)
+        .await?;
+    Ok(row.is_some_and(|r| now_ms() - r.get::<i64, _>(0) < REPLY_WINDOW_MS))
+}
+
 /// Whether `from` may reach `to`.
 pub async fn allowed(db: &Db, tenant: &str, from: &str, to: &str) -> anyhow::Result<bool> {
     Ok(decide(&rules(db, tenant).await?, default(db, tenant).await?, from, to) == Action::Allow)
@@ -191,5 +221,10 @@ mod tests {
         set_default(&db, t, Action::Deny).await.unwrap();
         assert!(!allowed(&db, t, "c@z", "b@y").await.unwrap());
         assert!(add(&db, t, "nope", "b@y", Action::Allow, None).await.is_err());
+        // A denied sender may answer someone who wrote to it.
+        assert!(!replying(&db, t, "c@x", "b@y").await.unwrap());
+        log_message(&db, t, "b@y", "c@x").await.unwrap();
+        assert!(replying(&db, t, "c@x", "b@y").await.unwrap());
+        assert!(!replying(&db, t, "c@x", "d@y").await.unwrap());
     }
 }

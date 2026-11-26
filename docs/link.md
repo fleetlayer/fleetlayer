@@ -35,7 +35,10 @@ where `meta` is the `fleetlayer.dev/session` object from protocol section 4.
 ## Access control
 
 Ordered rules on `<tab>@<node>` patterns (`*` matches any run of characters; a sender with no session is `-@<node>`),
-first match wins, then the tenant's default (`allow` on a new control plane). They decide `link/send`, and which
+first match wins, then the tenant's default (`allow` on a new control plane). A plugin sending a message is
+`plugin:<name>@<node>`, so a rule can give a runner that carries out only approved actions more reach than the agent on
+the same node. A session may always answer a session that messaged it in the last 24 hours (the reply window), so an
+agent limited to a short list can still reply to whoever wrote. They decide `link/send`, and which
 sessions `link/fleet` shows a node (those its `-@<node>` may message, plus its own). A node may subscribe and
 unsubscribe only its own sessions. Managed with `fleetlayer-control acl list|add|remove|default|check`.
 
