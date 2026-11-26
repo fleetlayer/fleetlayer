@@ -102,13 +102,15 @@ pub async fn get_endpoints(State(app): State<Arc<App>>, headers: HeaderMap) -> A
 #[derive(serde::Deserialize)]
 pub struct SummaryQuery {
     q: Option<String>,
+    since: Option<String>,
     mentions: Option<String>,
     session: Option<String>,
     limit: Option<i64>,
 }
 
 /// `GET /v1/summaries?q=words` searches (best match first); `?mentions=sc-1234` finds the sessions whose summaries
-/// mention that exact text (newest mention each); `?session=<id>` is one session's whole timeline, oldest first.
+/// mention that exact text (newest mention each); `?session=<id>` is one session's whole timeline, oldest first;
+/// `?since=<cursor>` is the feed of every record written after it, oldest first, with `nextCursor`.
 pub async fn get_summaries(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -116,6 +118,13 @@ pub async fn get_summaries(
 ) -> ApiResult {
     guard(&app, &headers).await?;
     let limit = q.limit.unwrap_or(20).clamp(1, 200);
+    if let Some(after) = &q.since {
+        let hits = crate::summaries::feed(&app.db, DEFAULT_TENANT, after, q.limit.unwrap_or(500).clamp(1, 5000))
+            .await
+            .map_err(|e| (StatusCode::BAD_REQUEST, format!("since: {e}")))?;
+        let next = hits.last().map(|h| h["cursor"].clone()).unwrap_or(json!(after));
+        return Ok(Json(json!({"summaries": hits, "nextCursor": next})));
+    }
     let hits = if let Some(s) = &q.session {
         crate::summaries::timeline(&app.db, DEFAULT_TENANT, s, q.limit.unwrap_or(10_000).clamp(1, 100_000)).await
     } else if let Some(m) = &q.mentions {

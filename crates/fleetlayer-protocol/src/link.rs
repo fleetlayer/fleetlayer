@@ -28,6 +28,10 @@ pub mod method {
     pub const SUMMARIES_SEARCH: &str = "link/summaries_search";
     /// Control plane → node: a session's catch-up from its summaries plugin. `{sessionId}` → `Catchup`.
     pub const CATCHUP: &str = "link/catchup";
+    /// Node → control plane: open a stream to a tool another node shares. `ToolOpen` → `ToolOpened`.
+    pub const TOOL_OPEN: &str = "link/tool_open";
+    /// Control plane → node: start a shared tool for a caller and connect it to stream `streamId`. `ToolServe` → `{}`.
+    pub const TOOL_SERVE: &str = "link/tool_serve";
     /// Control plane → node: deliver to one of its sessions. `DeliverRequest` → `Delivered`.
     pub const DELIVER: &str = "link/deliver";
 }
@@ -86,6 +90,33 @@ pub struct DeliverRequest {
     pub untrusted: bool,
     pub from: From,
     pub text: String,
+}
+
+/// A session asks for a tool on another node.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolOpen {
+    pub tool: String,
+    /// The node that shares it.
+    pub node: String,
+    /// The calling session's name (its tab), or `-` for a shell.
+    pub caller: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolOpened {
+    /// Connect to `/v1/stream/<streamId>?side=use` with the node token.
+    pub stream_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolServe {
+    pub stream_id: String,
+    pub tool: String,
+    /// `<tab>@<node>` of the caller.
+    pub caller: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

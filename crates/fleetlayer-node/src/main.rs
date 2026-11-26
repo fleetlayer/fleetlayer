@@ -10,6 +10,7 @@ mod local;
 mod plugins;
 mod service;
 mod sessions;
+mod tools;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -58,6 +59,9 @@ pub struct Node {
     pub link: link::Link,
     pub typing_fallback: bool,
     pub has_control: bool,
+    /// The control plane link's settings (token path expanded), for tool streams.
+    pub control: Option<config::ControlConfig>,
+    pub tools: Vec<tools::ToolConfig>,
 }
 
 impl Node {
@@ -134,16 +138,20 @@ async fn run(cfg: NodeConfig) -> anyhow::Result<()> {
         link: link::Link::default(),
         typing_fallback: cfg.typing_fallback,
         has_control: cfg.control.is_some(),
+        control: cfg.control.clone().map(|mut c| {
+            if let Ok(rest) = c.token_file.strip_prefix("~") {
+                c.token_file = config::home().join(rest);
+            }
+            c
+        }),
+        tools: cfg.tools.clone(),
     });
     tracing::info!(node = %node.name, machine = %node.machine, plugins = node.plugins.len(), "fleetlayer-node starting");
     for p in &node.plugins {
         tokio::spawn(plugins::supervise(node.clone(), p.clone()));
     }
-    match cfg.control.clone() {
-        Some(mut control) => {
-            if let Ok(rest) = control.token_file.strip_prefix("~") {
-                control.token_file = config::home().join(rest);
-            }
+    match node.control.clone() {
+        Some(control) => {
             tokio::spawn(link::run(node.clone(), control));
         }
         None => tracing::info!("no control: section in node.yaml, so this node works on its own"),
@@ -152,6 +160,15 @@ async fn run(cfg: NodeConfig) -> anyhow::Result<()> {
         tokio::spawn(heartbeat::run(node.clone(), h, cfg.control.is_some()));
     }
     let socket = cfg.socket();
+    let tools_socket = socket.with_file_name("tools.sock");
+    {
+        let node = node.clone();
+        tokio::spawn(async move {
+            if let Err(e) = tools::listen(node, &tools_socket).await {
+                tracing::error!("the tools socket stopped: {e}");
+            }
+        });
+    }
     tokio::select! {
         r = local::serve(node.clone(), &socket) => r,
         _ = shutdown() => {

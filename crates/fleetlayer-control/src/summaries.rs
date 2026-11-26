@@ -73,7 +73,7 @@ async fn store_record(db: &Db, tenant: &str, node: &str, r: &SummaryRecord) -> a
 macro_rules! columns {
     () => {
         "s.node, s.session_id, s.period_kind, s.period_key, s.agent, s.activity_from, s.activity_to, \
-         s.sentence, s.paragraph, s.page, s.tab, s.dir, s.written_at, s.origin"
+         s.sentence, s.paragraph, s.page, s.tab, s.dir, s.written_at, s.origin, s.rowid"
     };
 }
 
@@ -85,6 +85,7 @@ fn row_json(r: &sqlx::sqlite::SqliteRow) -> Value {
         "sentence": r.get::<String, _>(7), "paragraph": r.get::<String, _>(8), "page": r.get::<String, _>(9),
         "tab": r.get::<Option<String>, _>(10), "dir": r.get::<Option<String>, _>(11),
         "writtenAt": r.get::<i64, _>(12), "origin": r.get::<String, _>(13),
+        "cursor": format!("{}:{}", r.get::<i64, _>(12), r.get::<i64, _>(14)),
     })
 }
 
@@ -107,6 +108,31 @@ pub async fn search(db: &Db, tenant: &str, q: &str, limit: i64) -> anyhow::Resul
     ))
     .bind(terms.join(" "))
     .bind(tenant)
+    .bind(limit)
+    .fetch_all(db)
+    .await?;
+    Ok(rows.iter().map(row_json).collect())
+}
+
+/// Every record written after `after` (a record's `cursor`, `<writtenAt ms>:<rowid>`), oldest first: the feed a
+/// program follows to keep its own copy. A bare `<writtenAt ms>` means everything written at or after that moment. A
+/// replaced record gets a new `writtenAt`, so it comes round again.
+pub async fn feed(db: &Db, tenant: &str, after: &str, limit: i64) -> anyhow::Result<Vec<Value>> {
+    let (written, rowid) = match after.split_once(':') {
+        Some((w, r)) => (w.parse::<i64>()?, r.parse::<i64>()?),
+        // A bare time is inclusive: records written at that moment come again (an upsert makes repeats harmless),
+        // so two records sharing a writtenAt are never split across pages and lost.
+        None => (after.parse::<i64>()?, -1),
+    };
+    let rows = sqlx::query(concat!(
+        "SELECT ",
+        columns!(),
+        " FROM summaries s WHERE s.tenant = ?1 AND (s.written_at > ?2 OR (s.written_at = ?2 AND s.rowid > ?3))
+         ORDER BY s.written_at, s.rowid LIMIT ?4"
+    ))
+    .bind(tenant)
+    .bind(written)
+    .bind(rowid)
     .bind(limit)
     .fetch_all(db)
     .await?;
@@ -223,5 +249,15 @@ mod tests {
         assert_eq!(m[0]["sentence"], "Shipped sc-1234.", "the newest mention");
         assert!(mentions(&db, t, "sc-9", 10).await.unwrap().is_empty());
         assert!(mentions(&db, t, "100%", 10).await.unwrap().is_empty(), "% is literal");
+        // The feed pages by cursor, ties on writtenAt included.
+        let all = feed(&db, t, "0", 100).await.unwrap();
+        assert_eq!(all.len(), 4);
+        let first_two = feed(&db, t, "0", 2).await.unwrap();
+        let rest = feed(&db, t, first_two[1]["cursor"].as_str().unwrap(), 100).await.unwrap();
+        assert_eq!(first_two.len() + rest.len(), 4);
+        assert_ne!(first_two[1]["cursor"], rest[0]["cursor"]);
+        assert!(feed(&db, t, "bad", 10).await.is_err());
+        let last = all[3]["writtenAt"].as_i64().unwrap().to_string();
+        assert!(!feed(&db, t, &last, 10).await.unwrap().is_empty(), "a bare time is inclusive");
     }
 }

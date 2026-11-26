@@ -12,6 +12,7 @@ mod db;
 mod hooks;
 mod link;
 mod route;
+mod streams;
 mod summaries;
 
 use std::net::SocketAddr;
@@ -70,6 +71,11 @@ enum Command {
         target: String,
         #[arg(long)]
         subject: Option<String>,
+    },
+    /// The latest connections to tools shared by nodes (the audit log).
+    Tools {
+        #[arg(long, default_value_t = 30)]
+        limit: i64,
     },
     /// API tokens for programs that read the control plane.
     Token {
@@ -163,6 +169,7 @@ pub struct App {
     pub links: link::Links,
     pub hook_limits: hooks::Limits,
     pub admin_token_hash: Option<String>,
+    pub streams: streams::Streams,
 }
 
 #[tokio::main]
@@ -188,6 +195,7 @@ async fn main() -> anyhow::Result<()> {
                 links: link::Links::default(),
                 hook_limits: hooks::Limits::default(),
                 admin_token_hash,
+                streams: streams::Streams::default(),
             });
             serve(app, listen, hooks_listen).await
         }
@@ -238,6 +246,22 @@ async fn main() -> anyhow::Result<()> {
                 db::unsubscribe(&db, t, &Subscription { channel, subject, target }).await?,
                 "no such subscription"
             );
+            Ok(())
+        }
+        Command::Tools { limit } => {
+            for c in streams::recent(&db, t, limit).await? {
+                let at = c["openedAt"].as_i64().and_then(|ms| jiff::Timestamp::from_millisecond(ms).ok());
+                println!(
+                    "{}  {} -> {}@{}  {} B in, {} B out  {}",
+                    at.map(|t| t.strftime("%Y-%m-%d %H:%M:%S").to_string()).unwrap_or_default(),
+                    c["caller"].as_str().unwrap_or("?"),
+                    c["tool"].as_str().unwrap_or("?"),
+                    c["node"].as_str().unwrap_or("?"),
+                    c["bytesToTool"],
+                    c["bytesFromTool"],
+                    c["outcome"].as_str().unwrap_or("open")
+                );
+            }
             Ok(())
         }
         Command::Token { command } => match command {
@@ -302,6 +326,7 @@ async fn serve(app: Arc<App>, listen: SocketAddr, hooks_listen: SocketAddr) -> a
     let api = Router::new()
         .route("/healthz", get(api::healthz))
         .route("/v1/link", get(link::upgrade))
+        .route("/v1/stream/{id}", get(streams::upgrade))
         .route("/v1/fleet", get(api::get_fleet))
         .route("/v1/events", get(api::get_events))
         .route("/v1/subscriptions", get(api::get_subscriptions))

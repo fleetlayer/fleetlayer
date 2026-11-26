@@ -24,6 +24,11 @@ summary goes to two places:
 - `GET /v1/summaries?q=<words>`: full-text search, best match first.
 - `GET /v1/summaries?mentions=<text>`: the sessions whose summaries mention that exact text (an ID such as `sc-1234`,
   a PR number, a Sentry short ID), with the newest mentioning record of each. `fleetlayer summaries --mentions`.
+- `GET /v1/summaries?since=<cursor>&limit=<n>`: the feed, for a program that keeps its own copy: every record
+  written after the cursor, oldest first, with `nextCursor`. A cursor is `<writtenAt ms>:<rowid>` (each record carries
+  its own `cursor`) and pages exactly; a bare `<writtenAt ms>` is inclusive, so records sharing that moment come again
+  and an upsert by (node, session, period) absorbs them. A replaced record gets a new `writtenAt` and comes round
+  again.
 - `POST /v1/sessions/<id>/catchup`: "since your last message", from the session's node. Answers at once from the
   node's cache (with `stale: true` and a new one started when the transcript has grown), else waits while it's
   written.

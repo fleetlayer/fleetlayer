@@ -197,6 +197,39 @@ impl Handler for FromNode {
             l::method::SUBSCRIPTIONS => {
                 answer(&json!({"subscriptions": db::subscriptions(&app.db, tenant).await.map_err(RpcError::internal)?}))
             }
+            l::method::TOOL_OPEN => {
+                let t: l::ToolOpen = params(p)?;
+                let caller = format!("{}@{}", t.caller, self.node);
+                let target = format!("tool:{}@{}", t.tool, t.node);
+                if !crate::acl::allowed(&app.db, tenant, &caller, &target).await.map_err(RpcError::internal)? {
+                    return Err(RpcError::refused(format!("{caller} may not use {target} (access control)")));
+                }
+                let server = app
+                    .links
+                    .peer(tenant, &t.node)
+                    .await
+                    .ok_or_else(|| RpcError::not_here(format!("node {} is offline", t.node)))?;
+                let id = app
+                    .streams
+                    .create(&app.db, tenant, &t.tool, &self.node, &t.node, &caller)
+                    .await
+                    .map_err(RpcError::internal)?;
+                // A stream nobody opens is forgotten.
+                let (app2, id2) = (app.clone(), id.clone());
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                    app2.streams.forget(&id2).await;
+                });
+                let serve = l::ToolServe { stream_id: id.clone(), tool: t.tool.clone(), caller };
+                if let Err(e) =
+                    server.request_within::<_, Value>(l::method::TOOL_SERVE, &serve, Duration::from_secs(20)).await
+                {
+                    app.streams.forget(&id).await;
+                    crate::streams::finish(app, &id, 0, 0, &format!("refused: {}", e.message)).await;
+                    return Err(e);
+                }
+                answer(&l::ToolOpened { stream_id: id })
+            }
             l::method::SUMMARIES_SEARCH => {
                 let q = p["q"].as_str().unwrap_or_default();
                 let limit = p["limit"].as_i64().unwrap_or(20).clamp(1, 200);

@@ -59,6 +59,11 @@ enum Command {
         #[arg(long)]
         import: Option<String>,
     },
+    /// Use a tool another node shares, as this session's MCP server (stdio): `fleetlayer mcp browser@laptop`.
+    Mcp {
+        /// `<tool>@<node>`.
+        target: String,
+    },
     /// Messages between sessions.
     Msg {
         #[command(subcommand)]
@@ -85,6 +90,39 @@ enum Msg {
         to: String,
         text: String,
     },
+}
+
+/// Connect stdin and stdout to a shared tool through this node's tools socket.
+async fn mcp(socket: &std::path::Path, target: &str) -> anyhow::Result<()> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let (tool, node) = target.rsplit_once('@').ok_or_else(|| anyhow::anyhow!("give <tool>@<node>"))?;
+    let stream = tokio::net::UnixStream::connect(socket)
+        .await
+        .map_err(|e| anyhow::anyhow!("can't reach the node's tools socket {} ({e})", socket.display()))?;
+    let (r, mut w) = stream.into_split();
+    let c = caller();
+    let req = json!({"tool": tool, "node": node, "sessionId": c["sessionId"], "address": c["address"]});
+    w.write_all(format!("{req}\n").as_bytes()).await?;
+    let mut r = BufReader::new(r);
+    let mut line = String::new();
+    r.read_line(&mut line).await?;
+    let answer: Value = serde_json::from_str(&line).unwrap_or_default();
+    if let Some(e) = answer["error"].as_str() {
+        anyhow::bail!("{e}");
+    }
+    let up = async move {
+        let _ = tokio::io::copy(&mut tokio::io::stdin(), &mut w).await;
+        let _ = w.shutdown().await;
+    };
+    let down = async move {
+        let mut out = tokio::io::stdout();
+        let _ = tokio::io::copy(&mut r, &mut out).await;
+        let _ = out.flush().await;
+    };
+    // When stdin ends, the tool gets end-of-file and exits, which ends `down`; when the tool ends, so do we.
+    tokio::spawn(up);
+    down.await;
+    Ok(())
 }
 
 struct Named {
@@ -132,6 +170,9 @@ async fn main() {
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
     let socket = cli.socket.clone().unwrap_or_else(default_socket);
+    if let Command::Mcp { target } = &cli.command {
+        return mcp(&socket.with_file_name("tools.sock"), target).await;
+    }
     let stream = tokio::net::UnixStream::connect(&socket).await.map_err(|e| {
         anyhow::anyhow!("can't reach the node at {} ({e}). Is fleetlayer-node running?", socket.display())
     })?;
@@ -290,6 +331,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 }
             }
         }
+        Command::Mcp { .. } => {}
         Command::Msg { command: Msg::Send { to, text } } => {
             let v: Value = peer
                 .request("_fleetlayer.dev/message/send", &json!({"to": to, "text": text, "caller": caller()}))

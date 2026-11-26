@@ -73,6 +73,25 @@ fleetlayer subscribe ci --subject your-org/your-repo@your-branch
 CI results for that branch arrive in that session. `fleetlayer-control fallback ci <tab>@<node>` names where events go
 when nobody subscribes.
 
+## Using a tool on another machine
+
+A node can share a stdio tool, for example an MCP server driving your own signed-in browser on your laptop, with
+sessions on other machines. On the laptop's node:
+
+```yaml
+tools:
+  - name: browser
+    command: npx
+    args: ["@playwright/mcp@latest", "--extension", "--session-name", "{session}", "--profile-dir-name", "Default"]
+    env: { PLAYWRIGHT_MCP_EXECUTABLE_PATH: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" }
+    allow: ["*@server"]         # <tab>@<node> patterns; nobody when empty
+```
+
+In a session on another machine, the MCP server command is `fleetlayer mcp browser@laptop`. Each connection starts
+its own server, named after the calling session's tab (`{session}`), so each session gets its own tab group. The
+control plane checks access (`acl` rules on `tool:<name>@<node>`), joins the two nodes' streams and logs every
+connection (`fleetlayer-control tools`). It never reads what passes through.
+
 ## Monitoring the node
 
 ```yaml

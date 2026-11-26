@@ -38,6 +38,9 @@ pub struct NodeConfig {
     pub typing_fallback: bool,
     /// Report the node's health to a monitor (a Gatus external endpoint, say).
     pub heartbeat: Option<HeartbeatConfig>,
+    /// Tools this node shares with sessions on other nodes (`crate::tools`).
+    #[serde(default)]
+    pub tools: Vec<crate::tools::ToolConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
