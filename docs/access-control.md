@@ -116,7 +116,9 @@ justify:                       # the agent must say why, in one line, and it goe
     can: [use_tool, sync, start]
 ```
 
-An `ask` match pauses the request and asks the person (an approval card in Quietdeck, a push to the phone app, or
+Approvals are on by default: a new policy that leaves `ask:` out asks before `start` and before `sync` of secrets,
+the safe start for a fleet you don't know yet. A fleet of autonomous agents turns it off with `ask: []` (and
+`justify: []`). An `ask` match pauses the request and asks the person (an approval card in Quietdeck, a push to the phone app, or
 the `access` channel); approved, it's allowed, and the same agent, verb and target pass without asking again for
 `for`. Refused or unanswered, it's denied. A justification is one line of plain text, 16 to 1000 characters, with no
 hidden characters; a request that needs one and has none is refused with a message saying so.
@@ -128,9 +130,10 @@ handles maps to a verb: something unlisted fails closed.
 
 Every decision (allowed, denied, asked, approved) is written before the action happens, and if it can't be written,
 the action is refused: the control plane fails closed. Entries are chained, each with an HMAC over its content and the
-previous entry's hash, and every hour an anchor (the latest entry's position and hash, and the previous anchor's hash)
-is written to write-once storage (S3 Object Lock, or B2 with Object Lock), so changing, reordering or deleting
-anchored entries can be detected. `fleetlayer-control audit verify` checks the chain and the anchors. Repeats of the
+previous entry's hash, so any changed, reordered or removed entry before the newest is detected. Optionally, every
+hour an anchor (the latest entry's position and hash, and the previous anchor's hash) is written outside the database
+(a file on another machine, a git repository, or write-once storage such as S3 Object Lock), which also catches
+deleting the newest entries. `fleetlayer-control audit verify` checks the chain and any anchors. Repeats of the
 same denial within a minute are written as one entry with a count, so a looping agent can't flood the log. This
 follows Rack Gateway's audit log, built for SOC 2.
 
