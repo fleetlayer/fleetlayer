@@ -133,3 +133,23 @@ managers, machines that sleep.
   `Claude Code-credentials-<first 8 hex of sha256(NFC config dir)>` for others, account `$USER`, written with
   `security -i` and `add-generic-password -U`. Overwrite in place: deleting first leaves a moment where sessions see
   no sign-in. Where it lives: docs/plugins/claude-auth-manager.md ("The tokens bundle").
+- **Why claude.ai connectors (and other account-bound features) break down with several accounts and several
+  machines**, and what replaces them.
+  - **Several Claude accounts.** Connectors belong to a claude.ai account: each account has its own set, set up by
+    hand, and each connector holds one identity (one Google account per Gmail, Drive or Calendar connector; switching
+    means disconnecting and connecting again). A session an account rotator moves to another account gets that
+    account's connectors, or none, in the middle of its work. Claude in Chrome answers only the account its extension
+    is signed in to, so a moved session gets "signed in to a different account", and `/login` doesn't fix it.
+  - **Several machines.** A full claude.ai sign-in has an access token of about 8 hours and a single-use refresh token
+    that rotates, with a hard 30-day lifetime that refreshes don't extend. Two holders of one sign-in (machines,
+    copied `.credentials.json`, many sessions on one machine) knock each other out: the loser gets `invalid_grant`,
+    sometimes writes blank tokens over the winner's, and every session asks for `/login` (claude-code issues #21765,
+    #24317, #88583, #108871). So every machine needs its own sign-in for every account, redone monthly: accounts ×
+    machines sign-ins. The same race signs remote OAuth MCP servers out daily when 40+ sessions share one token entry.
+  - **What works instead:** `claude setup-token` per account (a year, no refresh, no race), shared to every machine
+    sealed (claude-auth-manager); the price is no connectors, artifacts or Remote Control. Replace them: one process
+    that holds the MCP sign-ins for every session (an MCP gateway), a shared signed-in browser over Fleetlayer's
+    tools (Playwright MCP) instead of Claude in Chrome, a phone relay for remote control, and your own page or
+    document tooling for artifacts.
+  - Where it lives now: docs/plugins/claude-auth-manager.md ("What a setup token can't do", "Token facts"), the
+    author's research notes on Claude OAuth tokens and account rotation.
