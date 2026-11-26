@@ -46,3 +46,10 @@ solved, and where the knowledge lives now. These become Fleetlayer's guides.
 - **After upgrading by hand, rerun `fleetlayer-node install` if the service runs a versioned path.** Since 26 Nov the
   installer writes the `PATH` symlink (`~/.local/bin/fleetlayer-node`) when it points at the running binary, so
   swapping symlinks reaches the service; older installs wrote the versioned path and kept running the old binary.
+- **Proxies close idle WebSockets.** Traefik 3.4's default entrypoint idleTimeout is 180 s, and a shared tool's stream
+  (a browser session between tasks) can sit idle much longer. Fleetlayer's nodes ping their stream sockets every 30 s
+  and the link every 30 s. If you put another proxy in front of a control plane, check its idle timeout is longer than
+  30 s. Found when a 5-minute idle browser stream was dropped, 26 Nov 2026.
+- **Don't let a node summarise another user's sessions.** Archive or RAG syncs can mirror one Unix user's Claude
+  transcripts into another's `~/.claude/projects`. The summaries plugin now skips sessions whose recorded cwd is
+  outside its own user's home; any tool that reads transcripts needs the same check.
