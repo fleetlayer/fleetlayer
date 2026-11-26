@@ -1,0 +1,112 @@
+//! The node's local socket (mode 0600, in a 0700 directory): the `fleetlayer` CLI talks to the node here, with the
+//! same JSON-RPC as plugins use.
+//!
+//! Methods:
+//! - `node/status` → the node's name, machine, version and plugins.
+//! - `node/sessions` → every session the node knows.
+//! - `_fleetlayer.dev/message/send` `{to, text, caller?: {sessionId?, address?}}` → `{via}`.
+//!
+//! Only the node's own Unix user can open the socket, so the caller's claim about which session it runs in
+//! (`caller`, from the session's environment) is trusted the way the user's own shell is: any process of that user
+//! could claim it.
+
+use std::path::Path;
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use fleetlayer_plugin::{Handler, Peer, answer, params};
+use fleetlayer_protocol::ext::{self, From};
+use fleetlayer_protocol::rpc::RpcError;
+use serde::Deserialize;
+use serde_json::{Value, json};
+use tokio::net::UnixListener;
+
+use crate::Node;
+
+pub async fn serve(node: Arc<Node>, path: &Path) -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    let _ = std::fs::remove_file(path);
+    let listener = UnixListener::bind(path)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    tracing::info!(socket = %path.display(), "local socket listening");
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let (r, w) = stream.into_split();
+        let (_peer, _task) = fleetlayer_plugin::connect(r, w, Arc::new(Local { node: node.clone() }));
+    }
+}
+
+struct Local {
+    node: Arc<Node>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Caller {
+    session_id: Option<String>,
+    address: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Send {
+    to: String,
+    text: String,
+    caller: Option<Caller>,
+}
+
+#[async_trait]
+impl Handler for Local {
+    async fn request(&self, _peer: &Peer, method: &str, p: Value) -> Result<Value, RpcError> {
+        let node = &self.node;
+        match method {
+            "node/status" => {
+                let mut plugins = vec![];
+                for p in &node.plugins {
+                    plugins.push(p.status().await);
+                }
+                answer(&json!({
+                    "node": node.name,
+                    "machine": node.machine,
+                    "user": node.user,
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "plugins": plugins,
+                }))
+            }
+            "node/sessions" => answer(&json!({"node": node.name, "sessions": node.registry.all().await})),
+            ext::method::MESSAGE_SEND => {
+                let s: Send = params(p)?;
+                let caller = match &s.caller {
+                    Some(c) => {
+                        let by_id = match &c.session_id {
+                            Some(id) => node.registry.get(id).await,
+                            None => None,
+                        };
+                        match by_id {
+                            Some(s) => Some(s),
+                            None => match &c.address {
+                                Some(a) => node.registry.by_address(a).await,
+                                None => None,
+                            },
+                        }
+                    }
+                    None => None,
+                };
+                let from = match &caller {
+                    Some(c) => From {
+                        label: format!("{} ({})", c.tab().unwrap_or(&c.session_id), node.name),
+                        name: c.tab().map(str::to_string),
+                        node: Some(node.name.clone()),
+                        session_id: Some(c.session_id.clone()),
+                    },
+                    None => From { label: format!("a shell on {}", node.name), ..Default::default() },
+                };
+                answer(&crate::deliver::send(node, &s.to, &s.text, from, caller.as_ref()).await?)
+            }
+            _ => Err(RpcError::method_not_found(method)),
+        }
+    }
+}

@@ -7,9 +7,28 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[[bin]]
+name = "fleetlayer-node"
+path = "src/main.rs"
+
 [dependencies]
+fleetlayer-protocol.workspace = true
+fleetlayer-plugin.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+jiff.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+thiserror.workspace = true
+async-trait = "0.1.92"
+yaml_serde = "0.10.7"
+nix = { version = "0.32.0", default-features = false, features = ["hostname", "user"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
 
 [lints]
 workspace = true
