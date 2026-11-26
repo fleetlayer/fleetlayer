@@ -48,7 +48,9 @@ Run inside the container (`kubectl exec … -- fleetlayer-control <command>`), a
 - `endpoint add --label <l> --channel <c>`: a webhook endpoint; prints `/hooks/<id>/<secret>` once. `endpoint list`.
 - `token add <name> [--scope read|admin]`: an API token for a program that reads the fleet (`read`: every GET and
   catch-ups); prints it once. `token list`, `token remove <name>`.
-- `acl list|add|remove|default|check`: access control between sessions.
+- `acl apply <file> [--check]`: make the access rules match a YAML file exactly (example: `deploy/examples/acl.yaml`),
+  printing what changed; running it again changes nothing. Keep the file in git and apply it on every start (an init
+  container), so the agents the rules limit can't change them. `acl list|add|remove|default|check` for inspection.
 - `subscribe <channel> <tab>@<node> [--subject s]`, `unsubscribe …`, `fallback <channel> <tab>@<node>|--none`.
 
 ### Backups

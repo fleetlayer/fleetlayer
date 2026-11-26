@@ -1,0 +1,17 @@
+# Fleetlayer access rules, applied with `fleetlayer-control acl apply acl.yaml` (keep the file in git and apply it on
+# every start; the agents the rules limit can't change them). First match wins; `*` matches any run of characters.
+# Subjects: `<tab>@<node>` for a session, `-@<node>` for a shell, `plugin:<name>@<node>` for a plugin;
+# targets: `<tab>@<node>`, `tool:<name>@<node>`, `sync:<bundle>@<node>`. A session may always reply within 24 hours to
+# a session that messaged it. Every refusal is published as an `access.denied` event on the `access` channel.
+#
+# Put tool denials before broad allows: `*@agents` also matches `tool:browser@agents`.
+default: allow
+rules:
+  # An email triage agent reads untrusted mail: no shared tools (no browser), ever. It may message any session.
+  - { from: "*@agents-triage", to: "tool:*", action: deny }
+  # An infrastructure agent: its person's sessions, the home-server agents and its worker; nothing else.
+  - { from: "*@agents-talira", to: "tool:*", action: deny }
+  - { from: "*@agents-talira", to: "*@agents", action: allow }
+  - { from: "*@agents-talira", to: "*@nathans-mac", action: allow }
+  - { from: "*@agents-talira", to: "*@agents-talira-worker", action: allow }
+  - { from: "*@agents-talira", to: "*", action: deny }

@@ -43,6 +43,11 @@ pub struct Rule {
     pub action: Action,
 }
 
+/// A pattern is `*`, `<tab>@<node>`, or a resource: `tool:<name>@<node>`, `sync:<bundle>@<node>` (with `*` anywhere).
+pub fn valid_pattern(p: &str) -> bool {
+    p == "*" || p.contains('@') || p.starts_with("tool:") || p.starts_with("sync:")
+}
+
 /// `*` matches any run of characters; everything else matches itself.
 pub fn glob(pattern: &str, text: &str) -> bool {
     let parts: Vec<&str> = pattern.split('*').collect();
@@ -111,7 +116,7 @@ pub async fn set_default(db: &Db, tenant: &str, a: Action) -> anyhow::Result<()>
 
 /// Add a rule at the end (or at `position`).
 pub async fn add(db: &Db, tenant: &str, from: &str, to: &str, a: Action, position: Option<i64>) -> anyhow::Result<i64> {
-    let ok = |p: &str| p == "*" || p.contains('@');
+    let ok = valid_pattern;
     anyhow::ensure!(ok(from) && ok(to), "patterns are <tab>@<node> (or *), with * as a wildcard");
     let position = match position {
         Some(p) => p,
@@ -140,6 +145,89 @@ pub async fn add(db: &Db, tenant: &str, from: &str, to: &str, a: Action, positio
 pub async fn remove(db: &Db, tenant: &str, id: i64) -> anyhow::Result<bool> {
     let r = sqlx::query("DELETE FROM acl_rules WHERE tenant = ? AND id = ?").bind(tenant).bind(id).execute(db).await?;
     Ok(r.rows_affected() > 0)
+}
+
+/// An access-control file: the default and the rules in order.
+///
+/// ```yaml
+/// default: allow
+/// rules:
+///   - { from: "*@agents-triage", to: "tool:*", action: deny }
+///   - { from: "*@agents-talira", to: "*@agents", action: allow }
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct File {
+    pub default: String,
+    #[serde(default)]
+    pub rules: Vec<FileRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileRule {
+    pub from: String,
+    pub to: String,
+    pub action: String,
+}
+
+/// Make the stored rules and default match `file` exactly. Returns the changes as lines (`+ …`, `- …`, `default: …`);
+/// empty when it already matched. With `check`, changes nothing.
+pub async fn apply(db: &Db, tenant: &str, file: &File, check: bool) -> anyhow::Result<Vec<String>> {
+    let want_default = Action::parse(&file.default)?;
+    let mut want = vec![];
+    for r in &file.rules {
+        let ok = valid_pattern;
+        anyhow::ensure!(ok(&r.from) && ok(&r.to), "patterns are <tab>@<node> (or *): {} -> {}", r.from, r.to);
+        want.push((r.from.clone(), r.to.clone(), Action::parse(&r.action)?));
+    }
+    let have_default = default(db, tenant).await?;
+    let have: Vec<(String, String, Action)> =
+        rules(db, tenant).await?.into_iter().map(|r| (r.from, r.to, r.action)).collect();
+    let line = |(f, t, a): &(String, String, Action)| format!("{} {f} -> {t}", a.as_str());
+    let mut changes = vec![];
+    if have_default != want_default {
+        changes.push(format!("default: {} -> {}", have_default.as_str(), want_default.as_str()));
+    }
+    if have != want {
+        for r in have.iter().filter(|r| !want.contains(r)) {
+            changes.push(format!("- {}", line(r)));
+        }
+        for r in want.iter().filter(|r| !have.contains(r)) {
+            changes.push(format!("+ {}", line(r)));
+        }
+        if changes.iter().all(|c| c.starts_with("default")) {
+            changes.push("rules reordered".into());
+        }
+    }
+    if check || changes.is_empty() {
+        return Ok(changes);
+    }
+    let mut tx = db.begin().await?;
+    sqlx::query("DELETE FROM acl_rules WHERE tenant = ?").bind(tenant).execute(&mut *tx).await?;
+    for (i, (f, t, a)) in want.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO acl_rules (tenant, position, from_pattern, to_pattern, action, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(tenant)
+        .bind((i as i64 + 1) * 10)
+        .bind(f)
+        .bind(t)
+        .bind(a.as_str())
+        .bind(now_ms())
+        .execute(&mut *tx)
+        .await?;
+    }
+    sqlx::query(
+        "INSERT INTO tenant_settings (tenant, acl_default) VALUES (?, ?)
+         ON CONFLICT (tenant) DO UPDATE SET acl_default = excluded.acl_default",
+    )
+    .bind(tenant)
+    .bind(want_default.as_str())
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(changes)
 }
 
 /// How long a session may answer a session that messaged it, whatever the rules say.
@@ -221,6 +309,19 @@ mod tests {
         set_default(&db, t, Action::Deny).await.unwrap();
         assert!(!allowed(&db, t, "c@z", "b@y").await.unwrap());
         assert!(add(&db, t, "nope", "b@y", Action::Allow, None).await.is_err());
+        // A file makes the rules match exactly, and applying it twice changes nothing.
+        let f: File = yaml_serde::from_str(
+            "default: allow\nrules:\n  - { from: \"*@t\", to: \"tool:*\", action: deny }\n  - { from: \"a@x\", to: \"*\", action: allow }\n",
+        )
+        .unwrap();
+        let first = apply(&db, t, &f, true).await.unwrap();
+        assert!(first.iter().any(|c| c == "default: deny -> allow"), "{first:?}");
+        assert!(rules(&db, t).await.unwrap().len() == 2, "--check changes nothing");
+        apply(&db, t, &f, false).await.unwrap();
+        assert_eq!(rules(&db, t).await.unwrap().len(), 2);
+        assert_eq!(rules(&db, t).await.unwrap()[0].from, "*@t");
+        assert!(apply(&db, t, &f, false).await.unwrap().is_empty(), "idempotent");
+        assert!(!allowed(&db, t, "x@t", "tool:browser@m").await.unwrap());
         // A denied sender may answer someone who wrote to it.
         assert!(!replying(&db, t, "c@x", "b@y").await.unwrap());
         log_message(&db, t, "b@y", "c@x").await.unwrap();

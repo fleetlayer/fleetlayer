@@ -136,6 +136,14 @@ enum AclCommand {
     Remove {
         id: i64,
     },
+    /// Make the rules and default match a YAML file exactly (`default:` and `rules:` of `{from, to, action}` in
+    /// order), printing what changed. Running it again changes nothing.
+    Apply {
+        file: PathBuf,
+        /// Print what would change without changing it.
+        #[arg(long)]
+        check: bool,
+    },
     /// What happens when no rule matches: allow or deny.
     Default {
         action: String,
@@ -316,6 +324,21 @@ async fn main() -> anyhow::Result<()> {
             }
             AclCommand::Remove { id } => {
                 anyhow::ensure!(acl::remove(&db, t, id).await?, "no rule #{id}");
+                Ok(())
+            }
+            AclCommand::Apply { file, check } => {
+                let text = std::fs::read_to_string(&file)?;
+                let f: acl::File =
+                    yaml_serde::from_str(&text).map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?;
+                let changes = acl::apply(&db, t, &f, check).await?;
+                if changes.is_empty() {
+                    println!("The access rules already match {}.", file.display());
+                } else {
+                    for c in &changes {
+                        println!("{c}");
+                    }
+                    println!("{} {} change(s).", if check { "Would make" } else { "Made" }, changes.len());
+                }
                 Ok(())
             }
             AclCommand::Default { action } => acl::set_default(&db, t, acl::Action::parse(&action)?).await,
