@@ -41,7 +41,7 @@ Fleetlayer's extensions is still a valid ACP agent to any other ACP client.
 - **Errors** use JSON-RPC error codes, plus ACP's: `-32601` for an unknown method, `-32002` for an unknown session.
   Fleetlayer adds `-32010` "not here" (the session isn't on this machine or isn't running) and `-32011` "refused"
   (the plugin understood the request and won't do it; the message says why, in a sentence a person can read),
-  `-32012` "busy" and `-32013` "no channel" (section 5).
+  `-32012` "busy", `-32013` "no channel" and `-32014` "no such" (section 5).
 
 ## 2. Naming rules for extensions
 
@@ -238,7 +238,8 @@ Errors, so the sender can say what happened:
 
 | Code | Meaning | The sender says |
 |---|---|---|
-| `-32010` not here | The session isn't running | "offline" |
+| `-32010` not here | The session exists but has stopped, or its node is offline | "offline" |
+| `-32014` no such | No session or node has that name; `data.suggestions` lists up to three running names containing it | "no session named 'triage' on agents-triage; did you mean 'quietdeck triage@agents-triage'?" |
 | `-32012` busy | Running, but can't take input now (blocked on a permission prompt or a question) | "it's waiting on a person" |
 | `-32013` no channel | This plugin has no way in for this session (no socket); the node may try another | (internal) |
 | `-32011` refused | Anything else, with a sentence why | the sentence |

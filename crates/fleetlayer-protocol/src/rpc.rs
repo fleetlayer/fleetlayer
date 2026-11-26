@@ -95,6 +95,9 @@ pub mod code {
     pub const BUSY: i64 = -32012;
     /// Fleetlayer: this plugin has no way in for this session; the node may try another.
     pub const NO_CHANNEL: i64 = -32013;
+    /// Fleetlayer: no session or node has that name (a typo, not an outage). `data.suggestions` lists up to three
+    /// running names that contain it.
+    pub const NO_SUCH: i64 = -32014;
     /// Fleetlayer: the other side went away before answering.
     pub const CLOSED: i64 = -32099;
 }
@@ -114,6 +117,18 @@ impl RpcError {
     }
     pub fn not_here(message: impl Into<String>) -> RpcError {
         RpcError::new(code::NOT_HERE, message)
+    }
+    /// No session or node by that name, with up to three names that contain it (`did you mean …?` in the message).
+    pub fn no_such(what: &str, suggestions: Vec<String>) -> RpcError {
+        let message = match suggestions.as_slice() {
+            [] => what.to_string(),
+            [one] => format!("{what}; did you mean '{one}'?"),
+            [rest @ .., last] => format!(
+                "{what}; did you mean {} or '{last}'?",
+                rest.iter().map(|s| format!("'{s}'")).collect::<Vec<_>>().join(", ")
+            ),
+        };
+        RpcError { code: code::NO_SUCH, message, data: Some(serde_json::json!({ "suggestions": suggestions })) }
     }
     pub fn refused(message: impl Into<String>) -> RpcError {
         RpcError::new(code::REFUSED, message)

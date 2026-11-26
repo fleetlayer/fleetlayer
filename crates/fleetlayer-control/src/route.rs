@@ -20,16 +20,33 @@ pub fn split_target(target: &str) -> Option<(&str, &str)> {
     (!name.is_empty() && !node.is_empty()).then_some((name, node))
 }
 
+/// Up to three known node names that contain `node` (or that it contains), in any case.
+pub fn suggest_nodes(known: &[String], node: &str) -> Vec<String> {
+    let want = node.to_lowercase();
+    known
+        .iter()
+        .filter(|n| {
+            let n = n.to_lowercase();
+            n.contains(&want) || want.contains(&n)
+        })
+        .take(3)
+        .cloned()
+        .collect()
+}
+
 /// Deliver to `<name>@<node>` through that node's link.
 pub async fn deliver(app: &App, tenant: &str, target: &str, mut d: DeliverRequest) -> Result<Delivered, RpcError> {
     let (name, node) =
         split_target(target).ok_or_else(|| RpcError::invalid_params(format!("{target} isn't <session>@<node>")))?;
     d.name = name.into();
-    let peer = app
-        .links
-        .peer(tenant, node)
-        .await
-        .ok_or_else(|| RpcError::not_here(format!("node {node} is offline, so {target} can't be reached now")))?;
+    let Some(peer) = app.links.peer(tenant, node).await else {
+        let known: Vec<String> =
+            crate::db::nodes(&app.db, tenant).await.map_err(RpcError::internal)?.into_iter().map(|n| n.name).collect();
+        if known.iter().any(|n| n == node) {
+            return Err(RpcError::not_here(format!("node {node} is offline, so {target} can't be reached now")));
+        }
+        return Err(RpcError::no_such(&format!("no node named '{node}'"), suggest_nodes(&known, node)));
+    };
     peer.request_within(l::method::DELIVER, &d, DELIVER_TIMEOUT).await
 }
 
@@ -137,6 +154,17 @@ pub async fn publish(app: &App, tenant: &str, e: Event, source: &str) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_wrong_node_name_gets_suggestions() {
+        let known = vec!["agents".to_string(), "agents-triage".into(), "nathans-mac".into()];
+        assert_eq!(suggest_nodes(&known, "triage"), vec!["agents-triage"]);
+        assert_eq!(suggest_nodes(&known, "AGENTS"), vec!["agents", "agents-triage"]);
+        assert!(suggest_nodes(&known, "laptop").is_empty());
+        let e = RpcError::no_such("no node named 'triage'", suggest_nodes(&known, "triage"));
+        assert_eq!(e.code, fleetlayer_protocol::rpc::code::NO_SUCH);
+        assert_eq!(e.message, "no node named 'triage'; did you mean 'agents-triage'?");
+    }
 
     #[test]
     fn targets_split_at_the_last_at() {

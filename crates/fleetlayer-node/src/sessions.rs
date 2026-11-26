@@ -260,6 +260,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_wrong_name_gets_running_tabs_that_contain_it() {
+        let r = Registry::default();
+        r.replace(
+            "herdr",
+            Role::Manager,
+            vec![
+                info("a", "quietdeck triage", json!({})),
+                info("b", "Triage Notes", json!({})),
+                info("c", "ci", json!({})),
+                info("d", "old triage", json!({"running": false})),
+            ],
+        )
+        .await;
+        let all = r.all().await;
+        assert_eq!(
+            crate::deliver::suggest(&all, "triage", "agents-triage"),
+            vec!["Triage Notes@agents-triage", "quietdeck triage@agents-triage"],
+            "any case, running only"
+        );
+        assert!(crate::deliver::suggest(&all, "billing", "n").is_empty());
+    }
+
+    #[tokio::test]
     async fn a_managers_list_replaces_its_sessions_and_a_harness_adds_delivery() {
         let r = Registry::default();
         r.replace("herdr", Role::Manager, vec![info("a", "planning", json!({})), info("b", "ci", json!({}))]).await;

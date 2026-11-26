@@ -53,11 +53,34 @@ pub fn parse_address(to: &str) -> (&str, Option<&str>) {
     }
 }
 
+/// Up to three running tabs whose names contain `name`, in any case, as `<tab>@<node>`.
+pub fn suggest(sessions: &[Session], name: &str, node: &str) -> Vec<String> {
+    let want = name.to_lowercase();
+    let mut tabs: Vec<&str> = sessions
+        .iter()
+        .filter(|s| s.running())
+        .filter_map(|s| s.tab())
+        .filter(|t| t.to_lowercase().contains(&want) || want.contains(&t.to_lowercase()))
+        .collect();
+    tabs.sort_unstable();
+    tabs.dedup();
+    tabs.into_iter().take(3).map(|t| format!("{t}@{node}")).collect()
+}
+
 /// The session on this node that `name` names.
 pub async fn resolve(node: &Node, name: &str) -> Result<Session, RpcError> {
     let mut found = node.registry.find(name).await;
     match found.len() {
-        0 => Err(RpcError::not_here(format!("no running session called {name} on {}", node.name))),
+        0 => {
+            let all = node.registry.all().await;
+            if all.iter().any(|s| s.tab() == Some(name)) {
+                return Err(RpcError::not_here(format!("{name} on {} has stopped", node.name)));
+            }
+            Err(RpcError::no_such(
+                &format!("no session named '{name}' on {}", node.name),
+                suggest(&all, name, &node.name),
+            ))
+        }
         1 => {
             let s = found.remove(0);
             if s.running() { Ok(s) } else { Err(RpcError::not_here(format!("{name} on {} isn't running", node.name))) }
