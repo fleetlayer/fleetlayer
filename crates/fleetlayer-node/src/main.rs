@@ -11,6 +11,7 @@ mod plugins;
 mod service;
 mod sessions;
 mod tools;
+mod update;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -159,6 +160,8 @@ async fn run(cfg: NodeConfig) -> anyhow::Result<()> {
     if let Some(h) = cfg.heartbeat.clone() {
         tokio::spawn(heartbeat::run(node.clone(), h, cfg.control.is_some()));
     }
+    let update = cfg.update.clone().unwrap_or(update::UpdateConfig { mode: None, every_hours: 6 });
+    tokio::spawn(update::run(node.clone(), update));
     let socket = cfg.socket();
     let tools_socket = socket.with_file_name("tools.sock");
     {

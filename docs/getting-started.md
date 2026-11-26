@@ -1,15 +1,19 @@
 # Getting started
 
-Fleetlayer is early. This is how to run it today, from source.
+Fleetlayer is early. Expect breaking changes.
 
-## Build
+## Install
 
 ```sh
-cargo build --release
-# target/release/: fleetlayer, fleetlayer-node, fleetlayer-control, fleetlayer-herdr, fleetlayer-claude-code
+curl -fsSL https://raw.githubusercontent.com/fleetlayer/fleetlayer/main/install.sh | sh
 ```
 
-Put the binaries on your `PATH`.
+It installs the latest release's binaries for Linux or macOS into `~/.local/lib/fleetlayer/<version>/`, checked
+against the release's checksums, with symlinks in `~/.local/bin`. A node installed this way updates itself from later
+releases (`update: {mode: auto | notify | off}` in node.yaml); one installed any other way only logs that a release is
+out.
+
+Or build from source: `cargo build --release`, and put `target/release/fleetlayer*` on your `PATH`.
 
 ## A node on one machine
 

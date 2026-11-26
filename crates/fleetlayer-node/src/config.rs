@@ -41,6 +41,8 @@ pub struct NodeConfig {
     /// Tools this node shares with sessions on other nodes (`crate::tools`).
     #[serde(default)]
     pub tools: Vec<crate::tools::ToolConfig>,
+    /// Self-update from Fleetlayer's releases (`crate::update`).
+    pub update: Option<crate::update::UpdateConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
