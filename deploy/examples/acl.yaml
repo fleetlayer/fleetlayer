@@ -4,14 +4,27 @@
 # targets: `<tab>@<node>`, `tool:<name>@<node>`, `sync:<bundle>@<node>`. A session may always reply within 24 hours to
 # a session that messaged it. Every refusal is published as an `access.denied` event on the `access` channel.
 #
-# Put tool denials before broad allows: `*@agents` also matches `tool:browser@agents`.
+# Put resource denials (tool:, sync:) before broad allows: `*@agents` also matches `tool:browser@agents` and
+# `sync:files/skills@agents`. Sync bundles are guarded only by these rules: a node allowed to send a bundle another node
+# applies (files/skills, say) can overwrite what it applies.
 default: allow
 rules:
-  # An email triage agent reads untrusted mail: no shared tools (no browser), ever. It may message any session.
+  # An email triage agent reads untrusted mail: no shared tools (no browser) and no sync, ever. It may message any
+  # session; when a rule gets in its way it reports it in the Inbox report's "# Triage Notes".
   - { from: "*@agents-triage", to: "tool:*", action: deny }
-  # An infrastructure agent: its person's sessions, the home-server agents and its worker; nothing else.
+  - { from: "*@agents-triage", to: "sync:*", action: deny }
+  # Talira's infrastructure agent: its person's sessions, the home-server agents and its worker; nothing else.
   - { from: "*@agents-talira", to: "tool:*", action: deny }
+  - { from: "*@agents-talira", to: "sync:*", action: deny }
   - { from: "*@agents-talira", to: "*@agents", action: allow }
   - { from: "*@agents-talira", to: "*@nathans-mac", action: allow }
   - { from: "*@agents-talira", to: "*@agents-talira-worker", action: allow }
   - { from: "*@agents-talira", to: "*", action: deny }
+  # Talira's worker reads untrusted posts and public submissions all day: no tools, no sync, and only the Talira
+  # coordinator, Talira's infrastructure agent and the home-server agent.
+  - { from: "*@agents-talira-worker", to: "tool:*", action: deny }
+  - { from: "*@agents-talira-worker", to: "sync:*", action: deny }
+  - { from: "*@agents-talira-worker", to: "*@nathans-mac", action: allow }
+  - { from: "*@agents-talira-worker", to: "talira infra@agents-talira", action: allow }
+  - { from: "*@agents-talira-worker", to: "homeserver pve@agents", action: allow }
+  - { from: "*@agents-talira-worker", to: "*", action: deny }
