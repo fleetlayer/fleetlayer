@@ -35,7 +35,7 @@ pub mod schedule;
 pub mod state;
 pub mod transcript;
 
-pub use transcript::set_auto_continue_message;
+pub use transcript::{set_auto_continue_message, set_owner_home};
 
 #[cfg(test)]
 mod tests;

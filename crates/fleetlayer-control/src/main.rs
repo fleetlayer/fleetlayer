@@ -72,6 +72,13 @@ enum Command {
         #[arg(long)]
         subject: Option<String>,
     },
+    /// Delete one session's summaries as one node published them (it summarised a session that isn't its own).
+    SummariesDelete {
+        #[arg(long)]
+        node: String,
+        #[arg(long)]
+        session: String,
+    },
     /// The latest connections to tools shared by nodes (the audit log).
     Tools {
         #[arg(long, default_value_t = 30)]
@@ -246,6 +253,11 @@ async fn main() -> anyhow::Result<()> {
                 db::unsubscribe(&db, t, &Subscription { channel, subject, target }).await?,
                 "no such subscription"
             );
+            Ok(())
+        }
+        Command::SummariesDelete { node, session } => {
+            let n = summaries::delete(&db, t, &node, &session).await?;
+            println!("Deleted {n} records of {session} published by {node}.");
             Ok(())
         }
         Command::Tools { limit } => {

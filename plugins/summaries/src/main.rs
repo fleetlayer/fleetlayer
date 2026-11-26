@@ -91,6 +91,8 @@ impl Handler for Shared {
                     .map_err(RpcError::invalid_params)?
                     .ok_or_else(|| RpcError::refused("fleetlayer-summaries runs under a Fleetlayer node"))?;
                 let home = PathBuf::from(&node.home);
+                // Only this user's own sessions: a mirror of another user's transcripts is theirs to summarise.
+                summaries::set_owner_home(&node.home);
                 let config: Config = serde_json::from_value(node.config.clone()).map_err(RpcError::invalid_params)?;
                 let engine: SummariesConfig = match config.engine.clone() {
                     Some(v) => serde_json::from_value(v).map_err(RpcError::invalid_params)?,

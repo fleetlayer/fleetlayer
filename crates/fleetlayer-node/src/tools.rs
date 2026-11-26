@@ -124,11 +124,22 @@ where
     let (mut ws_tx, mut ws_rx) = ws.split();
     let up = async move {
         let mut buf = vec![0u8; 64 * 1024];
+        // A stream can sit idle for a long time (a browser session between tasks); proxies on the way close idle
+        // connections, so ping every 30 seconds.
+        let mut ping = tokio::time::interval(Duration::from_secs(30));
+        ping.tick().await;
         loop {
-            match reader.read(&mut buf).await {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    if ws_tx.send(Message::Binary(buf[..n].to_vec().into())).await.is_err() {
+            tokio::select! {
+                r = reader.read(&mut buf) => match r {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if ws_tx.send(Message::Binary(buf[..n].to_vec().into())).await.is_err() {
+                            return ws_tx;
+                        }
+                    }
+                },
+                _ = ping.tick() => {
+                    if ws_tx.send(Message::Ping(Vec::new().into())).await.is_err() {
                         return ws_tx;
                     }
                 }
@@ -141,6 +152,7 @@ where
         while let Some(Ok(m)) = ws_rx.next().await {
             let bytes = match m {
                 Message::Binary(b) if b.is_empty() => break,
+                Message::Ping(_) | Message::Pong(_) => continue,
                 Message::Binary(b) => b.to_vec(),
                 Message::Text(t) => t.as_bytes().to_vec(),
                 Message::Close(_) => break,

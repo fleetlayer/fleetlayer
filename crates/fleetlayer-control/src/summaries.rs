@@ -89,6 +89,17 @@ fn row_json(r: &sqlx::sqlite::SqliteRow) -> Value {
     })
 }
 
+/// Delete a session's records published by one node (a session summarised by the wrong node). Returns how many.
+pub async fn delete(db: &Db, tenant: &str, node: &str, session_id: &str) -> anyhow::Result<u64> {
+    let r = sqlx::query("DELETE FROM summaries WHERE tenant = ? AND node = ? AND session_id = ?")
+        .bind(tenant)
+        .bind(node)
+        .bind(session_id)
+        .execute(db)
+        .await?;
+    Ok(r.rows_affected())
+}
+
 /// Full-text search, best match first. `q` is plain words: each is matched as a prefix.
 pub async fn search(db: &Db, tenant: &str, q: &str, limit: i64) -> anyhow::Result<Vec<Value>> {
     let terms: Vec<String> = q
