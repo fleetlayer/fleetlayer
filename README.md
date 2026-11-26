@@ -29,7 +29,7 @@ fleet of agents. It runs, from source: see [docs/getting-started.md](docs/gettin
 | `fleetlayer-node` | One daemon per machine (or per Unix user). Starts plugins, delivers messages into sessions, keeps one outbound connection to the control plane. |
 | `fleetlayer-herdr`, `fleetlayer-claude-code` | The first plugins: herdr as the session manager, and delivery through Claude Code's own messaging socket. |
 | Plugins | Separate processes the node talks to with JSON-RPC over stdio, in any language: adapters for session managers (herdr first), event sources, runner actions. The protocol is the [Agent Client Protocol](https://agentclientprotocol.com) plus Fleetlayer's extensions ([docs/protocol.md](docs/protocol.md)). |
-| `fleetlayer-control` | The control plane: machines, sessions, messages, channels and a public webhook endpoint. Self-host it, or use the hosted one. It never holds credentials. |
+| `fleetlayer-control` | The control plane: machines, sessions, messages, channels and a public webhook endpoint. Self-host it (a hosted one is planned). It never holds credentials. |
 | `fleetlayer` | The command line. |
 | `claude-auth-manager` (planned) | A plugin you run on your own machine: Claude sign-ins, usage across accounts, and year-long tokens handed to every agent. |
 
