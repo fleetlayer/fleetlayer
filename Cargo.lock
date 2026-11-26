@@ -481,6 +481,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c66915cc5391097de7a2b0b972e8505aa33c0df401fd3a6811dbdb32881ba48"
 
 [[package]]
+name = "fleetlayer-claude-code"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "fleetlayer-plugin",
+ "fleetlayer-protocol",
+ "hex",
+ "nix",
+ "rand 0.9.5",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "fleetlayer-cli"
 version = "0.1.0"
 dependencies = [

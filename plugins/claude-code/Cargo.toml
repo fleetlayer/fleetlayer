@@ -1,0 +1,28 @@
+[package]
+name = "fleetlayer-claude-code"
+description = "fleetlayer-claude-code: the Fleetlayer harness plugin for Claude Code (delivery through its messaging socket, transcripts)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+fleetlayer-protocol.workspace = true
+fleetlayer-plugin.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+async-trait = "0.1.92"
+sha2 = "0.11"
+hex = "0.4"
+rand = "0.9"
+nix = { version = "0.32.0", default-features = false, features = ["signal"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[lints]
+workspace = true

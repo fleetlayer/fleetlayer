@@ -31,6 +31,11 @@ pub struct NodeConfig {
     pub plugins: Vec<PluginConfig>,
     /// The control plane to link to. Without it the node works on its own machine only.
     pub control: Option<ControlConfig>,
+    /// When a session has no harness channel (no messaging socket), type the message into its terminal through the
+    /// session manager. Default true. Typing can land in the middle of what a person is typing in that tab, so a
+    /// machine where people work in the agents' tabs may turn it off; such messages then fail at once instead.
+    #[serde(default = "yes")]
+    pub typing_fallback: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

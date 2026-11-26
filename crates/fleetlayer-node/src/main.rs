@@ -45,6 +45,7 @@ pub struct Node {
     pub registry: sessions::Registry,
     pub deliveries: deliver::Deliveries,
     pub link: link::Link,
+    pub typing_fallback: bool,
 }
 
 impl Node {
@@ -96,6 +97,7 @@ async fn run(cfg: NodeConfig) -> anyhow::Result<()> {
         registry: sessions::Registry::default(),
         deliveries: deliver::Deliveries::default(),
         link: link::Link::default(),
+        typing_fallback: cfg.typing_fallback,
     });
     tracing::info!(node = %node.name, machine = %node.machine, plugins = node.plugins.len(), "fleetlayer-node starting");
     for p in &node.plugins {

@@ -138,6 +138,12 @@ pub async fn deliver(node: &Node, session: &Session, d: &Deliver) -> Result<Deli
             other => return other,
         }
     }
+    if !node.typing_fallback {
+        return Err(RpcError::not_here(format!(
+            "session {} has no messaging channel now, and typing into its terminal is off on {} (typing_fallback)",
+            session.session_id, node.name
+        )));
+    }
     let Some(m) = &session.manager else {
         return Err(RpcError::not_here(format!("no plugin runs session {}", session.session_id)));
     };
