@@ -341,6 +341,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 println!("{}", serde_json::to_string_pretty(&v)?);
                 return Ok(());
             }
+            if v["summaries"].as_array().is_none_or(|a| a.is_empty()) {
+                println!("No summaries match (or none you may read).");
+            }
             for s in v["summaries"].as_array().into_iter().flatten() {
                 let when = s["activityTo"].as_i64().and_then(|ms| jiff::Timestamp::from_millisecond(ms).ok());
                 println!(

@@ -98,7 +98,8 @@ audit:
       to: ["*@server", "planning@laptop"]
 ```
 
-Verbs: `message`, `use_tool`, `sync`, `read` (the fleet view, summaries, catch-ups), `subscribe`, `publish`, and
+Verbs: `message`, `use_tool`, `sync`, `read` (the fleet view, summaries, catch-ups; a node that may read nothing of
+another, not even `-@<node>`, doesn't see that node in the fleet view at all), `subscribe`, `publish`, and
 `start` (start, resume, close or interrupt a session on another node).
 
 ## Asking the person: approval and justification

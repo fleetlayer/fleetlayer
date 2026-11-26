@@ -377,6 +377,15 @@ impl Handler for FromNode {
                         }
                     }
                 }
+                // Nodes too: one this node may read nothing of (not even `-@<node>`) isn't shown at all.
+                if let Some(p) = &policy
+                    && let Some(nodes) = fleet["nodes"].as_array_mut()
+                {
+                    nodes.retain(|n| {
+                        let name = n["name"].as_str().unwrap_or_default();
+                        name == self.node || p.decide(&me, "read", &format!("-@{name}"), false).is_ok_and(|d| d.allowed)
+                    });
+                }
                 answer(&fleet)
             }
             _ => Err(RpcError::method_not_found(method)),
