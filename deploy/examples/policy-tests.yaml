@@ -27,3 +27,9 @@
 - { from: "billing@nathans-mac", can: use_tool, to: "tool:browser@nathans-mac", expect: allow }
 - { from: "fleetlayer@agents", can: read, to: "billing@nathans-mac", expect: allow }
 - { from: "fleetlayer@agents", can: message, to: "quietdeck triage@agents-triage", expect: allow }
+# Claude tokens: only the hub sends them.
+- { from: "-@agents-claudehub", can: sync, to: "sync:claude-auth-manager/tokens@agents", expect: allow }
+- { from: "-@agents-claudehub", can: sync, to: "sync:claude-auth-manager/tokens@nathans-mac", expect: allow }
+- { from: "-@nathans-mac", can: sync, to: "sync:claude-auth-manager/tokens@agents", expect: deny }
+- { from: "-@agents", can: sync, to: "sync:claude-auth-manager/tokens@agents-talira", expect: deny }
+- { from: "-@nathans-mac", can: sync, to: "sync:files/skills@agents", expect: allow }

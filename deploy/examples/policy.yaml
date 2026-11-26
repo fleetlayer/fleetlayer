@@ -18,6 +18,11 @@ deny:
     except: "plugin:runner@agents-triage"
     can: start
     why: sessions on other nodes start only through approved card actions (the triage runner)
+  - who: "*"
+    except: "*@agents-claudehub"
+    can: sync
+    to: "sync:claude-auth-manager/*@*"
+    why: only the Claude sign-in hub sends Claude tokens; a bundle from anywhere else could swap in someone else's account
 
 only:
   - who: group:restricted

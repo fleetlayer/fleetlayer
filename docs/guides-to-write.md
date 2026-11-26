@@ -90,3 +90,7 @@ solved, and where the knowledge lives now. These become Fleetlayer's guides.
 - **Signing Claude Code in on a machine with no browser.** `claude auth login --claudeai` prints a URL and reads a
   pasted code from stdin (a pipe is enough); `claude setup-token` needs a pseudo-terminal and prints the token on
   screen. Tested with 2.1.332, 26 Nov 2026; details in docs/plugins/claude-auth-manager.md.
+- **Running the Claude sign-in hub.** An always-on machine (never the laptop), its own Unix user as a hardened system
+  service, its page behind a private HTTPS proxy with `trusted_proxies` set (else one person's typos lock everyone out),
+  a firewall rule so only the proxy reaches its port, an uptime check on `/healthz` plus its heartbeat, its folder left
+  out of backups on purpose. How it went is in docs/plugins/claude-auth-manager.md ("The hub").

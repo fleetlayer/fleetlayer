@@ -16,6 +16,7 @@
 mod claude;
 mod coordinator;
 mod health;
+mod hub;
 mod slots;
 mod store;
 
@@ -66,6 +67,23 @@ struct Config {
     /// Hub: the nodes to send them to.
     #[serde(default)]
     targets: Vec<String>,
+    /// Hub: run the sign-in hub (its web page, usage polling and the tokens file) here.
+    hub: Option<HubSection>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HubSection {
+    /// Its private folder (0700): sign-ins, setup tokens, state. Default `~/.local/state/fleetlayer/claude-hub`.
+    dir: Option<String>,
+    /// Where the web page listens, e.g. `10.5.7.37:7660`. Put it behind a private HTTPS proxy, never on the internet.
+    listen: std::net::SocketAddr,
+    /// A file holding the page's login value (at least 32 characters), 0600.
+    login_file: String,
+    /// Proxies whose `X-Forwarded-For` is believed, for the per-address login lockout.
+    #[serde(default)]
+    trusted_proxies: Vec<std::net::IpAddr>,
+    heartbeat: Option<hub::Heartbeat>,
 }
 
 struct Plugin {
@@ -169,11 +187,35 @@ impl Handler for Shared {
                         self.0.coordinator.clone(),
                     ));
                 }
+                if config.hub.is_some() && !publishes {
+                    return Err(RpcError::refused("hub: needs role: hub"));
+                }
+                let mut tokens_file = config.tokens_file.clone();
+                if let Some(h) = &config.hub {
+                    let dir = expand(&home, h.dir.as_deref().unwrap_or("~/.local/state/fleetlayer/claude-hub"));
+                    let hub = hub::Hub::open(hub::HubConfig {
+                        dir: dir.into(),
+                        claude: find_claude(&home, config.claude.as_deref()).into(),
+                        listen: h.listen,
+                        login_file: expand(&home, &h.login_file).into(),
+                        trusted_proxies: h.trusted_proxies.clone(),
+                        heartbeat: h.heartbeat.clone(),
+                    })
+                    .map_err(|e| RpcError::refused(format!("the hub: {e}")))?;
+                    tokens_file.get_or_insert_with(|| hub.tokens_file());
+                    {
+                        let hub = hub.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = hub::serve(hub).await {
+                                tracing::error!("the hub's web page: {e}");
+                            }
+                        });
+                    }
+                    tokio::spawn(hub_poll_loop(peer.clone(), hub));
+                }
                 if publishes {
-                    let file = config
-                        .tokens_file
-                        .clone()
-                        .ok_or_else(|| RpcError::refused("tokens_file is needed on the hub"))?;
+                    let file =
+                        tokens_file.ok_or_else(|| RpcError::refused("tokens_file (or hub:) is needed on the hub"))?;
                     let file = PathBuf::from(expand(&home, &file.display().to_string()));
                     tokio::spawn(publish_loop(peer.clone(), file, config.targets.clone()));
                 }
@@ -303,6 +345,22 @@ async fn health_loop(
             _ = tokio::time::sleep(Duration::from_secs(600)) => {}
             _ = applied.changed() => {}
         }
+    }
+}
+
+/// The hub's rounds: usage and age readings every five minutes, and a heartbeat after each.
+async fn hub_poll_loop(peer: Peer, hub: Arc<hub::Hub>) {
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    while !peer.is_closed() {
+        let (readings, problems) = hub.poll().await;
+        if !readings.is_empty() {
+            peer.notify(ext::method::READING_PUBLISH, &ext::Readings { readings });
+        }
+        for p in &problems {
+            tracing::warn!("the hub: {p}");
+        }
+        hub.beat(&problems).await;
+        tokio::time::sleep(Duration::from_secs(300)).await;
     }
 }
 
