@@ -423,5 +423,11 @@ Not part of the plugin protocol, summarised here for context; `docs/link.md` wil
   move to it and propose `humanAttached` upstream as an RFD.
 - **ACP v2** (in preview since 20 November 2026) replaces `session/load` with `replayFrom` on `session/resume` and
   changes `_meta` on updates to patch semantics. Draft 1 targets v1; revisit when v2 is stable.
+- **Tools on another machine** (planned next after the Claude Code harness). A node can export a stdio tool, such as
+  an MCP server that drives the person's own browser on their laptop, to sessions on other nodes:
+  `fleetlayer mcp <tool>@<node>` runs as the session's MCP command, the exporting node starts one server per
+  connection (named after the calling session), checks the caller against its allowlist and logs it. The bytes go
+  node to node over the person's own network, never through the control plane, which only says where the node is and
+  hands out a short-lived pass.
 - **The chat view.** Reading a session's turns live (for the phone app) could use ACP's message and tool-call updates
   from a harness plugin. Not in draft 1.
