@@ -57,6 +57,33 @@ pub struct ToolConfig {
     /// `fleetlayer tools enable <name> --for 2h` opts in anywhere for a while.
     #[serde(default)]
     pub networks: Vec<String>,
+    /// For an MCP server: tools to call (with no arguments) when a connection ends, before the server is stopped, so
+    /// it cleans up after the session: `[browser_close]` closes a browser session's tabs.
+    #[serde(default)]
+    pub on_close: Vec<OnClose>,
+}
+
+/// A tool call to make when a connection ends: a name (no arguments), or `{name, arguments}`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum OnClose {
+    Name(String),
+    Call {
+        name: String,
+        #[serde(default)]
+        arguments: Value,
+    },
+}
+
+impl OnClose {
+    fn call(&self) -> (String, Value) {
+        match self {
+            OnClose::Name(n) => (n.clone(), serde_json::json!({})),
+            OnClose::Call { name, arguments } => {
+                (name.clone(), if arguments.is_null() { serde_json::json!({}) } else { arguments.clone() })
+            }
+        }
+    }
 }
 
 /// Whether `ip` is inside `cidr` (`10.5.0.0/16`, `fd7a::/48`, or a bare address).
@@ -309,9 +336,8 @@ async fn mcp_pipe<S>(
     stdout: tokio::process::ChildStdout,
     mut stdin: tokio::process::ChildStdin,
     ws: S,
-    filter: Option<ToolFilter>,
+    config: ToolConfig,
     node: String,
-    tool: String,
     caller: String,
 ) where
     S: futures::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
@@ -320,6 +346,8 @@ async fn mcp_pipe<S>(
         + Send
         + 'static,
 {
+    let filter = config.tools.clone();
+    let tool = config.name.clone();
     let (mut ws_tx, mut ws_rx) = ws.split();
     let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<Message>(64);
     // Everything to the caller goes through one sender: tool output, refusals and pings.
@@ -380,6 +408,18 @@ async fn mcp_pipe<S>(
                 }
             }
         }
+    }
+    // Clean up after the session (close its browser tabs) before the server stops.
+    if !config.on_close.is_empty() {
+        for (i, c) in config.on_close.iter().enumerate() {
+            let (name, arguments) = c.call();
+            let call = serde_json::json!({"jsonrpc": "2.0", "id": format!("fleetlayer-close-{i}"), "method": "tools/call",
+                "params": {"name": name, "arguments": arguments}});
+            let _ = stdin.write_all(format!("{call}\n").as_bytes()).await;
+        }
+        let _ = stdin.flush().await;
+        tracing::info!(tool = %tool, caller = %caller, calls = config.on_close.len(), "cleaning up after the session");
+        tokio::time::sleep(Duration::from_secs(3)).await;
     }
     let _ = stdin.shutdown().await;
     drop(stdin);
@@ -444,7 +484,7 @@ pub async fn serve(node: Arc<Node>, req: ToolServe) -> Result<Value, RpcError> {
     }
     let caller = req.caller.clone();
     tokio::spawn(async move {
-        mcp_pipe(stdout, stdin, ws, tool.tools.clone(), node.name.clone(), tool.name.clone(), caller.clone()).await;
+        mcp_pipe(stdout, stdin, ws, tool.clone(), node.name.clone(), caller.clone()).await;
         let _ = child.kill().await;
         tracing::info!(tool = %tool.name, caller = %caller, "tool connection closed");
     });
@@ -551,6 +591,7 @@ mod tests {
             allow: vec![],
             tools: None,
             networks: vec![],
+            on_close: vec![],
         };
         assert!(!allowed(&t, "ci@agents"));
         t.allow = vec!["*@agents".into()];

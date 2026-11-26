@@ -96,6 +96,7 @@ tools:
     env_files: { PLAYWRIGHT_MCP_EXTENSION_TOKEN: ~/.config/browser-mcp/extension-token }   # read at start; keep it 0600
     allow: ["*@server"]         # <tab>@<node> patterns; nobody when empty
     networks: ["10.5.0.0/16"]   # optional: offer it only while this machine is on these networks (at home)
+    on_close: [browser_close]   # optional: tool calls made when a session's connection ends, to clean up its tabs
     tools:                      # optional: which of the MCP server's own tools callers may use
       deny: [browser_evaluate]  # refused calls get an error reply and never reach the server
 ```
