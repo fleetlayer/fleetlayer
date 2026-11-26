@@ -87,3 +87,6 @@ solved, and where the knowledge lives now. These become Fleetlayer's guides.
   modification time, which can be older than the server's last build, so the build uses stale code and reports
   errors about things that exist. `scripts/on-dev` now syncs by content (`--checksum`) with fresh times on changed
   files. Found 26 Nov 2026.
+- **Signing Claude Code in on a machine with no browser.** `claude auth login --claudeai` prints a URL and reads a
+  pasted code from stdin (a pipe is enough); `claude setup-token` needs a pseudo-terminal and prints the token on
+  screen. Tested with 2.1.332, 26 Nov 2026; details in docs/plugins/claude-auth-manager.md.

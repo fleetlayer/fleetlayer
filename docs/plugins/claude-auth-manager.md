@@ -65,3 +65,17 @@ never touches a slot someone signed into by hand.
   `claude.coordinator` reading says which.
 - The hub can run the same coordinator in its normal (polling) mode against its own sign-in directory
   (`Coordinator::new`), publishing what it polls as `claude.usage` with `source: poll`.
+## Signing in headless (tested 26 November 2026, Claude Code 2.1.332)
+
+The hub runs on an always-on machine with no browser; the person opens its web UI from their own browser and does
+every sign-in there. Both of Claude Code's flows work that way:
+
+- `claude auth login --claudeai` (with `CLAUDE_CONFIG_DIR` and `CLAUDE_SECURESTORAGE_CONFIG_DIR` set to the account's
+  private folder) prints `If the browser didn't open, visit:`, the sign-in URL (one opaque query token), then
+  `Paste code here if prompted >`, and reads the code from stdin. It works with a plain pipe; no terminal needed.
+- `claude setup-token` draws a terminal UI: `Browser didn't open? Use the URL below to sign in`, the URL, and a
+  `Paste code here if prompted` box. It needs a pseudo-terminal, and it shows the year-long token on screen at the
+  end, where the hub reads it.
+- Still to confirm with a real sign-in: that the page shows a code after signing in when the hub's localhost callback
+  can't be reached, and that the pasted code lands in the account's folder. Sign-in URLs and codes are as sensitive as
+  tokens: never logged or published.
