@@ -6,7 +6,7 @@
 //!   - name: browser
 //!     command: npx
 //!     args: ["@playwright/mcp@0.0.86", "--extension", "--session-name", "{session}"]
-//!     env: { PLAYWRIGHT_MCP_EXTENSION_TOKEN_FILE: ... }
+//!     env_files: { PLAYWRIGHT_MCP_EXTENSION_TOKEN: ~/.config/browser-mcp/extension-token }
 //!     allow: ["*@agents"]          # who may use it: <tab>@<node> patterns. Nobody when empty.
 //! ```
 //!
@@ -43,6 +43,9 @@ pub struct ToolConfig {
     pub args: Vec<String>,
     #[serde(default)]
     pub env: HashMap<String, String>,
+    /// Environment variables read from files when the tool starts (a token in a 0600 file, never in node.yaml).
+    #[serde(default)]
+    pub env_files: HashMap<String, std::path::PathBuf>,
     /// `<tab>@<node>` patterns (`*` as a wildcard) that may use it. Nobody when empty.
     #[serde(default)]
     pub allow: Vec<String>,
@@ -179,9 +182,19 @@ pub async fn serve(node: Arc<Node>, req: ToolServe) -> Result<Value, RpcError> {
     }
     let name = session_name(&req.caller);
     let args: Vec<String> = tool.args.iter().map(|a| a.replace("{session}", &name)).collect();
+    let mut env = tool.env.clone();
+    for (var, file) in &tool.env_files {
+        let file = match file.strip_prefix("~") {
+            Ok(rest) => node.home.join(rest),
+            Err(_) => file.clone(),
+        };
+        let value = std::fs::read_to_string(&file)
+            .map_err(|e| RpcError::refused(format!("{} can't start: reading {}: {e}", tool.name, file.display())))?;
+        env.insert(var.clone(), value.trim().to_string());
+    }
     let mut child = tokio::process::Command::new(&tool.command)
         .args(&args)
-        .envs(&tool.env)
+        .envs(&env)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -189,7 +202,7 @@ pub async fn serve(node: Arc<Node>, req: ToolServe) -> Result<Value, RpcError> {
         .spawn()
         .map_err(|e| RpcError::refused(format!("starting {}: {e}", tool.command)))?;
     let ws = connect_stream(&node, &req.stream_id, "serve").await.map_err(|e| RpcError::refused(e.to_string()))?;
-    tracing::info!(tool = %tool.name, caller = %req.caller, "tool connection opened");
+    tracing::info!(tool = %tool.name, caller = %req.caller, session = %name, stream = %&req.stream_id[..8], "tool connection opened");
     let (stdin, stdout, stderr) = (child.stdin.take(), child.stdout.take(), child.stderr.take());
     let (Some(stdin), Some(stdout)) = (stdin, stdout) else {
         return Err(RpcError::internal("the tool's pipes didn't open"));
@@ -301,6 +314,7 @@ mod tests {
             command: "x".into(),
             args: vec![],
             env: HashMap::new(),
+            env_files: HashMap::new(),
             allow: vec![],
         };
         assert!(!allowed(&t, "ci@agents"));

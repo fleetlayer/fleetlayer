@@ -84,6 +84,7 @@ tools:
     command: npx
     args: ["@playwright/mcp@latest", "--extension", "--session-name", "{session}", "--profile-dir-name", "Default"]
     env: { PLAYWRIGHT_MCP_EXECUTABLE_PATH: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" }
+    env_files: { PLAYWRIGHT_MCP_EXTENSION_TOKEN: ~/.config/browser-mcp/extension-token }   # read at start; keep it 0600
     allow: ["*@server"]         # <tab>@<node> patterns; nobody when empty
 ```
 
