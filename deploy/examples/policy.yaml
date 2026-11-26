@@ -12,8 +12,8 @@ groups:
 
 deny:
   - who: group:restricted
-    can: [use_tool, sync]
-    why: no shared tools (the signed-in browser) and no sync bundles (a bundle another node applies can overwrite it)
+    can: [use_tool, sync, attach]
+    why: no shared tools (the signed-in browser), no sync bundles (a bundle another node applies can overwrite it) and no typing into other sessions' terminals
   - who: group:restricted
     except: "plugin:runner@agents-triage"
     can: start

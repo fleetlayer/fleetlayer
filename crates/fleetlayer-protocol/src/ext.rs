@@ -28,6 +28,9 @@ pub mod method {
     /// Node → summaries plugin: import claude-summarizer's history. `{dir}` → `{records}`.
     pub const SUMMARY_IMPORT: &str = "_fleetlayer.dev/summary/import";
     pub const HARNESS_TRANSCRIPT: &str = "_fleetlayer.dev/harness/transcript";
+    /// Node → session manager: the command that streams one of its sessions' terminals in the terminal stream format
+    /// (`docs/protocol.md`, "Terminals"). `TerminalCommandRequest` → `TerminalCommand`.
+    pub const TERMINAL_COMMAND: &str = "_fleetlayer.dev/terminal/command";
     pub const MESSAGE_SEND: &str = "_fleetlayer.dev/message/send";
     pub const EVENT_PUBLISH: &str = "_fleetlayer.dev/event/publish";
     pub const EVENT_HEARTBEAT: &str = "_fleetlayer.dev/event/heartbeat";
@@ -125,6 +128,51 @@ pub struct SessionManagerRole {
     /// the person's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub own_messages: Vec<String>,
+    /// It answers `TERMINAL_COMMAND`: its sessions' terminals can be watched and driven.
+    #[serde(default)]
+    pub terminal: bool,
+}
+
+/// Watching a terminal, or driving it too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminalMode {
+    #[default]
+    Observe,
+    Control,
+}
+
+impl TerminalMode {
+    /// The access policy's verb: `read` to watch, `attach` to type.
+    pub fn verb(self) -> &'static str {
+        match self {
+            TerminalMode::Observe => "read",
+            TerminalMode::Control => "attach",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalCommandRequest {
+    pub session_id: String,
+    pub mode: TerminalMode,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+/// A command the node runs to stream a terminal: it writes the stream format on stdout and reads it on stdin.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalCommand {
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub env: std::collections::BTreeMap<String, String>,
+    /// Variables to remove from the node's environment for it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env_remove: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -417,6 +465,15 @@ pub struct MessageSend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_modes_map_to_policy_verbs_and_read_as_snake_case() {
+        assert_eq!(TerminalMode::Observe.verb(), "read");
+        assert_eq!(TerminalMode::Control.verb(), "attach");
+        let r: TerminalCommandRequest =
+            serde_json::from_value(serde_json::json!({"sessionId":"a","mode":"control","cols":80,"rows":24})).unwrap();
+        assert_eq!(r.mode, TerminalMode::Control);
+    }
     use serde_json::json;
 
     #[test]

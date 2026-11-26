@@ -33,3 +33,7 @@
 - { from: "-@nathans-mac", can: sync, to: "sync:claude-auth-manager/tokens@agents", expect: deny }
 - { from: "-@agents", can: sync, to: "sync:claude-auth-manager/tokens@agents-talira", expect: deny }
 - { from: "-@nathans-mac", can: sync, to: "sync:files/skills@agents", expect: allow }
+# Terminals: the person's sessions may drive each other's; restricted agents may not type into any.
+- { from: "-@nathans-mac", can: attach, to: "planning@agents", expect: allow }
+- { from: "quietdeck triage@agents-triage", can: attach, to: "planning@agents", expect: deny }
+- { from: "talira worker@agents-talira-worker", can: attach, to: "talira@nathans-mac", expect: deny }

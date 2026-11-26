@@ -117,6 +117,28 @@ impl Plugin {
     }
 }
 
+/// herdr's own terminal stream: `herdr terminal session observe|control <pane>` speaks the terminal stream format.
+fn terminal_command(program: &str, pane: &str, mode: ext::TerminalMode, cols: u16, rows: u16) -> ext::TerminalCommand {
+    let mode = match mode {
+        ext::TerminalMode::Observe => "observe",
+        ext::TerminalMode::Control => "control",
+    };
+    ext::TerminalCommand {
+        command: program.into(),
+        args: vec![
+            "terminal".into(),
+            "session".into(),
+            mode.into(),
+            pane.into(),
+            "--cols".into(),
+            cols.max(20).to_string(),
+            "--rows".into(),
+            rows.max(5).to_string(),
+        ],
+        ..Default::default()
+    }
+}
+
 fn not_running(session_id: &str) -> RpcError {
     RpcError::not_here(format!("session {session_id} isn't running in herdr on this machine"))
 }
@@ -154,6 +176,7 @@ impl Handler for Shared {
                     interrupt: true,
                     deliver: true,
                     events: true,
+                    terminal: true,
                     own_messages: herdr::auto_continue_message(&PathBuf::from(&node.home)).into_iter().collect(),
                 };
                 let meta = PluginMeta {
@@ -175,6 +198,12 @@ impl Handler for Shared {
                 })
             }
             ext::method::PING => Ok(json!({})),
+            ext::method::TERMINAL_COMMAND => {
+                let r: ext::TerminalCommandRequest = params(p)?;
+                let s = plugin.settings().await?;
+                let pane = plugin.pane_of(&r.session_id).await?;
+                answer(&terminal_command(&s.program, &pane, r.mode, r.cols, r.rows))
+            }
             acp::method::SESSION_LIST => {
                 let sessions = plugin.snapshot().await?;
                 let machine = plugin.settings().await?.machine.clone();
@@ -373,4 +402,19 @@ async fn main() {
         .with_env_filter(tracing_subscriber::EnvFilter::from_env("FLEETLAYER_LOG"))
         .init();
     fleetlayer_plugin::serve_stdio(Arc::new(Shared(Arc::new(Plugin::default())))).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terminals_stream_through_herdrs_own_terminal_session_command() {
+        let c = terminal_command("/usr/local/bin/herdr", "w1:p4", ext::TerminalMode::Control, 100, 30);
+        assert_eq!(c.command, "/usr/local/bin/herdr");
+        assert_eq!(c.args, ["terminal", "session", "control", "w1:p4", "--cols", "100", "--rows", "30"]);
+        let c = terminal_command("herdr", "w1:p1", ext::TerminalMode::Observe, 3, 1);
+        assert_eq!(c.args[2], "observe");
+        assert_eq!((c.args[5].as_str(), c.args[7].as_str()), ("20", "5"), "a usable minimum size");
+    }
 }

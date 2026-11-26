@@ -16,7 +16,7 @@ use cedar_policy::{
 use serde::{Deserialize, Serialize};
 
 /// What a subject may do.
-pub const VERBS: &[&str] = &["message", "use_tool", "sync", "read", "subscribe", "publish", "start"];
+pub const VERBS: &[&str] = &["message", "use_tool", "sync", "read", "subscribe", "publish", "start", "attach"];
 
 /// One string or a list of them.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -108,7 +108,7 @@ pub fn default_ask() -> Vec<AskRule> {
         except: None,
         hold: hold.into(),
     };
-    vec![rule(&["start"], "10m"), rule(&["use_tool", "sync"], "30d")]
+    vec![rule(&["start", "attach"], "10m"), rule(&["use_tool", "sync"], "30d")]
 }
 
 /// The policy file, version 2.

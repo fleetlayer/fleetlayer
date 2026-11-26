@@ -72,6 +72,20 @@ enum Command {
         #[arg(long, env = "FLEETLAYER_WHY")]
         why: Option<String>,
     },
+    /// Watch or drive a session's terminal anywhere in the fleet: `fleetlayer attach planning@laptop`. Ctrl-] leaves.
+    Attach {
+        /// `<tab>@<node>`, or `<tab>` on this node.
+        target: String,
+        /// Only watch: nothing you type reaches it (needs `read`; driving it needs `attach`).
+        #[arg(long)]
+        observe: bool,
+        /// Print the terminal stream's JSON lines instead of drawing them (for other programs).
+        #[arg(long)]
+        raw: bool,
+        /// Why, in one line, when its access rules ask for a reason. Default: $FLEETLAYER_WHY.
+        #[arg(long, env = "FLEETLAYER_WHY")]
+        why: Option<String>,
+    },
     /// Messages between sessions.
     Msg {
         #[command(subcommand)]
@@ -149,6 +163,162 @@ async fn mcp(socket: &std::path::Path, target: &str, why: Option<&str>) -> anyho
     Ok(())
 }
 
+/// Ctrl-]: leave an attached terminal.
+const DETACH: u8 = 0x1d;
+
+/// Watch or drive a session's terminal through this node's tools socket: frames drawn on this terminal, keys sent
+/// as `terminal.input`, size changes as `terminal.resize` (`docs/protocol.md`, "Terminals").
+async fn attach(
+    socket: &std::path::Path,
+    target: &str,
+    observe: bool,
+    raw: bool,
+    why: Option<&str>,
+) -> anyhow::Result<()> {
+    use base64::Engine;
+    use std::io::IsTerminal;
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+    let b64 = &base64::engine::general_purpose::STANDARD;
+    let tty = std::io::stdout().is_terminal() && std::io::stdin().is_terminal() && !raw;
+    let (cols, rows) = if tty { crossterm::terminal::size().unwrap_or((120, 40)) } else { (120, 40) };
+    let stream = tokio::net::UnixStream::connect(socket)
+        .await
+        .map_err(|e| anyhow::anyhow!("can't reach the node's tools socket {} ({e})", socket.display()))?;
+    let (r, mut w) = stream.into_split();
+    let c = caller();
+    let mode = if observe { "observe" } else { "control" };
+    let req = json!({"terminal": target, "mode": mode, "cols": cols, "rows": rows,
+        "sessionId": c["sessionId"], "address": c["address"], "why": why});
+    w.write_all(format!("{req}\n").as_bytes()).await?;
+    let mut lines = BufReader::new(r).lines();
+    let first = lines.next_line().await?.unwrap_or_default();
+    let answer: Value = serde_json::from_str(&first).unwrap_or_default();
+    if let Some(e) = answer["error"].as_str() {
+        anyhow::bail!("{e}");
+    }
+    if !tty {
+        // Pass the stream through as it is, both ways.
+        let up = async move {
+            let _ = tokio::io::copy(&mut tokio::io::stdin(), &mut w).await;
+        };
+        tokio::spawn(up);
+        let mut out = tokio::io::stdout();
+        while let Some(line) = lines.next_line().await? {
+            out.write_all(format!("{line}\n").as_bytes()).await?;
+            out.flush().await?;
+        }
+        return Ok(());
+    }
+    crossterm::terminal::enable_raw_mode()?;
+    print!("\x1b[?1049h\x1b[2J\x1b[H");
+    let result = async {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(64);
+        // Keys: Ctrl-] leaves; anything else is typed into the session (unless only watching).
+        let keys = {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let mut stdin = tokio::io::stdin();
+                let mut buf = [0u8; 1024];
+                while let Ok(n) = stdin.read(&mut buf).await {
+                    if n == 0 {
+                        break;
+                    }
+                    let bytes = &buf[..n];
+                    if let Some(i) = bytes.iter().position(|b| *b == DETACH) {
+                        if i > 0 && !observe {
+                            let _ = tx
+                                .send(json!({"type": "terminal.input", "bytes": b64.encode(&bytes[..i])}).to_string())
+                                .await;
+                        }
+                        let _ = tx.send(json!({"type": "terminal.release"}).to_string()).await;
+                        let _ = tx.send(String::new()).await;
+                        break;
+                    }
+                    if !observe {
+                        let _ =
+                            tx.send(json!({"type": "terminal.input", "bytes": b64.encode(bytes)}).to_string()).await;
+                    }
+                }
+            })
+        };
+        // Size changes follow this terminal.
+        let resize = {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let mut last = (cols, rows);
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    if let Ok(now) = crossterm::terminal::size()
+                        && now != last
+                    {
+                        last = now;
+                        if !observe {
+                            let msg = json!({"type": "terminal.resize", "cols": now.0, "rows": now.1}).to_string();
+                            if tx.send(msg).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            })
+        };
+        let writer = tokio::spawn(async move {
+            while let Some(m) = rx.recv().await {
+                if m.is_empty() {
+                    break;
+                }
+                if w.write_all(format!("{m}\n").as_bytes()).await.is_err() {
+                    break;
+                }
+            }
+            let _ = w.shutdown().await;
+        });
+        let mut out = tokio::io::stdout();
+        let mut reason = String::new();
+        loop {
+            tokio::select! {
+                line = lines.next_line() => {
+                    let Ok(Some(line)) = line else { break };
+                    let v: Value = serde_json::from_str(&line).unwrap_or_default();
+                    match v["type"].as_str() {
+                        Some("terminal.frame") => {
+                            if let Some(bytes) = v["bytes"].as_str().and_then(|b| b64.decode(b).ok()) {
+                                out.write_all(&bytes).await?;
+                                out.flush().await?;
+                            }
+                        }
+                        Some("terminal.closed") => {
+                            reason = v["reason"].as_str().or(v["code"].as_str()).unwrap_or("closed").to_string();
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                _ = writer_done(&writer) => break,
+            }
+        }
+        keys.abort();
+        resize.abort();
+        writer.abort();
+        anyhow::Ok(reason)
+    }
+    .await;
+    print!("\x1b[?1049l");
+    let _ = crossterm::terminal::disable_raw_mode();
+    match result {
+        Ok(reason) if !reason.is_empty() && reason != "detached" => eprintln!("{target}: {reason}"),
+        Ok(_) => {}
+        Err(e) => return Err(e),
+    }
+    Ok(())
+}
+
+async fn writer_done(h: &tokio::task::JoinHandle<()>) {
+    while !h.is_finished() {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
 struct Named {
     command_name: &'static str,
     command: Command,
@@ -194,6 +364,9 @@ async fn main() {
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
     let socket = cli.socket.clone().unwrap_or_else(default_socket);
+    if let Command::Attach { target, observe, raw, why } = &cli.command {
+        return attach(&socket.with_extension("tools.sock"), target, *observe, *raw, why.as_deref()).await;
+    }
     if let Command::Mcp { target, why } = &cli.command {
         return mcp(&socket.with_extension("tools.sock"), target, why.as_deref()).await;
     }
@@ -358,7 +531,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 }
             }
         }
-        Command::Mcp { .. } => {}
+        Command::Mcp { .. } | Command::Attach { .. } => {}
         Command::Tools { command } => {
             let (method, args) = match &command {
                 ToolsCommand::Enable { tool, duration } => {

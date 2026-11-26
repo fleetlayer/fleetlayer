@@ -13,6 +13,7 @@ mod readings;
 mod service;
 mod sessions;
 mod sync;
+mod terminals;
 mod tools;
 mod update;
 

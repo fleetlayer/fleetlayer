@@ -250,12 +250,12 @@ pub fn allowed(tool: &ToolConfig, caller: &str) -> bool {
 }
 
 /// `wss://host/v1/link` → `wss://host/v1/stream/<id>?side=<side>`.
-fn stream_url(link_url: &str, id: &str, side: &str) -> String {
+pub(crate) fn stream_url(link_url: &str, id: &str, side: &str) -> String {
     let base = link_url.strip_suffix("/v1/link").unwrap_or(link_url.trim_end_matches('/'));
     format!("{base}/v1/stream/{id}?side={side}")
 }
 
-async fn connect_stream(
+pub(crate) async fn connect_stream(
     node: &Node,
     id: &str,
     side: &str,
@@ -276,7 +276,7 @@ const DRAIN: Duration = Duration::from_secs(10);
 /// Copy bytes between a reader/writer pair and a WebSocket (binary frames). WebSocket has no half-close, so the end
 /// of one direction travels as an empty binary frame: the other side shuts its writer and keeps sending until its
 /// own end. Ends when both directions have ended (or `DRAIN` after the first), or the socket closes.
-async fn pipe<R, W, S>(mut reader: R, mut writer: W, ws: S)
+pub(crate) async fn pipe<R, W, S>(mut reader: R, mut writer: W, ws: S)
 where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
@@ -565,6 +565,11 @@ pub async fn listen(node: Arc<Node>, path: &Path) -> anyhow::Result<()> {
             let mut r = BufReader::new(r);
             let mut line = String::new();
             if r.read_line(&mut line).await.unwrap_or(0) == 0 {
+                return;
+            }
+            // A terminal (`{"terminal": …}`) rather than a tool.
+            if let Ok(t) = serde_json::from_str::<crate::terminals::OpenRequest>(&line) {
+                crate::terminals::handle(node, t, r, w).await;
                 return;
             }
             match open(&node, &line).await {

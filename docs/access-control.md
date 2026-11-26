@@ -100,7 +100,8 @@ audit:
 
 Verbs: `message`, `use_tool`, `sync`, `read` (the fleet view, summaries, catch-ups; a node that may read nothing of
 another, not even `-@<node>`, doesn't see that node in the fleet view at all), `subscribe`, `publish`, and
-`start` (start, resume, close or interrupt a session on another node).
+`start` (start, resume, close or interrupt a session on another node), and `attach` (type into a session's
+terminal; watching it is `read`).
 
 ## Asking the person: approval and justification
 
@@ -119,7 +120,8 @@ justify:                       # the agent must say why, in one line, and it goe
     can: [use_tool, sync, start]
 ```
 
-Approvals are on by default: a policy that leaves `ask:` out asks before `start` (an approval holds 10 minutes) and
+Approvals are on by default: a policy that leaves `ask:` out asks before `start` and `attach` (an approval holds 10
+minutes) and
 before each agent's first `use_tool` or `sync` to a target (it holds 30 days), the safe start for a fleet you don't know
 yet. A fleet of autonomous agents turns it off with `ask: []` (and
 `justify: []`). An `ask` match refuses the request with a request ID and publishes an `access.ask` event on the `access` channel (for

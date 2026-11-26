@@ -348,6 +348,44 @@ impl Handler for FromNode {
                 }
                 answer(&l::ToolOpened { stream_id: id })
             }
+            l::method::TERMINAL_OPEN => {
+                let t: l::TerminalOpen = params(p)?;
+                let caller = format!("{}@{}", t.caller, self.node);
+                let target = format!("{}@{}", t.session, t.node);
+                let verb = t.mode.verb();
+                crate::authz::check_why(app, tenant, &caller, verb, &target, t.justification.as_deref()).await?;
+                let server = app
+                    .links
+                    .peer(tenant, &t.node)
+                    .await
+                    .ok_or_else(|| RpcError::not_here(format!("node {} is offline", t.node)))?;
+                let id = app
+                    .streams
+                    .create(&app.db, tenant, &format!("terminal:{}", t.session), &self.node, &t.node, &caller)
+                    .await
+                    .map_err(RpcError::internal)?;
+                let (app2, id2) = (app.clone(), id.clone());
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                    app2.streams.forget(&id2).await;
+                });
+                let serve = l::TerminalServe {
+                    stream_id: id.clone(),
+                    session: t.session.clone(),
+                    mode: t.mode,
+                    cols: t.cols,
+                    rows: t.rows,
+                    caller,
+                };
+                if let Err(e) =
+                    server.request_within::<_, Value>(l::method::TERMINAL_SERVE, &serve, Duration::from_secs(20)).await
+                {
+                    app.streams.forget(&id).await;
+                    crate::streams::finish(app, &id, 0, 0, &format!("refused: {}", e.message)).await;
+                    return Err(e);
+                }
+                answer(&l::ToolOpened { stream_id: id })
+            }
             l::method::SUMMARIES_SEARCH => {
                 let q = p["q"].as_str().unwrap_or_default();
                 let limit = p["limit"].as_i64().unwrap_or(20).clamp(1, 200);

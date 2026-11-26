@@ -201,6 +201,32 @@ A plugin that can't stream (`"events": false`) is polled with `session/list` eve
   caller, adds permission flags from its own config. A failure is `-32011` with a sentence saying why.
 - `close` and `cancel` on a session that isn't there answer `-32010`.
 
+### Terminals
+
+A session manager that sets `terminal: true` in its role lets its sessions' terminals be watched and driven from
+anywhere in the fleet, under the access policy: `read` to watch, `attach` to type.
+
+| Request | Params | Result |
+|---|---|---|
+| `_fleetlayer.dev/terminal/command` | `{sessionId, mode: "observe" \| "control", cols, rows}` | `{command, args[], env?, envRemove?}` |
+
+The plugin names a command, and the node runs it. The command writes the **terminal stream format** on stdout and
+reads it on stdin, one JSON object per line. The format is herdr's own (`herdr terminal session observe|control`
+speaks it), so a herdr plugin answers with that command, and a plugin for another manager (tmux, zellij, T3 Code)
+answers with a helper that translates:
+
+- out: `{"type":"terminal.opened", ...}`; `{"type":"terminal.frame", "seq", "full", "width", "height",
+  "encoding":"ansi", "bytes": <base64>}` (the bytes to write to a terminal of that size; `full` frames redraw the
+  whole screen); `{"type":"terminal.closed", "code", "reason"}`; `{"type":"terminal.error", ...}`.
+- in: `{"type":"terminal.input", "text": …}` or `{"type":"terminal.input", "bytes": <base64>}`;
+  `{"type":"terminal.resize", "cols", "rows"}`; `{"type":"terminal.release"}` (leave).
+
+In `observe` mode the node passes nothing from the caller to the command, whatever the manager would allow. A caller
+on the same node is connected straight to the command. A caller on another node gets a stream the control plane
+pairs (`link/terminal_open` → `link/terminal_serve`), the same way as shared tools; the control plane checks access
+and reads nothing in it. `fleetlayer attach <tab>@<node>` is the reference client (`--observe` to watch,
+`--raw` for the JSON lines).
+
 ## 5. Delivering messages: the harness role
 
 A message from another session, a webhook or the runner reaches a session through

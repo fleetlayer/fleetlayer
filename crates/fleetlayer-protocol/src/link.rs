@@ -32,6 +32,11 @@ pub mod method {
     pub const TOOL_OPEN: &str = "link/tool_open";
     /// Control plane → node: start a shared tool for a caller and connect it to stream `streamId`. `ToolServe` → `{}`.
     pub const TOOL_SERVE: &str = "link/tool_serve";
+    /// Node → control plane: open a stream to a session's terminal on another node. `TerminalOpen` → `ToolOpened`.
+    pub const TERMINAL_OPEN: &str = "link/terminal_open";
+    /// Control plane → node: start streaming one of its sessions' terminals into stream `streamId`. `TerminalServe` →
+    /// `{}`.
+    pub const TERMINAL_SERVE: &str = "link/terminal_serve";
     /// Node → control plane: sealed bundles for other nodes. `SyncPublishSealed` → `{results: [TargetResult]}`.
     pub const SYNC_PUBLISH: &str = "link/sync_publish";
     /// Control plane → node: a sealed bundle for this node. `SyncDeliver` → `{applied}`.
@@ -131,6 +136,33 @@ pub struct ToolOpen {
 pub struct ToolOpened {
     /// Connect to `/v1/stream/<streamId>?side=use` with the node token.
     pub stream_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalOpen {
+    /// The session's name (its tab) or ID on `node`.
+    pub session: String,
+    pub node: String,
+    /// The calling session's name, or `-` for a shell.
+    pub caller: String,
+    pub mode: crate::ext::TerminalMode,
+    pub cols: u16,
+    pub rows: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub justification: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalServe {
+    pub stream_id: String,
+    pub session: String,
+    pub mode: crate::ext::TerminalMode,
+    pub cols: u16,
+    pub rows: u16,
+    /// `<tab>@<node>` of the caller.
+    pub caller: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

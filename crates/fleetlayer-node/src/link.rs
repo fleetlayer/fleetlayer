@@ -204,6 +204,7 @@ impl Handler for FromControl {
             ext::method::PING => Ok(json!({})),
             l::method::SYNC_DELIVER => crate::sync::deliver(&self.node, params(p)?).await,
             l::method::TOOL_SERVE => crate::tools::serve(self.node.clone(), params(p)?).await,
+            l::method::TERMINAL_SERVE => crate::terminals::serve(self.node.clone(), params(p)?).await,
             l::method::CATCHUP => {
                 self.node.ask_observer(ext::method::SUMMARY_CATCHUP, &p, Duration::from_secs(480)).await
             }

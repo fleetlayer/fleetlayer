@@ -94,3 +94,7 @@ solved, and where the knowledge lives now. These become Fleetlayer's guides.
   service, its page behind a private HTTPS proxy with `trusted_proxies` set (else one person's typos lock everyone out),
   a firewall rule so only the proxy reaches its port, an uptime check on `/healthz` plus its heartbeat, its folder left
   out of backups on purpose. How it went is in docs/plugins/claude-auth-manager.md ("The hub").
+- **Watching and driving any session's terminal from anywhere.** `fleetlayer attach <tab>@<node>` (Ctrl-] leaves,
+  `--observe` only watches). herdr's `terminal session observe|control` is the stream; the access policy's `read` and
+  `attach` decide who. A shell inside a herdr pane carries `HERDR_SOCKET_PATH`, which beats `HERDR_SESSION`: unset it
+  to reach a named test session. Design: docs/protocol.md ("Terminals").
