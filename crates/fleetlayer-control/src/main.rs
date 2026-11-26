@@ -547,6 +547,14 @@ async fn main() -> anyhow::Result<()> {
                 for a in &d.audit_would_deny {
                     println!("  an audit rule would refuse it: {a}");
                 }
+                if d.allowed
+                    && let Some(hold) = p.ask_for(&from, &can, &to)
+                {
+                    println!(
+                        "  but it needs its person's approval first (an approval holds {} minutes)",
+                        hold / 60_000
+                    );
+                }
                 if can == "message" {
                     let (per_hour, distinct) = p.limits_for(&from);
                     if per_hour.is_some() || distinct.is_some() {
