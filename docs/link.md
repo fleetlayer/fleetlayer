@@ -40,7 +40,8 @@ first match wins, then the tenant's default (`allow` on a new control plane). A 
 the same node. A session may always answer a session that messaged it in the last 24 hours (the reply window), so an
 agent limited to a short list can still reply to whoever wrote. They decide `link/send`, and which
 sessions `link/fleet` shows a node (those its `-@<node>` may message, plus its own). A node may subscribe and
-unsubscribe only its own sessions. Managed with `fleetlayer-control acl list|add|remove|default|check`.
+unsubscribe only its own sessions. Every refusal is also published as an `access.denied` event on the `access`
+channel (kept in the event log; subscribe a session or set the channel's fallback to hear about them). Managed with `fleetlayer-control acl list|add|remove|default|check`.
 
 ## Routing
 

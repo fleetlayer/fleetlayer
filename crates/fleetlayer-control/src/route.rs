@@ -39,7 +39,11 @@ pub async fn send(app: &App, tenant: &str, from_node: &str, s: SendRequest) -> R
     let allowed = crate::acl::allowed(&app.db, tenant, &from, &s.to).await.map_err(RpcError::internal)?
         || crate::acl::replying(&app.db, tenant, &from, &s.to).await.map_err(RpcError::internal)?;
     if !allowed {
-        return Err(RpcError::refused(format!("{from} may not message {} (access control)", s.to)));
+        denied(app, tenant, &from, &s.to, "message").await;
+        return Err(RpcError::refused(format!(
+            "{from} may not message {} (access control). If this stops you doing your job, report it to your person",
+            s.to
+        )));
     }
     let _ = crate::acl::log_message(&app.db, tenant, &from, &s.to).await;
     let d = DeliverRequest {
@@ -52,6 +56,24 @@ pub async fn send(app: &App, tenant: &str, from_node: &str, s: SendRequest) -> R
         text: s.text,
     };
     deliver(app, tenant, &s.to, d).await
+}
+
+/// Record a refusal as an `access.denied` event on the `access` channel: kept with the other events (`GET
+/// /v1/events`), and delivered to whoever subscribes to the channel or is its fallback.
+pub async fn denied(app: &App, tenant: &str, from: &str, to: &str, what: &str) {
+    let e = Event {
+        channel: "access".into(),
+        kind: "access.denied".into(),
+        subject: Some(format!("{from} -> {to}")),
+        at: jiff::Timestamp::now(),
+        dedupe_key: None,
+        summary: format!("access control refused {from} a {what} to {to}"),
+        body: serde_json::json!({"from": from, "to": to, "what": what}),
+    };
+    tracing::info!(from, to, what, "access denied");
+    if let Err(e) = publish(app, tenant, e, "fleetlayer access control").await {
+        tracing::warn!("recording a refusal: {e}");
+    }
 }
 
 /// The text a session sees for an event.

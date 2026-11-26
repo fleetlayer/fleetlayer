@@ -230,6 +230,7 @@ impl Handler for FromNode {
                     let allowed =
                         crate::acl::allowed(&app.db, tenant, &from, &target).await.map_err(RpcError::internal)?;
                     let r = if !allowed {
+                        crate::route::denied(app, tenant, &from, &target, "sync bundle").await;
                         Err(format!("{} may not send {} to {} (access control)", self.node, s.bundle, copy.node))
                     } else {
                         match app.links.peer(tenant, &copy.node).await {
@@ -286,6 +287,7 @@ impl Handler for FromNode {
                 let caller = format!("{}@{}", t.caller, self.node);
                 let target = format!("tool:{}@{}", t.tool, t.node);
                 if !crate::acl::allowed(&app.db, tenant, &caller, &target).await.map_err(RpcError::internal)? {
+                    crate::route::denied(app, tenant, &caller, &target, "tool connection").await;
                     return Err(RpcError::refused(format!("{caller} may not use {target} (access control)")));
                 }
                 let server = app
