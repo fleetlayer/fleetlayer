@@ -153,3 +153,12 @@ managers, machines that sleep.
     document tooling for artifacts.
   - Where it lives now: docs/plugins/claude-auth-manager.md ("What a setup token can't do", "Token facts"), the
     author's research notes on Claude OAuth tokens and account rotation.
+- **Recommended tools, with "X vs Y and why we chose X".** A series of short comparisons, each fair to the tool not
+  chosen: what it does well, and why the pick fits a fleet that agents run from config in git.
+  - **Gatus vs Uptime Kuma for uptime checks and heartbeats.** Gatus keeps every check in config files: they live in
+    the infrastructure repo, go through review, are deployed with everything else, and an agent adds a check in the
+    same change that adds a service (which "everything in the background is monitored" needs). Uptime Kuma is good
+    and friendly, but its checks live in its own database behind a UI, so automating it means its API or editing the
+    database directly, both worse than a file in git. It may move towards agent access (an API, MCP), so the guide
+    shouldn't rule it out; it's a fine choice for someone who wants a UI first. Where it lives now: the author's
+    home-server setup (Gatus external endpoints for heartbeats, alerts to a chat room an agent listens to).
