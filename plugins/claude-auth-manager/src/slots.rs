@@ -36,7 +36,7 @@ pub struct Applied {
 }
 
 /// Where the slots are: `pattern` for accounts 2 and up (the rotator's `~/.claude/accounts/{slot}`), and account 1's
-/// default slot (Claude Code's normal sign-in, `~/.claude`), written only when `default_slot` is on.
+/// default slot (Claude Code's normal sign-in, `~/.claude`), written unless `default_slot` is off.
 #[derive(Debug, Clone)]
 pub struct Layout {
     pub pattern: String,
@@ -107,7 +107,7 @@ pub fn apply(layout: &Layout, store: &dyn Store, accounts: &[Account]) -> anyhow
     for a in accounts {
         anyhow::ensure!(a.slot >= 1, "slots start at 1");
         if a.slot == 1 && !layout.default_slot {
-            out.skipped.push("slot 1: the default sign-in slot, written only with default_slot: true".into());
+            out.skipped.push("slot 1: the default sign-in slot, left alone (default_slot: false)".into());
             continue;
         }
         anyhow::ensure!(a.token.starts_with("sk-ant-"), "slot {}: that isn't a Claude token", a.slot);
@@ -119,12 +119,9 @@ pub fn apply(layout: &Layout, store: &dyn Store, accounts: &[Account]) -> anyhow
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
         }
+        // The hub manages every slot: a sign-in made by hand here is replaced (it expires; the token lasts a year).
         let key = layout.key(a.slot);
         let marker = dir.join(MARKER);
-        if !marker.exists() && store.read(&key)?.is_some() {
-            out.skipped.push(format!("slot {}: signed into by hand (no {MARKER}), left alone", a.slot));
-            continue;
-        }
         let entry = serde_json::json!({"claudeAiOauth": {
             "accessToken": a.token,
             "expiresAt": expires.as_millisecond(),
@@ -203,7 +200,7 @@ mod tests {
     }
 
     #[test]
-    fn the_default_slot_is_written_only_when_asked_and_never_over_a_hand_sign_in() {
+    fn the_default_slot_is_written_unless_turned_off_and_replaces_a_hand_sign_in() {
         let d = tempfile::tempdir().unwrap();
         let r = apply(&layout(d.path(), false), &files(d.path()), &[acct(1), acct(2)]).unwrap();
         assert_eq!((r.written, r.skipped.len()), (1, 1));
@@ -215,15 +212,17 @@ mod tests {
         let r = apply(&layout(d.path(), false), &files(d.path()), &[acct(2)]).unwrap();
         assert_eq!(r.removed, 1);
         assert!(!d.path().join(".claude/.credentials.json").exists());
-        // Someone signs in by hand there: never overwritten.
+        // A sign-in made by hand there: replaced by the hub's token.
         std::fs::write(d.path().join(".claude/.credentials.json"), "hand").unwrap();
         let r = apply(&layout(d.path(), true), &files(d.path()), &[acct(1)]).unwrap();
-        assert_eq!(r.skipped.len(), 1);
-        assert_eq!(std::fs::read_to_string(d.path().join(".claude/.credentials.json")).unwrap(), "hand");
+        assert_eq!((r.written, r.skipped.len()), (1, 0));
+        assert!(
+            std::fs::read_to_string(d.path().join(".claude/.credentials.json")).unwrap().contains("sk-ant-oat01-test1")
+        );
     }
 
     #[test]
-    fn slots_match_the_bundle_and_hand_signed_slots_are_left_alone() {
+    fn slots_match_the_bundle_and_hand_signed_slots_are_replaced() {
         use std::os::unix::fs::PermissionsExt;
         let d = tempfile::tempdir().unwrap();
         let pattern = layout(d.path(), false);
@@ -231,7 +230,7 @@ mod tests {
         std::fs::create_dir_all(d.path().join("slot-3")).unwrap();
         std::fs::write(d.path().join("slot-3/.credentials.json"), "{\"hand\":true}").unwrap();
         let r = apply(&pattern, &files(d.path()), &[acct(4), acct(2), acct(3)]).unwrap();
-        assert_eq!((r.written, r.removed, r.skipped.len()), (2, 0, 1));
+        assert_eq!((r.written, r.removed, r.skipped.len()), (3, 0, 0));
         let creds = std::fs::read_to_string(d.path().join("slot-4/.credentials.json")).unwrap();
         let v: serde_json::Value = serde_json::from_str(&creds).unwrap();
         assert_eq!(v["claudeAiOauth"]["accessToken"], "sk-ant-oat01-test4");
@@ -239,12 +238,15 @@ mod tests {
         assert!(v["claudeAiOauth"].get("refreshToken").is_none());
         let mode = std::fs::metadata(d.path().join("slot-4/.credentials.json")).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
-        assert_eq!(std::fs::read_to_string(d.path().join("slot-3/.credentials.json")).unwrap(), "{\"hand\":true}");
-        // Account 2 leaves the bundle: its managed slot is cleared, slot 3 still untouched.
+        assert!(
+            std::fs::read_to_string(d.path().join("slot-3/.credentials.json")).unwrap().contains("sk-ant-oat01-test3")
+        );
+        // Accounts 2 and 3 leave the bundle: both slots are cleared (3 is managed now too); 4 stays.
         let r = apply(&pattern, &files(d.path()), &[acct(4)]).unwrap();
-        assert_eq!(r.removed, 1);
+        assert_eq!(r.removed, 2);
         assert!(!d.path().join("slot-2/.credentials.json").exists());
-        assert!(d.path().join("slot-3/.credentials.json").exists());
+        assert!(!d.path().join("slot-3/.credentials.json").exists());
+        assert!(d.path().join("slot-4/.credentials.json").exists());
         assert!(apply(&pattern, &files(d.path()), &[Account { token: "nope".into(), ..acct(5) }]).is_err());
     }
 
@@ -261,22 +263,24 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (store, fake) = crate::store::tests::keychain(false);
         let l = layout(d.path(), true);
-        // The person's own sign-in in the default item: never touched.
+        // A sign-in made by hand in the default item: replaced by account 1's token.
         fake.items.lock().unwrap().insert(("tester".into(), "Claude Code-credentials".into()), "hand".into());
         let r = apply(&l, &store, &[acct(1), acct(2)]).unwrap();
-        assert_eq!((r.written, r.skipped.len()), (1, 1));
+        assert_eq!((r.written, r.skipped.len()), (2, 0));
         let item = crate::claude::keychain_item(&d.path().join("slot-2").display().to_string());
         let stored = fake.items.lock().unwrap().get(&("tester".into(), item.clone())).cloned().unwrap();
         assert!(stored.contains("sk-ant-oat01-test2"));
         assert!(!d.path().join("slot-2/.credentials.json").exists(), "no file on macOS");
         assert!(d.path().join("slot-2/.fleetlayer-managed").exists());
-        assert_eq!(l.managed().iter().map(|m| m.account_uuid.as_str()).collect::<Vec<_>>(), vec!["uuid-2"]);
-        // Account 2 leaves: its item goes, the hand sign-in stays.
+        assert_eq!(l.managed().iter().map(|m| m.account_uuid.as_str()).collect::<Vec<_>>(), vec!["uuid-1", "uuid-2"]);
+        // Account 2 leaves: its item goes, account 1's stays.
         let r = apply(&l, &store, &[acct(1)]).unwrap();
         assert_eq!(r.removed, 1);
         let items = fake.items.lock().unwrap();
         assert!(!items.contains_key(&("tester".into(), item)));
-        assert_eq!(items.get(&("tester".into(), "Claude Code-credentials".into())).map(String::as_str), Some("hand"));
+        assert!(
+            items.get(&("tester".into(), "Claude Code-credentials".into())).unwrap().contains("sk-ant-oat01-test1")
+        );
     }
 
     #[test]

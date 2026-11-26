@@ -28,7 +28,9 @@ person controls. The control plane never holds them; it only relays them sealed 
 `claude-auth-manager/tokens`, secret. Items: one per account,
 `{slot, accountUuid, email, expiresAt, token}`, where `expiresAt` is a year after the hub got the token, not after it
 was sent. Applying it makes the node's managed slots match: writes each slot, removes managed slots no longer in it,
-never touches a slot someone signed into by hand.
+and replaces a sign-in someone made by hand: the hub manages every slot, and a hand sign-in would expire while a
+setup token lasts a year. Account 1 goes into Claude Code's default sign-in (`~/.claude`); `default_slot: false` on a
+node leaves that alone.
 
 - **macOS:** the login keychain item `Claude Code-credentials-<first 8 hex of sha256(NFC slot path)>`, account `$USER`,
   written through `security -i` so the token never appears in a process list. This needs the login keychain unlocked,
@@ -99,8 +101,11 @@ plugins:
 
 - **The person does every sign-in from their own browser**, in the hub's page: it shows Claude Code's sign-in link,
   they sign in as that account, and paste the code the page shows back into the hub. Each account needs a normal
-  sign-in (for usage, monthly) and a setup token (for the agents, yearly). Accounts start at 2: account 1 is the hub
-  user's own default sign-in, which stays empty. Claude Code's own messages (a code cut short, a code refused) appear
+  sign-in (for usage, monthly) and a setup token (for the agents, yearly). The hub's account numbers are the account
+  numbers on every machine: account 1 is each machine's default sign-in (`~/.claude`), 2 and up the rotator's slots. A
+  new account takes the lowest free number. **Delete** signs the account's normal sign-in out, removes it, and every
+  machine clears that slot on the next publish (a setup token itself can only be revoked on claude.ai). Claude Code's
+  own messages (a code cut short, a code refused) appear
   on the page.
 - **Its folder** holds `hub.json` (accounts and dates), `tokens.json` (the bundle, 0600, published whenever it changes)
   and `home/.claude/accounts/<n>` (the normal sign-ins). Losing it costs a few minutes of signing in again; the tokens

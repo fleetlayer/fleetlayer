@@ -221,7 +221,13 @@ pub fn latest_message(text: &str) -> Option<String> {
             l.rsplit_once("Paste code here if prompted >").map_or(l, |(_, rest)| rest).trim().to_string()
         })
         .rfind(|l| {
-            !l.is_empty() && !l.contains("https://") && !l.starts_with("Paste code here") && !l.contains("sk-ant-")
+            // The input box echoes the pasted code masked, with its last characters shown: never a message.
+            let masked = l.chars().filter(|c| *c == '*').count() * 2 > l.chars().count();
+            !l.is_empty()
+                && !masked
+                && !l.contains("https://")
+                && !l.starts_with("Paste code here")
+                && !l.contains("sk-ant-")
         })
 }
 
@@ -547,7 +553,11 @@ impl Hub {
                 f.input = Some(Input::Pipe(stdin));
             }
             Some(Input::Pty(mut w)) => {
+                // A terminal UI takes a burst of text as a paste and swallows an Enter inside it: send Enter on its
+                // own, once the paste has landed.
                 w.write_all(code.as_bytes())?;
+                w.flush()?;
+                tokio::time::sleep(Duration::from_millis(500)).await;
                 w.write_all(b"\r")?;
                 w.flush()?;
                 f.input = Some(Input::Pty(w));
@@ -608,6 +618,28 @@ impl Hub {
             }
         }
         out
+    }
+
+    /// Removes an account: signs its normal sign-in out (Claude Code revokes it), deletes its folder, and drops it
+    /// from the tokens bundle, so every machine clears that slot on the next publish. The setup token itself can only
+    /// be revoked on claude.ai. False when there was no such account.
+    pub async fn delete(&self, slot: u32) -> anyhow::Result<bool> {
+        use crate::coordinator::core::Deps;
+        let mut store = self.store.lock().await;
+        if store.accounts.remove(&slot).is_none() {
+            return Ok(false);
+        }
+        let snapshot = store.clone();
+        drop(store);
+        self.flows.lock().await.retain(|_, f| f.slot != slot);
+        let path = self.slot_path(slot);
+        if path.exists() {
+            self.deps().sign_out(&path.display().to_string()).await;
+            std::fs::remove_dir_all(&path)?;
+        }
+        self.save(&snapshot).await?;
+        tracing::info!(slot, "account removed");
+        Ok(true)
     }
 
     // ------------------------------------------------------------ polling
@@ -744,6 +776,7 @@ pub fn router(hub: Arc<Hub>) -> Router {
         .route("/", get(page))
         .route("/api/state", get(api_state))
         .route("/api/accounts", post(api_add))
+        .route("/api/accounts/{slot}", axum::routing::delete(api_delete))
         .route("/api/accounts/{slot}/sign-in", post(api_sign_in))
         .route("/api/accounts/{slot}/setup-token", post(api_setup_token))
         .route("/api/flows/{id}", get(api_flow))
@@ -855,8 +888,9 @@ async fn api_state(State(hub): Ctx, headers: HeaderMap) -> Response {
 async fn api_add(State(hub): Ctx, headers: HeaderMap) -> Response {
     guard!(hub, headers);
     let mut store = hub.store.lock().await;
-    // Account 1 is the hub user's own default sign-in, which stays empty; accounts start at 2.
-    let slot = store.accounts.keys().max().map_or(2, |m| m + 1).max(2);
+    // The lowest free number: the hub's numbers are the account numbers on every machine (1 is each machine's
+    // default sign-in).
+    let slot = (1..).find(|n| !store.accounts.contains_key(n)).unwrap_or(1);
     store.accounts.insert(slot, HubAccount::default());
     let snapshot = store.clone();
     drop(store);
@@ -866,8 +900,8 @@ async fn api_add(State(hub): Ctx, headers: HeaderMap) -> Response {
 
 async fn api_sign_in(State(hub): Ctx, headers: HeaderMap, UrlPath(slot): UrlPath<u32>) -> Response {
     guard!(hub, headers);
-    if slot < 2 {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error": "accounts start at 2"}))).into_response();
+    if !hub.store.lock().await.accounts.contains_key(&slot) {
+        return (StatusCode::NOT_FOUND, Json(json!({"error": "no such account"}))).into_response();
     }
     match hub.start_sign_in(slot).await {
         Ok(id) => Json(json!({"id": id})).into_response(),
@@ -877,8 +911,20 @@ async fn api_sign_in(State(hub): Ctx, headers: HeaderMap, UrlPath(slot): UrlPath
 
 async fn api_setup_token(State(hub): Ctx, headers: HeaderMap, UrlPath(slot): UrlPath<u32>) -> Response {
     guard!(hub, headers);
+    if !hub.store.lock().await.accounts.contains_key(&slot) {
+        return (StatusCode::NOT_FOUND, Json(json!({"error": "no such account"}))).into_response();
+    }
     match hub.start_setup_token(slot).await {
         Ok(id) => Json(json!({"id": id})).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn api_delete(State(hub): Ctx, headers: HeaderMap, UrlPath(slot): UrlPath<u32>) -> Response {
+    guard!(hub, headers);
+    match hub.delete(slot).await {
+        Ok(true) => Json(json!({"ok": true})).into_response(),
+        Ok(false) => (StatusCode::NOT_FOUND, Json(json!({"error": "no such account"}))).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
     }
 }
@@ -933,11 +979,15 @@ once a month; the hub warns a few days before it runs out.</li>
 let flow=null;
 async function j(u,o){const r=await fetch(u,o);return r.json()}
 function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
-async function load(){const s=await j('/api/state');document.getElementById('rows').innerHTML=s.accounts.map(a=>`<tr>
+let accts=[];
+async function load(){const s=await j('/api/state');accts=s.accounts;document.getElementById('rows').innerHTML=s.accounts.map(a=>`<tr>
 <td>${a.slot}</td><td>${esc(a.email)||'<i>not signed in</i>'}</td>
 <td class="${a.signInWarn?'warn':''}">${a.signedInAt?(a.signInDaysLeft+' days left'):'—'}</td>
 <td class="${a.tokenWarn?'warn':''}">${a.hasToken?(a.tokenDaysLeft+' days left'):'—'}</td>
-<td><button onclick="start(${a.slot},'sign-in')">Sign in</button> <button onclick="start(${a.slot},'setup-token')">Make setup token</button></td></tr>`).join('')}
+<td><button onclick="start(${a.slot},'sign-in')">Sign in</button> <button onclick="start(${a.slot},'setup-token')">Make setup token</button>
+<button onclick="del(${a.slot})">Delete</button></td></tr>`).join('')}
+async function del(slot){const email=(accts.find(a=>a.slot===slot)||{}).email;if(!confirm(`Delete account ${slot}${email?' ('+email+')':''}? Its sign-in here is signed out, and every machine clears account ${slot} on the next publish. To revoke its setup token as well, do it on claude.ai.`))return;
+const r=await j('/api/accounts/'+slot,{method:'DELETE'});if(r.error)alert(r.error);load()}
 async function add(){await j('/api/accounts',{method:'POST'});load()}
 async function start(slot,kind){const r=await j(`/api/accounts/${slot}/${kind}`,{method:'POST'});if(r.error){alert(r.error);return}
 flow=r.id;document.getElementById('flow').style.display='block';poll()}
@@ -965,6 +1015,11 @@ mod tests {
         assert_eq!(latest_message(rejected).as_deref(), Some("That doesn't look like the full code."));
         let boxed = "\u{1b}[1m│ Couldn't log in: That code wasn't accepted. │\n╰────╯\n";
         assert_eq!(latest_message(boxed).as_deref(), Some("Couldn't log in: That code wasn't accepted."));
+        assert_eq!(
+            latest_message("Paste code here if prompted >\n│ ****************abc123 │\n"),
+            None,
+            "the masked code"
+        );
         assert_eq!(strip_ansi("Press\u{1b}[1CEnter\u{1b}[2Cto"), "Press Enter  to");
     }
 
@@ -1044,5 +1099,10 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(std::fs::metadata(hub.tokens_file()).unwrap().permissions().mode() & 0o777, 0o600);
         assert_eq!(hub.readings().await.len(), 2, "sign-in age and token age for the account with a UUID");
+        // Deleting account 2 drops it from the tokens file.
+        assert!(hub.delete(2).await.unwrap());
+        assert!(!hub.delete(2).await.unwrap());
+        let tokens: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(hub.tokens_file()).unwrap()).unwrap();
+        assert!(tokens.is_empty());
     }
 }

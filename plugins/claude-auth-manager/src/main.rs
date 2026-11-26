@@ -5,12 +5,12 @@
 //!
 //! Two roles, set by `role:` in its config (`hub`, `node`, or `both` on the hub's own machine):
 //! - **hub** (one per person, on a machine they control): publishes the tokens bundle from `tokens_file` (a 0600
-//!   JSON list of `{slot, accountUuid, email, expiresAt, token}`) to `targets` whenever the file changes. Signing in
-//!   and polling usage come later.
+//!   JSON list of `{slot, accountUuid, email, expiresAt, token}`) to `targets` whenever the file changes. With a
+//!   `hub:` section it also runs the sign-in hub (`hub.rs`).
 //! - **node**: applies the bundle: writes each account's slot (`slot_dir`, default `~/.claude/accounts/{slot}`, the
 //!   rotator's), marks the slots it manages, and removes managed slots that left the bundle. Account 1 is Claude
-//!   Code's default sign-in (`~/.claude`), written only with `default_slot: true`. A slot someone signed into by hand
-//!   is never touched. On macOS the tokens go into the login keychain, where Claude Code keeps them there (`store.rs`).
+//!   Code's default sign-in (`~/.claude`). The hub manages every slot: a sign-in made by hand is replaced (it would
+//!   expire; a setup token lasts a year). `default_slot: false` leaves `~/.claude` alone. On macOS the tokens go into the login keychain, where Claude Code keeps them there (`store.rs`).
 //!   It also checks that each managed slot's token works (`health.rs`), as the `claude.token_health` reading.
 
 mod claude;
@@ -55,9 +55,9 @@ struct Config {
     /// Where account N's slot is (N of 2 and up), with `{slot}`: the directory the rotator puts in
     /// CLAUDE_SECURESTORAGE_CONFIG_DIR. Default `~/.claude/accounts/{slot}`, the rotator's.
     slot_dir: Option<String>,
-    /// Also write account 1 into Claude Code's default sign-in slot (`~/.claude`), so sessions started without the
-    /// rotator work on a machine nobody signed into. Never over a hand sign-in.
-    #[serde(default)]
+    /// Write account 1 into Claude Code's default sign-in slot (`~/.claude`), replacing whatever sign-in is there.
+    /// Default true; false leaves `~/.claude` alone.
+    #[serde(default = "yes")]
     default_slot: bool,
     /// Node: the Claude Code binary for the token checks. Default: `claude` on PATH, then the usual install places
     /// (a LaunchAgent's PATH has none of them).
@@ -109,6 +109,10 @@ impl Default for Plugin {
             node: Mutex::default(),
         }
     }
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// Claude Code: the configured path, else `claude` on PATH, else where its installers put it.
