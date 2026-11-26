@@ -45,8 +45,11 @@ never touches a slot someone signed into by hand.
   and seven-day figures from response headers as they work, setup-token sessions included (seen in Claude Code's
   `rate_limit_event`; not yet confirmed through the rotator's `$.session.usage().rateLimits`); only the hub's polling has the per-model weeks, which go
   stale while the hub sleeps.
-- Kind `claude.token_health`: the node half runs `claude -p` from each token slot after each Claude Code upgrade and
-  daily (seconds, one request each), separately from applying the bundle.
+- Kind `claude.token_health`, keyed by account UUID, `data` `{ok, email, claudeVersion, error?}`: the node half runs
+  `claude -p` from each managed slot (a few seconds, one small request) when the slot is new or its token changed,
+  after each Claude Code upgrade, a day after its last check and an hour after a failed one, and straight after a
+  bundle is applied. Separate from applying: `applied: true` only says the write worked. The control plane can alert
+  on `ok: false` and on a reading that stops coming.
 - The node half serves the rotator's coordinator API on its socket (`GET /state` long polls, `POST /readings`), merging
   readings from every node with what local sessions post, with a version that only goes up (starting at the clock in
   milliseconds) and a `startedAt`. It needs rotator 0.7.5 or later, which handles a restarted coordinator.

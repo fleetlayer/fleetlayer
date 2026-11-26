@@ -1,20 +1,20 @@
 //! Writing setup tokens into account slots, the way Claude Code reads them (tested November 2026, Claude Code
-//! 2.1.332): on Linux `<slot>/.credentials.json`, mode 0600, holding
-//! `{"claudeAiOauth":{"accessToken":…,"expiresAt":…,"scopes":["user:inference"],"subscriptionType":"max"}}` with no
-//! refresh token. Claude Code uses it as it is and leaves it alone. (macOS keeps it in the login keychain instead; that
-//! writer is the claude rotation session's part.)
+//! 2.1.332): `{"claudeAiOauth":{"accessToken":…,"expiresAt":…,"scopes":["user:inference"],"subscriptionType":"max"}}`
+//! with no refresh token, in `<slot>/.credentials.json` (mode 0600) on Linux and the login keychain on macOS
+//! (`store.rs`). Claude Code uses it as it is and leaves it alone.
 //!
-//! A slot this plugin wrote has a `.fleetlayer-managed` marker beside its credentials. Applying a bundle writes every
+//! A slot this plugin wrote has a `.fleetlayer-managed` marker file in its directory (on macOS too, where the
+//! credentials themselves are in the keychain). Applying a bundle writes every
 //! account's slot and removes the credentials of managed slots that left the bundle; a slot without the marker that
 //! already has credentials (someone signed into it by hand) is never touched.
 
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-const MARKER: &str = ".fleetlayer-managed";
-const CREDENTIALS: &str = ".credentials.json";
+use crate::store::{Store, write_0600};
+
+pub const MARKER: &str = ".fleetlayer-managed";
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -48,26 +48,57 @@ impl Layout {
     fn path(&self, slot: u32) -> PathBuf {
         if slot == 1 { self.default_dir.clone() } else { slot_path(&self.pattern, slot) }
     }
+
+    /// The slot as Claude Code names it: the empty string for the default sign-in, the directory for any other.
+    fn key(&self, slot: u32) -> String {
+        if slot == 1 { String::new() } else { slot_path(&self.pattern, slot).display().to_string() }
+    }
+
+    /// The slot named by its directory.
+    fn key_of(&self, dir: &Path) -> String {
+        if dir == self.default_dir { String::new() } else { dir.display().to_string() }
+    }
+
+    /// The slots this plugin manages now (they have its marker), with what the marker says.
+    pub fn managed(&self) -> Vec<Managed> {
+        let mut dirs = vec![self.default_dir.clone()];
+        if let Some(parent) = slot_path(&self.pattern, 0).parent()
+            && let Ok(rd) = std::fs::read_dir(parent)
+        {
+            let mut found: Vec<PathBuf> =
+                rd.flatten().map(|e| e.path()).filter(|d| matches_pattern(&self.pattern, d)).collect();
+            found.sort();
+            dirs.extend(found);
+        }
+        dirs.into_iter()
+            .filter_map(|dir| {
+                let text = std::fs::read_to_string(dir.join(MARKER)).ok()?;
+                let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+                Some(Managed {
+                    slot: self.key_of(&dir),
+                    account_uuid: v["accountUuid"].as_str().unwrap_or_default().into(),
+                    email: v["email"].as_str().unwrap_or_default().into(),
+                })
+            })
+            .collect()
+    }
+}
+
+/// A slot this plugin wrote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Managed {
+    /// As Claude Code names it (`Layout::key`).
+    pub slot: String,
+    pub account_uuid: String,
+    pub email: String,
 }
 
 fn slot_path(pattern: &str, slot: u32) -> PathBuf {
     PathBuf::from(pattern.replace("{slot}", &slot.to_string()))
 }
 
-fn write_0600(path: &Path, content: &[u8]) -> std::io::Result<()> {
-    let tmp = path.with_extension("fleetlayer-tmp");
-    let _ = std::fs::remove_file(&tmp);
-    {
-        use std::io::Write;
-        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
-        f.write_all(content)?;
-        f.sync_all()?;
-    }
-    std::fs::rename(tmp, path)
-}
-
 /// Make the managed slots match `accounts`.
-pub fn apply(layout: &Layout, accounts: &[Account]) -> anyhow::Result<Applied> {
+pub fn apply(layout: &Layout, store: &dyn Store, accounts: &[Account]) -> anyhow::Result<Applied> {
     let pattern = layout.pattern.as_str();
     let mut out = Applied::default();
     for a in accounts {
@@ -85,9 +116,9 @@ pub fn apply(layout: &Layout, accounts: &[Account]) -> anyhow::Result<Applied> {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
         }
-        let creds = dir.join(CREDENTIALS);
+        let key = layout.key(a.slot);
         let marker = dir.join(MARKER);
-        if creds.exists() && !marker.exists() {
+        if !marker.exists() && store.read(&key)?.is_some() {
             out.skipped.push(format!("slot {}: signed into by hand (no {MARKER}), left alone", a.slot));
             continue;
         }
@@ -97,7 +128,7 @@ pub fn apply(layout: &Layout, accounts: &[Account]) -> anyhow::Result<Applied> {
             "scopes": ["user:inference"],
             "subscriptionType": "max",
         }});
-        write_0600(&creds, serde_json::to_string(&entry)?.as_bytes())?;
+        store.write(&key, &serde_json::to_string(&entry)?)?;
         write_0600(
             &marker,
             serde_json::json!({"accountUuid": a.account_uuid, "email": a.email}).to_string().as_bytes(),
@@ -109,7 +140,7 @@ pub fn apply(layout: &Layout, accounts: &[Account]) -> anyhow::Result<Applied> {
     // The default slot, when this plugin wrote it and account 1 left the bundle (or default_slot was turned off).
     let default_wanted = layout.default_slot && accounts.iter().any(|a| a.slot == 1);
     if !default_wanted && layout.default_dir.join(MARKER).exists() {
-        let _ = std::fs::remove_file(layout.default_dir.join(CREDENTIALS));
+        store.remove("")?;
         let _ = std::fs::remove_file(layout.default_dir.join(MARKER));
         out.removed += 1;
     }
@@ -119,7 +150,7 @@ pub fn apply(layout: &Layout, accounts: &[Account]) -> anyhow::Result<Applied> {
         for e in rd.flatten() {
             let dir = e.path();
             if dir.join(MARKER).exists() && !wanted.contains(&dir) && matches_pattern(pattern, &dir) {
-                let _ = std::fs::remove_file(dir.join(CREDENTIALS));
+                store.remove(&layout.key_of(&dir))?;
                 let _ = std::fs::remove_file(dir.join(MARKER));
                 out.removed += 1;
             }
@@ -141,6 +172,7 @@ fn matches_pattern(pattern: &str, dir: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::FileStore;
 
     fn acct(slot: u32) -> Account {
         Account {
@@ -153,27 +185,31 @@ mod tests {
     }
 
     fn layout(d: &Path, default_slot: bool) -> Layout {
-        Layout { pattern: format!("{}/slot-{{slot}}", d.display()), default_dir: d.join("default"), default_slot }
+        Layout { pattern: format!("{}/slot-{{slot}}", d.display()), default_dir: d.join(".claude"), default_slot }
+    }
+
+    fn files(d: &Path) -> FileStore {
+        FileStore { home: d.display().to_string() }
     }
 
     #[test]
     fn the_default_slot_is_written_only_when_asked_and_never_over_a_hand_sign_in() {
         let d = tempfile::tempdir().unwrap();
-        let r = apply(&layout(d.path(), false), &[acct(1), acct(2)]).unwrap();
+        let r = apply(&layout(d.path(), false), &files(d.path()), &[acct(1), acct(2)]).unwrap();
         assert_eq!((r.written, r.skipped.len()), (1, 1));
-        assert!(!d.path().join("default/.credentials.json").exists());
-        let r = apply(&layout(d.path(), true), &[acct(1), acct(2)]).unwrap();
+        assert!(!d.path().join(".claude/.credentials.json").exists());
+        let r = apply(&layout(d.path(), true), &files(d.path()), &[acct(1), acct(2)]).unwrap();
         assert_eq!(r.written, 2);
-        assert!(d.path().join("default/.credentials.json").exists());
+        assert!(d.path().join(".claude/.credentials.json").exists());
         // Turned off again: the managed default slot is cleared.
-        let r = apply(&layout(d.path(), false), &[acct(2)]).unwrap();
+        let r = apply(&layout(d.path(), false), &files(d.path()), &[acct(2)]).unwrap();
         assert_eq!(r.removed, 1);
-        assert!(!d.path().join("default/.credentials.json").exists());
+        assert!(!d.path().join(".claude/.credentials.json").exists());
         // Someone signs in by hand there: never overwritten.
-        std::fs::write(d.path().join("default/.credentials.json"), "hand").unwrap();
-        let r = apply(&layout(d.path(), true), &[acct(1)]).unwrap();
+        std::fs::write(d.path().join(".claude/.credentials.json"), "hand").unwrap();
+        let r = apply(&layout(d.path(), true), &files(d.path()), &[acct(1)]).unwrap();
         assert_eq!(r.skipped.len(), 1);
-        assert_eq!(std::fs::read_to_string(d.path().join("default/.credentials.json")).unwrap(), "hand");
+        assert_eq!(std::fs::read_to_string(d.path().join(".claude/.credentials.json")).unwrap(), "hand");
     }
 
     #[test]
@@ -184,7 +220,7 @@ mod tests {
         // Slot 3 was signed into by hand.
         std::fs::create_dir_all(d.path().join("slot-3")).unwrap();
         std::fs::write(d.path().join("slot-3/.credentials.json"), "{\"hand\":true}").unwrap();
-        let r = apply(&pattern, &[acct(4), acct(2), acct(3)]).unwrap();
+        let r = apply(&pattern, &files(d.path()), &[acct(4), acct(2), acct(3)]).unwrap();
         assert_eq!((r.written, r.removed, r.skipped.len()), (2, 0, 1));
         let creds = std::fs::read_to_string(d.path().join("slot-4/.credentials.json")).unwrap();
         let v: serde_json::Value = serde_json::from_str(&creds).unwrap();
@@ -195,11 +231,11 @@ mod tests {
         assert_eq!(mode, 0o600);
         assert_eq!(std::fs::read_to_string(d.path().join("slot-3/.credentials.json")).unwrap(), "{\"hand\":true}");
         // Account 2 leaves the bundle: its managed slot is cleared, slot 3 still untouched.
-        let r = apply(&pattern, &[acct(4)]).unwrap();
+        let r = apply(&pattern, &files(d.path()), &[acct(4)]).unwrap();
         assert_eq!(r.removed, 1);
         assert!(!d.path().join("slot-2/.credentials.json").exists());
         assert!(d.path().join("slot-3/.credentials.json").exists());
-        assert!(apply(&pattern, &[Account { token: "nope".into(), ..acct(5) }]).is_err());
+        assert!(apply(&pattern, &files(d.path()), &[Account { token: "nope".into(), ..acct(5) }]).is_err());
     }
 
     #[test]
@@ -208,5 +244,39 @@ mod tests {
         assert!(!matches_pattern("/x/slot-{slot}", Path::new("/x/slot-abc")));
         assert!(!matches_pattern("/x/slot-{slot}", Path::new("/x/other")));
         assert!(matches_pattern("/x/{slot}", Path::new("/x/5")));
+    }
+
+    #[test]
+    fn on_macos_the_tokens_go_to_the_keychain_and_markers_to_the_slot_directories() {
+        let d = tempfile::tempdir().unwrap();
+        let (store, fake) = crate::store::tests::keychain(false);
+        let l = layout(d.path(), true);
+        // The person's own sign-in in the default item: never touched.
+        fake.items.lock().unwrap().insert(("tester".into(), "Claude Code-credentials".into()), "hand".into());
+        let r = apply(&l, &store, &[acct(1), acct(2)]).unwrap();
+        assert_eq!((r.written, r.skipped.len()), (1, 1));
+        let item = crate::claude::keychain_item(&d.path().join("slot-2").display().to_string());
+        let stored = fake.items.lock().unwrap().get(&("tester".into(), item.clone())).cloned().unwrap();
+        assert!(stored.contains("sk-ant-oat01-test2"));
+        assert!(!d.path().join("slot-2/.credentials.json").exists(), "no file on macOS");
+        assert!(d.path().join("slot-2/.fleetlayer-managed").exists());
+        assert_eq!(l.managed().iter().map(|m| m.account_uuid.as_str()).collect::<Vec<_>>(), vec!["uuid-2"]);
+        // Account 2 leaves: its item goes, the hand sign-in stays.
+        let r = apply(&l, &store, &[acct(1)]).unwrap();
+        assert_eq!(r.removed, 1);
+        let items = fake.items.lock().unwrap();
+        assert!(!items.contains_key(&("tester".into(), item)));
+        assert_eq!(items.get(&("tester".into(), "Claude Code-credentials".into())).map(String::as_str), Some("hand"));
+    }
+
+    #[test]
+    fn managed_lists_the_marked_slots_with_their_accounts() {
+        let d = tempfile::tempdir().unwrap();
+        let l = layout(d.path(), true);
+        apply(&l, &files(d.path()), &[acct(1), acct(3), acct(2)]).unwrap();
+        let m = l.managed();
+        assert_eq!(m.iter().map(|m| m.account_uuid.as_str()).collect::<Vec<_>>(), vec!["uuid-1", "uuid-2", "uuid-3"]);
+        assert_eq!(m[0].slot, "", "the default slot is named by the empty string");
+        assert_eq!(m[1].slot, d.path().join("slot-2").display().to_string());
     }
 }

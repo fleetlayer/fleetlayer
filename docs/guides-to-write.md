@@ -65,3 +65,15 @@ solved, and where the knowledge lives now. These become Fleetlayer's guides.
   launchd service's cwd is `/`); `browser_close` only disconnects in extension mode and leaves tabs in a grey group, so
   clean up with `browser_tabs {action: close, index: 0}` repeated one at a time (pipelined calls race and leave tabs).
   Where it lives: docs/getting-started.md, docs/access-control.md.
+- **A LaunchAgent can't find `claude`.** launchd gives agents a PATH without `~/.local/bin`, where Claude Code's
+  installer puts it, so anything a node runs that calls `claude` fails with "No such file or directory". The
+  claude-auth-manager plugin looks on PATH and then in the installers' places (`~/.local/bin`, `~/.claude/local`,
+  Homebrew), and takes `claude:` in its config. Other plugins that run `claude` need the same. Found writing the
+  token checks, 26 Nov 2026.
+- **Running `claude -p` from a token slot without touching the person's setup.** Set
+  `CLAUDE_SECURESTORAGE_CONFIG_DIR` to the slot (that's where the credentials are read from, on macOS and Linux) and
+  `CLAUDE_CONFIG_DIR` to a scratch directory, so Claude Code leaves its config files there and not in the slot; add
+  `--setting-sources project` from an empty working directory (no user settings, so no plugins or hooks),
+  `--strict-mcp-config` and `--no-session-persistence`; remove `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` and the
+  other overriding variables. Tested with Claude Code 2.1.332, 26 Nov 2026; it lives in claude-auth-manager's
+  `health.rs`.

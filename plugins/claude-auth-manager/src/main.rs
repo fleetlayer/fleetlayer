@@ -10,9 +10,13 @@
 //! - **node**: applies the bundle: writes each account's slot (`slot_dir`, default `~/.claude/accounts/{slot}`, the
 //!   rotator's), marks the slots it manages, and removes managed slots that left the bundle. Account 1 is Claude
 //!   Code's default sign-in (`~/.claude`), written only with `default_slot: true`. A slot someone signed into by hand
-//!   is never touched.
+//!   is never touched. On macOS the tokens go into the login keychain, where Claude Code keeps them there (`store.rs`).
+//!   It also checks that each managed slot's token works (`health.rs`), as the `claude.token_health` reading.
 
+mod claude;
+mod health;
 mod slots;
+mod store;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -53,6 +57,9 @@ struct Config {
     /// rotator work on a machine nobody signed into. Never over a hand sign-in.
     #[serde(default)]
     default_slot: bool,
+    /// Node: the Claude Code binary for the token checks. Default: `claude` on PATH, then the usual install places
+    /// (a LaunchAgent's PATH has none of them).
+    claude: Option<String>,
     /// Hub: the tokens file.
     tokens_file: Option<PathBuf>,
     /// Hub: the nodes to send them to.
@@ -63,6 +70,28 @@ struct Config {
 #[derive(Default)]
 struct Plugin {
     layout: Mutex<Option<slots::Layout>>,
+    store: Mutex<Option<Arc<dyn store::Store>>>,
+    /// Wakes the token checks after a bundle is applied.
+    applied: Arc<tokio::sync::Notify>,
+}
+
+/// Claude Code: the configured path, else `claude` on PATH, else where its installers put it.
+fn find_claude(home: &Path, configured: Option<&str>) -> String {
+    if let Some(c) = configured {
+        return expand(home, c);
+    }
+    let on_path = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).map(|d| d.join("claude")).find(|f| f.is_file()))
+        .unwrap_or_default();
+    let known = [
+        home.join(".local/bin/claude"),
+        home.join(".claude/local/claude"),
+        "/opt/homebrew/bin/claude".into(),
+        "/usr/local/bin/claude".into(),
+    ];
+    on_path
+        .or_else(|| known.into_iter().find(|f| f.is_file()))
+        .map_or_else(|| "claude".into(), |f| f.display().to_string())
 }
 
 fn expand(home: &Path, p: &str) -> String {
@@ -92,11 +121,16 @@ impl Handler for Shared {
                     if !dir.contains("{slot}") {
                         return Err(RpcError::refused("slot_dir must contain {slot}"));
                     }
-                    *self.0.layout.lock().await = Some(slots::Layout {
+                    let layout = slots::Layout {
                         pattern: expand(&home, dir),
                         default_dir: home.join(".claude"),
                         default_slot: config.default_slot,
-                    });
+                    };
+                    let store: Arc<dyn store::Store> = store::native(&node.home, Some(&node.user)).into();
+                    *self.0.layout.lock().await = Some(layout.clone());
+                    *self.0.store.lock().await = Some(store.clone());
+                    let claude = health::Claude { bin: find_claude(&home, config.claude.as_deref()) };
+                    tokio::spawn(health_loop(peer.clone(), layout, store, claude, self.0.applied.clone()));
                 }
                 if publishes {
                     let file = config
@@ -135,6 +169,7 @@ impl Handler for Shared {
                     return Err(RpcError::not_here(format!("this plugin applies only {BUNDLE}")));
                 }
                 let layout = self.0.layout.lock().await.clone().ok_or_else(|| RpcError::refused("not a node"))?;
+                let store = self.0.store.lock().await.clone().ok_or_else(|| RpcError::refused("not a node"))?;
                 let item = a
                     .items
                     .iter()
@@ -142,8 +177,9 @@ impl Handler for Shared {
                     .ok_or_else(|| RpcError::invalid_params("no accounts.json"))?;
                 let accounts: Vec<slots::Account> =
                     serde_json::from_str(&item.content).map_err(RpcError::invalid_params)?;
-                match slots::apply(&layout, &accounts) {
+                match slots::apply(&layout, store.as_ref(), &accounts) {
                     Ok(r) => {
+                        self.0.applied.notify_one();
                         tracing::info!(
                             version = a.version,
                             written = r.written,
@@ -157,6 +193,60 @@ impl Handler for Shared {
                 }
             }
             _ => Err(RpcError::method_not_found(method)),
+        }
+    }
+}
+
+/// Check each managed slot's token when it's due (`health::due`), and publish a `claude.token_health` reading for each
+/// check. Looks every ten minutes, and straight after a bundle is applied.
+async fn health_loop(
+    peer: Peer,
+    layout: slots::Layout,
+    store: Arc<dyn store::Store>,
+    claude: health::Claude,
+    applied: Arc<tokio::sync::Notify>,
+) {
+    let mut history = health::History::new();
+    tokio::time::sleep(Duration::from_secs(20)).await;
+    while !peer.is_closed() {
+        let managed = layout.managed();
+        if !managed.is_empty() {
+            let version = claude.version().await;
+            let mut readings = vec![];
+            for m in &managed {
+                let fingerprint = match store.read(&m.slot) {
+                    Ok(Some(stored)) => health::fingerprint(&stored),
+                    Ok(None) => "none".into(),
+                    Err(e) => format!("unreadable: {e}"),
+                };
+                let now = jiff::Timestamp::now();
+                let v = version.clone().unwrap_or_else(|e| format!("unknown ({e})"));
+                if !health::due(history.get(&m.slot), now.as_millisecond(), &v, &fingerprint) {
+                    continue;
+                }
+                let outcome = match &version {
+                    Err(e) => health::Outcome { ok: false, error: Some(e.clone()) },
+                    Ok(_) => claude.check(&m.slot).await,
+                };
+                if outcome.ok {
+                    tracing::info!(account = %m.email, "token check passed");
+                } else {
+                    tracing::warn!(account = %m.email, error = ?outcome.error, "token check failed");
+                }
+                readings.push(health::reading(m, &outcome, &v, now));
+                history.insert(
+                    m.slot.clone(),
+                    health::Last { at_ms: now.as_millisecond(), version: v, fingerprint, ok: outcome.ok },
+                );
+            }
+            history.retain(|slot, _| managed.iter().any(|m| &m.slot == slot));
+            if !readings.is_empty() {
+                peer.notify(ext::method::READING_PUBLISH, &ext::Readings { readings });
+            }
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(600)) => {}
+            _ = applied.notified() => {}
         }
     }
 }
