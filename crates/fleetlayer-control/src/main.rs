@@ -462,7 +462,7 @@ async fn main() -> anyhow::Result<()> {
                 }
                 for r in sqlx::query(
                     "SELECT DISTINCT caller, tool, server_node FROM tool_connections WHERE tenant = ? AND opened_at >= ?
-                     AND (outcome IS NULL OR outcome NOT LIKE 'refused%')",
+                     AND bytes_from_tool > 0",
                 )
                 .bind(t)
                 .bind(since)
