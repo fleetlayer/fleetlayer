@@ -49,6 +49,65 @@ pub struct ToolConfig {
     /// `<tab>@<node>` patterns (`*` as a wildcard) that may use it. Nobody when empty.
     #[serde(default)]
     pub allow: Vec<String>,
+    /// For an MCP server: which of its own tools callers may use (`tools/call` by name, `*` as a wildcard).
+    #[serde(default)]
+    pub tools: Option<ToolFilter>,
+}
+
+/// Which of an MCP server's tools may be called. A name in `deny` is refused; with `allow` set, so is any name not in
+/// it. Refused tools are also left out of `tools/list`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolFilter {
+    #[serde(default)]
+    pub allow: Option<Vec<String>>,
+    #[serde(default)]
+    pub deny: Vec<String>,
+}
+
+impl ToolFilter {
+    pub fn permits(&self, name: &str) -> bool {
+        if self.deny.iter().any(|p| glob(p, name)) {
+            return false;
+        }
+        self.allow.as_ref().is_none_or(|a| a.iter().any(|p| glob(p, name)))
+    }
+}
+
+/// What to do with one line from the caller to an MCP server.
+#[derive(Debug, PartialEq)]
+pub enum Inbound {
+    /// Pass it to the server. `Some(name)` for a tool call, for the log.
+    Forward(Option<String>),
+    /// Don't pass it; answer the caller with this line instead.
+    Refuse(String),
+}
+
+/// Look at one JSON-RPC line from the caller: a `tools/call` for a refused tool is answered with an MCP error result.
+pub fn inbound(filter: Option<&ToolFilter>, line: &str, node: &str, tool: &str) -> Inbound {
+    let Ok(v) = serde_json::from_str::<Value>(line) else { return Inbound::Forward(None) };
+    if v["method"] != "tools/call" {
+        return Inbound::Forward(None);
+    }
+    let name = v["params"]["name"].as_str().unwrap_or_default().to_string();
+    match filter {
+        Some(f) if !f.permits(&name) => Inbound::Refuse(
+            serde_json::json!({"jsonrpc": "2.0", "id": v["id"], "result": {"isError": true, "content": [{"type": "text",
+                "text": format!("{node} doesn't let callers use the {name} tool of its shared {tool} (its tools: rules). \
+                                 If this stops you doing your job, report it to your person.")}]}})
+            .to_string(),
+        ),
+        _ => Inbound::Forward(Some(name)),
+    }
+}
+
+/// Look at one line from an MCP server to the caller: a `tools/list` result loses the refused tools.
+pub fn outbound(filter: Option<&ToolFilter>, line: &str) -> String {
+    let Some(f) = filter else { return line.to_string() };
+    let Ok(mut v) = serde_json::from_str::<Value>(line) else { return line.to_string() };
+    let Some(tools) = v.pointer_mut("/result/tools").and_then(Value::as_array_mut) else { return line.to_string() };
+    tools.retain(|t| t["name"].as_str().is_some_and(|n| f.permits(n)));
+    v.to_string()
 }
 
 /// A session name safe to pass as an argument: letters, digits, space, `-` and `_`, at most 40 characters.
@@ -178,6 +237,91 @@ where
     let _ = ws_tx.close().await;
 }
 
+/// `pipe` for a tool's side of a stream, one JSON-RPC line at a time in both directions: refused tool calls are answered
+/// here and never reach the tool, `tools/list` results lose refused tools, and every tool call is logged.
+async fn mcp_pipe<S>(
+    stdout: tokio::process::ChildStdout,
+    mut stdin: tokio::process::ChildStdin,
+    ws: S,
+    filter: Option<ToolFilter>,
+    node: String,
+    tool: String,
+    caller: String,
+) where
+    S: futures::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+        + futures::Sink<Message>
+        + Unpin
+        + Send
+        + 'static,
+{
+    let (mut ws_tx, mut ws_rx) = ws.split();
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<Message>(64);
+    // Everything to the caller goes through one sender: tool output, refusals and pings.
+    let sender = tokio::spawn(async move {
+        let mut ping = tokio::time::interval(Duration::from_secs(30));
+        ping.tick().await;
+        loop {
+            tokio::select! {
+                m = out_rx.recv() => match m {
+                    Some(m) => if ws_tx.send(m).await.is_err() { break },
+                    None => break,
+                },
+                _ = ping.tick() => if ws_tx.send(Message::Ping(Vec::new().into())).await.is_err() { break },
+            }
+        }
+        let _ = ws_tx.close().await;
+    });
+    // Tool to caller, line by line.
+    let down_tx = out_tx.clone();
+    let f2 = filter.clone();
+    let down = tokio::spawn(async move {
+        let mut lines = BufReader::new(stdout).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let line = outbound(f2.as_ref(), &line);
+            if down_tx.send(Message::Binary(format!("{line}\n").into_bytes().into())).await.is_err() {
+                break;
+            }
+        }
+        let _ = down_tx.send(Message::Binary(Vec::new().into())).await;
+    });
+    // Caller to tool, line by line.
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(Ok(m)) = ws_rx.next().await {
+        let bytes = match m {
+            Message::Binary(b) if b.is_empty() => break,
+            Message::Binary(b) => b.to_vec(),
+            Message::Text(t) => t.as_bytes().to_vec(),
+            Message::Close(_) => break,
+            _ => continue,
+        };
+        buf.extend_from_slice(&bytes);
+        while let Some(i) = buf.iter().position(|b| *b == b'\n') {
+            let line: Vec<u8> = buf.drain(..=i).collect();
+            let text = String::from_utf8_lossy(&line);
+            match inbound(filter.as_ref(), text.trim_end(), &node, &tool) {
+                Inbound::Forward(name) => {
+                    if let Some(n) = name {
+                        tracing::info!(tool = %tool, caller = %caller, call = %n, "tool call");
+                    }
+                    if stdin.write_all(&line).await.is_err() {
+                        break;
+                    }
+                    let _ = stdin.flush().await;
+                }
+                Inbound::Refuse(reply) => {
+                    tracing::warn!(tool = %tool, caller = %caller, line = %text.trim_end(), "refused a tool call");
+                    let _ = out_tx.send(Message::Binary(format!("{reply}\n").into_bytes().into())).await;
+                }
+            }
+        }
+    }
+    let _ = stdin.shutdown().await;
+    drop(stdin);
+    let _ = tokio::time::timeout(DRAIN, down).await;
+    drop(out_tx);
+    let _ = tokio::time::timeout(Duration::from_secs(2), sender).await;
+}
+
 // ---------------------------------------------------------------- serving a tool this node shares
 
 /// The control plane asks this node to start a tool for a caller.
@@ -230,7 +374,7 @@ pub async fn serve(node: Arc<Node>, req: ToolServe) -> Result<Value, RpcError> {
     }
     let caller = req.caller.clone();
     tokio::spawn(async move {
-        pipe(stdout, stdin, ws).await;
+        mcp_pipe(stdout, stdin, ws, tool.tools.clone(), node.name.clone(), tool.name.clone(), caller.clone()).await;
         let _ = child.kill().await;
         tracing::info!(tool = %tool.name, caller = %caller, "tool connection closed");
     });
@@ -328,11 +472,38 @@ mod tests {
             env: HashMap::new(),
             env_files: HashMap::new(),
             allow: vec![],
+            tools: None,
         };
         assert!(!allowed(&t, "ci@agents"));
         t.allow = vec!["*@agents".into()];
         assert!(allowed(&t, "ci@agents"));
         assert!(!allowed(&t, "ci@agents-triage"));
+    }
+
+    #[test]
+    fn refused_tools_are_answered_here_and_hidden_from_the_list() {
+        let f = ToolFilter { allow: None, deny: vec!["browser_evaluate".into(), "browser_file_*".into()] };
+        let call = |n: &str| {
+            format!(r#"{{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{{"name":"{n}","arguments":{{}}}}}}"#)
+        };
+        assert_eq!(
+            inbound(Some(&f), &call("browser_navigate"), "laptop", "browser"),
+            Inbound::Forward(Some("browser_navigate".into()))
+        );
+        let Inbound::Refuse(r) = inbound(Some(&f), &call("browser_file_upload"), "laptop", "browser") else { panic!() };
+        let v: Value = serde_json::from_str(&r).unwrap();
+        assert_eq!((v["id"].as_i64(), v["result"]["isError"].as_bool()), (Some(7), Some(true)));
+        assert_eq!(
+            inbound(Some(&f), r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#, "l", "b"),
+            Inbound::Forward(None)
+        );
+        assert_eq!(inbound(None, &call("anything"), "l", "b"), Inbound::Forward(Some("anything".into())));
+        let list =
+            r#"{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"browser_navigate"},{"name":"browser_evaluate"}]}}"#;
+        let out: Value = serde_json::from_str(&outbound(Some(&f), list)).unwrap();
+        assert_eq!(out["result"]["tools"].as_array().unwrap().len(), 1);
+        let only = ToolFilter { allow: Some(vec!["browser_snapshot".into()]), deny: vec![] };
+        assert!(only.permits("browser_snapshot") && !only.permits("browser_navigate"));
     }
 
     #[test]

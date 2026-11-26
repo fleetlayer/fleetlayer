@@ -95,6 +95,8 @@ tools:
       PATH: /opt/homebrew/bin:/usr/bin:/bin
     env_files: { PLAYWRIGHT_MCP_EXTENSION_TOKEN: ~/.config/browser-mcp/extension-token }   # read at start; keep it 0600
     allow: ["*@server"]         # <tab>@<node> patterns; nobody when empty
+    tools:                      # optional: which of the MCP server's own tools callers may use
+      deny: [browser_evaluate]  # refused calls get an error reply and never reach the server
 ```
 
 In a session on another machine, the MCP server command is `fleetlayer mcp browser@laptop`. Each connection starts

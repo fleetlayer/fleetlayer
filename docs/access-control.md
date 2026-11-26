@@ -3,8 +3,8 @@
 Status (26 November 2026): version 2's first phase is built: the Cedar engine and the policy file (groups, deny,
 only, allow, `except`, default), `acl apply`, `explain`, `test`, `show`, `log` and `unapply`, read rules on the fleet
 view, summaries and subscriptions, untrusted marking, rate limits, audit rules, and a check that every request the
-control plane serves is classified. Next: `acl suggest`, the tamper-evident audit log, approvals and justifications,
-and per-tool rules for shared MCP servers. Without a version 2 policy, version 1's ordered rules still decide.
+control plane serves is classified; `acl suggest`; per-tool rules for shared MCP servers. Next: the tamper-evident
+audit log, then approvals (on by default) and justifications. Without a version 2 policy, version 1's ordered rules still decide.
 
 Agents act on what they read. An agent that reads email, issue trackers, web pages or public submissions can be
 steered by whoever wrote them (prompt injection), and every other agent it can reach inherits that risk. Fleetlayer's
@@ -140,7 +140,9 @@ follows Rack Gateway's audit log, built for SOC 2.
 ## Tools at the level of their own tools
 
 A shared tool is often an MCP server with many tools of its own. The machine sharing it can allow or deny them one by
-one, since the node starts the server and sees every `tools/call`:
+one, since the node starts the server and sees every `tools/call`. A refused call is answered with an MCP error result
+that names the rule and never reaches the server; refused tools are left out of `tools/list`; every call is logged on
+the sharing node with its caller:
 
 ```yaml
 - name: browser
