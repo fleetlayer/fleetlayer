@@ -4,8 +4,8 @@ Status (26 November 2026): version 2's first phase is built: the Cedar engine an
 only, allow, `except`, default), `acl apply`, `explain`, `test`, `show`, `log` and `unapply`, read rules on the fleet
 view, summaries and subscriptions, untrusted marking, rate limits, audit rules, and a check that every request the
 control plane serves is classified; `acl suggest`; per-tool rules for shared MCP servers. The tamper-evident audit log
-(HMAC chain, optional anchors, counted repeats, `audit verify` and `audit tail`). Next: approvals (on by default) and
-justifications. Without a version 2 policy, version 1's ordered rules still decide.
+(HMAC chain, optional anchors, counted repeats, `audit verify` and `audit tail`). Approvals, on by default (`approvals list|approve|deny`, `GET /v1/approvals`, `POST /v1/approvals/<id>`
+with an admin token). Next: justifications. Without a version 2 policy, version 1's ordered rules still decide.
 
 Agents act on what they read. An agent that reads email, issue trackers, web pages or public submissions can be
 steered by whoever wrote them (prompt injection), and every other agent it can reach inherits that risk. Fleetlayer's
@@ -117,11 +117,12 @@ justify:                       # the agent must say why, in one line, and it goe
     can: [use_tool, sync, start]
 ```
 
-Approvals are on by default: a new policy that leaves `ask:` out asks before `start` and before `sync` of secrets,
-the safe start for a fleet you don't know yet. A fleet of autonomous agents turns it off with `ask: []` (and
-`justify: []`). An `ask` match pauses the request and asks the person (an approval card in Quietdeck, a push to the phone app, or
-the `access` channel); approved, it's allowed, and the same agent, verb and target pass without asking again for
-`for`. Refused or unanswered, it's denied. A justification is one line of plain text, 16 to 1000 characters, with no
+Approvals are on by default: a policy that leaves `ask:` out asks before `start` (an approval holds 10 minutes) and
+before each agent's first `use_tool` or `sync` to a target (it holds 30 days), the safe start for a fleet you don't know
+yet. A fleet of autonomous agents turns it off with `ask: []` (and
+`justify: []`). An `ask` match refuses the request with a request ID and publishes an `access.ask` event on the `access` channel (for
+an Inbox card, a phone push, or whoever subscribes); once the person approves it, the agent tries again and the same
+agent, verb and target pass without asking again for `for`. A refusal stands for an hour. A justification is one line of plain text, 16 to 1000 characters, with no
 hidden characters; a request that needs one and has none is refused with a message saying so.
 
 The list of verbs that can change things is exhaustive in the code, and a test checks every request the control plane

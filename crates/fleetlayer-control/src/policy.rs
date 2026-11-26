@@ -70,6 +70,47 @@ pub struct AuditRules {
     pub only: Vec<Rule>,
 }
 
+/// An `ask` rule: allowed once the person approves; an approval holds for `for`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AskRule {
+    pub who: OneOrMany,
+    pub can: OneOrMany,
+    #[serde(default)]
+    pub to: Option<OneOrMany>,
+    #[serde(default)]
+    pub except: Option<OneOrMany>,
+    /// How long an approval holds: `10m`, `2h`, `30d`.
+    #[serde(rename = "for")]
+    pub hold: String,
+}
+
+/// `10m`, `2h`, `30d` in milliseconds.
+pub fn parse_duration_ms(s: &str) -> anyhow::Result<i64> {
+    let s = s.trim();
+    let (n, unit) = s.split_at(s.len().saturating_sub(1));
+    let n: i64 = n.parse().map_err(|_| anyhow::anyhow!("{s:?} isn't like 10m, 2h or 30d"))?;
+    Ok(n * match unit {
+        "m" => 60_000,
+        "h" => 3_600_000,
+        "d" => 86_400_000,
+        _ => anyhow::bail!("{s:?} isn't like 10m, 2h or 30d"),
+    })
+}
+
+/// Fleetlayer's default `ask:` when a policy leaves it out: on by default, the safe start for a fleet you don't know
+/// yet. A fleet of autonomous agents writes `ask: []`.
+pub fn default_ask() -> Vec<AskRule> {
+    let rule = |can: &[&str], hold: &str| AskRule {
+        who: OneOrMany::One("*".into()),
+        can: OneOrMany::Many(can.iter().map(|c| c.to_string()).collect()),
+        to: None,
+        except: None,
+        hold: hold.into(),
+    };
+    vec![rule(&["start"], "10m"), rule(&["use_tool", "sync"], "30d")]
+}
+
 /// The policy file, version 2.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -92,6 +133,9 @@ pub struct PolicyFile {
     /// Rules that record what they would refuse, without refusing it.
     #[serde(default)]
     pub audit: AuditRules,
+    /// Allowed once the person approves. Absent: Fleetlayer's defaults ([`default_ask`]); `[]`: never ask.
+    #[serde(default)]
+    pub ask: Option<Vec<AskRule>>,
 }
 
 /// A decision, with the rules that made it.
@@ -249,6 +293,11 @@ impl Compiled {
         for t in &file.untrusted {
             term("principal", t, g)?;
         }
+        for r in file.ask.iter().flatten() {
+            parse_duration_ms(&r.hold)?;
+            any("principal", &r.who.items(), g)?;
+            actions(&r.can)?;
+        }
         for l in &file.limits {
             any("principal", &l.who.items(), g)?;
         }
@@ -280,6 +329,26 @@ impl Compiled {
             Some(g) => self.file.groups.get(g).is_some_and(|ms| ms.iter().any(|m| crate::acl::glob(m, who))),
             None => crate::acl::glob(t, who),
         })
+    }
+
+    /// How long an approval holds when `who` doing `verb` to `target` needs one; None when it doesn't.
+    pub fn ask_for(&self, who: &str, verb: &str, target: &str) -> Option<i64> {
+        let defaults;
+        let rules = match &self.file.ask {
+            Some(r) => r,
+            None => {
+                defaults = default_ask();
+                &defaults
+            }
+        };
+        rules
+            .iter()
+            .filter(|r| r.can.items().iter().any(|c| c == verb))
+            .filter(|r| self.matches(&r.who.items(), who))
+            .filter(|r| !r.except.as_ref().is_some_and(|e| self.matches(&e.items(), who)))
+            .filter(|r| r.to.as_ref().is_none_or(|t| self.matches(&t.items(), target)))
+            .filter_map(|r| parse_duration_ms(&r.hold).ok())
+            .min()
     }
 
     /// Whether messages from `who` are delivered as outside data.
@@ -566,6 +635,22 @@ audit:
         let p = Compiled::parse(&format!("version: 2\ndefault: allow\n{by_node}")).unwrap();
         assert!(!p.decide("x@triage", "message", "finances@laptop", false).unwrap().allowed);
         assert!(suggest(&[], true).starts_with("# Nothing"));
+    }
+
+    #[test]
+    fn approvals_are_on_by_default_and_off_with_an_empty_list() {
+        let base = "version: 2\ndefault: allow\n";
+        let p = Compiled::parse(base).unwrap();
+        assert_eq!(p.ask_for("a@x", "start", "b@y"), Some(600_000));
+        assert_eq!(p.ask_for("a@x", "use_tool", "tool:browser@y"), Some(30 * 86_400_000));
+        assert_eq!(p.ask_for("a@x", "message", "b@y"), None);
+        let off = Compiled::parse(&format!("{base}ask: []\n")).unwrap();
+        assert_eq!(off.ask_for("a@x", "start", "b@y"), None);
+        let some =
+            Compiled::parse(&format!("{base}ask:\n  - {{ who: \"*@triage\", can: message, for: 2h }}\n")).unwrap();
+        assert_eq!(some.ask_for("x@triage", "message", "b@y"), Some(7_200_000));
+        assert_eq!(some.ask_for("x@laptop", "message", "b@y"), None);
+        assert!(Compiled::parse(&format!("{base}ask:\n  - {{ who: \"*\", can: start, for: soon }}\n")).is_err());
     }
 
     #[test]

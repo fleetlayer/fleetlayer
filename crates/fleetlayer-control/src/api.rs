@@ -164,6 +164,43 @@ pub async fn post_catchup(
     Ok(Json(c))
 }
 
+pub async fn get_approvals(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
+    guard(&app, &headers).await?;
+    Ok(Json(json!({"approvals": crate::approvals::list(&app.db, DEFAULT_TENANT, false).await.map_err(internal)?})))
+}
+
+#[derive(serde::Deserialize)]
+pub struct ApprovalBody {
+    approve: bool,
+    /// How long an approval holds (`10m`, `2h`, `30d`); the request's own when absent.
+    #[serde(default, rename = "for")]
+    hold: Option<String>,
+}
+
+/// `POST /v1/approvals/<id>` `{approve, for?}`: decide a pending request. Admin tokens only: approving widens what an
+/// agent may do.
+pub async fn post_approval(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(body): Json<ApprovalBody>,
+) -> ApiResult {
+    if scope_of(&app, &headers).await != Some(Scope::Admin) {
+        return Err((StatusCode::FORBIDDEN, "approving needs an admin token".into()));
+    }
+    let hold = body
+        .hold
+        .as_deref()
+        .map(crate::policy::parse_duration_ms)
+        .transpose()
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let done = crate::approvals::decide(&app.db, DEFAULT_TENANT, &id, body.approve, hold).await.map_err(internal)?;
+    if !done {
+        return Err((StatusCode::NOT_FOUND, format!("no pending request {id}")));
+    }
+    Ok(Json(json!({"id": id, "approved": body.approve})))
+}
+
 /// `/healthz`: ok when the database answers, with the number of linked nodes.
 pub async fn healthz(State(app): State<Arc<App>>) -> Result<Json<Value>, StatusCode> {
     sqlx::query("SELECT 1").execute(&app.db).await.map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;

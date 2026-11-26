@@ -33,6 +33,9 @@ only:
     to: ["talira@nathans-mac", "talira infra@agents-talira", "homeserver pve@agents"]
     why: the Talira coordinator, Talira's infrastructure agent and the home-server agent
 
+# Nathan's agents are autonomous: never ask him to approve (Fleetlayer asks by default otherwise).
+ask: []
+
 # Their messages arrive labelled as outside data.
 untrusted: [group:untrusted-input]
 

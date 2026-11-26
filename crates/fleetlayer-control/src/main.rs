@@ -8,6 +8,7 @@
 
 mod acl;
 mod api;
+mod approvals;
 mod audit;
 mod authz;
 mod db;
@@ -93,6 +94,11 @@ enum Command {
         #[arg(long)]
         session: String,
     },
+    /// Requests waiting for the person's approval (policy ask: rules).
+    Approvals {
+        #[command(subcommand)]
+        command: ApprovalsCommand,
+    },
     /// The latest connections to tools shared by nodes (the audit log).
     Tools {
         #[arg(long, default_value_t = 30)]
@@ -115,6 +121,23 @@ enum Command {
         #[arg(long)]
         none: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum ApprovalsCommand {
+    /// Pending requests (--all: decided ones too).
+    List {
+        #[arg(long)]
+        all: bool,
+    },
+    /// Approve a request: the same agent may do the same thing to the same target for its rule's time, or --for.
+    Approve {
+        id: String,
+        #[arg(long = "for")]
+        hold: Option<String>,
+    },
+    /// Refuse a request (it stands for an hour).
+    Deny { id: String },
 }
 
 #[derive(Subcommand)]
@@ -349,6 +372,32 @@ async fn main() -> anyhow::Result<()> {
             println!("Deleted {n} records of {session} published by {node}.");
             Ok(())
         }
+        Command::Approvals { command } => match command {
+            ApprovalsCommand::List { all } => {
+                for a in approvals::list(&db, t, all).await? {
+                    println!(
+                        "{}  {:<9} {} {} {}",
+                        a["id"].as_str().unwrap_or("?"),
+                        a["status"].as_str().unwrap_or("?"),
+                        a["from"].as_str().unwrap_or("?"),
+                        a["verb"].as_str().unwrap_or("?"),
+                        a["to"].as_str().unwrap_or("?")
+                    );
+                }
+                Ok(())
+            }
+            ApprovalsCommand::Approve { id, hold } => {
+                let hold = hold.map(|h| policy::parse_duration_ms(&h)).transpose()?;
+                anyhow::ensure!(approvals::decide(&db, t, &id, true, hold).await?, "no pending request {id}");
+                println!("Approved {id}.");
+                Ok(())
+            }
+            ApprovalsCommand::Deny { id } => {
+                anyhow::ensure!(approvals::decide(&db, t, &id, false, None).await?, "no pending request {id}");
+                println!("Refused {id}.");
+                Ok(())
+            }
+        },
         Command::Audit { command: AuditCommand::Verify { key_file, anchors } } => {
             let a = audit::Audit::new(read_key(key_file.as_deref())?);
             let (report, ok) = audit::verify(&a, &db, anchors.as_deref()).await?;
@@ -628,6 +677,8 @@ async fn serve(app: Arc<App>, listen: SocketAddr, hooks_listen: SocketAddr) -> a
         .route("/v1/endpoints", get(api::get_endpoints))
         .route("/v1/summaries", get(api::get_summaries))
         .route("/v1/sessions/{id}/catchup", axum::routing::post(api::post_catchup))
+        .route("/v1/approvals", get(api::get_approvals))
+        .route("/v1/approvals/{id}", axum::routing::post(api::post_approval))
         .with_state(app.clone());
     let hooks = hooks::router(app);
     let api_listener = tokio::net::TcpListener::bind(listen).await?;

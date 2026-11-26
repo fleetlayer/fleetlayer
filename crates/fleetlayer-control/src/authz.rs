@@ -111,9 +111,32 @@ pub async fn check(app: &App, tenant: &str, who: &str, verb: &str, target: &str)
             (ok, "a version 1 rule".to_string())
         }
     };
+    // An allowed request an `ask:` rule covers needs the person's approval first.
+    let mut asked: Option<String> = None;
+    if allowed
+        && let Some(p) = &policy
+        && let Some(hold) = p.ask_for(who, verb, target)
+    {
+        match crate::approvals::check(app, tenant, who, verb, target, hold).await.map_err(RpcError::internal)? {
+            crate::approvals::Status::Approved => {}
+            crate::approvals::Status::Pending(id) => {
+                asked = Some(format!("waiting for the person to approve request {id}"))
+            }
+            crate::approvals::Status::Denied(id) => asked = Some(format!("the person refused request {id}")),
+        }
+    }
+    let allowed = allowed && asked.is_none();
+    let because = asked.clone().unwrap_or(because);
     // Fail closed: nothing goes ahead without its entry in the audit log.
     let entry = crate::audit::Entry {
-        decision: if allowed { "allowed" } else { "denied" }.into(),
+        decision: if asked.is_some() {
+            "asked"
+        } else if allowed {
+            "allowed"
+        } else {
+            "denied"
+        }
+        .into(),
         subject: who.into(),
         verb: verb.into(),
         target: target.into(),
@@ -125,6 +148,11 @@ pub async fn check(app: &App, tenant: &str, who: &str, verb: &str, target: &str)
     }
     if allowed {
         return Ok(());
+    }
+    if let Some(why) = asked {
+        return Err(RpcError::refused(format!(
+            "{who} needs its person's approval to {verb} {target}: {why}. Try again once they've approved it"
+        )));
     }
     crate::route::denied(app, tenant, who, target, verb).await;
     Err(RpcError::refused(format!(
