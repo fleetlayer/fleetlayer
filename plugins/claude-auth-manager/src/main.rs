@@ -97,6 +97,8 @@ struct Plugin {
     coordinator: coordinator::Slot,
     /// This node's name.
     node: Mutex<String>,
+    /// Where the last applied bundle is kept, in the same store as the slots.
+    kept: Mutex<Option<String>>,
 }
 
 impl Default for Plugin {
@@ -107,12 +109,27 @@ impl Default for Plugin {
             applied: tokio::sync::watch::channel(0).0,
             coordinator: coordinator::Slot::default(),
             node: Mutex::default(),
+            kept: Mutex::default(),
         }
     }
 }
 
 fn yes() -> bool {
     true
+}
+
+/// The store key the last applied bundle is kept under: a directory of the plugin's own beside its state (on macOS
+/// the keychain item named from it, on Linux `.credentials.json` in it, 0600), never a slot Claude Code reads.
+fn kept_key(home: &Path) -> String {
+    home.join(".local/state/fleetlayer/claude-auth-manager/last-bundle").display().to_string()
+}
+
+fn keep(store: &dyn store::Store, key: &str, accounts_json: &str) {
+    use std::os::unix::fs::DirBuilderExt;
+    let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(key);
+    if let Err(e) = store.write(key, accounts_json) {
+        tracing::warn!("keeping the applied tokens for the next start: {e}");
+    }
 }
 
 /// Claude Code: the configured path, else `claude` on PATH, else where its installers put it.
@@ -169,6 +186,23 @@ impl Handler for Shared {
                     let store: Arc<dyn store::Store> = store::native(&node.home, Some(&node.user)).into();
                     *self.0.layout.lock().await = Some(layout.clone());
                     *self.0.store.lock().await = Some(store.clone());
+                    // The last bundle again, on the layout as it is now: a changed slot_dir, default_slot or managed
+                    // set takes effect on restart, without waiting for the hub's next version.
+                    let kept = kept_key(&home);
+                    if let Ok(Some(text)) = store.read(&kept)
+                        && let Ok(accounts) = serde_json::from_str::<Vec<slots::Account>>(&text)
+                    {
+                        match slots::apply(&layout, store.as_ref(), &accounts) {
+                            Ok(r) => tracing::info!(
+                                written = r.written,
+                                removed = r.removed,
+                                skipped = r.skipped.len(),
+                                "applied the kept tokens on start"
+                            ),
+                            Err(e) => tracing::warn!("applying the kept tokens on start: {e}"),
+                        }
+                    }
+                    *self.0.kept.lock().await = Some(kept);
                     let claude = health::Claude { bin: find_claude(&home, config.claude.as_deref()) };
                     *self.0.node.lock().await = node.node.clone();
                     let env = coordinator::NodeEnv {
@@ -265,6 +299,9 @@ impl Handler for Shared {
                     serde_json::from_str(&item.content).map_err(RpcError::invalid_params)?;
                 match slots::apply(&layout, store.as_ref(), &accounts) {
                     Ok(r) => {
+                        if let Some(kept) = self.0.kept.lock().await.clone() {
+                            keep(store.as_ref(), &kept, &item.content);
+                        }
                         self.0.applied.send_modify(|v| *v += 1);
                         tracing::info!(
                             version = a.version,
