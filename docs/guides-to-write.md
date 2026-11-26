@@ -59,3 +59,9 @@ solved, and where the knowledge lives now. These become Fleetlayer's guides.
 - **Test nodes on a machine where people work must set `typing_fallback: false`.** A test node with only the herdr
   plugin types messages into the real tab when it can't use Claude Code's socket, so a test message lands as the
   person's input in the middle of their work. Happened once while testing access policy v2, 26 Nov 2026.
+- **Sharing a browser MCP server safely (Playwright MCP 0.0.86, extension mode).** Found by the homeserver session,
+  26 Nov 2026: `browser_run_code_unsafe` is always on (deny it with `tools:`); file arguments are confined to the
+  client's MCP roots or the server's working directory, so pass `--ignore-roots` and give it an empty `cwd` (a
+  launchd service's cwd is `/`); `browser_close` only disconnects in extension mode and leaves tabs in a grey group, so
+  clean up with `browser_tabs {action: close, index: 0}` repeated one at a time (pipelined calls race and leave tabs).
+  Where it lives: docs/getting-started.md, docs/access-control.md.

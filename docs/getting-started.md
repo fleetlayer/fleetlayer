@@ -89,16 +89,22 @@ tools:
     # service may not have npx on its PATH.
     command: /opt/homebrew/bin/node
     args: ["/Users/you/.local/share/browser-mcp/node_modules/@playwright/mcp/cli.js",
-           "--extension", "--profile-dir-name", "Default", "--session-name", "{session}"]
+           "--extension", "--profile-dir-name", "Default", "--session-name", "{session}",
+           "--ignore-roots"]        # don't let a caller widen file access with its own MCP roots
+    # File arguments (uploads) are confined to the server's working directory: give it an empty one, never your home.
+    # (Without cwd: a tool gets an empty directory of its own, ~/.local/state/fleetlayer/tools/<name>.)
+    cwd: ~/.local/state/fleetlayer/tools/browser
     env:
       PLAYWRIGHT_MCP_EXECUTABLE_PATH: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
       PATH: /opt/homebrew/bin:/usr/bin:/bin
     env_files: { PLAYWRIGHT_MCP_EXTENSION_TOKEN: ~/.config/browser-mcp/extension-token }   # read at start; keep it 0600
-    allow: ["*@server"]         # <tab>@<node> patterns; nobody when empty
-    networks: ["10.5.0.0/16"]   # optional: offer it only while this machine is on these networks (at home)
-    on_close: [browser_close]   # optional: tool calls made when a session's connection ends, to clean up its tabs
-    tools:                      # optional: which of the MCP server's own tools callers may use
-      deny: [browser_evaluate]  # refused calls get an error reply and never reach the server
+    allow: ["*@server"]          # <tab>@<node> patterns; nobody when empty
+    networks: ["10.5.0.0/16"]    # optional: offer it only while this machine is on these networks (at home)
+    tools:
+      deny: [browser_run_code_unsafe]   # always on in Playwright MCP: arbitrary code in the server's process
+    # When a session's connection ends, close its tabs one at a time (browser_close only disconnects in extension
+    # mode, leaving the tabs open in a grey group).
+    on_close: [{ name: browser_tabs, arguments: { action: close, index: 0 }, repeat: 50 }]
 ```
 
 In a session on another machine, the MCP server command is `fleetlayer mcp browser@laptop`. With `networks:` set, the

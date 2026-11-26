@@ -57,10 +57,15 @@ pub struct ToolConfig {
     /// `fleetlayer tools enable <name> --for 2h` opts in anywhere for a while.
     #[serde(default)]
     pub networks: Vec<String>,
-    /// For an MCP server: tools to call (with no arguments) when a connection ends, before the server is stopped, so
-    /// it cleans up after the session: `[browser_close]` closes a browser session's tabs.
+    /// For an MCP server: tool calls made when a connection ends, before the server is stopped, so it cleans up after
+    /// the session. Sent one at a time, each waiting for its reply; `repeat` makes a call again until it errors.
+    /// Playwright MCP in extension mode: `[{name: browser_tabs, arguments: {action: close, index: 0}, repeat: 50}]`.
     #[serde(default)]
     pub on_close: Vec<OnClose>,
+    /// The directory the tool runs in. Default: an empty directory of its own
+    /// (`~/.local/state/fleetlayer/tools/<name>`), never the node's, since tools often confine file access to it.
+    #[serde(default)]
+    pub cwd: Option<std::path::PathBuf>,
 }
 
 /// A tool call to make when a connection ends: a name (no arguments), or `{name, arguments}`.
@@ -72,19 +77,27 @@ pub enum OnClose {
         name: String,
         #[serde(default)]
         arguments: Value,
+        /// Make the call up to this many times, stopping at the first error (close tab 0 until there's none left).
+        #[serde(default)]
+        repeat: Option<u32>,
     },
 }
 
 impl OnClose {
-    fn call(&self) -> (String, Value) {
+    fn call(&self) -> (String, Value, u32) {
         match self {
-            OnClose::Name(n) => (n.clone(), serde_json::json!({})),
-            OnClose::Call { name, arguments } => {
-                (name.clone(), if arguments.is_null() { serde_json::json!({}) } else { arguments.clone() })
-            }
+            OnClose::Name(n) => (n.clone(), serde_json::json!({}), 1),
+            OnClose::Call { name, arguments, repeat } => (
+                name.clone(),
+                if arguments.is_null() { serde_json::json!({}) } else { arguments.clone() },
+                repeat.unwrap_or(1).clamp(1, 1000),
+            ),
         }
     }
 }
+
+/// How long to wait for each cleanup call's reply.
+const CLOSE_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Whether `ip` is inside `cidr` (`10.5.0.0/16`, `fd7a::/48`, or a bare address).
 pub fn in_cidr(ip: std::net::IpAddr, cidr: &str) -> bool {
@@ -368,9 +381,18 @@ async fn mcp_pipe<S>(
     // Tool to caller, line by line.
     let down_tx = out_tx.clone();
     let f2 = filter.clone();
+    // Replies to our own cleanup calls go here, not to the caller.
+    let (close_tx, mut close_rx) = tokio::sync::mpsc::channel::<Value>(8);
     let down = tokio::spawn(async move {
         let mut lines = BufReader::new(stdout).lines();
         while let Ok(Some(line)) = lines.next_line().await {
+            if line.contains("fleetlayer-close-")
+                && let Ok(v) = serde_json::from_str::<Value>(&line)
+                && v["id"].as_str().is_some_and(|id| id.starts_with("fleetlayer-close-"))
+            {
+                let _ = close_tx.send(v).await;
+                continue;
+            }
             let line = outbound(f2.as_ref(), &line);
             if down_tx.send(Message::Binary(format!("{line}\n").into_bytes().into())).await.is_err() {
                 break;
@@ -410,16 +432,31 @@ async fn mcp_pipe<S>(
         }
     }
     // Clean up after the session (close its browser tabs) before the server stops.
-    if !config.on_close.is_empty() {
-        for (i, c) in config.on_close.iter().enumerate() {
-            let (name, arguments) = c.call();
-            let call = serde_json::json!({"jsonrpc": "2.0", "id": format!("fleetlayer-close-{i}"), "method": "tools/call",
+    // One call at a time, each waiting for its reply: an MCP server may run calls concurrently, and cleanup calls that
+    // race each other leave things behind.
+    let mut seq = 0u32;
+    let mut made = 0u32;
+    'calls: for c in &config.on_close {
+        let (name, arguments, times) = c.call();
+        for _ in 0..times {
+            seq += 1;
+            let id = format!("fleetlayer-close-{seq}");
+            let call = serde_json::json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
                 "params": {"name": name, "arguments": arguments}});
-            let _ = stdin.write_all(format!("{call}\n").as_bytes()).await;
+            if stdin.write_all(format!("{call}\n").as_bytes()).await.is_err() || stdin.flush().await.is_err() {
+                break 'calls;
+            }
+            made += 1;
+            match tokio::time::timeout(CLOSE_CALL_TIMEOUT, close_rx.recv()).await {
+                Ok(Some(reply)) if reply["error"].is_null() && reply["result"]["isError"] != true => {}
+                // An error (no more tabs) ends this call's repeats; a timeout or a closed stream ends cleanup.
+                Ok(Some(_)) => break,
+                _ => break 'calls,
+            }
         }
-        let _ = stdin.flush().await;
-        tracing::info!(tool = %tool, caller = %caller, calls = config.on_close.len(), "cleaning up after the session");
-        tokio::time::sleep(Duration::from_secs(3)).await;
+    }
+    if made > 0 {
+        tracing::info!(tool = %tool, caller = %caller, calls = made, "cleaned up after the session");
     }
     let _ = stdin.shutdown().await;
     drop(stdin);
@@ -458,9 +495,18 @@ pub async fn serve(node: Arc<Node>, req: ToolServe) -> Result<Value, RpcError> {
             .map_err(|e| RpcError::refused(format!("{} can't start: reading {}: {e}", tool.name, file.display())))?;
         env.insert(var.clone(), value.trim().to_string());
     }
+    let cwd = match &tool.cwd {
+        Some(c) => match c.strip_prefix("~") {
+            Ok(rest) => node.home.join(rest),
+            Err(_) => c.clone(),
+        },
+        None => node.home.join(".local/state/fleetlayer/tools").join(&tool.name),
+    };
+    std::fs::create_dir_all(&cwd).map_err(|e| RpcError::refused(format!("{}: {e}", cwd.display())))?;
     let mut child = tokio::process::Command::new(&tool.command)
         .args(&args)
         .envs(&env)
+        .current_dir(&cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -592,6 +638,7 @@ mod tests {
             tools: None,
             networks: vec![],
             on_close: vec![],
+            cwd: None,
         };
         assert!(!allowed(&t, "ci@agents"));
         t.allow = vec!["*@agents".into()];

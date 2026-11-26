@@ -154,8 +154,12 @@ the sharing node with its caller:
 - name: browser
   allow: ["*@server"]
   tools:
-    deny: [browser_evaluate, browser_file_upload]     # no arbitrary JavaScript, no uploading local files
+    deny: [browser_run_code_unsafe]     # Playwright MCP: arbitrary code in the server's process, always on
 ```
+
+A tool runs in an empty directory of its own unless `cwd:` says otherwise: MCP servers often confine file access
+(uploads) to their working directory, and the node's own (`/` under launchd) would expose every file. For Playwright
+MCP, also pass `--ignore-roots`, so a caller can't widen that with its own MCP roots.
 
 Decision order: a `deny` match refuses; then an `only` rule for that agent and verb refuses anything outside its list
 (a reply within 24 hours to a session that wrote first is always inside); then an `allow` match allows; then the
