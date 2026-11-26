@@ -21,10 +21,10 @@ rules:
   - { from: "*@agents-talira", to: "*@agents-talira-worker", action: allow }
   - { from: "*@agents-talira", to: "*", action: deny }
   # Talira's worker reads untrusted posts and public submissions all day: no tools, no sync, and only the Talira
-  # coordinator, Talira's infrastructure agent and the home-server agent.
+  # coordinator (talira@nathans-mac, not every session on the Mac), its infrastructure agent and the home-server agent.
   - { from: "*@agents-talira-worker", to: "tool:*", action: deny }
   - { from: "*@agents-talira-worker", to: "sync:*", action: deny }
-  - { from: "*@agents-talira-worker", to: "*@nathans-mac", action: allow }
+  - { from: "*@agents-talira-worker", to: "talira@nathans-mac", action: allow }
   - { from: "*@agents-talira-worker", to: "talira infra@agents-talira", action: allow }
   - { from: "*@agents-talira-worker", to: "homeserver pve@agents", action: allow }
   - { from: "*@agents-talira-worker", to: "*", action: deny }
