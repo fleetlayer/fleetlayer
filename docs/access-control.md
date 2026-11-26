@@ -1,8 +1,10 @@
 # Access control: running agents with least privilege
 
-Status: design for version 2 (26 November 2026), being built in phases: the Cedar engine and the policy file, explain,
-test and apply, read and rate limits, and untrusted marking first; then the tamper-evident audit log; then approvals
-and justifications; then per-tool rules for shared MCP servers. Version 1 (ordered allow/deny rules) runs today.
+Status (26 November 2026): version 2's first phase is built: the Cedar engine and the policy file (groups, deny,
+only, allow, `except`, default), `acl apply`, `explain`, `test`, `show`, `log` and `unapply`, read rules on the fleet
+view, summaries and subscriptions, untrusted marking, rate limits, audit rules, and a check that every request the
+control plane serves is classified. Next: `acl suggest`, the tamper-evident audit log, approvals and justifications,
+and per-tool rules for shared MCP servers. Without a version 2 policy, version 1's ordered rules still decide.
 
 Agents act on what they read. An agent that reads email, issue trackers, web pages or public submissions can be
 steered by whoever wrote them (prompt injection), and every other agent it can reach inherits that risk. Fleetlayer's

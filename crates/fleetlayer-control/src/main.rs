@@ -8,9 +8,11 @@
 
 mod acl;
 mod api;
+mod authz;
 mod db;
 mod hooks;
 mod link;
+mod policy;
 mod route;
 mod streams;
 mod summaries;
@@ -144,6 +146,36 @@ enum AclCommand {
         #[arg(long)]
         check: bool,
     },
+    /// The decision for one request, and the rules behind it. Uses the stored policy, or --policy <file>.
+    Explain {
+        #[arg(long)]
+        from: String,
+        #[arg(long)]
+        can: String,
+        #[arg(long)]
+        to: String,
+        /// Treat it as a reply to a message `to` sent `from` within 24 hours.
+        #[arg(long)]
+        reply: bool,
+        #[arg(long)]
+        policy: Option<PathBuf>,
+    },
+    /// Check a file of expected decisions (`[{from, can, to, expect: allow|deny}]`) against a policy file, offline.
+    /// Exits non-zero on any mismatch: run it in CI.
+    Test {
+        cases: PathBuf,
+        #[arg(long)]
+        policy: PathBuf,
+    },
+    /// Print the stored version 2 policy.
+    Show,
+    /// Remove the version 2 policy, so the version 1 rules decide again.
+    Unapply,
+    /// Recent refusals and what audit rules would have refused.
+    Log {
+        #[arg(long, default_value_t = 30)]
+        limit: i64,
+    },
     /// What happens when no rule matches: allow or deny.
     Default {
         action: String,
@@ -185,6 +217,7 @@ pub struct App {
     pub hook_limits: hooks::Limits,
     pub admin_token_hash: Option<String>,
     pub streams: streams::Streams,
+    pub authz: authz::Authz,
 }
 
 #[tokio::main]
@@ -211,6 +244,7 @@ async fn main() -> anyhow::Result<()> {
                 hook_limits: hooks::Limits::default(),
                 admin_token_hash,
                 streams: streams::Streams::default(),
+                authz: authz::Authz::default(),
             });
             serve(app, listen, hooks_listen).await
         }
@@ -326,6 +360,29 @@ async fn main() -> anyhow::Result<()> {
                 anyhow::ensure!(acl::remove(&db, t, id).await?, "no rule #{id}");
                 Ok(())
             }
+            AclCommand::Apply { file, check } if is_v2(&file) => {
+                let text = std::fs::read_to_string(&file)?;
+                policy::Compiled::parse(&text).map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?;
+                let old = authz::stored(&db, t).await?.unwrap_or_default();
+                if old == text {
+                    println!("The access policy already matches {}.", file.display());
+                    return Ok(());
+                }
+                let (old_lines, new_lines): (Vec<&str>, Vec<&str>) = (old.lines().collect(), text.lines().collect());
+                for l in old_lines.iter().filter(|l| !new_lines.contains(l)) {
+                    println!("- {l}");
+                }
+                for l in new_lines.iter().filter(|l| !old_lines.contains(l)) {
+                    println!("+ {l}");
+                }
+                if check {
+                    println!("Would apply {} (version 2).", file.display());
+                } else {
+                    authz::store(&db, t, &text).await?;
+                    println!("Applied {} (version 2). Version 1 rules no longer decide anything.", file.display());
+                }
+                Ok(())
+            }
             AclCommand::Apply { file, check } => {
                 let text = std::fs::read_to_string(&file)?;
                 let f: acl::File =
@@ -338,6 +395,79 @@ async fn main() -> anyhow::Result<()> {
                         println!("{c}");
                     }
                     println!("{} {} change(s).", if check { "Would make" } else { "Made" }, changes.len());
+                }
+                Ok(())
+            }
+            AclCommand::Explain { from, can, to, reply, policy } => {
+                let text = match policy {
+                    Some(f) => std::fs::read_to_string(f)?,
+                    None => authz::stored(&db, t)
+                        .await?
+                        .ok_or_else(|| anyhow::anyhow!("no version 2 policy is applied; pass --policy"))?,
+                };
+                let p = policy::Compiled::parse(&text)?;
+                let d = p.decide(&from, &can, &to, reply)?;
+                println!("{}: {from} {can} {to}", if d.allowed { "ALLOW" } else { "DENY" });
+                for b in &d.because {
+                    println!("  because {b}");
+                }
+                for a in &d.audit_would_deny {
+                    println!("  an audit rule would refuse it: {a}");
+                }
+                if can == "message" {
+                    let (per_hour, distinct) = p.limits_for(&from);
+                    if per_hour.is_some() || distinct.is_some() {
+                        let n = |v: Option<u32>| v.map_or("no limit".to_string(), |n| n.to_string());
+                        println!("  limits: {} messages an hour, {} recipients an hour", n(per_hour), n(distinct));
+                    }
+                    if p.untrusted(&from) {
+                        println!("  delivered as outside data (untrusted)");
+                    }
+                }
+                Ok(())
+            }
+            AclCommand::Test { cases, policy } => {
+                let p = policy::Compiled::parse(&std::fs::read_to_string(&policy)?)
+                    .map_err(|e| anyhow::anyhow!("{}: {e}", policy.display()))?;
+                let list: Vec<policy::Case> = yaml_serde::from_str(&std::fs::read_to_string(&cases)?)
+                    .map_err(|e| anyhow::anyhow!("{}: {e}", cases.display()))?;
+                let failures = policy::run_cases(&p, &list)?;
+                for f in &failures {
+                    println!("FAIL {f}");
+                }
+                println!("{} of {} cases pass.", list.len() - failures.len(), list.len());
+                anyhow::ensure!(failures.is_empty(), "{} case(s) failed", failures.len());
+                Ok(())
+            }
+            AclCommand::Unapply => {
+                if authz::remove(&db, t).await? {
+                    println!("Removed the version 2 policy; version 1 rules decide again.");
+                } else {
+                    println!("No version 2 policy was applied.");
+                }
+                Ok(())
+            }
+            AclCommand::Show => {
+                match authz::stored(&db, t).await? {
+                    Some(text) => print!("{text}"),
+                    None => println!("No version 2 policy is applied; version 1 rules decide (acl list)."),
+                }
+                Ok(())
+            }
+            AclCommand::Log { limit } => {
+                for e in db::recent_events(&db, t, 500)
+                    .await?
+                    .into_iter()
+                    .filter(|e| e["channel"] == "access")
+                    .take(limit as usize)
+                {
+                    let at = e["at"].as_i64().and_then(|ms| jiff::Timestamp::from_millisecond(ms).ok());
+                    println!(
+                        "{}  {:<13} {}",
+                        at.map(|t| t.strftime("%Y-%m-%d %H:%M:%S").to_string()).unwrap_or_default(),
+                        e["kind"].as_str().unwrap_or("?"),
+                        e["summary"].as_str().unwrap_or("")
+                    );
                 }
                 Ok(())
             }
@@ -355,6 +485,14 @@ async fn main() -> anyhow::Result<()> {
             db::set_fallback(&db, t, &channel, target.as_deref()).await
         }
     }
+}
+
+/// Whether a policy file is version 2 (`version: 2`).
+fn is_v2(path: &std::path::Path) -> bool {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| yaml_serde::from_str::<serde_json::Value>(&t).ok())
+        .is_some_and(|v| v["version"].as_i64() == Some(2))
 }
 
 async fn serve(app: Arc<App>, listen: SocketAddr, hooks_listen: SocketAddr) -> anyhow::Result<()> {

@@ -1,0 +1,44 @@
+# Fleetlayer access policy, version 2 (docs/access-control.md). Apply with `fleetlayer-control acl apply policy.yaml`
+# from git, on every start; check changes with `fleetlayer-control acl test policy-tests.yaml --policy policy.yaml`.
+# Deny always wins, whatever the order. `*` matches any run of characters; a node always sees its own sessions.
+version: 2
+default: allow                       # a fleet of one person; the agents below are the exceptions
+
+groups:
+  # Agents that read text strangers wrote: email, the X feed, public submissions.
+  untrusted-input: ["*@agents-triage", "*@agents-talira-worker"]
+  # Agents that aren't the person's own sessions.
+  restricted: ["*@agents-triage", "*@agents-talira-worker", "*@agents-talira"]
+
+deny:
+  - who: group:restricted
+    can: [use_tool, sync]
+    why: no shared tools (the signed-in browser) and no sync bundles (a bundle another node applies can overwrite it)
+  - who: group:restricted
+    except: "plugin:runner@agents-triage"
+    can: start
+    why: sessions on other nodes start only through approved card actions (the triage runner)
+
+only:
+  - who: group:restricted
+    can: read
+    to: []
+    why: no fleet view, summaries or catch-ups of other sessions
+  - who: "*@agents-talira"
+    can: message
+    to: ["*@agents", "*@nathans-mac", "*@agents-talira-worker"]
+    why: its person's sessions, the home-server agents and its worker
+  - who: "*@agents-talira-worker"
+    can: message
+    to: ["talira@nathans-mac", "talira infra@agents-talira", "homeserver pve@agents"]
+    why: the Talira coordinator, Talira's infrastructure agent and the home-server agent
+
+# Their messages arrive labelled as outside data.
+untrusted: [group:untrusted-input]
+
+limits:
+  - who: "*@agents-triage"
+    messages_per_hour: 120            # it forwards and follows up on many threads (about 20 sessions in three days)
+  - who: "*@agents-talira-worker"
+    messages_per_hour: 30
+    distinct_recipients_per_hour: 3

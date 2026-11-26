@@ -141,6 +141,11 @@ struct FromNode {
 }
 
 impl FromNode {
+    /// This node as a subject, for requests not made by one of its sessions.
+    fn me(&self) -> String {
+        format!("-@{}", self.node)
+    }
+
     /// A node subscribes only its own sessions.
     fn own(&self, target: &str) -> Result<(), RpcError> {
         match crate::route::split_target(target) {
@@ -156,6 +161,10 @@ impl FromNode {
 impl Handler for FromNode {
     async fn request(&self, _peer: &Peer, method: &str, p: Value) -> Result<Value, RpcError> {
         let (app, tenant) = (&self.app, self.tenant.as_str());
+        // Fail closed: a method that isn't classified for authorization isn't served.
+        if method != ext::method::PING && !crate::authz::LINK_METHODS.iter().any(|(m, _)| *m == method) {
+            return Err(RpcError::method_not_found(method));
+        }
         match method {
             ext::method::PING => Ok(json!({})),
             l::method::HELLO => {
@@ -203,12 +212,14 @@ impl Handler for FromNode {
             }
             l::method::PUBLISH => {
                 let e: Event = params(p)?;
+                crate::authz::check(app, tenant, &self.me(), "publish", &format!("channel:{}", e.channel)).await?;
                 let out = crate::route::publish(app, tenant, e, &format!("node {}", self.node)).await?;
                 answer(&out)
             }
             l::method::SUBSCRIBE => {
                 let s: Subscription = params(p)?;
                 self.own(&s.target)?;
+                crate::authz::check(app, tenant, &s.target, "subscribe", &format!("channel:{}", s.channel)).await?;
                 db::subscribe(&app.db, tenant, &s).await.map_err(RpcError::internal)?;
                 Ok(json!({}))
             }
@@ -219,7 +230,17 @@ impl Handler for FromNode {
                 Ok(json!({"removed": removed}))
             }
             l::method::SUBSCRIPTIONS => {
-                answer(&json!({"subscriptions": db::subscriptions(&app.db, tenant).await.map_err(RpcError::internal)?}))
+                let mut subs = db::subscriptions(&app.db, tenant).await.map_err(RpcError::internal)?;
+                let me = self.me();
+                let mut visible = vec![];
+                for s in subs.drain(..) {
+                    if s.target.ends_with(&format!("@{}", self.node))
+                        || crate::authz::may_read(app, tenant, &me, &s.target).await
+                    {
+                        visible.push(s);
+                    }
+                }
+                answer(&json!({"subscriptions": visible}))
             }
             l::method::SYNC_PUBLISH => {
                 let s: l::SyncPublishSealed = params(p)?;
@@ -227,11 +248,8 @@ impl Handler for FromNode {
                 for copy in s.copies {
                     let target = format!("sync:{}@{}", s.bundle, copy.node);
                     let from = format!("-@{}", self.node);
-                    let allowed =
-                        crate::acl::allowed(&app.db, tenant, &from, &target).await.map_err(RpcError::internal)?;
-                    let r = if !allowed {
-                        crate::route::denied(app, tenant, &from, &target, "sync bundle").await;
-                        Err(format!("{} may not send {} to {} (access control)", self.node, s.bundle, copy.node))
+                    let r = if let Err(e) = crate::authz::check(app, tenant, &from, "sync", &target).await {
+                        Err(e.message)
                     } else {
                         match app.links.peer(tenant, &copy.node).await {
                             None => {
@@ -286,10 +304,7 @@ impl Handler for FromNode {
                 let t: l::ToolOpen = params(p)?;
                 let caller = format!("{}@{}", t.caller, self.node);
                 let target = format!("tool:{}@{}", t.tool, t.node);
-                if !crate::acl::allowed(&app.db, tenant, &caller, &target).await.map_err(RpcError::internal)? {
-                    crate::route::denied(app, tenant, &caller, &target, "tool connection").await;
-                    return Err(RpcError::refused(format!("{caller} may not use {target} (access control)")));
-                }
+                crate::authz::check(app, tenant, &caller, "use_tool", &target).await?;
                 let server = app
                     .links
                     .peer(tenant, &t.node)
@@ -327,22 +342,40 @@ impl Handler for FromNode {
                     crate::summaries::search(&app.db, tenant, q, limit).await
                 }
                 .map_err(RpcError::internal)?;
-                answer(&json!({"summaries": hits}))
+                // Only the sessions this node may read (and its own).
+                let me = self.me();
+                let mut visible = vec![];
+                for h in hits {
+                    let node = h["node"].as_str().unwrap_or_default().to_string();
+                    let name = h["tab"].as_str().or(h["sessionId"].as_str()).unwrap_or_default().to_string();
+                    if node == self.node || crate::authz::may_read(app, tenant, &me, &format!("{name}@{node}")).await {
+                        visible.push(h);
+                    }
+                }
+                answer(&json!({"summaries": visible}))
             }
             l::method::FLEET => {
                 let mut fleet = crate::api::fleet(app, tenant).await.map_err(RpcError::internal)?;
-                // A node sees the sessions it may message (and its own).
-                let rules = crate::acl::rules(&app.db, tenant).await.map_err(RpcError::internal)?;
-                let default = crate::acl::default(&app.db, tenant).await.map_err(RpcError::internal)?;
-                let me = format!("-@{}", self.node);
+                let me = self.me();
+                let policy = app.authz.policy(&app.db, tenant).await.map_err(RpcError::internal)?;
                 if let Some(list) = fleet["sessions"].as_array_mut() {
-                    list.retain(|s| {
-                        let node = s["node"].as_str().unwrap_or_default();
-                        let name = s["meta"]["tab"].as_str().or(s["sessionId"].as_str()).unwrap_or_default();
-                        node == self.node
-                            || crate::acl::decide(&rules, default, &me, &format!("{name}@{node}"))
-                                == crate::acl::Action::Allow
-                    });
+                    let all = std::mem::take(list);
+                    for s in all {
+                        let node = s["node"].as_str().unwrap_or_default().to_string();
+                        let name =
+                            s["meta"]["tab"].as_str().or(s["sessionId"].as_str()).unwrap_or_default().to_string();
+                        let target = format!("{name}@{node}");
+                        let visible = node == self.node
+                            || match &policy {
+                                // Version 2: read rules.
+                                Some(p) => p.decide(&me, "read", &target, false).is_ok_and(|d| d.allowed),
+                                // Version 1: the sessions it may message.
+                                None => crate::acl::allowed(&app.db, tenant, &me, &target).await.unwrap_or(false),
+                            };
+                        if visible {
+                            list.push(s);
+                        }
+                    }
                 }
                 answer(&fleet)
             }

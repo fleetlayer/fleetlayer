@@ -1,0 +1,29 @@
+# Expected decisions for policy.yaml: `fleetlayer-control acl test policy-tests.yaml --policy policy.yaml`.
+# Triage: messages anyone, nothing else.
+- { from: "quietdeck triage@agents-triage", can: message, to: "billing@nathans-mac", expect: allow }
+- { from: "quietdeck triage@agents-triage", can: message, to: "homeserver pve@agents", expect: allow }
+- { from: "quietdeck triage@agents-triage", can: use_tool, to: "tool:browser@nathans-mac", expect: deny }
+- { from: "quietdeck triage@agents-triage", can: sync, to: "sync:files/skills@nathans-mac", expect: deny }
+- { from: "quietdeck triage@agents-triage", can: read, to: "billing@nathans-mac", expect: deny }
+- { from: "quietdeck triage@agents-triage", can: start, to: "billing@nathans-mac", expect: deny }
+- { from: "-@agents-triage", can: read, to: "fleetlayer@agents", expect: deny }
+# Its runner carries out approved card actions, including starting sessions.
+- { from: "plugin:runner@agents-triage", can: start, to: "billing@nathans-mac", expect: allow }
+- { from: "plugin:runner@agents-triage", can: message, to: "sentry errors@nathans-mac", expect: allow }
+- { from: "plugin:runner@agents-triage", can: use_tool, to: "tool:browser@nathans-mac", expect: deny }
+# Talira infra: its person's sessions and its worker, no tools.
+- { from: "talira infra@agents-talira", can: message, to: "talira@nathans-mac", expect: allow }
+- { from: "talira infra@agents-talira", can: message, to: "homeserver pve@agents", expect: allow }
+- { from: "talira infra@agents-talira", can: message, to: "talira worker@agents-talira-worker", expect: allow }
+- { from: "talira infra@agents-talira", can: message, to: "quietdeck triage@agents-triage", expect: deny }
+- { from: "talira infra@agents-talira", can: message, to: "quietdeck triage@agents-triage", reply: true, expect: allow }
+- { from: "talira infra@agents-talira", can: use_tool, to: "tool:browser@nathans-mac", expect: deny }
+# Talira worker: three recipients only.
+- { from: "talira worker@agents-talira-worker", can: message, to: "talira@nathans-mac", expect: allow }
+- { from: "talira worker@agents-talira-worker", can: message, to: "billing@nathans-mac", expect: deny }
+- { from: "talira worker@agents-talira-worker", can: message, to: "homeserver pve@agents", expect: allow }
+- { from: "talira worker@agents-talira-worker", can: sync, to: "sync:files/skills@agents", expect: deny }
+# Nathan's own sessions: everything.
+- { from: "billing@nathans-mac", can: use_tool, to: "tool:browser@nathans-mac", expect: allow }
+- { from: "fleetlayer@agents", can: read, to: "billing@nathans-mac", expect: allow }
+- { from: "fleetlayer@agents", can: message, to: "quietdeck triage@agents-triage", expect: allow }

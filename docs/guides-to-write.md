@@ -56,3 +56,6 @@ solved, and where the knowledge lives now. These become Fleetlayer's guides.
 - **launchctl bootstrap right after bootout can fail** with "Bootstrap failed: 5: Input/output error": bootout returns
   before launchd has unloaded the service. `fleetlayer-node install` now waits until `launchctl print` no longer finds
   it, then bootstraps, retrying once. Found by the homeserver session installing the Mac node (1 in 3 runs).
+- **Test nodes on a machine where people work must set `typing_fallback: false`.** A test node with only the herdr
+  plugin types messages into the real tab when it can't use Claude Code's socket, so a test message lands as the
+  person's input in the middle of their work. Happened once while testing access policy v2, 26 Nov 2026.
