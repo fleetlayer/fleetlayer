@@ -36,6 +36,24 @@ pub struct NodeConfig {
     /// machine where people work in the agents' tabs may turn it off; such messages then fail at once instead.
     #[serde(default = "yes")]
     pub typing_fallback: bool,
+    /// Report the node's health to a monitor (a Gatus external endpoint, say).
+    pub heartbeat: Option<HeartbeatConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HeartbeatConfig {
+    /// Posted to with `?success=true|false&error=<why>` added.
+    pub url: String,
+    /// A file holding a bearer token for the URL.
+    pub token_file: Option<PathBuf>,
+    /// Seconds between reports (default 60).
+    #[serde(default = "sixty")]
+    pub every: u64,
+}
+
+fn sixty() -> u64 {
+    60
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -102,7 +120,14 @@ impl NodeConfig {
     /// Read the config file; a missing file is the empty config.
     pub fn load(path: &Path) -> anyhow::Result<NodeConfig> {
         match std::fs::read_to_string(path) {
-            Ok(text) => yaml_serde::from_str(&text).map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display())),
+            Ok(text) => {
+                let c: NodeConfig =
+                    yaml_serde::from_str(&text).map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
+                if let Some(h) = &c.heartbeat {
+                    reqwest::Url::parse(&h.url).map_err(|e| anyhow::anyhow!("heartbeat url {}: {e}", h.url))?;
+                }
+                Ok(c)
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(NodeConfig::default()),
             Err(e) => Err(anyhow::anyhow!("reading {}: {e}", path.display())),
         }

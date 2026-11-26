@@ -93,6 +93,7 @@ impl Handler for Local {
                 }
                 answer(&json!({
                     "control": node.link.state().await,
+                    "health": crate::heartbeat::health(node, node.has_control).await,
                     "node": node.name,
                     "machine": node.machine,
                     "user": node.user,

@@ -20,13 +20,14 @@ Fleetlayer is a small set of components you run, and a large set of guides on pl
 ## Status
 
 Early. Being built in public, starting from parts of [Quietdeck](https://quietdeck.ai) that already run one person's
-fleet of agents. Nothing here is ready to install yet.
+fleet of agents. It runs, from source: see [docs/getting-started.md](docs/getting-started.md). Expect breaking changes.
 
 ## The parts
 
 | Part | What it does |
 |---|---|
 | `fleetlayer-node` | One daemon per machine (or per Unix user). Starts plugins, delivers messages into sessions, keeps one outbound connection to the control plane. |
+| `fleetlayer-herdr`, `fleetlayer-claude-code` | The first plugins: herdr as the session manager, and delivery through Claude Code's own messaging socket. |
 | Plugins | Separate processes the node talks to with JSON-RPC over stdio, in any language: adapters for session managers (herdr first), event sources, runner actions. The protocol is the [Agent Client Protocol](https://agentclientprotocol.com) plus Fleetlayer's extensions ([docs/protocol.md](docs/protocol.md)). |
 | `fleetlayer-control` | The control plane: machines, sessions, messages, channels and a public webhook endpoint. Self-host it, or use the hosted one. It never holds credentials. |
 | `fleetlayer` | The command line. |

@@ -1,0 +1,59 @@
+//! The node's heartbeat: every `every` seconds it judges its own health and reports it to a URL, the way Gatus's
+//! external endpoints take results (`?success=true|false&error=…`, with a bearer token). Healthy means every enabled
+//! plugin is running and, when a control plane is configured, the link to it is up. So the check fails when the node
+//! is up but has stopped doing its job, not only when it stops; and when the node dies, the heartbeat stops and the
+//! monitor's own timeout raises the alert.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use crate::Node;
+use crate::config::HeartbeatConfig;
+use crate::plugins::State;
+
+/// None when healthy, else why not.
+pub async fn health(node: &Node, has_control: bool) -> Option<String> {
+    let mut problems = vec![];
+    for p in &node.plugins {
+        if !p.config.enabled {
+            continue;
+        }
+        match p.status().await.state {
+            State::Running { .. } => {}
+            State::Starting => problems.push(format!("plugin {} is starting", p.name())),
+            State::Restarting { reason, .. } => problems.push(format!("plugin {} is restarting ({reason})", p.name())),
+            State::Broken { reason } => problems.push(format!("plugin {} is broken ({reason})", p.name())),
+        }
+    }
+    if has_control && node.link.peer().await.is_none() {
+        problems.push("not linked to the control plane".into());
+    }
+    (!problems.is_empty()).then(|| problems.join("; "))
+}
+
+pub async fn run(node: Arc<Node>, cfg: HeartbeatConfig, has_control: bool) {
+    let token = cfg.token_file.as_ref().and_then(|f| std::fs::read_to_string(f).ok()).map(|t| t.trim().to_string());
+    let client = match reqwest::Client::builder().timeout(Duration::from_secs(10)).build() {
+        Ok(c) => c,
+        Err(e) => return tracing::error!("heartbeat: {e}"),
+    };
+    // A minute's grace at start, so plugins and the link come up before the first report.
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    loop {
+        let problem = health(&node, has_control).await;
+        let mut url = reqwest::Url::parse(&cfg.url).expect("checked when the config was read");
+        url.query_pairs_mut()
+            .append_pair("success", if problem.is_none() { "true" } else { "false" })
+            .append_pair("error", problem.as_deref().unwrap_or(""));
+        let mut req = client.post(url);
+        if let Some(t) = &token {
+            req = req.bearer_auth(t);
+        }
+        match req.send().await {
+            Ok(r) if r.status().is_success() => {}
+            Ok(r) => tracing::warn!("heartbeat: {} answered {}", cfg.url, r.status()),
+            Err(e) => tracing::warn!("heartbeat: {e}"),
+        }
+        tokio::time::sleep(Duration::from_secs(cfg.every.max(10))).await;
+    }
+}

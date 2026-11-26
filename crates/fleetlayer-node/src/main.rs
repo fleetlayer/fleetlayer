@@ -4,9 +4,11 @@
 
 mod config;
 mod deliver;
+mod heartbeat;
 mod link;
 mod local;
 mod plugins;
+mod service;
 mod sessions;
 
 use std::path::PathBuf;
@@ -33,6 +35,15 @@ enum Command {
     Run,
     /// Print the config as the node reads it, defaults filled in.
     Config,
+    /// Run the node as a service: a launchd agent on macOS, a systemd user service on Linux. Run it again after
+    /// moving the binary or changing PATH.
+    Install {
+        /// Write the service file without starting it.
+        #[arg(long)]
+        no_start: bool,
+    },
+    /// Stop the service and remove its file.
+    Uninstall,
 }
 
 /// Everything the node's tasks share.
@@ -46,6 +57,7 @@ pub struct Node {
     pub deliveries: deliver::Deliveries,
     pub link: link::Link,
     pub typing_fallback: bool,
+    pub has_control: bool,
 }
 
 impl Node {
@@ -80,6 +92,8 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Run => run(cfg).await,
+        Command::Install { no_start } => service::install(&config::home(), &path, !no_start),
+        Command::Uninstall => service::uninstall(&config::home()),
     }
 }
 
@@ -98,6 +112,7 @@ async fn run(cfg: NodeConfig) -> anyhow::Result<()> {
         deliveries: deliver::Deliveries::default(),
         link: link::Link::default(),
         typing_fallback: cfg.typing_fallback,
+        has_control: cfg.control.is_some(),
     });
     tracing::info!(node = %node.name, machine = %node.machine, plugins = node.plugins.len(), "fleetlayer-node starting");
     for p in &node.plugins {
@@ -111,6 +126,9 @@ async fn run(cfg: NodeConfig) -> anyhow::Result<()> {
             tokio::spawn(link::run(node.clone(), control));
         }
         None => tracing::info!("no control: section in node.yaml, so this node works on its own"),
+    }
+    if let Some(h) = cfg.heartbeat.clone() {
+        tokio::spawn(heartbeat::run(node.clone(), h, cfg.control.is_some()));
     }
     let socket = cfg.socket();
     tokio::select! {

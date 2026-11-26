@@ -27,6 +27,7 @@ async-trait = "0.1.92"
 yaml_serde = "0.10.7"
 tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
 futures = "0.3.34"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] }
 nix = { version = "0.32.0", default-features = false, features = ["hostname", "user"] }
 
 [dev-dependencies]
