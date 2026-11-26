@@ -35,7 +35,10 @@ changing dependencies. The server's SSH host goes in `.dev-host` (gitignored) or
 
 Fleetlayer is "a small set of components you can run, and a large set of guides about how to plug them all together
 with what you already use". Every setup step or footgun others will hit goes into `docs/guides-to-write.md` in the
-same change: what it is, how it was solved, and where the knowledge lives now.
+same change: what it is, how it was solved, and where the knowledge lives now. That includes what Nathan runs into
+outside Fleetlayer while running his fleet (Claude Code permissions and hooks, accounts, session managers): the
+guides cover the whole journey. When another agent fixes such a problem, add the entry here even if the fix lives
+elsewhere, without private names or hostnames.
 
 ## Releases
 

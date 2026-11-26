@@ -1,7 +1,9 @@
 # Guides to write
 
 Every setup step, footgun or design reason others will hit goes here in the same change: what it is, how it was
-solved, and where the knowledge lives now. These become Fleetlayer's guides.
+solved, and where the knowledge lives now. These become Fleetlayer's guides. They cover the whole journey of running a
+fleet of agents, not only Fleetlayer itself: Claude Code's permissions and hooks, accounts and sign-ins, session
+managers, machines that sleep.
 
 - **A GitHub organization can't be created from the CLI or the API on github.com.** `POST /admin/organizations`
   exists only on GitHub Enterprise Server (it answers 404 on github.com, whatever the token's scopes). An agent can
@@ -98,3 +100,23 @@ solved, and where the knowledge lives now. These become Fleetlayer's guides.
   `--observe` only watches). herdr's `terminal session observe|control` is the stream; the access policy's `read` and
   `attach` decide who. A shell inside a herdr pane carries `HERDR_SOCKET_PATH`, which beats `HERDR_SESSION`: unset it
   to reach a named test session. Design: docs/protocol.md ("Terminals").
+- **Replacing Claude Code's built-in "dangerous command" prompts with your own hooks, so unattended agents never
+  block.** Even with permissions skipped, Claude Code can stop at a built-in safety prompt (an `rm` on a path built
+  from a variable, for example), and an agent nobody watches sits there all night (it happened to a worker agent).
+  The fix has two halves: a fast `PreToolUse` hook that refuses the risky command at once and puts the safe rewrite in
+  its reason (quote the variable, check it's set with `${DIR:?}`), so the agent corrects itself and carries on; and
+  `CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS=1` in the session manager's service environment, so sessions in
+  bypass mode never stop at Claude Code's own prompt. The hook has to answer in milliseconds and never ask: a hook that
+  prompts is the same trap. Where it lives now: the author's home-server setup; verify the variable's exact behaviour
+  against the Claude Code version when writing the guide.
+- **Setup tokens can't use claude.ai features.** A `claude setup-token` token has only the inference scope: claude.ai
+  connectors disappear, and very likely artifacts, Remote Control and cloud sessions. Fine for a fleet with its own
+  replacements; say so before people switch. Where it lives: docs/plugins/claude-auth-manager.md ("What a setup token
+  can't do").
+- **Reading a token off a terminal UI.** Read the screen through a terminal emulator (`vt100`), take the token from
+  one line only, and test it with one request before keeping it: joining lines once glued the next line of text onto
+  every token, and all of them failed. Where it lives: plugins/claude-auth-manager/src/hub.rs (`find_token`).
+- **Claude Code's keychain items on macOS.** `Claude Code-credentials` for the default sign-in, and
+  `Claude Code-credentials-<first 8 hex of sha256(NFC config dir)>` for others, account `$USER`, written with
+  `security -i` and `add-generic-password -U`. Overwrite in place: deleting first leaves a moment where sessions see
+  no sign-in. Where it lives: docs/plugins/claude-auth-manager.md ("The tokens bundle").
