@@ -11,7 +11,7 @@
 //! ```
 //!
 //! A session elsewhere uses it as its MCP server: `fleetlayer mcp browser@laptop`. That connects to its own node's
-//! `tools.sock`; the node asks the control plane (`link/tool_open`), which checks access and asks this node to start
+//! `node.tools.sock`; the node asks the control plane (`link/tool_open`), which checks access and asks this node to start
 //! the tool (`link/tool_serve`) with `{session}` replaced by the caller's tab. Both nodes then open a WebSocket to
 //! `/v1/stream/<id>` and the control plane joins them. One process per connection; it's killed when either side
 //! closes.
@@ -52,6 +52,72 @@ pub struct ToolConfig {
     /// For an MCP server: which of its own tools callers may use (`tools/call` by name, `*` as a wildcard).
     #[serde(default)]
     pub tools: Option<ToolFilter>,
+    /// Offer it only while this node's link to the control plane goes out from one of these networks (CIDR, such as
+    /// `10.5.0.0/16`): a laptop's browser only while the laptop is at home. Empty: on any network.
+    /// `fleetlayer tools enable <name> --for 2h` opts in anywhere for a while.
+    #[serde(default)]
+    pub networks: Vec<String>,
+}
+
+/// Whether `ip` is inside `cidr` (`10.5.0.0/16`, `fd7a::/48`, or a bare address).
+pub fn in_cidr(ip: std::net::IpAddr, cidr: &str) -> bool {
+    use std::net::IpAddr;
+    let (net, bits) = match cidr.split_once('/') {
+        Some((n, b)) => (n, b.parse::<u32>().ok()),
+        None => (cidr, None),
+    };
+    let Ok(net) = net.trim().parse::<IpAddr>() else { return false };
+    match (ip, net) {
+        (IpAddr::V4(a), IpAddr::V4(n)) => {
+            let bits = bits.unwrap_or(32).min(32);
+            let mask = if bits == 0 { 0 } else { u32::MAX << (32 - bits) };
+            u32::from(a) & mask == u32::from(n) & mask
+        }
+        (IpAddr::V6(a), IpAddr::V6(n)) => {
+            let bits = bits.unwrap_or(128).min(128);
+            let mask = if bits == 0 { 0 } else { u128::MAX << (128 - bits) };
+            u128::from(a) & mask == u128::from(n) & mask
+        }
+        _ => false,
+    }
+}
+
+/// Opt-ins: a tool offered on any network until a time (`fleetlayer tools enable`).
+#[derive(Default)]
+pub struct OptIns {
+    until: tokio::sync::Mutex<HashMap<String, std::time::Instant>>,
+}
+
+impl OptIns {
+    pub async fn enable(&self, tool: &str, for_: Duration) {
+        self.until.lock().await.insert(tool.to_string(), std::time::Instant::now() + for_);
+    }
+    pub async fn disable(&self, tool: &str) {
+        self.until.lock().await.remove(tool);
+    }
+    pub async fn active(&self, tool: &str) -> Option<Duration> {
+        let until = *self.until.lock().await.get(tool)?;
+        until.checked_duration_since(std::time::Instant::now())
+    }
+}
+
+/// Why the tool isn't offered on this network now, or None when it is.
+pub async fn network_refusal(node: &Node, tool: &ToolConfig) -> Option<String> {
+    if tool.networks.is_empty() || node.opt_ins.active(&tool.name).await.is_some() {
+        return None;
+    }
+    match node.link.local_ip().await {
+        Some(ip) if tool.networks.iter().any(|c| in_cidr(ip, c)) => None,
+        Some(ip) => Some(format!(
+            "{} offers {} only on its listed networks ({}), and it's on {ip} now. Its person can opt in with \
+             'fleetlayer tools enable {} --for 2h' on that machine",
+            node.name,
+            tool.name,
+            tool.networks.join(", "),
+            tool.name
+        )),
+        None => Some(format!("{} can't tell which network it's on, so it doesn't offer {}", node.name, tool.name)),
+    }
 }
 
 /// Which of an MCP server's tools may be called. A name in `deny` is refused; with `allow` set, so is any name not in
@@ -332,6 +398,10 @@ pub async fn serve(node: Arc<Node>, req: ToolServe) -> Result<Value, RpcError> {
         .find(|t| t.name == req.tool)
         .cloned()
         .ok_or_else(|| RpcError::not_here(format!("{} shares no tool called {}", node.name, req.tool)))?;
+    if let Some(why) = network_refusal(&node, &tool).await {
+        tracing::warn!(tool = %tool.name, caller = %req.caller, "refused a tool connection: {why}");
+        return Err(RpcError::refused(why));
+    }
     if !allowed(&tool, &req.caller) {
         tracing::warn!(tool = %tool.name, caller = %req.caller, "refused a tool connection: not in its allow list");
         return Err(RpcError::refused(format!("{} may not use {} on {}", req.caller, tool.name, node.name)));
@@ -392,7 +462,7 @@ struct OpenRequest {
     address: Option<String>,
 }
 
-/// `tools.sock` beside the node's socket: a caller (`fleetlayer mcp`) writes one JSON line naming the tool, gets one
+/// `<socket>.tools.sock` beside the node's socket (`node.tools.sock`): a caller (`fleetlayer mcp`) writes one JSON line naming the tool, gets one
 /// line back (`{"ok":true}` or `{"error":"…"}`), and the connection then carries the tool's bytes.
 pub async fn listen(node: Arc<Node>, path: &Path) -> anyhow::Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -473,6 +543,7 @@ mod tests {
             env_files: HashMap::new(),
             allow: vec![],
             tools: None,
+            networks: vec![],
         };
         assert!(!allowed(&t, "ci@agents"));
         t.allow = vec!["*@agents".into()];
@@ -504,6 +575,19 @@ mod tests {
         assert_eq!(out["result"]["tools"].as_array().unwrap().len(), 1);
         let only = ToolFilter { allow: Some(vec!["browser_snapshot".into()]), deny: vec![] };
         assert!(only.permits("browser_snapshot") && !only.permits("browser_navigate"));
+    }
+
+    #[test]
+    fn addresses_match_networks() {
+        let ip = |s: &str| s.parse::<std::net::IpAddr>().unwrap();
+        assert!(in_cidr(ip("10.5.7.20"), "10.5.0.0/16"));
+        assert!(!in_cidr(ip("100.101.1.2"), "10.5.0.0/16"));
+        assert!(in_cidr(ip("100.101.1.2"), "100.64.0.0/10"));
+        assert!(in_cidr(ip("192.168.1.9"), "192.168.1.9"));
+        assert!(!in_cidr(ip("192.168.1.9"), "nonsense"));
+        assert!(in_cidr(ip("fd7a:115c:a1e0::1"), "fd7a:115c:a1e0::/48"));
+        assert!(!in_cidr(ip("10.5.7.20"), "fd7a::/16"));
+        assert!(in_cidr(ip("1.2.3.4"), "0.0.0.0/0"));
     }
 
     #[test]

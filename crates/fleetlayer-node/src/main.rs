@@ -69,6 +69,7 @@ pub struct Node {
     pub public_key: String,
     pub identity: age::x25519::Identity,
     pub sync: sync::Sync,
+    pub opt_ins: tools::OptIns,
 }
 
 impl Node {
@@ -156,6 +157,7 @@ async fn run(cfg: NodeConfig) -> anyhow::Result<()> {
         public_key: key.to_public().to_string(),
         identity: key,
         sync: sync::Sync::default(),
+        opt_ins: tools::OptIns::default(),
     });
     tracing::info!(node = %node.name, machine = %node.machine, plugins = node.plugins.len(), "fleetlayer-node starting");
     for p in &node.plugins {
@@ -173,7 +175,7 @@ async fn run(cfg: NodeConfig) -> anyhow::Result<()> {
     let update = cfg.update.clone().unwrap_or(update::UpdateConfig { mode: None, every_hours: 6 });
     tokio::spawn(update::run(node.clone(), update));
     let socket = cfg.socket();
-    let tools_socket = socket.with_file_name("tools.sock");
+    let tools_socket = socket.with_extension("tools.sock");
     {
         let node = node.clone();
         tokio::spawn(async move {

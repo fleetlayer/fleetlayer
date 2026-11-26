@@ -31,6 +31,8 @@ pub struct Link {
     peer: Mutex<Option<Peer>>,
     last_error: Mutex<Option<String>>,
     held: Mutex<std::collections::VecDeque<(String, Value)>>,
+    /// The local address the link goes out from, while linked: which network this machine is on now.
+    local_ip: Mutex<Option<std::net::IpAddr>>,
 }
 
 impl Link {
@@ -60,6 +62,12 @@ impl Link {
                 return;
             }
         }
+    }
+
+    /// The local address the link goes out from, while linked.
+    pub async fn local_ip(&self) -> Option<std::net::IpAddr> {
+        self.peer().await?;
+        *self.local_ip.lock().await
     }
 
     pub async fn state(&self) -> Value {
@@ -95,6 +103,12 @@ async fn connect_once(node: &Arc<Node>, cfg: &ControlConfig) -> anyhow::Result<(
     let (ws, _) = tokio::time::timeout(Duration::from_secs(15), tokio_tungstenite::connect_async(req))
         .await
         .map_err(|_| anyhow::anyhow!("no answer from {} within 15s", cfg.url))??;
+    let local = match ws.get_ref() {
+        tokio_tungstenite::MaybeTlsStream::Plain(s) => s.local_addr().ok(),
+        tokio_tungstenite::MaybeTlsStream::Rustls(s) => s.get_ref().0.local_addr().ok(),
+        _ => None,
+    };
+    *node.link.local_ip.lock().await = local.map(|a| a.ip());
     let (mut sink, mut stream) = ws.split();
     let (in_tx, in_rx) = mpsc::channel::<String>(256);
     let (out_tx, mut out_rx) = mpsc::channel::<String>(256);

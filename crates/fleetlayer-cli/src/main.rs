@@ -59,6 +59,11 @@ enum Command {
         #[arg(long)]
         import: Option<String>,
     },
+    /// Tools this node shares: opt in to offering one on any network for a while, or end the opt-in.
+    Tools {
+        #[command(subcommand)]
+        command: ToolsCommand,
+    },
     /// Use a tool another node shares, as this session's MCP server (stdio): `fleetlayer mcp browser@laptop`.
     Mcp {
         /// `<tool>@<node>`.
@@ -79,6 +84,19 @@ struct SubscribeArgs {
     /// `<tab>@<node>`. Default: the session this runs in.
     #[arg(long)]
     target: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum ToolsCommand {
+    /// Offer a tool even off its listed networks, for a while (it stops by itself).
+    Enable {
+        tool: String,
+        /// How long: 30m, 2h, 1d (at most a day).
+        #[arg(long = "for", default_value = "2h")]
+        duration: String,
+    },
+    /// End an opt-in now.
+    Disable { tool: String },
 }
 
 #[derive(Subcommand)]
@@ -171,7 +189,7 @@ async fn main() {
 async fn run(cli: Cli) -> anyhow::Result<()> {
     let socket = cli.socket.clone().unwrap_or_else(default_socket);
     if let Command::Mcp { target } = &cli.command {
-        return mcp(&socket.with_file_name("tools.sock"), target).await;
+        return mcp(&socket.with_extension("tools.sock"), target).await;
     }
     let stream = tokio::net::UnixStream::connect(&socket).await.map_err(|e| {
         anyhow::anyhow!("can't reach the node at {} ({e}). Is fleetlayer-node running?", socket.display())
@@ -332,6 +350,33 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
         Command::Mcp { .. } => {}
+        Command::Tools { command } => {
+            let (method, args) = match &command {
+                ToolsCommand::Enable { tool, duration } => {
+                    let d = duration.trim();
+                    let (n, unit) = d.split_at(d.len().saturating_sub(1));
+                    let n: u64 = n.parse().map_err(|_| anyhow::anyhow!("--for is like 30m, 2h or 1d"))?;
+                    let minutes = match unit {
+                        "m" => n,
+                        "h" => n * 60,
+                        "d" => n * 1440,
+                        _ => anyhow::bail!("--for is like 30m, 2h or 1d"),
+                    };
+                    ("node/tools_enable", json!({"tool": tool, "minutes": minutes}))
+                }
+                ToolsCommand::Disable { tool } => ("node/tools_disable", json!({"tool": tool})),
+            };
+            let v: Value = peer.request(method, &args).await?;
+            if v["enabled"].as_bool() == Some(true) {
+                println!(
+                    "{} is offered on any network for the next {} minutes.",
+                    v["tool"].as_str().unwrap_or("?"),
+                    v["minutes"]
+                );
+            } else {
+                println!("{} is offered only on its listed networks again.", v["tool"].as_str().unwrap_or("?"));
+            }
+        }
         Command::Msg { command: Msg::Send { to, text } } => {
             let v: Value = peer
                 .request("_fleetlayer.dev/message/send", &json!({"to": to, "text": text, "caller": caller()}))

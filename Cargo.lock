@@ -1107,6 +1107,7 @@ dependencies = [
  "fleetlayer-protocol",
  "futures",
  "hex",
+ "hmac 0.13.0",
  "jiff 1.0.3",
  "rand 0.9.5",
  "serde",

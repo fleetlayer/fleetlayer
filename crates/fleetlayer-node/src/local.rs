@@ -103,6 +103,23 @@ impl Handler for Local {
                     "plugins": plugins,
                 }))
             }
+            "node/tools_enable" | "node/tools_disable" => {
+                let name = p["tool"].as_str().ok_or_else(|| RpcError::invalid_params("tool"))?;
+                let tool = node
+                    .tools
+                    .iter()
+                    .find(|t| t.name == name)
+                    .ok_or_else(|| RpcError::not_here(format!("{} shares no tool called {name}", node.name)))?;
+                if method == "node/tools_disable" {
+                    node.opt_ins.disable(name).await;
+                    tracing::info!(tool = name, "opt-in ended by hand");
+                    return answer(&json!({"tool": name, "enabled": false}));
+                }
+                let minutes = p["minutes"].as_u64().unwrap_or(120).clamp(1, 24 * 60);
+                node.opt_ins.enable(name, std::time::Duration::from_secs(minutes * 60)).await;
+                tracing::warn!(tool = name, minutes, networks = ?tool.networks, "opted in: offered on any network");
+                answer(&json!({"tool": name, "enabled": true, "minutes": minutes}))
+            }
             "node/summaries_import" => {
                 node.ask_observer(ext::method::SUMMARY_IMPORT, &p, std::time::Duration::from_secs(600)).await
             }
