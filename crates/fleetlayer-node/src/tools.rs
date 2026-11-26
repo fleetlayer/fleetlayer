@@ -458,6 +458,8 @@ pub async fn serve(node: Arc<Node>, req: ToolServe) -> Result<Value, RpcError> {
 struct OpenRequest {
     tool: String,
     node: String,
+    #[serde(default)]
+    why: Option<String>,
     session_id: Option<String>,
     address: Option<String>,
 }
@@ -513,7 +515,12 @@ async fn open(
     let opened: ToolOpened = peer
         .request_within(
             l::method::TOOL_OPEN,
-            &ToolOpen { tool: req.tool.clone(), node: req.node.clone(), caller: caller_name },
+            &ToolOpen {
+                tool: req.tool.clone(),
+                node: req.node.clone(),
+                caller: caller_name,
+                justification: req.why.clone(),
+            },
             Duration::from_secs(30),
         )
         .await

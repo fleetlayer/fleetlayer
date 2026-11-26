@@ -86,6 +86,9 @@ pub struct SendRequest {
     pub delivery_id: String,
     pub from: From,
     pub text: String,
+    /// Why, in one line, when the sender gave a reason (`--why`): access rules can require one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub justification: Option<String>,
 }
 
 /// Deliver to the session `name` names on the receiving node. `text` is rendered.
@@ -112,6 +115,8 @@ pub struct ToolOpen {
     pub node: String,
     /// The calling session's name (its tab), or `-` for a shell.
     pub caller: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub justification: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

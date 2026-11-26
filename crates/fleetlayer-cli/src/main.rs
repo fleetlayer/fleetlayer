@@ -68,6 +68,9 @@ enum Command {
     Mcp {
         /// `<tool>@<node>`.
         target: String,
+        /// Why this session uses it, in one line, when its access rules ask for a reason. Default: $FLEETLAYER_WHY.
+        #[arg(long, env = "FLEETLAYER_WHY")]
+        why: Option<String>,
     },
     /// Messages between sessions.
     Msg {
@@ -107,11 +110,14 @@ enum Msg {
         #[arg(long)]
         to: String,
         text: String,
+        /// Why, in one line, when the access rules ask for a reason.
+        #[arg(long)]
+        why: Option<String>,
     },
 }
 
 /// Connect stdin and stdout to a shared tool through this node's tools socket.
-async fn mcp(socket: &std::path::Path, target: &str) -> anyhow::Result<()> {
+async fn mcp(socket: &std::path::Path, target: &str, why: Option<&str>) -> anyhow::Result<()> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     let (tool, node) = target.rsplit_once('@').ok_or_else(|| anyhow::anyhow!("give <tool>@<node>"))?;
     let stream = tokio::net::UnixStream::connect(socket)
@@ -119,7 +125,7 @@ async fn mcp(socket: &std::path::Path, target: &str) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("can't reach the node's tools socket {} ({e})", socket.display()))?;
     let (r, mut w) = stream.into_split();
     let c = caller();
-    let req = json!({"tool": tool, "node": node, "sessionId": c["sessionId"], "address": c["address"]});
+    let req = json!({"tool": tool, "node": node, "sessionId": c["sessionId"], "address": c["address"], "why": why});
     w.write_all(format!("{req}\n").as_bytes()).await?;
     let mut r = BufReader::new(r);
     let mut line = String::new();
@@ -188,8 +194,8 @@ async fn main() {
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
     let socket = cli.socket.clone().unwrap_or_else(default_socket);
-    if let Command::Mcp { target } = &cli.command {
-        return mcp(&socket.with_extension("tools.sock"), target).await;
+    if let Command::Mcp { target, why } = &cli.command {
+        return mcp(&socket.with_extension("tools.sock"), target, why.as_deref()).await;
     }
     let stream = tokio::net::UnixStream::connect(&socket).await.map_err(|e| {
         anyhow::anyhow!("can't reach the node at {} ({e}). Is fleetlayer-node running?", socket.display())
@@ -377,9 +383,12 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 println!("{} is offered only on its listed networks again.", v["tool"].as_str().unwrap_or("?"));
             }
         }
-        Command::Msg { command: Msg::Send { to, text } } => {
+        Command::Msg { command: Msg::Send { to, text, why } } => {
             let v: Value = peer
-                .request("_fleetlayer.dev/message/send", &json!({"to": to, "text": text, "caller": caller()}))
+                .request(
+                    "_fleetlayer.dev/message/send",
+                    &json!({"to": to, "text": text, "caller": caller(), "why": why}),
+                )
                 .await?;
             if cli.json {
                 println!("{v}");

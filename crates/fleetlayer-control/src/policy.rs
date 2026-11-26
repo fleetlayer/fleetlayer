@@ -136,6 +136,33 @@ pub struct PolicyFile {
     /// Allowed once the person approves. Absent: Fleetlayer's defaults ([`default_ask`]); `[]`: never ask.
     #[serde(default)]
     pub ask: Option<Vec<AskRule>>,
+    /// Requests that must say why (one line, recorded in the audit log). None by default.
+    #[serde(default)]
+    pub justify: Vec<Rule>,
+}
+
+/// Check a justification: one line of plain text, 16 to 1000 characters, nothing hidden (after Rack Gateway's).
+pub fn check_justification(text: &str) -> Result<(), String> {
+    for c in text.chars() {
+        if c == '\n' || c == '\r' || c == '\t' {
+            return Err("a justification is one line of plain text".into());
+        }
+        if c.is_control()
+            || matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}')
+        {
+            return Err(format!("a justification can't hold hidden or control characters (it has {:?})", c));
+        }
+    }
+    let n = text.trim().chars().count();
+    if n < 16 {
+        return Err(format!(
+            "the justification is too short ({n} characters, at least 16): say why, and what it's for"
+        ));
+    }
+    if n > 1000 {
+        return Err(format!("the justification is too long ({n} characters, at most 1000)"));
+    }
+    Ok(())
 }
 
 /// A decision, with the rules that made it.
@@ -293,6 +320,10 @@ impl Compiled {
         for t in &file.untrusted {
             term("principal", t, g)?;
         }
+        for r in &file.justify {
+            any("principal", &r.who.items(), g)?;
+            actions(&r.can)?;
+        }
         for r in file.ask.iter().flatten() {
             parse_duration_ms(&r.hold)?;
             any("principal", &r.who.items(), g)?;
@@ -349,6 +380,16 @@ impl Compiled {
             .filter(|r| r.to.as_ref().is_none_or(|t| self.matches(&t.items(), target)))
             .filter_map(|r| parse_duration_ms(&r.hold).ok())
             .min()
+    }
+
+    /// Whether `who` doing `verb` to `target` must say why.
+    pub fn needs_justification(&self, who: &str, verb: &str, target: &str) -> bool {
+        self.file.justify.iter().any(|r| {
+            r.can.items().iter().any(|c| c == verb)
+                && self.matches(&r.who.items(), who)
+                && !r.except.as_ref().is_some_and(|e| self.matches(&e.items(), who))
+                && r.to.as_ref().is_none_or(|t| self.matches(&t.items(), target))
+        })
     }
 
     /// Whether messages from `who` are delivered as outside data.
@@ -651,6 +692,21 @@ audit:
         assert_eq!(some.ask_for("x@triage", "message", "b@y"), Some(7_200_000));
         assert_eq!(some.ask_for("x@laptop", "message", "b@y"), None);
         assert!(Compiled::parse(&format!("{base}ask:\n  - {{ who: \"*\", can: start, for: soon }}\n")).is_err());
+    }
+
+    #[test]
+    fn justifications_are_required_by_rule_and_checked() {
+        let p = Compiled::parse(
+            "version: 2\ndefault: allow\njustify:\n  - { who: \"*\", can: use_tool, to: \"tool:browser@*\" }\n",
+        )
+        .unwrap();
+        assert!(p.needs_justification("a@x", "use_tool", "tool:browser@laptop"));
+        assert!(!p.needs_justification("a@x", "use_tool", "tool:db@laptop"));
+        assert!(!p.needs_justification("a@x", "message", "b@y"));
+        assert!(check_justification("Checking the invoice page renders for sc-1234").is_ok());
+        assert!(check_justification("because").unwrap_err().contains("too short"));
+        assert!(check_justification("two lines of text\nare not one line").is_err());
+        assert!(check_justification("hidden\u{202e}override characters here").unwrap_err().contains("hidden"));
     }
 
     #[test]

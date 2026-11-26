@@ -304,7 +304,7 @@ impl Handler for FromNode {
                 let t: l::ToolOpen = params(p)?;
                 let caller = format!("{}@{}", t.caller, self.node);
                 let target = format!("tool:{}@{}", t.tool, t.node);
-                crate::authz::check(app, tenant, &caller, "use_tool", &target).await?;
+                crate::authz::check_why(app, tenant, &caller, "use_tool", &target, t.justification.as_deref()).await?;
                 let server = app
                     .links
                     .peer(tenant, &t.node)

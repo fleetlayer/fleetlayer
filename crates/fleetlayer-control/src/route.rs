@@ -36,7 +36,7 @@ pub async fn deliver(app: &App, tenant: &str, target: &str, mut d: DeliverReques
 /// A message from a session (or plugin) on `from_node` to a session on another node. The sending node rendered it.
 pub async fn send(app: &App, tenant: &str, from_node: &str, s: SendRequest) -> Result<Delivered, RpcError> {
     let from = format!("{}@{from_node}", s.from.name.as_deref().unwrap_or("-"));
-    crate::authz::check(app, tenant, &from, "message", &s.to).await?;
+    crate::authz::check_why(app, tenant, &from, "message", &s.to, s.justification.as_deref()).await?;
     crate::authz::within_limits(app, tenant, &from, &s.to).await?;
     let _ = crate::acl::log_message(&app.db, tenant, &from, &s.to).await;
     // A message from an agent that reads untrusted input is itself outside data.

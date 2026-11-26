@@ -91,6 +91,18 @@ impl Authz {
 
 /// Whether `who` may `verb` `target`, publishing refusals and audit matches. Err is the refusal to send back.
 pub async fn check(app: &App, tenant: &str, who: &str, verb: &str, target: &str) -> Result<(), RpcError> {
+    check_why(app, tenant, who, verb, target, None).await
+}
+
+/// [`check`], with the request's justification, which `justify:` rules can require; it goes in the audit log.
+pub async fn check_why(
+    app: &App,
+    tenant: &str,
+    who: &str,
+    verb: &str,
+    target: &str,
+    why: Option<&str>,
+) -> Result<(), RpcError> {
     let reply = crate::acl::replying(&app.db, tenant, who, target).await.map_err(RpcError::internal)?;
     let policy = app.authz.policy(&app.db, tenant).await.map_err(RpcError::internal)?;
     let (allowed, because) = match &policy {
@@ -111,25 +123,41 @@ pub async fn check(app: &App, tenant: &str, who: &str, verb: &str, target: &str)
             (ok, "a version 1 rule".to_string())
         }
     };
-    // An allowed request an `ask:` rule covers needs the person's approval first.
-    let mut asked: Option<String> = None;
+    // An allowed request a `justify:` rule covers must say why.
+    let mut no_reason: Option<String> = None;
     if allowed
+        && let Some(p) = &policy
+        && p.needs_justification(who, verb, target)
+    {
+        no_reason = match why {
+            None => Some("its access rules need a reason: give one with --why \"…\" (one line)".into()),
+            Some(w) => crate::policy::check_justification(w).err(),
+        };
+    }
+    // An allowed request an `ask:` rule covers needs the person's approval first.
+    let mut waiting: Option<String> = None;
+    if allowed
+        && no_reason.is_none()
         && let Some(p) = &policy
         && let Some(hold) = p.ask_for(who, verb, target)
     {
         match crate::approvals::check(app, tenant, who, verb, target, hold).await.map_err(RpcError::internal)? {
             crate::approvals::Status::Approved => {}
             crate::approvals::Status::Pending(id) => {
-                asked = Some(format!("waiting for the person to approve request {id}"))
+                waiting = Some(format!("waiting for the person to approve request {id}"))
             }
-            crate::approvals::Status::Denied(id) => asked = Some(format!("the person refused request {id}")),
+            crate::approvals::Status::Denied(id) => waiting = Some(format!("the person refused request {id}")),
         }
     }
-    let allowed = allowed && asked.is_none();
-    let because = asked.clone().unwrap_or(because);
+    let allowed = allowed && no_reason.is_none() && waiting.is_none();
+    let reason = match (&no_reason, &waiting, why) {
+        (Some(r), _, _) | (None, Some(r), _) => r.clone(),
+        (None, None, Some(w)) => format!("{because}; why: {w}"),
+        (None, None, None) => because.clone(),
+    };
     // Fail closed: nothing goes ahead without its entry in the audit log.
     let entry = crate::audit::Entry {
-        decision: if asked.is_some() {
+        decision: if waiting.is_some() {
             "asked"
         } else if allowed {
             "allowed"
@@ -140,7 +168,7 @@ pub async fn check(app: &App, tenant: &str, who: &str, verb: &str, target: &str)
         subject: who.into(),
         verb: verb.into(),
         target: target.into(),
-        reason: because.clone(),
+        reason,
     };
     if let Err(e) = app.audit.record(&app.db, tenant, entry).await {
         tracing::error!("the audit log can't be written, so refusing {who} {verb} {target}: {e}");
@@ -149,10 +177,13 @@ pub async fn check(app: &App, tenant: &str, who: &str, verb: &str, target: &str)
     if allowed {
         return Ok(());
     }
-    if let Some(why) = asked {
+    if let Some(w) = waiting {
         return Err(RpcError::refused(format!(
-            "{who} needs its person's approval to {verb} {target}: {why}. Try again once they've approved it"
+            "{who} needs its person's approval to {verb} {target}: {w}. Try again once they've approved it"
         )));
+    }
+    if let Some(r) = no_reason {
+        return Err(RpcError::refused(format!("{who} may {verb} {target} only with a reason: {r}")));
     }
     crate::route::denied(app, tenant, who, target, verb).await;
     Err(RpcError::refused(format!(

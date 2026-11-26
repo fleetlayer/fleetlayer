@@ -91,6 +91,7 @@ pub async fn send(
     text: &str,
     from: From,
     caller: Option<&Session>,
+    why: Option<String>,
 ) -> Result<Delivered, RpcError> {
     let (name, target_node) = parse_address(to);
     let reply_to = caller.and_then(|c| c.tab().map(|t| format!("{t}@{}", node.name)));
@@ -108,6 +109,7 @@ pub async fn send(
             delivery_id: node.deliveries.new_id(&node.name),
             from,
             text: rendered,
+            justification: why,
         };
         return peer.request_within(fleetlayer_protocol::link::method::SEND, &req, Duration::from_secs(12)).await;
     }

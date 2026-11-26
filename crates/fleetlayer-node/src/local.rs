@@ -56,6 +56,8 @@ struct Caller {
 struct Send {
     to: String,
     text: String,
+    #[serde(default)]
+    why: Option<String>,
     caller: Option<Caller>,
 }
 
@@ -168,7 +170,7 @@ impl Handler for Local {
                     },
                     None => From { label: format!("a shell on {}", node.name), ..Default::default() },
                 };
-                answer(&crate::deliver::send(node, &s.to, &s.text, from, caller.as_ref()).await?)
+                answer(&crate::deliver::send(node, &s.to, &s.text, from, caller.as_ref(), s.why.clone()).await?)
             }
             _ => Err(RpcError::method_not_found(method)),
         }
