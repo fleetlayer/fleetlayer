@@ -35,6 +35,10 @@ pub async fn deliver(app: &App, tenant: &str, target: &str, mut d: DeliverReques
 
 /// A message from a session (or plugin) on `from_node` to a session on another node. The sending node rendered it.
 pub async fn send(app: &App, tenant: &str, from_node: &str, s: SendRequest) -> Result<Delivered, RpcError> {
+    let from = format!("{}@{from_node}", s.from.name.as_deref().unwrap_or("-"));
+    if !crate::acl::allowed(&app.db, tenant, &from, &s.to).await.map_err(RpcError::internal)? {
+        return Err(RpcError::refused(format!("{from} may not message {} (access control)", s.to)));
+    }
     let d = DeliverRequest {
         name: String::new(),
         delivery_id: s.delivery_id,

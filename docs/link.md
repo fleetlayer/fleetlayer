@@ -32,6 +32,13 @@ where `meta` is the `fleetlayer.dev/session` object from protocol section 4.
 |---|---|
 | `link/deliver` | `{name, deliveryId, kind, subkind?, untrusted, from, text}` → `{via}`. The node resolves `name` (a tab or a session ID) among its own sessions and delivers as protocol section 5 says. |
 
+## Access control
+
+Ordered rules on `<tab>@<node>` patterns (`*` matches any run of characters; a sender with no session is `-@<node>`),
+first match wins, then the tenant's default (`allow` on a new control plane). They decide `link/send`, and which
+sessions `link/fleet` shows a node (those its `-@<node>` may message, plus its own). A node may subscribe and
+unsubscribe only its own sessions. Managed with `fleetlayer-control acl list|add|remove|default|check`.
+
 ## Routing
 
 - **Messages** between nodes: the control plane forwards `link/send` to the target node as `link/deliver`. A target

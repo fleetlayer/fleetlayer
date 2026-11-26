@@ -6,6 +6,7 @@
 //! Self-hosted: one binary and a SQLite file. The API and node links listen on one port; webhooks on another, so only
 //! that one needs to face the internet.
 
+mod acl;
 mod api;
 mod db;
 mod hooks;
@@ -69,12 +70,47 @@ enum Command {
         #[arg(long)]
         subject: Option<String>,
     },
+    /// Access control: who may message whom (and which sessions a node sees).
+    Acl {
+        #[command(subcommand)]
+        command: AclCommand,
+    },
     /// Where a channel's events go when nobody subscribes (`<tab>@<node>`), or `--none`.
     Fallback {
         channel: String,
         target: Option<String>,
         #[arg(long)]
         none: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum AclCommand {
+    /// Every rule, in order, and the default.
+    List,
+    /// Add a rule: `<tab>@<node>` patterns with * as a wildcard; a sender with no session is `-@<node>`.
+    Add {
+        #[arg(long)]
+        from: String,
+        #[arg(long)]
+        to: String,
+        /// allow or deny
+        action: String,
+        /// Where it goes in the order (lower first). Default: last.
+        #[arg(long)]
+        position: Option<i64>,
+    },
+    Remove {
+        id: i64,
+    },
+    /// What happens when no rule matches: allow or deny.
+    Default {
+        action: String,
+    },
+    /// Whether `from` may message `to` now.
+    Check {
+        from: String,
+        to: String,
     },
 }
 
@@ -184,6 +220,36 @@ async fn main() -> anyhow::Result<()> {
             );
             Ok(())
         }
+        Command::Acl { command } => match command {
+            AclCommand::List => {
+                for r in acl::rules(&db, t).await? {
+                    println!(
+                        "{:>4}  #{:<4} {:<5}  {} -> {}",
+                        r.position,
+                        r.id,
+                        format!("{:?}", r.action).to_lowercase(),
+                        r.from,
+                        r.to
+                    );
+                }
+                println!("default: {:?}", acl::default(&db, t).await?);
+                Ok(())
+            }
+            AclCommand::Add { from, to, action, position } => {
+                let id = acl::add(&db, t, &from, &to, acl::Action::parse(&action)?, position).await?;
+                println!("Rule #{id} added.");
+                Ok(())
+            }
+            AclCommand::Remove { id } => {
+                anyhow::ensure!(acl::remove(&db, t, id).await?, "no rule #{id}");
+                Ok(())
+            }
+            AclCommand::Default { action } => acl::set_default(&db, t, acl::Action::parse(&action)?).await,
+            AclCommand::Check { from, to } => {
+                println!("{}", if acl::allowed(&db, t, &from, &to).await? { "allowed" } else { "denied" });
+                Ok(())
+            }
+        },
         Command::Fallback { channel, target, none } => {
             anyhow::ensure!(none != target.is_some(), "give a target or --none");
             if let Some(t) = &target {

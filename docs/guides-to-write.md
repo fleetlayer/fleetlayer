@@ -20,3 +20,8 @@ solved, and where the knowledge lives now. These become Fleetlayer's guides.
   `~/.claude/settings.json` has `"crossSessionInbound": "accept"`. That setting also accepts unattested messages from
   any process of the same user that can read the session's key file: the guide says so and leaves the choice to the
   user. Where it lives: `plugins/claude-code/src/main.rs`.
+- **Access control for a fleet with an agent you trust less.** A new control plane allows every message. Before a node
+  that reads untrusted input joins (an email triage agent), add rules: `fleetlayer-control acl add --from
+  '*@triage-node' --to 'inbox@main' allow`, then `--from '*@triage-node' --to '*' deny`, or set `acl default deny`
+  and list what's allowed. A node sees only the sessions it may message, and subscribes only its own. Where it
+  lives: `crates/fleetlayer-control/src/acl.rs`.

@@ -140,6 +140,18 @@ struct FromNode {
     node: String,
 }
 
+impl FromNode {
+    /// A node subscribes only its own sessions.
+    fn own(&self, target: &str) -> Result<(), RpcError> {
+        match crate::route::split_target(target) {
+            Some((_, node)) if node == self.node => Ok(()),
+            _ => {
+                Err(RpcError::refused(format!("node {} can subscribe only its own sessions, not {target}", self.node)))
+            }
+        }
+    }
+}
+
 #[async_trait]
 impl Handler for FromNode {
     async fn request(&self, _peer: &Peer, method: &str, p: Value) -> Result<Value, RpcError> {
@@ -172,18 +184,36 @@ impl Handler for FromNode {
             }
             l::method::SUBSCRIBE => {
                 let s: Subscription = params(p)?;
+                self.own(&s.target)?;
                 db::subscribe(&app.db, tenant, &s).await.map_err(RpcError::internal)?;
                 Ok(json!({}))
             }
             l::method::UNSUBSCRIBE => {
                 let s: Subscription = params(p)?;
+                self.own(&s.target)?;
                 let removed = db::unsubscribe(&app.db, tenant, &s).await.map_err(RpcError::internal)?;
                 Ok(json!({"removed": removed}))
             }
             l::method::SUBSCRIPTIONS => {
                 answer(&json!({"subscriptions": db::subscriptions(&app.db, tenant).await.map_err(RpcError::internal)?}))
             }
-            l::method::FLEET => answer(&crate::api::fleet(app, tenant).await.map_err(RpcError::internal)?),
+            l::method::FLEET => {
+                let mut fleet = crate::api::fleet(app, tenant).await.map_err(RpcError::internal)?;
+                // A node sees the sessions it may message (and its own).
+                let rules = crate::acl::rules(&app.db, tenant).await.map_err(RpcError::internal)?;
+                let default = crate::acl::default(&app.db, tenant).await.map_err(RpcError::internal)?;
+                let me = format!("-@{}", self.node);
+                if let Some(list) = fleet["sessions"].as_array_mut() {
+                    list.retain(|s| {
+                        let node = s["node"].as_str().unwrap_or_default();
+                        let name = s["meta"]["tab"].as_str().or(s["sessionId"].as_str()).unwrap_or_default();
+                        node == self.node
+                            || crate::acl::decide(&rules, default, &me, &format!("{name}@{node}"))
+                                == crate::acl::Action::Allow
+                    });
+                }
+                answer(&fleet)
+            }
             _ => Err(RpcError::method_not_found(method)),
         }
     }
