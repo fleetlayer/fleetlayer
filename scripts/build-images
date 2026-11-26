@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Builds and pushes a commit's images on the build host, in the background there:
+#   <registry>/fleetlayer/control:<sha>   (deploy/Dockerfile)
+#   <registry>/fleetlayer/node-bin:<sha>  (the Linux fleetlayer, fleetlayer-node and plugin binaries, FROM scratch)
+# Progress: /opt/code/fleetlayer/images/<sha>.log on the build host; <sha>.status there says "done 0" when both are
+# pushed (anything else is a failure).
+#
+#   scripts/build-images [--wait] [<commit>]    defaults to HEAD; the commit must be committed
+#
+# The build host comes from .dev-host or $FLEETLAYER_DEV_HOST, the registry from .registry or $FLEETLAYER_REGISTRY.
+set -euo pipefail
+dir=$(git rev-parse --show-toplevel)
+host=${FLEETLAYER_DEV_HOST:-$(cat "$dir/.dev-host" 2>/dev/null || true)}
+registry=${FLEETLAYER_REGISTRY:-$(cat "$dir/.registry" 2>/dev/null || true)}
+[ -n "$host" ] && [ -n "$registry" ] || { echo "scripts/build-images: set the build host and the registry (see the top of this file)" >&2; exit 2; }
+wait=
+if [ "${1:-}" = --wait ]; then wait=1; shift; fi
+sha=$(git rev-parse --short=7 "${1:-HEAD}")
+root=/opt/code/fleetlayer/images
+git archive "$sha" | ssh "$host" "mkdir -p $root/src && cd $root/src && find . -mindepth 1 -maxdepth 1 ! -name target -exec rm -rf {} + && tar -x -m -C ." 2>&1 | grep -v setlocale || true
+ssh "$host" "SHA=$sha R=$registry/fleetlayer ROOT=$root bash -s" > /dev/null 2>&1 <<'REMOTE' &
+cd $ROOT/src
+rm -f $ROOT/$SHA.status
+nohup sh -c "
+DOCKER_BUILDKIT=1 docker build -f deploy/Dockerfile -t $R/control:$SHA . > $ROOT/$SHA.log 2>&1 &&
+docker run --rm $R/control:$SHA --help > /dev/null 2>&1 &&
+docker push $R/control:$SHA >> $ROOT/$SHA.log 2>&1 &&
+docker run --rm -v $ROOT/src:/src -v fleetlayer-cargo-registry:/usr/local/cargo/registry -w /src rust:1.99.1-bookworm sh -c 'cargo build --release --locked -j 8 -p fleetlayer-cli -p fleetlayer-node -p fleetlayer-herdr -p fleetlayer-claude-code && rm -rf dist && mkdir dist && cp target/release/fleetlayer target/release/fleetlayer-node target/release/fleetlayer-herdr target/release/fleetlayer-claude-code dist/' >> $ROOT/$SHA.log 2>&1 &&
+cd dist && printf 'FROM scratch\nCOPY fleetlayer fleetlayer-node fleetlayer-herdr fleetlayer-claude-code /\n' > Dockerfile.node-bin &&
+DOCKER_BUILDKIT=1 docker build --platform linux/amd64 -f Dockerfile.node-bin -t $R/node-bin:$SHA . >> $ROOT/$SHA.log 2>&1 &&
+docker push $R/node-bin:$SHA >> $ROOT/$SHA.log 2>&1
+echo done \$? > $ROOT/$SHA.status" < /dev/null > /dev/null 2>&1 &
+REMOTE
+sleep 5
+echo "Building $sha on $host: $root/$sha.status says done 0 when control and node-bin are pushed."
+[ -n "$wait" ] || exit 0
+for _ in $(seq 1 90); do
+  status=$(ssh "$host" "cat $root/$sha.status 2>/dev/null" 2>/dev/null | grep -v setlocale || true)
+  if [ -n "$status" ]; then echo "$status"; [ "$status" = "done 0" ] && exit 0; exit 1; fi
+  sleep 20
+done
+echo "still building after 30 minutes" >&2
+exit 1
