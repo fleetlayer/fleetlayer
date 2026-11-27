@@ -38,6 +38,7 @@ pub const BINARIES: &[&str] = &[
     "fleetlayer-control",
     "fleetlayer-gateway",
     "fleetlayer-pages",
+    "fleetlayer-signin",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
