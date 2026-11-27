@@ -32,6 +32,21 @@ credentials) and `fleetlayer` (the command line).
 - **Tools that live on one machine**: your signed-in browser on a laptop, used by an agent on a server with
   `fleetlayer mcp browser@laptop`.
 
+## Works with
+
+The tools the author's own fleet runs on, and what Fleetlayer does with each:
+
+- **herdr** (https://herdr.dev): runs the sessions; Fleetlayer lists them, delivers messages into them and attaches to
+  their terminals.
+- **herdr relay** (coming): herdr on your phone through Fleetlayer's one connection, so you pair once and reach every
+  machine.
+- **Claude Code**: messages through its own channel, shared accounts and usage, year-long tokens on every machine.
+- **Codex**: its sessions run in herdr, so they're in the fleet and get messages like any other.
+- **Playwright MCP**: your signed-in browser on the laptop, used by agents on other machines.
+- **Syncthing**: pages and summaries are plain folders, synced to every machine you like.
+- **Gatus and Traefik**: on a server, Fleetlayer writes their config, a health check and an address for every service.
+- **restic**: backs up every machine; the backups guide sets it up for a fleet: https://fleetlayer.ai/guides/backups.md
+
 ## Start small, replace any component as you go
 
 Begin with everything on your laptop. When you outgrow it, move one piece to a home server or a VPS, or swap it for
