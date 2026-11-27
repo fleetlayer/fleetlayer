@@ -61,6 +61,9 @@ pub struct HubAccount {
     pub token: Option<String>,
     #[serde(default)]
     pub token_at: Option<Timestamp>,
+    /// The organization's rate-limit tier from the profile (`default_claude_max_20x`), for showing the plan.
+    #[serde(default)]
+    pub tier: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -94,10 +97,38 @@ enum Input {
     Pty(Box<dyn Write + Send>),
 }
 
+/// Stops a running flow: the flag for loops that check it, the notify for tasks that wait on the program.
+#[derive(Default)]
+struct Cancel {
+    flag: std::sync::atomic::AtomicBool,
+    notify: tokio::sync::Notify,
+}
+
+impl Cancel {
+    fn cancel(&self) {
+        self.flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.notify.notify_one();
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.flag.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// What the last poll learned about an account, for the page: its usage and why it needs signing in again.
+#[derive(Clone, Default)]
+struct Polled {
+    usage: Option<crate::coordinator::model::Reading>,
+    sign_in_needed: Option<String>,
+}
+
 struct Flow {
     kind: &'static str,
     slot: u32,
     started: Instant,
+    cancel: Arc<Cancel>,
+    /// Claude Code's latest message when the latest code went in: only a newer one is about that code.
+    message_at_paste: Option<String>,
     /// The sign-in URL once the program printed it.
     url: Arc<std::sync::Mutex<Option<String>>>,
     /// What it printed, the newest 64 KB (in memory only), for its latest message.
@@ -108,12 +139,59 @@ struct Flow {
     state: Arc<std::sync::Mutex<String>>,
 }
 
+impl Flow {
+    fn is_running(&self) -> bool {
+        *self.state.lock().unwrap() == "running"
+    }
+
+    /// Stops it if it's still running: the program is killed and the flow says `cancelled`.
+    fn stop(&self) {
+        let mut state = self.state.lock().unwrap();
+        if *state == "running" {
+            *state = "cancelled".into();
+            self.cancel.cancel();
+        }
+    }
+
+    /// The flow for the page. `stage` is where it is: `starting` (no link yet), `link` (waiting for the code),
+    /// `checking` (a code went in), `done`, `failed` or `cancelled`. `message` is what Claude Code said about the
+    /// latest code: a failure's reason, or, while a sign-in still runs, why it's waiting for the code again (a code
+    /// cut short).
+    fn json(&self, id: &str) -> Value {
+        let state = self.state.lock().unwrap().clone();
+        let url = self.url.lock().unwrap().clone();
+        let running = state == "running";
+        // A failure's reason; else only after a code went in, and only a newer message than the one on screen then
+        // (before, the latest line is the welcome text). A setup token's screen redraws as it works, so only its
+        // failure says anything.
+        let message = if let Some(why) = state.strip_prefix("failed: ") {
+            Some(why.to_string())
+        } else if !self.pasted || (running && self.kind != "sign_in") {
+            None
+        } else {
+            latest_message(&self.output.lock().unwrap()).filter(|m| Some(m) != self.message_at_paste.as_ref())
+        };
+        let stage = match state.as_str() {
+            "running" if url.is_none() => "starting",
+            // A sign-in that said something about the code is waiting for it again.
+            "running" if !self.pasted || message.is_some() => "link",
+            "running" => "checking",
+            "done" => "done",
+            "cancelled" => "cancelled",
+            _ => "failed",
+        };
+        json!({"id": id, "kind": self.kind, "slot": self.slot, "url": url, "state": state, "stage": stage,
+            "message": message, "seconds": self.started.elapsed().as_secs()})
+    }
+}
+
 pub struct Hub {
     cfg: HubConfig,
     store: Mutex<Store>,
     flows: Mutex<HashMap<String, Flow>>,
     sessions: Mutex<HashMap<String, Instant>>,
     failures: Mutex<HashMap<IpAddr, VecDeque<Instant>>>,
+    polled: Mutex<HashMap<u32, Polled>>,
     login: String,
 }
 
@@ -294,6 +372,7 @@ impl Hub {
             flows: Mutex::default(),
             sessions: Mutex::default(),
             failures: Mutex::default(),
+            polled: Mutex::default(),
             login,
         }))
     }
@@ -334,7 +413,7 @@ impl Hub {
     }
 
     /// Who a slot is signed in as, with its account UUID (from the profile endpoint) and the sign-in's expiry.
-    async fn identify(&self, slot: u32) -> Option<(String, Option<String>, Option<Timestamp>)> {
+    async fn identify(&self, slot: u32) -> Option<(String, Option<String>, Option<Timestamp>, Option<String>)> {
         use crate::coordinator::core::{Deps, Stored};
         let logger = crate::coordinator::deps::Logger::new(self.cfg.dir.join("hub.log"));
         let deps = crate::coordinator::deps::RealDeps::new(
@@ -348,12 +427,31 @@ impl Hub {
         let who =
             crate::coordinator::model::identity_from_profile(deps.fetch_profile(&cred.access_token).await.as_ref())?;
         let expires = cred.refresh_token_expires_at.and_then(|ms| Timestamp::from_millisecond(ms).ok());
-        Some((who.email?, who.account_uuid, expires))
+        Some((who.email?, who.account_uuid, expires, who.tier))
     }
 
     // ------------------------------------------------------------ flows
 
+    /// Before a new flow for an account: stop the one already running for it (two programs signing the same account
+    /// in would race), and forget finished flows nobody has looked at for a while.
+    async fn begin(&self, slot: u32) {
+        let mut flows = self.flows.lock().await;
+        for f in flows.values().filter(|f| f.slot == slot) {
+            f.stop();
+        }
+        flows.retain(|_, f| f.is_running() || f.started.elapsed() < FLOW_TIMEOUT + Duration::from_secs(60));
+    }
+
+    /// Stops a flow (its program is killed). False when there's no such flow; a finished flow stays as it ended.
+    pub async fn cancel_flow(&self, id: &str) -> bool {
+        let flows = self.flows.lock().await;
+        let Some(f) = flows.get(id) else { return false };
+        f.stop();
+        true
+    }
+
     async fn start_sign_in(self: &Arc<Self>, slot: u32) -> anyhow::Result<String> {
+        self.begin(slot).await;
         let path = self.slot_path(slot);
         std::fs::create_dir_all(&path)?;
         let mut child = tokio::process::Command::new(&self.cfg.claude)
@@ -372,6 +470,7 @@ impl Hub {
         let url = Arc::new(std::sync::Mutex::new(None));
         let output = Arc::new(std::sync::Mutex::new(String::new()));
         let state = Arc::new(std::sync::Mutex::new("running".to_string()));
+        let cancel = Arc::new(Cancel::default());
         for stream in [Box::new(stdout) as Box<dyn tokio::io::AsyncRead + Send + Unpin>, Box::new(stderr)] {
             let (url, output) = (url.clone(), output.clone());
             tokio::spawn(async move {
@@ -391,9 +490,20 @@ impl Hub {
             });
         }
         {
-            let (hub, state, output) = (self.clone(), state.clone(), output.clone());
+            let (hub, state, output, cancel) = (self.clone(), state.clone(), output.clone(), cancel.clone());
             tokio::spawn(async move {
-                let result = tokio::time::timeout(FLOW_TIMEOUT, child.wait()).await;
+                let result = tokio::select! {
+                    r = tokio::time::timeout(FLOW_TIMEOUT, child.wait()) => Some(r),
+                    _ = cancel.notify.notified() => None,
+                };
+                // Cancelled: stop the program; the flow already says so.
+                let Some(result) = result else {
+                    let _ = child.kill().await;
+                    return;
+                };
+                if cancel.is_cancelled() {
+                    return;
+                }
                 let ok = matches!(result, Ok(Ok(s)) if s.success());
                 if !ok {
                     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -403,7 +513,7 @@ impl Hub {
                     return;
                 }
                 match hub.identify(slot).await {
-                    Some((email, uuid, expires)) => {
+                    Some((email, uuid, expires, tier)) => {
                         let mut store = hub.store.lock().await;
                         let a = store.accounts.entry(slot).or_default();
                         a.email = Some(email.clone());
@@ -412,9 +522,16 @@ impl Hub {
                         }
                         a.signed_in_at = Some(Timestamp::now());
                         a.sign_in_expires_at = expires;
+                        if tier.is_some() {
+                            a.tier = tier;
+                        }
                         let snapshot = store.clone();
                         drop(store);
                         let _ = hub.save(&snapshot).await;
+                        // Whatever the last poll found wrong with the old sign-in, this one replaces it.
+                        if let Some(p) = hub.polled.lock().await.get_mut(&slot) {
+                            p.sign_in_needed = None;
+                        }
                         tracing::info!(slot, email = %email, "signed in");
                         *state.lock().unwrap() = "done".into();
                     }
@@ -428,6 +545,8 @@ impl Hub {
                 kind: "sign_in",
                 slot,
                 started: Instant::now(),
+                cancel,
+                message_at_paste: None,
                 url,
                 output,
                 input: Some(Input::Pipe(stdin)),
@@ -439,11 +558,14 @@ impl Hub {
     }
 
     async fn start_setup_token(self: &Arc<Self>, slot: u32) -> anyhow::Result<String> {
+        self.begin(slot).await;
         use portable_pty::{CommandBuilder, PtySize, native_pty_system};
         let pty = native_pty_system();
         let pair = pty.openpty(PtySize { rows: 50, cols: 200, pixel_width: 0, pixel_height: 0 })?;
-        // A throwaway config directory: setup-token signs in only to print the token.
-        let scratch = self.cfg.dir.join(format!("setup-{slot}"));
+        let id = new_id();
+        // A throwaway config directory: setup-token signs in only to print the token. Its own per flow: a stopped
+        // flow removes its folder after a new one for the same account has started.
+        let scratch = self.cfg.dir.join(format!("setup-{slot}-{}", &id[..12]));
         let _ = std::fs::remove_dir_all(&scratch);
         std::fs::create_dir_all(&scratch)?;
         let mut cmd = CommandBuilder::new(&self.cfg.claude);
@@ -458,10 +580,10 @@ impl Hub {
         drop(pair.slave);
         let mut reader = pair.master.try_clone_reader()?;
         let writer = pair.master.take_writer()?;
-        let id = new_id();
         let url = Arc::new(std::sync::Mutex::new(None));
         let output = Arc::new(std::sync::Mutex::new(String::new()));
         let state = Arc::new(std::sync::Mutex::new("running".to_string()));
+        let cancel = Arc::new(Cancel::default());
         {
             let (url, output) = (url.clone(), output.clone());
             std::thread::spawn(move || {
@@ -489,12 +611,15 @@ impl Hub {
             });
         }
         {
-            let (hub, state, output) = (self.clone(), state.clone(), output.clone());
+            let (hub, state, output, cancel) = (self.clone(), state.clone(), output.clone(), cancel.clone());
             let master = pair.master;
             tokio::spawn(async move {
                 let started = Instant::now();
                 loop {
                     tokio::time::sleep(Duration::from_millis(500)).await;
+                    if cancel.is_cancelled() {
+                        break;
+                    }
                     let token = find_token(&output.lock().unwrap());
                     if let Some(token) = token {
                         // Kept and sent only once it works: one small request with the token alone.
@@ -507,6 +632,9 @@ impl Hub {
                             tracing::warn!(slot, "the setup token Claude Code printed doesn't work: {why}");
                             *state.lock().unwrap() =
                                 format!("failed: the token Claude Code printed doesn't work ({why}). Start again.");
+                            break;
+                        }
+                        if cancel.is_cancelled() {
                             break;
                         }
                         let mut store = hub.store.lock().await;
@@ -552,6 +680,8 @@ impl Hub {
                 kind: "setup_token",
                 slot,
                 started: Instant::now(),
+                cancel,
+                message_at_paste: None,
                 url,
                 output,
                 input: Some(Input::Pty(writer)),
@@ -585,6 +715,7 @@ impl Hub {
             }
             None => anyhow::bail!("this sign-in isn't waiting for a code"),
         }
+        f.message_at_paste = latest_message(&f.output.lock().unwrap());
         f.pasted = true;
         Ok(())
     }
@@ -592,18 +723,14 @@ impl Hub {
     async fn flow_json(&self, id: &str) -> Option<Value> {
         let flows = self.flows.lock().await;
         let f = flows.get(id)?;
-        let state = f.state.lock().unwrap().clone();
-        // Only after a code went in: before that, the latest line is the welcome text.
-        let message = if f.pasted { latest_message(&f.output.lock().unwrap()) } else { None };
-        Some(
-            json!({"id": id, "kind": f.kind, "slot": f.slot, "url": *f.url.lock().unwrap(), "state": state, "message": message,
-            "seconds": f.started.elapsed().as_secs()}),
-        )
+        Some(f.json(id))
     }
 
-    /// What the page shows: accounts (never their tokens), their dates and warnings.
+    /// What the page shows: accounts (never their tokens), their dates and warnings, what the last poll found (usage,
+    /// a sign-in it found no longer works), and the flows still running, so a reloaded page can pick them up.
     async fn state_json(&self) -> Value {
         let store = self.store.lock().await;
+        let polled = self.polled.lock().await.clone();
         let accounts: Vec<Value> = store
             .accounts
             .iter()
@@ -614,14 +741,30 @@ impl Hub {
                     .map(|e| e.duration_since(Timestamp::now()).as_secs() / 86_400)
                     .or(signin_days.map(|d| SIGNIN_LIFETIME_DAYS - d));
                 let token_left = a.token_at.map(|t| TOKEN_LIFETIME_DAYS - days_since(t));
-                json!({"slot": slot, "email": a.email, "accountUuid": a.account_uuid,
+                let signin_expires = a.sign_in_expires_at.or(a
+                    .signed_in_at
+                    .map(|t| t + SignedDuration::from_hours(24 * SIGNIN_LIFETIME_DAYS)));
+                let token_expires = a.token_at.map(|t| t + SignedDuration::from_hours(24 * TOKEN_LIFETIME_DAYS));
+                let p = polled.get(slot).cloned().unwrap_or_default();
+                json!({"slot": slot, "email": a.email, "accountUuid": a.account_uuid, "tier": a.tier,
+                    "signInExpiresAt": signin_expires, "tokenExpiresAt": token_expires,
+                    "signInNeeded": p.sign_in_needed, "usage": p.usage,
                     "signedInAt": a.signed_in_at, "signInDaysLeft": signin_left,
                     "signInWarn": signin_days.is_some_and(|d| d >= SIGNIN_WARN_DAYS) || signin_left.is_some_and(|l| l <= SIGNIN_LIFETIME_DAYS - SIGNIN_WARN_DAYS),
                     "hasToken": a.token.is_some(), "tokenAt": a.token_at, "tokenDaysLeft": token_left,
                     "tokenWarn": token_left.is_some_and(|l| l <= TOKEN_WARN_DAYS_LEFT)})
             })
             .collect();
-        json!({"accounts": accounts})
+        drop(store);
+        let flows: Vec<Value> = self
+            .flows
+            .lock()
+            .await
+            .iter()
+            .filter(|(_, f)| f.is_running())
+            .map(|(id, f)| json!({"id": id, "kind": f.kind, "slot": f.slot}))
+            .collect();
+        json!({"accounts": accounts, "flows": flows})
     }
 
     /// The readings the hub publishes about its accounts: sign-in and setup-token ages, with warnings.
@@ -663,7 +806,14 @@ impl Hub {
         }
         let snapshot = store.clone();
         drop(store);
-        self.flows.lock().await.retain(|_, f| f.slot != slot);
+        {
+            let mut flows = self.flows.lock().await;
+            for f in flows.values().filter(|f| f.slot == slot) {
+                f.stop();
+            }
+            flows.retain(|_, f| f.slot != slot);
+        }
+        self.polled.lock().await.remove(&slot);
         let path = self.slot_path(slot);
         if path.exists() {
             self.deps().sign_out(&path.display().to_string()).await;
@@ -696,6 +846,7 @@ impl Hub {
         let mut readings = vec![];
         let mut problems = vec![];
         let mut sign_in_needed = HashMap::new();
+        let mut usage = HashMap::new();
         for (slot, a) in accounts {
             let (Some(uuid), Some(_)) = (a.account_uuid.clone(), a.signed_in_at) else { continue };
             let path = self.slot_path(slot).display().to_string();
@@ -722,6 +873,7 @@ impl Hub {
             match deps.fetch_usage(&cred.access_token).await {
                 UsageAnswer::Ok(body) => {
                     if let Some(r) = crate::coordinator::model::reading_from_usage(&body, now) {
+                        usage.insert(slot, r.clone());
                         let mut data = serde_json::to_value(&r).unwrap_or_default();
                         data["source"] = json!("poll");
                         readings.push(ext::Reading {
@@ -740,6 +892,16 @@ impl Hub {
                 UsageAnswer::Failed { status, .. } => {
                     problems.push(format!("account {slot}: the usage endpoint answered {status}"))
                 }
+            }
+        }
+        {
+            let mut polled = self.polled.lock().await;
+            polled.clear();
+            for (slot, r) in usage {
+                polled.entry(slot).or_default().usage = Some(r);
+            }
+            for (slot, why) in &sign_in_needed {
+                polled.entry(*slot).or_default().sign_in_needed = Some(why.clone());
             }
         }
         for v in self.readings_with(&sign_in_needed).await {
@@ -815,9 +977,49 @@ pub fn router(hub: Arc<Hub>) -> Router {
         .route("/api/accounts/{slot}", axum::routing::delete(api_delete))
         .route("/api/accounts/{slot}/sign-in", post(api_sign_in))
         .route("/api/accounts/{slot}/setup-token", post(api_setup_token))
-        .route("/api/flows/{id}", get(api_flow))
+        .route("/api/flows/{id}", get(api_flow).delete(api_cancel))
         .route("/api/flows/{id}/code", post(api_code))
+        .route("/assets/{name}", get(asset))
+        .layer(axum::middleware::map_response(security_headers))
         .with_state(hub)
+}
+
+/// The page's own files, built into the binary: no CDN, nothing fetched at runtime.
+const ASSETS: &[(&str, &str, &str)] = &[
+    ("hub.css", "text/css; charset=utf-8", include_str!("../web/hub.css")),
+    ("app.js", "text/javascript; charset=utf-8", include_str!("../web/app.js")),
+    ("icon.svg", "image/svg+xml", include_str!("../web/icon.svg")),
+];
+
+async fn asset(UrlPath(name): UrlPath<String>) -> Response {
+    match ASSETS.iter().find(|(n, _, _)| *n == name) {
+        Some((_, kind, body)) => {
+            ([(header::CONTENT_TYPE, *kind), (header::CACHE_CONTROL, "no-cache")], *body).into_response()
+        }
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// On every answer: scripts and styles only from the hub itself (none inline), no framing, no referrer to the
+/// sign-in page it links to, and nothing cached but its own files.
+async fn security_headers(mut res: Response) -> Response {
+    let h = res.headers_mut();
+    let set = |h: &mut HeaderMap, k: &'static str, v: &'static str| {
+        h.insert(header::HeaderName::from_static(k), header::HeaderValue::from_static(v));
+    };
+    set(
+        h,
+        "content-security-policy",
+        "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; \
+        form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+    );
+    set(h, "x-frame-options", "DENY");
+    set(h, "referrer-policy", "no-referrer");
+    set(h, "x-content-type-options", "nosniff");
+    if !h.contains_key(header::CACHE_CONTROL) {
+        set(h, "cache-control", "no-store");
+    }
+    res
 }
 
 pub async fn serve(hub: Arc<Hub>) -> anyhow::Result<()> {
@@ -834,29 +1036,22 @@ async fn healthz(State(hub): Ctx) -> impl IntoResponse {
     }
 }
 
-const LOGIN_HTML: &str = r#"<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
-<title>Claude hub</title><style>body{font:16px system-ui;max-width:30rem;margin:4rem auto;padding:0 1rem;line-height:1.45}
-input,button{font:inherit;padding:.5rem;width:100%;box-sizing:border-box;margin:.25rem 0}.hint{color:#666;font-size:.9em}
-.msg{color:#b91c1c}@media (prefers-color-scheme:dark){body{background:#111;color:#ddd}.hint{color:#999}.msg{color:#f87171}}</style>
-<h1>Claude hub</h1>
-<p>This hub holds your fleet's Claude sign-ins and sends each account's setup token to your machines, sealed.</p>
-<p>To open it, paste the hub's own login key: the long random value set up with the hub. Signing in to your Claude
-accounts comes next, on the following page.</p>
-<form method=post action=/login><label for=login>Hub login key</label>
-<input type=password id=login name=login autocomplete=current-password autofocus><button>Open the hub</button></form>
-{hint}<p class=msg>{msg}</p>"#;
+const LOGIN_HTML: &str = include_str!("../web/login.html");
 
 fn esc(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
 fn login_html(hub: &Hub, msg: &str) -> Html<String> {
-    let hint = hub
-        .cfg
-        .login_hint
-        .as_deref()
-        .map_or(String::new(), |h| format!("<p class=hint>Where the key is: {}</p>", esc(h)));
-    Html(LOGIN_HTML.replace("{hint}", &hint).replace("{msg}", msg))
+    let hint =
+        hub.cfg.login_hint.as_deref().map_or(String::new(), |h| format!(r#"<p class="login-hint">{}</p>"#, esc(h)));
+    let msg = if msg.is_empty() {
+        String::new()
+    } else {
+        format!(r#"<p class="field-error" id="login-error" role="alert">{}</p>"#, esc(msg))
+    };
+    let invalid = if msg.is_empty() { "" } else { r#" aria-invalid="true" aria-describedby="login-error""# };
+    Html(LOGIN_HTML.replace("{hint}", &hint).replace("{msg}", &msg).replace("{invalid}", invalid))
 }
 
 async fn login_page(State(hub): Ctx) -> Html<String> {
@@ -898,7 +1093,11 @@ async fn logout(State(hub): Ctx, headers: HeaderMap) -> Response {
     {
         hub.sessions.lock().await.remove(&sid);
     }
-    ([(header::SET_COOKIE, "hub_session=; Max-Age=0; Path=/")], Redirect::to("/login")).into_response()
+    (
+        [(header::SET_COOKIE, "hub_session=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0")],
+        Redirect::to("/login"),
+    )
+        .into_response()
 }
 
 async fn page(State(hub): Ctx, headers: HeaderMap) -> Response {
@@ -973,6 +1172,17 @@ async fn api_flow(State(hub): Ctx, headers: HeaderMap, UrlPath(id): UrlPath<Stri
     }
 }
 
+async fn api_cancel(State(hub): Ctx, headers: HeaderMap, UrlPath(id): UrlPath<String>) -> Response {
+    guard!(hub, headers);
+    if !hub.cancel_flow(&id).await {
+        return (StatusCode::NOT_FOUND, Json(json!({"error": "no such sign-in"}))).into_response();
+    }
+    match hub.flow_json(&id).await {
+        Some(v) => Json(v).into_response(),
+        None => Json(json!({"ok": true})).into_response(),
+    }
+}
+
 #[derive(Deserialize)]
 struct CodeBody {
     code: String,
@@ -991,49 +1201,7 @@ async fn api_code(
     }
 }
 
-const PAGE_HTML: &str = r#"<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
-<title>Claude hub</title>
-<style>
-body{font:15px system-ui;max-width:52rem;margin:2rem auto;padding:0 1rem;color:#222}
-table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:.5rem;border-bottom:1px solid #ddd}
-button{font:inherit;padding:.35rem .7rem;cursor:pointer}.warn{color:#b45309;font-weight:600}
-#flow{border:1px solid #ccc;padding:1rem;margin:1rem 0;display:none}input{font:inherit;padding:.4rem;width:70%}
-@media (prefers-color-scheme:dark){body{background:#111;color:#ddd}td,th{border-color:#333}#flow{border-color:#444}}
-</style>
-<h1>Claude hub</h1>
-<p>Each account needs two things, so it has two buttons:</p>
-<ul><li><b>Sign in</b>: the account's normal sign-in. The hub uses it only to read the account's usage. Redo it about
-once a month; the hub warns a few days before it runs out.</li>
-<li><b>Make setup token</b>: the token your machines get, sealed, for their agents to use. It lasts a year.</li></ul>
-<p>Both open Claude's sign-in page: sign in as that account, then paste the code it shows back here.</p>
-<div id=flow><p id=fstate></p><p id=furl></p>
-<p><input id=code placeholder="Paste the code from the sign-in page"> <button onclick=paste()>Send</button></p></div>
-<table><thead><tr><th>#</th><th>Account</th><th>Sign-in</th><th>Setup token</th><th></th></tr></thead><tbody id=rows></tbody></table>
-<p><button onclick=add()>Add an account</button>
-<form method=post action=/logout style=display:inline><button>Log out</button></form></p>
-<script>
-let flow=null;
-async function j(u,o){const r=await fetch(u,o);return r.json()}
-function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
-let accts=[];
-async function load(){const s=await j('/api/state');accts=s.accounts;document.getElementById('rows').innerHTML=s.accounts.map(a=>`<tr>
-<td>${a.slot}</td><td>${esc(a.email)||'<i>not signed in</i>'}</td>
-<td class="${a.signInWarn?'warn':''}">${a.signedInAt?(a.signInDaysLeft+' days left'):'—'}</td>
-<td class="${a.tokenWarn?'warn':''}">${a.hasToken?(a.tokenDaysLeft+' days left'):'—'}</td>
-<td><button onclick="start(${a.slot},'sign-in')">Sign in</button> <button onclick="start(${a.slot},'setup-token')">Make setup token</button>
-<button onclick="del(${a.slot})">Delete</button></td></tr>`).join('')}
-async function del(slot){const email=(accts.find(a=>a.slot===slot)||{}).email;if(!confirm(`Delete account ${slot}${email?' ('+email+')':''}? Its sign-in here is signed out, and every machine clears account ${slot} on the next publish. To revoke its setup token as well, do it on claude.ai.`))return;
-const r=await j('/api/accounts/'+slot,{method:'DELETE'});if(r.error)alert(r.error);load()}
-async function add(){await j('/api/accounts',{method:'POST'});load()}
-async function start(slot,kind){const r=await j(`/api/accounts/${slot}/${kind}`,{method:'POST'});if(r.error){alert(r.error);return}
-flow=r.id;document.getElementById('flow').style.display='block';poll()}
-async function poll(){if(!flow)return;const f=await j('/api/flows/'+flow);
-document.getElementById('fstate').textContent=(f.kind==='sign_in'?'Signing in':'Making a setup token')+' for account '+f.slot+': '+f.state+(f.message&&f.state==='running'?' ('+f.message+')':'');
-document.getElementById('furl').innerHTML=f.url?`<a href="${esc(f.url)}" target=_blank rel=noopener>Open the sign-in page</a>, sign in as that account, then paste the code it shows below.`:'Waiting for the sign-in link…';
-if(f.state==='running')setTimeout(poll,1500);else{flow=null;load()}}
-async function paste(){const c=document.getElementById('code');const r=await j('/api/flows/'+flow+'/code',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({code:c.value})});c.value='';if(r.error)alert(r.error)}
-load();
-</script>"#;
+const PAGE_HTML: &str = include_str!("../web/app.html");
 
 #[cfg(test)]
 mod tests {
@@ -1093,7 +1261,7 @@ mod tests {
         .unwrap();
         assert!(hub.check_login(&"x".repeat(40)));
         let page = login_html(&hub, "").0;
-        assert!(!page.contains("Where the key is"), "no hint unless configured");
+        assert!(!page.contains("login-hint"), "no hint unless configured");
         assert!(!page.contains(&"x".repeat(40)), "never the key");
         assert!(!hub.check_login("nope"));
         let ip: IpAddr = "192.0.2.1".parse().unwrap();
@@ -1150,5 +1318,146 @@ mod tests {
         assert!(!hub.delete(2).await.unwrap());
         let tokens: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(hub.tokens_file()).unwrap()).unwrap();
         assert!(tokens.is_empty());
+    }
+
+    fn test_hub(d: &Path, claude: PathBuf) -> Arc<Hub> {
+        std::fs::write(d.join("login"), "z".repeat(40)).unwrap();
+        Hub::open(HubConfig {
+            dir: d.join("hub"),
+            claude,
+            listen: "127.0.0.1:0".parse().unwrap(),
+            login_file: d.join("login"),
+            trusted_proxies: vec![],
+            heartbeat: None,
+            login_hint: None,
+        })
+        .unwrap()
+    }
+
+    /// A stand-in for `claude auth login`: prints a sign-in URL, says a code without a `#` is cut short and waits
+    /// for another, refuses any other code; writes its process ID so a test can see it stopped.
+    fn fake_claude(d: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = d.join("claude");
+        let script = format!(
+            "#!/bin/sh\necho $$ > {pid}\necho 'Visit: https://claude.ai/oauth/authorize?fake=1'\n\
+            printf 'Paste code here if prompted > '\nwhile read code; do\n  case \"$code\" in\n    \
+            *'#'*) echo \"Couldn't log in: that code wasn't accepted.\"; exit 1;;\n    \
+            *) printf \"That doesn't look like the full code.\\nPaste code here if prompted > \";;\n  esac\ndone\n",
+            pid = d.join("pid").display()
+        );
+        std::fs::write(&bin, script).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        bin
+    }
+
+    async fn flow_until(hub: &Hub, id: &str, stage: &str) -> Value {
+        for _ in 0..100 {
+            let f = hub.flow_json(id).await.unwrap();
+            if f["stage"] == stage {
+                return f;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("the flow never reached {stage}: {}", hub.flow_json(id).await.unwrap());
+    }
+
+    fn alive(pid_file: &Path) -> bool {
+        let pid = std::fs::read_to_string(pid_file).unwrap().trim().to_string();
+        std::process::Command::new("kill").args(["-0", &pid]).stderr(Stdio::null()).status().unwrap().success()
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_shows_its_stages_and_claude_codes_messages_and_cancel_stops_it() {
+        let d = tempfile::tempdir().unwrap();
+        let hub = test_hub(d.path(), fake_claude(d.path()));
+        hub.store.lock().await.accounts.insert(1, HubAccount::default());
+
+        let id = hub.start_sign_in(1).await.unwrap();
+        let f = flow_until(&hub, &id, "link").await;
+        assert_eq!(f["url"], "https://claude.ai/oauth/authorize?fake=1");
+        assert!(f["message"].is_null(), "nothing said about a code before one went in");
+        let st = hub.state_json().await;
+        assert_eq!(st["flows"][0]["id"], id.as_str(), "a running flow is listed, for a reloaded page");
+
+        // A code cut short: Claude Code says so and waits for the code again.
+        hub.paste(&id, "abc").await.unwrap();
+        let f = flow_until(&hub, &id, "link").await;
+        let f = if f["message"].is_null() {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            hub.flow_json(&id).await.unwrap()
+        } else {
+            f
+        };
+        assert_eq!(f["message"], "That doesn't look like the full code.");
+        // A refused code ends it, with Claude Code's reason.
+        hub.paste(&id, "abc#def").await.unwrap();
+        let f = flow_until(&hub, &id, "failed").await;
+        assert_eq!(f["message"], "Couldn't log in: that code wasn't accepted.");
+        assert!(hub.state_json().await["flows"].as_array().unwrap().is_empty());
+
+        // Cancel kills the program.
+        let id = hub.start_sign_in(1).await.unwrap();
+        flow_until(&hub, &id, "link").await;
+        assert!(alive(&d.path().join("pid")));
+        assert!(hub.cancel_flow(&id).await);
+        assert_eq!(hub.flow_json(&id).await.unwrap()["stage"], "cancelled");
+        let mut stopped = false;
+        for _ in 0..40 {
+            if !alive(&d.path().join("pid")) {
+                stopped = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(stopped, "the cancelled sign-in's program is stopped");
+        assert!(!hub.cancel_flow("nope").await);
+
+        // A new flow for the same account stops the one already running.
+        let first = hub.start_sign_in(1).await.unwrap();
+        flow_until(&hub, &first, "link").await;
+        let second = hub.start_sign_in(1).await.unwrap();
+        assert_eq!(hub.flow_json(&first).await.unwrap()["stage"], "cancelled");
+        flow_until(&hub, &second, "link").await;
+        // Deleting the account stops its flow too.
+        assert!(hub.delete(1).await.unwrap());
+        assert!(hub.flow_json(&second).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn every_answer_carries_the_security_headers_and_the_api_needs_the_login() {
+        let d = tempfile::tempdir().unwrap();
+        let hub = test_hub(d.path(), "claude".into());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router(hub).into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
+        });
+        let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+        let base = format!("http://{addr}");
+        for path in ["/login", "/", "/api/state", "/assets/hub.css", "/healthz"] {
+            let r = client.get(format!("{base}{path}")).send().await.unwrap();
+            let h = r.headers();
+            let csp = h["content-security-policy"].to_str().unwrap();
+            assert!(csp.contains("script-src 'self'") && !csp.contains("unsafe-inline"), "{path}: {csp}");
+            assert!(csp.contains("frame-ancestors 'none'"), "{path}");
+            assert_eq!(h["x-frame-options"], "DENY", "{path}");
+            assert_eq!(h["referrer-policy"], "no-referrer", "{path}");
+        }
+        let r = client.get(format!("{base}/api/state")).send().await.unwrap();
+        assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+        let r = client.delete(format!("{base}/api/flows/x")).send().await.unwrap();
+        assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "cancel needs the login too");
+        let r = client.get(format!("{base}/")).send().await.unwrap();
+        assert_eq!(r.status(), StatusCode::SEE_OTHER);
+        let r = client.get(format!("{base}/assets/app.js")).send().await.unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        assert!(r.headers()["content-type"].to_str().unwrap().starts_with("text/javascript"));
+        assert_eq!(client.get(format!("{base}/assets/nope")).send().await.unwrap().status(), StatusCode::NOT_FOUND);
+        let page = client.get(format!("{base}/login")).send().await.unwrap().text().await.unwrap();
+        assert!(!page.contains("<script>") && !page.contains("onclick"), "no inline script");
+        for (_, _, body) in ASSETS {
+            assert!(!body.contains("localStorage"), "nothing kept in the browser");
+        }
     }
 }

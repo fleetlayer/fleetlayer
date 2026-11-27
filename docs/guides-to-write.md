@@ -200,3 +200,18 @@ managers, machines that sleep.
     The pick depends on scale: one machine and a few sessions, claude-swap or the original; many sessions on one
     machine, the fork; many machines, claude-auth-manager. Where it lives now: docs/plugins/claude-auth-manager.md,
     the fork's README, the codexbar brief.
+- **A web page for secrets that ships inside a Rust binary.** The hub's page (sign-in links and codes pass through
+  it) embeds its HTML, CSS and JS with `include_str!` and serves them from its own routes, so the CSP can be
+  `script-src 'self'; style-src 'self'` with no `unsafe-inline`. Footguns: inline `style=""` attributes are blocked
+  too (set CSS custom properties from JS through `el.style.setProperty`, which CSP allows); a link to an outside
+  sign-in page leaks the page's address unless `Referrer-Policy: no-referrer`; a native `<dialog>` closed with Escape
+  fires `cancel`, which must also stop the server-side flow or the program keeps running until its timeout. Where it
+  lives: `plugins/claude-auth-manager/src/hub.rs` (`security_headers`, `ASSETS`) and `web/`.
+- **Claude's sign-in codes have a `#` in the middle, and copying from the browser can cut them short.** `claude auth
+  login` says so and waits for the code again; `claude setup-token` fails outright and needs a new link. The hub's
+  page refuses a code without a `#` before sending it, so a setup token isn't lost to a short copy. Where it lives:
+  `plugins/claude-auth-manager/web/app.js` (`sendCode`).
+- **Screenshots of a web UI from a small headless VM.** Use a Playwright browser already on the machine
+  (`playwright-core` + `chromium_headless_shell`, pointing `executablePath` at it when versions differ) on
+  localhost, with a small mock of the API that serves the real page files, so every state (failures, a code cut
+  short, done) can be shown without real sign-ins and nothing opens to the network.

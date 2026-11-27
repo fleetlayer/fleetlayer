@@ -131,8 +131,21 @@ plugins:
   numbers on every machine: account 1 is each machine's default sign-in (`~/.claude`), 2 and up the rotator's slots. A
   new account takes the lowest free number. **Delete** signs the account's normal sign-in out, removes it, and every
   machine clears that slot on the next publish (a setup token itself can only be revoked on claude.ai). Claude Code's
-  own messages (a code cut short, a code refused) appear
-  on the page.
+  own messages (a code cut short, a code refused) appear on the page.
+- **The page** lists the accounts with each one's sign-in, setup token and usage at a glance, and offers the one
+  action an account needs next (Set up, Sign in, Make token). Each flow runs in a dialog: open the sign-in link, paste
+  the code, checking, done; it closes by itself and the account updates in place. "Set up" runs the sign-in and the
+  setup token back to back. Cancel stops the flow on the hub (its `claude` is killed). Starting a flow for an account
+  stops the one already running for it; a reloaded page offers to continue a flow still running. Its files
+  (`plugins/claude-auth-manager/web/`) are built into the binary: no CDN, no inline script. Every answer carries a
+  strict Content-Security-Policy, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` (so the sign-in page never
+  learns the hub's address) and `Cache-Control: no-store`; sign-in links, codes and tokens are never stored in the
+  browser.
+- **The JSON API** (every route behind the login): `GET /api/state` (accounts with `tier`, `signInExpiresAt`,
+  `tokenExpiresAt`, the last poll's `usage` and `signInNeeded`, and the running `flows`), `POST /api/accounts`, `DELETE
+  /api/accounts/{n}`, `POST /api/accounts/{n}/sign-in` and `/setup-token` (answer a flow `id`), `GET /api/flows/{id}`
+  (`stage`: `starting`, `link`, `checking`, `done`, `failed` or `cancelled`; `url`; `message`, Claude Code's words
+  about the latest code), `POST /api/flows/{id}/code` and `DELETE /api/flows/{id}` (cancel).
 - **Its folder** holds `hub.json` (accounts and dates), `tokens.json` (the bundle, 0600, published whenever it changes)
   and `home/.claude/accounts/<n>` (the normal sign-ins). Losing it costs a few minutes of signing in again; the tokens
   already on the nodes keep working for up to a year, so leaving it out of backups is the safer choice.

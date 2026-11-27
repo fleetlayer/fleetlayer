@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="robots" content="noindex">
+<title>Claude hub</title>
+<link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/assets/hub.css">
+<script src="/assets/app.js" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="wrap topbar-in">
+    <a class="brand" href="/"><img src="/assets/icon.svg" alt="" width="24" height="24">Claude hub</a>
+    <div class="topbar-actions">
+      <form method="post" action="/logout"><button class="btn btn-ghost btn-sm" type="submit">Log out</button></form>
+      <button class="btn btn-primary btn-sm" type="button" id="add" hidden>
+        <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span class="lbl-long">Add account</span><span class="lbl-short">Add</span>
+      </button>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+  <div class="page-head">
+    <h1>Accounts</h1>
+    <p class="summary" id="summary" aria-live="polite"></p>
+  </div>
+  <section class="list" id="list" aria-busy="true" aria-label="Accounts">
+    <div class="acct" aria-hidden="true">
+      <div class="acct-id"><span class="num"></span><div class="who"><span class="skeleton"></span></div></div>
+      <div class="acct-stats"><span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span></div>
+      <div class="acct-actions"></div>
+    </div>
+    <div class="acct" aria-hidden="true">
+      <div class="acct-id"><span class="num"></span><div class="who"><span class="skeleton"></span></div></div>
+      <div class="acct-stats"><span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span></div>
+      <div class="acct-actions"></div>
+    </div>
+  </section>
+</main>
+
+<div class="menu" id="menu" popover role="menu" aria-label="Account actions"></div>
+
+<dialog id="flow" aria-labelledby="flow-title"></dialog>
+
+<dialog id="confirm" aria-labelledby="confirm-title">
+  <div class="dlg-head"><div><h2 id="confirm-title"></h2><p class="dlg-sub" id="confirm-sub"></p></div></div>
+  <div class="dlg-body">
+    <p id="confirm-text"></p>
+    <p>Its setup token stays valid until you revoke it on claude.ai.</p>
+  </div>
+  <div class="dlg-foot">
+    <button class="btn" type="button" id="confirm-no">Cancel</button>
+    <button class="btn btn-danger" type="button" id="confirm-yes">Delete account</button>
+  </div>
+</dialog>
+
+<div class="toast" id="toast" role="status" hidden></div>
+</body>
+</html>
