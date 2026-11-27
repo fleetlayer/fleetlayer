@@ -1,8 +1,8 @@
 # Fleetlayer sign-in: one sign-in for every service
 
 Status: design (27 November 2026). Steps 1a (people, tenants, teams, memberships, invites, node owners on the control
-plane) and 1b (decisions in the owning tenant, people in the policy, the check call) are built; the rest follows the
-steps at the end, each one shippable.
+plane), 1b (decisions in the owning tenant, people in the policy, the check call) and 1c (the sign-in token and its
+routes) are built; the rest follows the steps at the end, each one shippable.
 
 People sign in once, with Fleetlayer, to every web service the fleet runs: the Claude sign-in hub, pages, and any
 other service someone chooses to run. Who may use what comes from the same access policy that decides what agents may
@@ -318,10 +318,23 @@ tenant per request. No dynamic registration.
   --tenant --owner`, run with the control plane's admin token; `fleetlayer-control signin token` makes the sign-in
   service's token. The first admin of a deployment: `fleetlayer-control invite --tenant home --handle a --role admin`
   prints their link.
-- **The control plane's side** (sign-in token only): `signin/person {personId}` → memberships `[{tenant, handle,
-  role, teams, enabled}]`; `signin/invite_redeem {code, personId}`; `signin/check {tenant, who, can, to}`;
-  `signin/event {kind, personId?, tenant?, method}`. Every membership change (invited, joined, removed, role or team
-  changed) is written to that tenant's audit log, whoever made it.
+- **The control plane's side** (built in 1c), `POST` with the sign-in token as a bearer token; no node, API or admin
+  token reaches these, and the sign-in token reaches nothing else:
+  - `/v1/signin/person {person}` → `{id, display_name, tenants: [{tenant, slug, name, handle, role, teams, groups}]}`:
+    what each tenant's ID token says (`teams` with the teams above them and without `everyone`, `groups` the flat
+    claim). 404 for an unknown ID.
+  - `/v1/signin/invite_redeem {code, display_name | person}` → `{tenant, person, handle, recovery}`: a new account
+    (its name) or someone already signed in (their ID).
+  - `/v1/signin/check {tenant, who, can, to}` → `{allowed, rules, reason}`, `who` a person's ID or `person:<handle>`:
+    decided and audited in that tenant like a node's `link/access_check`.
+  - `/v1/signin/event {tenant, person, kind, client?, detail?}`: `kind` is `signed_in`, `signed_out`, `refused`,
+    `passkey_added`, `passkey_removed` or `upstream_linked`, `detail` one line (how, or why refused, never a
+    credential). Recorded in the tenant's audit log as `signin.<kind>`, with the token's name.
+  - `fleetlayer-control signin token [--name signin]` makes (or replaces) the token and prints it once; `signin
+    tokens` lists them; `signin revoke <name>` stops the service using it at once.
+
+  Every membership change (invited, joined, removed, role or team changed) is written to that tenant's audit log,
+  whoever made it.
 
 ## Upstream providers
 

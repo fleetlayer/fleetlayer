@@ -199,6 +199,16 @@ pub async fn access_check(
     if !tenant.is_member(&fleet, &format!("-@{node}")) {
         return Err(not_member());
     }
+    check_as(app, &fleet, tenant, req).await
+}
+
+/// [`access_check`] once the asker may ask about the tenant: the sign-in service (`signin.rs`), or a member node.
+pub async fn check_as(
+    app: &App,
+    fleet: &Fleet,
+    tenant: &crate::directory::Tenant,
+    req: &fleetlayer_protocol::link::AccessCheck,
+) -> Result<fleetlayer_protocol::link::AccessDecision, RpcError> {
     if !crate::directory::is_tenant_thing(&req.to) || req.to.starts_with("person:") {
         return Err(RpcError::invalid_params(format!(
             "{} isn't something a tenant owns: ask about service:…, page:… or app:…",
@@ -215,7 +225,7 @@ pub async fn access_check(
         None => req.who.clone(),
     };
     let tenants = [tenant.id.clone()];
-    let out = decide_in(app, &fleet, &tenants, None, (&who, &req.can, &req.to), None, false).await?;
+    let out = decide_in(app, fleet, &tenants, None, (&who, &req.can, &req.to), None, false).await?;
     let reason = match &out.refusal {
         Some(e) => e.message.clone(),
         None => out.because.join(", "),

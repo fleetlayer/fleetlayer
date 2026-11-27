@@ -20,6 +20,7 @@ mod people;
 mod policy;
 mod readings;
 mod route;
+mod signin;
 mod streams;
 mod summaries;
 
@@ -152,6 +153,12 @@ enum Command {
         #[command(subcommand)]
         command: TokenCommand,
     },
+    /// The sign-in service's token (`docs/sso.md`): it reads memberships, redeems invites, asks checks and records
+    /// sign-ins, for every tenant, and nothing else.
+    Signin {
+        #[command(subcommand)]
+        command: SigninCommand,
+    },
     /// Access control: who may message whom (and which sessions a node sees).
     Acl {
         #[command(subcommand)]
@@ -200,6 +207,19 @@ enum AuditCommand {
         #[arg(long)]
         denied: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum SigninCommand {
+    /// Make the sign-in token and print it (shown once). Making it again replaces it.
+    Token {
+        #[arg(long, default_value = "signin")]
+        name: String,
+    },
+    /// The sign-in tokens there are.
+    Tokens,
+    /// Remove a sign-in token: the sign-in service using it stops working.
+    Revoke { name: String },
 }
 
 #[derive(Subcommand)]
@@ -790,6 +810,27 @@ async fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
+        Command::Signin { command } => match command {
+            SigninCommand::Token { name } => {
+                println!("{}", signin::token_add(&db, &name).await?);
+                eprintln!(
+                    "Sign-in token {name} made. Give it to the sign-in service (its token file); it isn't shown again."
+                );
+                Ok(())
+            }
+            SigninCommand::Tokens => {
+                for (name, created) in signin::tokens(&db).await? {
+                    let at = jiff::Timestamp::from_millisecond(created).map(|t| t.to_string()).unwrap_or_default();
+                    println!("{name:<24} {at}");
+                }
+                Ok(())
+            }
+            SigninCommand::Revoke { name } => {
+                anyhow::ensure!(signin::token_remove(&db, &name).await?, "no sign-in token {name}");
+                println!("Sign-in token {name} revoked.");
+                Ok(())
+            }
+        },
         Command::Token { command } => match command {
             TokenCommand::Add { name, scope } => {
                 println!("{}", db::add_token(&db, t, &name, &scope).await?);
@@ -1044,6 +1085,10 @@ async fn serve(app: Arc<App>, listen: SocketAddr, hooks_listen: SocketAddr) -> a
         .route("/v1/sessions/{id}/catchup", axum::routing::post(api::post_catchup))
         .route("/v1/approvals", get(api::get_approvals))
         .route("/v1/approvals/{id}", axum::routing::post(api::post_approval))
+        .route("/v1/signin/person", axum::routing::post(signin::post_person))
+        .route("/v1/signin/invite_redeem", axum::routing::post(signin::post_invite_redeem))
+        .route("/v1/signin/check", axum::routing::post(signin::post_check))
+        .route("/v1/signin/event", axum::routing::post(signin::post_event))
         .with_state(app.clone());
     let hooks = hooks::router(app);
     let api_listener = tokio::net::TcpListener::bind(listen).await?;

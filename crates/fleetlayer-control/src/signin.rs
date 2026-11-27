@@ -1,0 +1,339 @@
+//! What the sign-in service asks of the control plane (`docs/sso.md`, step 1c). The sign-in service holds every
+//! credential (passkeys, upstream links, sessions, the token-signing key); the control plane holds who belongs where.
+//! It reaches these routes with a sign-in token (`fleetlayer-control signin token`), separate from node and API
+//! tokens, which may read memberships, redeem invites, ask checks and record sign-ins, for every tenant, and nothing
+//! else. No other token reaches them.
+//!
+//! - `POST /v1/signin/person {person}` → the person and their tenants, with what the ID token says in each
+//! - `POST /v1/signin/invite_redeem {code, display_name? | person?}` → `{tenant, person, handle, recovery}`
+//! - `POST /v1/signin/check {tenant, who, can, to}` → `{allowed, rules, reason}`
+//! - `POST /v1/signin/event {tenant, person, kind, client?, detail?}` → `{}`, into the tenant's audit log
+
+use std::sync::Arc;
+
+use axum::Json;
+use axum::extract::State;
+use axum::http::{HeaderMap, StatusCode};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use sqlx::Row;
+
+use crate::App;
+use crate::db::{Db, hash, new_secret, now_ms};
+
+/// Make (or replace) the sign-in token called `name`: returns it, shown once.
+pub async fn token_add(db: &Db, name: &str) -> anyhow::Result<String> {
+    anyhow::ensure!(crate::db::valid_name(name), "a token name is letters, digits, - and _");
+    let token = format!("fls_{}", new_secret());
+    sqlx::query(
+        "INSERT INTO signin_tokens (name, token_hash, created_at) VALUES (?, ?, ?)
+         ON CONFLICT (name) DO UPDATE SET token_hash = excluded.token_hash, created_at = excluded.created_at",
+    )
+    .bind(name)
+    .bind(hash(&token))
+    .bind(now_ms())
+    .execute(db)
+    .await?;
+    Ok(token)
+}
+
+pub async fn token_remove(db: &Db, name: &str) -> anyhow::Result<bool> {
+    let r = sqlx::query("DELETE FROM signin_tokens WHERE name = ?").bind(name).execute(db).await?;
+    Ok(r.rows_affected() > 0)
+}
+
+pub async fn tokens(db: &Db) -> anyhow::Result<Vec<(String, i64)>> {
+    let rows = sqlx::query("SELECT name, created_at FROM signin_tokens ORDER BY name").fetch_all(db).await?;
+    Ok(rows.iter().map(|r| (r.get(0), r.get(1))).collect())
+}
+
+type ApiResult = Result<Json<Value>, (StatusCode, String)>;
+
+fn bad(e: impl std::fmt::Display) -> (StatusCode, String) {
+    (StatusCode::BAD_REQUEST, e.to_string())
+}
+
+fn internal(e: impl std::fmt::Display) -> (StatusCode, String) {
+    (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+}
+
+/// Only a sign-in token passes. Returns its name, which audit entries record as `signin:<name>`.
+async fn guard(app: &App, headers: &HeaderMap) -> Result<String, (StatusCode, String)> {
+    let token = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or((StatusCode::UNAUTHORIZED, "a sign-in token is needed".to_string()))?;
+    let row = sqlx::query("SELECT name FROM signin_tokens WHERE token_hash = ?")
+        .bind(hash(token))
+        .fetch_optional(&app.db)
+        .await
+        .map_err(internal)?;
+    row.map(|r| r.get::<String, _>(0)).ok_or((StatusCode::UNAUTHORIZED, "a sign-in token is needed".to_string()))
+}
+
+/// One of a person's tenants, as the ID token for it says.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Membership {
+    pub tenant: String,
+    pub slug: String,
+    pub name: String,
+    /// `preferred_username`; `fleetlayer.dev/principal` is `person:<handle>`.
+    pub handle: String,
+    pub role: String,
+    /// The teams they're in, directly or through a sub-team, without `everyone`.
+    pub teams: Vec<String>,
+    /// The flat `groups` claim: the tenant, `<tenant>/role:<role>`, and each team with its parents' path.
+    pub groups: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PersonView {
+    pub id: String,
+    pub display_name: String,
+    pub tenants: Vec<Membership>,
+}
+
+/// A person and every tenant they're a member of.
+pub async fn person(db: &Db, id: &str) -> anyhow::Result<Option<PersonView>> {
+    let Some(row) = sqlx::query("SELECT display_name FROM people WHERE id = ?").bind(id).fetch_optional(db).await?
+    else {
+        return Ok(None);
+    };
+    let fleet = crate::directory::Fleet::load(db).await?;
+    let mut tenants = vec![];
+    for t in &fleet.tenants {
+        let Some(handle) = t.handles.get(id) else { continue };
+        let Some(member) = t.people.get(handle) else { continue };
+        let name: String =
+            sqlx::query_scalar("SELECT name FROM tenants WHERE id = ?").bind(&t.id).fetch_one(db).await?;
+        let teams: Vec<String> =
+            t.teams_of(handle).into_iter().filter(|team| team != crate::people::EVERYONE).collect();
+        let mut groups = vec![t.slug.clone(), format!("{}/role:{}", t.slug, member.role)];
+        for team in &teams {
+            // Engineering > Platform is `acme/engineering/platform`.
+            let mut path = t.with_parents(team);
+            path.reverse();
+            groups.push(format!("{}/{}", t.slug, path.join("/")));
+        }
+        groups.sort();
+        tenants.push(Membership {
+            tenant: t.id.clone(),
+            slug: t.slug.clone(),
+            name,
+            handle: handle.clone(),
+            role: member.role.clone(),
+            teams,
+            groups,
+        });
+    }
+    Ok(Some(PersonView { id: id.into(), display_name: row.get(0), tenants }))
+}
+
+#[derive(Deserialize)]
+pub struct PersonQuery {
+    person: String,
+}
+
+pub async fn post_person(State(app): State<Arc<App>>, headers: HeaderMap, Json(q): Json<PersonQuery>) -> ApiResult {
+    guard(&app, &headers).await?;
+    match person(&app.db, &q.person).await.map_err(internal)? {
+        Some(p) => Ok(Json(serde_json::to_value(p).map_err(internal)?)),
+        None => Err((StatusCode::NOT_FOUND, format!("no person {}", q.person))),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct RedeemRequest {
+    code: String,
+    /// A new account: the name they gave.
+    #[serde(default)]
+    display_name: Option<String>,
+    /// Someone already signed in: their person ID.
+    #[serde(default)]
+    person: Option<String>,
+}
+
+pub async fn post_invite_redeem(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(r): Json<RedeemRequest>,
+) -> ApiResult {
+    guard(&app, &headers).await?;
+    let who = match (&r.display_name, &r.person) {
+        (Some(n), None) => crate::people::Redeemer::New { display_name: n },
+        (None, Some(p)) => crate::people::Redeemer::Existing { person: p },
+        _ => return Err(bad("give display_name (a new account) or person (an existing one), not both")),
+    };
+    let done = crate::people::invite_redeem(&app.db, &r.code, who).await.map_err(bad)?;
+    Ok(Json(json!({
+        "tenant": done.tenant, "person": done.person, "handle": done.handle, "recovery": done.recovery
+    })))
+}
+
+pub async fn post_check(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(req): Json<fleetlayer_protocol::link::AccessCheck>,
+) -> ApiResult {
+    guard(&app, &headers).await?;
+    let fleet = app.authz.fleet(&app.db).await.map_err(internal)?;
+    let tenant = fleet.tenant(&req.tenant).ok_or_else(|| bad(format!("no tenant {}", req.tenant)))?;
+    let d = crate::authz::check_as(&app, &fleet, tenant, &req).await.map_err(|e| bad(e.message))?;
+    Ok(Json(serde_json::to_value(d).map_err(internal)?))
+}
+
+/// What the sign-in service records: a sign-in, a sign-out, a refusal, a passkey added or removed.
+const EVENTS: &[&str] = &["signed_in", "signed_out", "refused", "passkey_added", "passkey_removed", "upstream_linked"];
+
+#[derive(Deserialize)]
+pub struct EventRequest {
+    tenant: String,
+    person: String,
+    kind: String,
+    /// The client (`service:<name>`) it was for, if any.
+    #[serde(default)]
+    client: Option<String>,
+    /// One line: how (passkey, Google), or why refused. Never a credential.
+    #[serde(default)]
+    detail: Option<String>,
+}
+
+pub async fn post_event(State(app): State<Arc<App>>, headers: HeaderMap, Json(e): Json<EventRequest>) -> ApiResult {
+    let by = guard(&app, &headers).await?;
+    if !EVENTS.contains(&e.kind.as_str()) {
+        return Err(bad(format!("kind is one of {}", EVENTS.join(", "))));
+    }
+    let fleet = app.authz.fleet(&app.db).await.map_err(internal)?;
+    let tenant = fleet.tenant(&e.tenant).ok_or_else(|| bad(format!("no tenant {}", e.tenant)))?;
+    let subject = match tenant.handles.get(&e.person) {
+        Some(h) => format!("person:{h}"),
+        // Someone refused for not being a member has no handle here.
+        None => e.person.clone(),
+    };
+    let detail = e.detail.unwrap_or_default();
+    if detail.contains('\n') || detail.chars().count() > 300 {
+        return Err(bad("detail is one line of at most 300 characters"));
+    }
+    let entry = crate::audit::Entry {
+        decision: "recorded".into(),
+        subject,
+        verb: format!("signin.{}", e.kind),
+        target: e.client.unwrap_or_else(|| "service:signin".into()),
+        reason: if detail.is_empty() { format!("by signin:{by}") } else { format!("{detail} (by signin:{by})") },
+    };
+    app.audit.record(&app.db, &tenant.id, entry).await.map_err(internal)?;
+    Ok(Json(json!({})))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::people::{self, NewInvite, Redeemer};
+
+    #[tokio::test]
+    async fn a_persons_tenants_say_what_their_id_tokens_will() {
+        let db = crate::db::open_memory().await.unwrap();
+        let acme = people::tenant_add(&db, "acme", "Acme", "admin").await.unwrap().id;
+        people::team_add(&db, &acme, "engineering", None, "admin").await.unwrap();
+        people::team_add(&db, &acme, "platform", Some("engineering"), "admin").await.unwrap();
+        let teams = vec!["platform".to_string()];
+        let code =
+            people::invite(&db, &acme, NewInvite { handle: "a", role: "admin", teams: &teams, person: None }, "admin")
+                .await
+                .unwrap();
+        let a = people::invite_redeem(&db, &code, Redeemer::New { display_name: "A" }).await.unwrap().person;
+        let home = people::invite(
+            &db,
+            "default",
+            NewInvite { handle: "a", role: "member", teams: &[], person: Some(&a) },
+            "admin",
+        )
+        .await
+        .unwrap();
+        people::invite_redeem(&db, &home, Redeemer::Existing { person: &a }).await.unwrap();
+        let p = person(&db, &a).await.unwrap().unwrap();
+        assert_eq!(p.display_name, "A");
+        let acme = p.tenants.iter().find(|t| t.slug == "acme").unwrap();
+        assert_eq!(acme.handle, "a");
+        assert_eq!(acme.teams, ["engineering", "platform"]);
+        assert_eq!(acme.groups, ["acme", "acme/engineering", "acme/engineering/platform", "acme/role:admin"]);
+        let default = p.tenants.iter().find(|t| t.tenant == "default").unwrap();
+        assert_eq!(default.groups, ["default", "default/role:member"]);
+        assert!(person(&db, "p_nobody").await.unwrap().is_none());
+    }
+
+    fn bearer(t: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert("authorization", format!("Bearer {t}").parse().unwrap());
+        h
+    }
+
+    #[tokio::test]
+    async fn only_a_sign_in_token_reaches_the_routes() {
+        let app = Arc::new(App {
+            db: crate::db::open_memory().await.unwrap(),
+            links: Default::default(),
+            hook_limits: Default::default(),
+            admin_token_hash: None,
+            streams: Default::default(),
+            authz: Default::default(),
+            audit: crate::audit::Audit::new(None),
+        });
+        let code = people::invite(
+            &app.db,
+            "default",
+            NewInvite { handle: "a", role: "admin", teams: &[], person: None },
+            "admin",
+        )
+        .await
+        .unwrap();
+        let admin = crate::db::add_token(&app.db, "default", "dash", "admin").await.unwrap();
+        let q = |c: &str| Json(RedeemRequest { code: c.into(), display_name: Some("A".into()), person: None });
+        let refused = post_invite_redeem(State(app.clone()), bearer(&admin), q(&code)).await.unwrap_err();
+        assert_eq!(refused.0, StatusCode::UNAUTHORIZED, "an admin API token isn't a sign-in token");
+        let t = token_add(&app.db, "signin").await.unwrap();
+        let done = post_invite_redeem(State(app.clone()), bearer(&t), q(&code)).await.unwrap();
+        let person = done.0["person"].as_str().unwrap().to_string();
+        let p =
+            post_person(State(app.clone()), bearer(&t), Json(PersonQuery { person: person.clone() })).await.unwrap();
+        assert_eq!(p.0["tenants"][0]["handle"], "a");
+        let ask = fleetlayer_protocol::link::AccessCheck {
+            tenant: "default".into(),
+            who: person.clone(),
+            can: "read".into(),
+            to: "service:quietdeck/a/inbox".into(),
+        };
+        let d = post_check(State(app.clone()), bearer(&t), Json(ask)).await.unwrap();
+        assert_eq!(d.0["allowed"], true, "{}", d.0);
+        let e = EventRequest {
+            tenant: "default".into(),
+            person: person.clone(),
+            kind: "signed_in".into(),
+            client: Some("service:hub".into()),
+            detail: Some("passkey".into()),
+        };
+        let _done = post_event(State(app.clone()), bearer(&t), Json(e)).await.unwrap();
+        let logged: String = sqlx::query_scalar(
+            "SELECT subject || ' ' || verb || ' ' || target || ' ' || reason FROM audit_log WHERE verb LIKE 'signin.%'",
+        )
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+        assert_eq!(logged, "person:a signin.signed_in service:hub passkey (by signin:signin)");
+        token_remove(&app.db, "signin").await.unwrap();
+        let gone = post_person(State(app), bearer(&t), Json(PersonQuery { person })).await.unwrap_err();
+        assert_eq!(gone.0, StatusCode::UNAUTHORIZED, "a revoked token stops at once");
+    }
+
+    #[tokio::test]
+    async fn sign_in_tokens_are_their_own() {
+        let db = crate::db::open_memory().await.unwrap();
+        let t = token_add(&db, "signin").await.unwrap();
+        assert!(t.starts_with("fls_"));
+        assert_eq!(tokens(&db).await.unwrap().len(), 1);
+        // Not an API token: the read and admin routes don't take it.
+        assert!(crate::db::token_scope(&db, &t).await.unwrap().is_none());
+        assert!(token_remove(&db, "signin").await.unwrap());
+    }
+}
