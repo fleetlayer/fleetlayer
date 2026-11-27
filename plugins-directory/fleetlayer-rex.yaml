@@ -3,7 +3,7 @@ summary: Connects Rex, Superlogical's terminal and session manager, so the Claud
 kind: plugin
 roles: [session_manager]
 ships_with_fleetlayer: true
-status: in progress
+status: beta
 licence: Apache-2.0
 maintainer: Fleetlayer
 source: https://github.com/fleetlayer/fleetlayer/tree/main/plugins/rex
