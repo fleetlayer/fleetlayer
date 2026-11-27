@@ -41,11 +41,13 @@ The tools the author's own fleet runs on, and what Fleetlayer does with each:
 - **herdr relay** (coming): herdr on your phone through Fleetlayer's one connection, so you pair once and reach every
   machine.
 - **Claude Code**: messages through its own channel, shared accounts and usage, year-long tokens on every machine.
-- **Codex**: its sessions run in herdr, so they're in the fleet and get messages like any other.
-- **Playwright MCP**: your signed-in browser on the laptop, used by agents on other machines.
-- **Syncthing**: pages and summaries are plain folders, synced to every machine you like.
+- **Codex**: its sessions in herdr are listed, get messages (typed in through herdr), and can be watched or driven
+  with `fleetlayer attach`. No Codex plugin yet.
+- **Playwright MCP**: your signed-in browser on the laptop, shared with agents on other machines, limited to the
+  callers, networks and tools you allow.
+- **Syncthing, or any sync**: pages are plain folders; Fleetlayer hosts whatever your sync keeps in step.
 - **Gatus and Traefik**: on a server, Fleetlayer writes their config, a health check and an address for every service.
-- **restic**: backs up every machine; the backups guide sets it up for a fleet: https://fleetlayer.ai/guides/backups.md
+- **restic** (a guide, not built in): https://fleetlayer.ai/guides/backups.md sets it up for every machine in a fleet.
 
 ## Start small, replace any component as you go
 
