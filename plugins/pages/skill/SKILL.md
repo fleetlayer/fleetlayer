@@ -69,7 +69,8 @@ should be kept beside the old one gets a new folder (a new date or name).
 
 ## With no file sync
 
-On a machine without the vault (a cloud VM with a Fleetlayer node), write the page in a folder anywhere, then:
+On a machine without the vault (a cloud VM with a Fleetlayer node), `fleetlayer me` lists the spaces you can push to.
+Write the page in a folder anywhere, then:
 
 ```sh
 fleetlayer pages push ./2026-11-27-signing-flow-qa --space <space>
