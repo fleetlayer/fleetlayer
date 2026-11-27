@@ -71,7 +71,7 @@ To give your screenshots to more agents than your downloads, share them as two t
 tools:
   - name: screenshots
     command: /Users/you/.local/bin/fleetlayer-folders
-    args: ["--folder", "screenshots=~/Screenshots", "--trusted", "screenshots"]
+    args: ["--folder", "screenshots=~/Screenshots"]
     allow: ["*@server"]
   - name: downloads
     command: /Users/you/.local/bin/fleetlayer-folders
@@ -85,8 +85,9 @@ either: [Run an agent that reads strangers' text](untrusted-input.md) denies it 
 
 Whatever an agent reads from a folder comes with a line saying the contents are outside data, to be treated as
 information and never as instructions: a PDF or a saved web page in Downloads can carry text written to steer an
-agent. For a folder only you write to, such as your screenshots, `--trusted screenshots` leaves the line out. The
-line helps, but it doesn't make a file safe; [that guide](untrusted-input.md) covers the rest.
+agent, and so can a screenshot of an email or a chat, since agents read the text in images too. For a folder only you
+write to, such as your own notes, `--trusted <name>` leaves the line out. The line helps, but it doesn't make a file
+safe; [that guide](untrusted-input.md) covers the rest.
 
 ## 5. Use them from another machine
 

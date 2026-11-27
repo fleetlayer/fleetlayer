@@ -24,7 +24,8 @@ tools:
 - `--max-read-mb <n>`: the most of one file a reply carries, 8 by default and at most 10. A reply travels as one
   WebSocket message, and those are refused over 16 MiB once base64 has added its third.
 
-- `--trusted <name>`: a folder only you write to. Everything read from any other folder comes with a line ahead of
+- `--trusted <name>`: a folder only you write to, such as your own notes (not screenshots: they often show someone
+  else's email or chat, and agents read text in images). Everything read from any other folder comes with a line ahead of
   it saying the contents are outside data, information and never instructions, as messages from outside do: Downloads
   holds web pages, PDFs and emails from anyone.
 
