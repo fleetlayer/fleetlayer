@@ -27,7 +27,10 @@ fn bin_dir() -> PathBuf {
         "fleetlayer-signin",
         "fleetlayer-claude-auth-manager",
     ] {
-        assert!(dir.join(b).is_file(), "{b} isn't built next to fleetlayer: run `cargo build --workspace --bins` first");
+        assert!(
+            dir.join(b).is_file(),
+            "{b} isn't built next to fleetlayer: run `cargo build --workspace --bins` first"
+        );
     }
     dir
 }
