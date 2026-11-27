@@ -96,6 +96,7 @@ Shared tools:
     Add it: claude mcp add folders -- fleetlayer mcp folders@laptop
 Pages space personal (on home): allowed
     Push a page: fleetlayer pages push <folder> --space personal
+Start or resume sessions on: home (asks your person first), laptop (asks your person first), server (this node) (`fleetlayer session start --on <node>`).
 ```
 
 It asks nothing and records nothing: no approval request is filed and nothing counts as a first use. What your access

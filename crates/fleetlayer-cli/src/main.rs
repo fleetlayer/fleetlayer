@@ -376,6 +376,21 @@ fn me_text(v: &Value) -> String {
         let _ = writeln!(o, "Pages space {space} (on {}): {}", p["node"].as_str().unwrap_or("?"), state(&p));
         let _ = writeln!(o, "    Push a page: fleetlayer pages push <folder> --space {space}");
     }
+    let start: Vec<String> = list("start")
+        .iter()
+        .map(|t| {
+            let n = t["name"].as_str().unwrap_or("?");
+            match (n == node, t["state"].as_str()) {
+                (true, _) => format!("{n} (this node)"),
+                (false, Some("ask")) => format!("{n} (asks your person first)"),
+                _ => n.to_string(),
+            }
+        })
+        .collect();
+    if !start.is_empty() {
+        let _ =
+            writeln!(o, "Start or resume sessions on: {} (`fleetlayer session start --on <node>`).", start.join(", "));
+    }
     for u in list("unknown") {
         let _ = writeln!(o, "Can't tell what {} shares.", u.as_str().unwrap_or("?"));
     }

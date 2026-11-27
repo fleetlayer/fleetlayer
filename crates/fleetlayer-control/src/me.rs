@@ -96,6 +96,31 @@ pub async fn answer(app: &App, tenant: &str, node: &str, caller: &str) -> Result
         }
     }
 
+    // Where it may start sessions: its own node without asking anyone; others as the policy says, for a new tab,
+    // checked against the node's own address (`-@<node>`, which tenant membership is keyed on; a rule on `*@<node>`
+    // matches it). Approvals are per tab, so none is looked up.
+    for (name, _version) in &visible {
+        if name == node {
+            out.start.push(MeTarget {
+                name: name.clone(),
+                node: name.clone(),
+                state: "allowed".into(),
+                ..Default::default()
+            });
+            continue;
+        }
+        let d = match crate::authz::dry(app, tenant, &who, "start", &format!("-@{name}")).await {
+            Dry::Ask { why, .. } | Dry::Refused { why, .. } => Dry::Ask { why, pending: None },
+            d => d,
+        };
+        if let Some(t) = target_of(&d, name, name, !online.contains(name)) {
+            if why(&d) {
+                justify.insert("start");
+            }
+            out.start.push(MeTarget { until: None, ..t });
+        }
+    }
+
     // Nodes that can't say what they share.
     for (name, version) in &visible {
         if tools.contains_key(&(tenant.to_string(), name.clone())) {
@@ -212,6 +237,9 @@ mod tests {
         // The built-in default asks before each first use of a tool; bank's own allow list leaves planning out.
         assert_eq!(names, [("browser@laptop", "ask"), ("downloads@laptop", "ask")]);
         assert!(me.tools.iter().all(|t| t.target.offline), "laptop isn't linked");
+        let start: Vec<(&str, &str)> = me.start.iter().map(|t| (t.name.as_str(), t.state.as_str())).collect();
+        // Its own node needs nobody; another asks first by default.
+        assert_eq!(start, [("laptop", "ask"), ("server", "allowed")]);
         assert!(!me.untrusted);
         assert_eq!(counts(&app).await, (0, 0), "asking files no approval request and writes no audit entry");
     }
@@ -232,11 +260,26 @@ mod tests {
         .unwrap();
         let me = answer(&app, "default", "server", "planning").await.unwrap();
         assert_eq!(me.tools.len(), 1, "downloads is denied, so it isn't named at all");
+        // A policy that leaves ask: out keeps the default asks: starting on laptop asks first.
+        assert!(me.start.iter().any(|t| t.name == "laptop" && t.state == "ask"));
         assert_eq!((me.tools[0].target.state.as_str(), me.tools[0].target.until), ("allowed", Some(far)));
         assert!(me.untrusted);
         let expires: i64 =
             sqlx::query_scalar("SELECT expires_at FROM approvals WHERE id = 'ap_1'").fetch_one(&app.db).await.unwrap();
         assert_eq!(expires, far, "looking doesn't renew an approval");
+    }
+
+    #[tokio::test]
+    async fn a_node_it_may_not_start_sessions_on_is_left_out() {
+        let app = fleet().await;
+        let policy =
+            "version: 2\ndefault: allow\nask: []\ndeny:\n  - { who: \"*@server\", can: start, to: [\"*@laptop\"] }\n";
+        crate::authz::store(&app.db, "default", policy).await.unwrap();
+        let me = answer(&app, "default", "server", "planning").await.unwrap();
+        let start: Vec<(&str, &str)> = me.start.iter().map(|t| (t.name.as_str(), t.state.as_str())).collect();
+        assert_eq!(start, [("server", "allowed")]);
+        let me = answer(&app, "default", "laptop", "planning").await.unwrap();
+        assert!(me.start.iter().any(|t| t.name == "server" && t.state == "allowed"), "no ask: rules, so no asking");
     }
 
     #[tokio::test]

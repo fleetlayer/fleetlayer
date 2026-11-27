@@ -425,6 +425,10 @@ pub struct Me {
     /// Pages spaces it may push to, or could ask for.
     #[serde(default)]
     pub pages: Vec<MeTarget>,
+    /// Nodes it may start or resume sessions on (`fleetlayer session start --on`), decided for a new tab (`start` on `-@<node>`): its own
+    /// node is always there (`allowed`), others say `allowed` or `ask`. Refused ones are left out.
+    #[serde(default)]
+    pub start: Vec<MeTarget>,
     /// Nodes it can see that are too old to say what they share.
     #[serde(default)]
     pub unknown: Vec<String>,

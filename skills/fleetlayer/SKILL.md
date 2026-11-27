@@ -25,7 +25,7 @@ fleetlayer me
 
 It says who you are (`<tab>@<node>`), which sessions you may message, whether your messages arrive as outside data,
 each shared tool you may use (with its folders, whether your first use still asks your person, and the line that adds
-it), the pages spaces you may push to, and your subscriptions. Asking files no approval request. What a rule refuses
+it), the pages spaces you may push to, the nodes you may start sessions on, and your subscriptions. Asking files no approval request. What a rule refuses
 you isn't listed. From v0.3.9; on an older node, ask your person what's shared.
 
 ## See who's there and what they're doing
