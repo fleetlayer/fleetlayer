@@ -254,6 +254,29 @@ pub async fn post_join(State(app): State<Arc<App>>, headers: HeaderMap, Json(j):
     Ok(Json(json!({"tenant": done.tenant, "person": done.person, "handle": done.handle, "recovery": false})))
 }
 
+/// Teams from an upstream provider's groups, at a sign-in through it or the sign-in service's daily resync.
+#[derive(Deserialize)]
+pub struct TeamsSyncRequest {
+    tenant: String,
+    person: String,
+    upstream: String,
+    teams: Vec<String>,
+}
+
+pub async fn post_teams_sync(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(r): Json<TeamsSyncRequest>,
+) -> ApiResult {
+    let token = guard(&app, &headers).await?;
+    let fleet = app.authz.fleet(&app.db).await.map_err(internal)?;
+    let tenant = fleet.tenant(&r.tenant).ok_or_else(|| bad(format!("no tenant {}", r.tenant)))?;
+    let by = format!("signin:{token} via upstream {}", r.upstream);
+    let done =
+        crate::people::teams_sync(&app.db, &tenant.id, &r.person, &r.upstream, &r.teams, &by).await.map_err(bad)?;
+    Ok(Json(json!(done)))
+}
+
 // ---------------------------------------------------------------- admin pages
 
 /// A change an admin makes on the sign-in service's admin pages, for a tenant, as that person.

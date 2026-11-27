@@ -314,7 +314,8 @@ pub async fn member_remove(db: &Db, tenant: &str, handle: &str, by: &str) -> any
 pub struct Team {
     pub name: String,
     pub parent: Option<String>,
-    pub members: Vec<(String, String)>,
+    /// Handle, role, and the upstream provider that put them there (none: an admin).
+    pub members: Vec<(String, String, Option<String>)>,
 }
 
 pub async fn team_add(db: &Db, tenant: &str, name: &str, parent: Option<&str>, by: &str) -> anyhow::Result<()> {
@@ -371,7 +372,7 @@ pub async fn teams(db: &Db, tenant: &str) -> anyhow::Result<Vec<Team>> {
     for r in rows {
         let name: String = r.get(0);
         let members = sqlx::query(
-            "SELECT m.handle, t.role FROM team_members t JOIN members m ON m.tenant = t.tenant AND m.person = t.person
+            "SELECT m.handle, t.role, t.source FROM team_members t JOIN members m ON m.tenant = t.tenant AND m.person = t.person
              WHERE t.tenant = ? AND t.team = ? ORDER BY m.handle",
         )
         .bind(tenant)
@@ -379,9 +380,97 @@ pub async fn teams(db: &Db, tenant: &str) -> anyhow::Result<Vec<Team>> {
         .fetch_all(db)
         .await?
         .into_iter()
-        .map(|m| (m.get(0), m.get(1)))
+        .map(|m| (m.get(0), m.get(1), m.get(2)))
         .collect();
         out.push(Team { name, parent: r.get(1), members });
+    }
+    Ok(out)
+}
+
+/// What a teams sync changed.
+#[derive(Debug, Default, Clone, Serialize, PartialEq, Eq)]
+pub struct TeamsSynced {
+    pub added: Vec<String>,
+    pub removed: Vec<String>,
+    /// Mapped teams the tenant doesn't have (never created).
+    pub missing: Vec<String>,
+}
+
+/// Make `person`'s memberships from `upstream` exactly `teams` (those that exist), in one transaction: rows that
+/// upstream added and that no longer map go, new ones are added with it as their source, and a membership an admin
+/// set is left as it is. Audited only when something changed.
+pub async fn teams_sync(
+    db: &Db,
+    tenant: &str,
+    person: &str,
+    upstream: &str,
+    teams: &[String],
+    by: &str,
+) -> anyhow::Result<TeamsSynced> {
+    let mut tx = db.begin().await?;
+    let member: Option<(String,)> = sqlx::query_as("SELECT handle FROM members WHERE tenant = ? AND person = ?")
+        .bind(tenant)
+        .bind(person)
+        .fetch_optional(&mut *tx)
+        .await?;
+    let Some((handle,)) = member else { anyhow::bail!("{person} isn't a member of this tenant") };
+    let existing: std::collections::BTreeSet<String> = sqlx::query_scalar("SELECT name FROM teams WHERE tenant = ?")
+        .bind(tenant)
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .collect();
+    let rows: Vec<(String, Option<String>)> =
+        sqlx::query_as("SELECT team, source FROM team_members WHERE tenant = ? AND person = ?")
+            .bind(tenant)
+            .bind(person)
+            .fetch_all(&mut *tx)
+            .await?;
+    let mut want: Vec<String> = vec![];
+    let mut out = TeamsSynced::default();
+    for t in teams {
+        if t == EVERYONE || want.contains(t) {
+            continue;
+        }
+        if existing.contains(t) {
+            want.push(t.clone());
+        } else if !out.missing.contains(t) {
+            out.missing.push(t.clone());
+        }
+    }
+    for (team, source) in &rows {
+        if source.as_deref() == Some(upstream) && !want.contains(team) {
+            sqlx::query("DELETE FROM team_members WHERE tenant = ? AND team = ? AND person = ?")
+                .bind(tenant)
+                .bind(team)
+                .bind(person)
+                .execute(&mut *tx)
+                .await?;
+            out.removed.push(team.clone());
+        }
+    }
+    for team in &want {
+        // Already in it (by an admin, or this upstream before): nothing to do.
+        if rows.iter().any(|(t, _)| t == team) {
+            continue;
+        }
+        sqlx::query("INSERT INTO team_members (tenant, team, person, role, source) VALUES (?, ?, ?, 'member', ?)")
+            .bind(tenant)
+            .bind(team)
+            .bind(person)
+            .bind(upstream)
+            .execute(&mut *tx)
+            .await?;
+        out.added.push(team.clone());
+    }
+    tx.commit().await?;
+    for t in &out.added {
+        log(db, tenant, by, "team.member", &format!("team:{t}"), &format!("person:{handle} added by {upstream}"))
+            .await?;
+    }
+    for t in &out.removed {
+        log(db, tenant, by, "team.member", &format!("team:{t}"), &format!("person:{handle} removed by {upstream}"))
+            .await?;
     }
     Ok(out)
 }
@@ -1036,7 +1125,7 @@ mod tests {
         assert_eq!(team_and_children(&db, t, "engineering").await.unwrap(), ["engineering", "platform"]);
         team_member(&db, t, "engineering", "a", true, true, "admin").await.unwrap();
         let teams = teams(&db, t).await.unwrap();
-        assert_eq!(teams[0].members, [("a".to_string(), "maintainer".to_string())]);
+        assert_eq!(teams[0].members, [("a".to_string(), "maintainer".to_string(), None)]);
         assert_eq!(teams[1].name, EVERYONE);
         assert!(team_remove(&db, t, EVERYONE, "admin").await.is_err());
         assert!(team_remove(&db, t, "engineering", "admin").await.unwrap_err().to_string().contains("inside"));
@@ -1075,6 +1164,62 @@ mod tests {
         let role: String =
             sqlx::query_scalar("SELECT role FROM members WHERE handle = 'sam-2'").fetch_one(&db).await.unwrap();
         assert_eq!(role, "member");
+    }
+
+    #[tokio::test]
+    async fn a_providers_groups_replace_its_own_team_memberships_and_leave_an_admins_alone() {
+        let db = open_memory().await.unwrap();
+        let t = "default";
+        for team in ["engineering", "support", "ops"] {
+            team_add(&db, t, team, None, "admin").await.unwrap();
+        }
+        let sam = super::join(&db, t, "Sam", "sam", "x").await.unwrap().person;
+        team_member(&db, t, "ops", "sam", true, false, "admin").await.unwrap();
+        let sync = |teams: &[&str]| {
+            let teams: Vec<String> = teams.iter().map(|s| s.to_string()).collect();
+            let db = db.clone();
+            let sam = sam.clone();
+            async move {
+                teams_sync(&db, t, &sam, "acme-google", &teams, "signin:s via upstream acme-google").await.unwrap()
+            }
+        };
+        let teams_of = || {
+            let db = db.clone();
+            async move { members(&db, t).await.unwrap()[0].teams.clone() }
+        };
+        let audited = || {
+            let db = db.clone();
+            async move {
+                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM audit_outbox WHERE verb = 'team.member'")
+                    .fetch_one(&db)
+                    .await
+                    .unwrap()
+            }
+        };
+
+        let r = sync(&["engineering", "ops", "nope", "everyone"]).await;
+        assert_eq!(r.added, ["engineering"], "ops was the admin's already; everyone is everyone's");
+        assert_eq!(r.missing, ["nope"], "never created");
+        assert_eq!(teams_of().await, ["engineering", "everyone", "ops"]);
+        let before = audited().await;
+        assert_eq!(sync(&["engineering", "ops"]).await, TeamsSynced::default(), "nothing changed");
+        assert_eq!(audited().await, before, "and nothing audited");
+
+        // Out of the group: the provider's membership goes, the admin's stays even when it no longer maps.
+        let r = sync(&["support"]).await;
+        assert_eq!((r.added, r.removed), (vec!["support".to_string()], vec!["engineering".to_string()]));
+        assert_eq!(teams_of().await, ["everyone", "ops", "support"]);
+        let listed = teams(&db, t).await.unwrap();
+        let support = listed.iter().find(|x| x.name == "support").unwrap();
+        assert_eq!(support.members[0].2.as_deref(), Some("acme-google"));
+        let ops = listed.iter().find(|x| x.name == "ops").unwrap();
+        assert_eq!(ops.members[0].2, None);
+        // Another provider's memberships are its own business.
+        teams_sync(&db, t, &sam, "okta", &["engineering".into()], "x").await.unwrap();
+        sync(&[]).await;
+        assert_eq!(teams_of().await, ["engineering", "everyone", "ops"]);
+        // Not a member: refused.
+        assert!(teams_sync(&db, t, "p_nobody", "okta", &[], "x").await.is_err());
     }
 
     #[tokio::test]

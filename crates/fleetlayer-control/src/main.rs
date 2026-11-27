@@ -660,7 +660,13 @@ async fn main() -> anyhow::Result<()> {
                         let members: Vec<String> = team
                             .members
                             .iter()
-                            .map(|(h, r)| if r == "maintainer" { format!("{h} (maintainer)") } else { h.clone() })
+                            .map(|(h, r, source)| {
+                                let mut s = if r == "maintainer" { format!("{h} (maintainer)") } else { h.clone() };
+                                if let Some(u) = source {
+                                    s.push_str(&format!(" (from {u})"));
+                                }
+                                s
+                            })
                             .collect();
                         println!("{:<20} {:<20} {}", team.name, team.parent.unwrap_or_default(), members.join(", "));
                     }
@@ -1138,6 +1144,7 @@ async fn serve(app: Arc<App>, listen: SocketAddr, hooks_listen: SocketAddr) -> a
         .route("/v1/signin/check", axum::routing::post(signin::post_check))
         .route("/v1/signin/event", axum::routing::post(signin::post_event))
         .route("/v1/signin/join", axum::routing::post(signin::post_join))
+        .route("/v1/signin/teams_sync", axum::routing::post(signin::post_teams_sync))
         .route("/v1/signin/admin/view", axum::routing::post(signin::post_admin_view))
         .route("/v1/signin/admin/{action}", axum::routing::post(signin::post_admin_action))
         .with_state(app.clone());
