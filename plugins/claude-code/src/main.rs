@@ -127,6 +127,14 @@ impl Handler for Shared {
                 let reg = socket::find(&dir, &d.session_id).await.ok_or_else(|| {
                     RpcError::new(code::NO_CHANNEL, format!("no Claude Code session {} is registered", d.session_id))
                 })?;
+                // The registered process has ended: the session is gone, and its pane may be a plain shell by now,
+                // where typing the message in would run it. Say so, so the node doesn't fall back to typing.
+                if !socket::pid_alive(reg.pid) {
+                    return Err(RpcError::not_here(format!(
+                        "Claude Code session {} has ended (its process is gone)",
+                        d.session_id
+                    )));
+                }
                 match socket::send(&dir, &reg, &d.from.label, &d.text).await {
                     Ok(()) => answer(&Delivered { via: Via::HarnessChannel }),
                     Err(socket::SendError::NoChannel(m)) => Err(RpcError::new(code::NO_CHANNEL, m)),

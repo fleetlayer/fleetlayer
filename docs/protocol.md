@@ -278,7 +278,9 @@ Errors, so the sender can say what happened:
 **The node owns delivery order and deduplication.** It keeps the set of recent `deliveryId`s and refuses a repeat
 before choosing a plugin. It tries a `harness` plugin that claims the session first (its `session/list` entries carry
 `"deliverable": true`), because that channel tells the agent who the message is from, and falls back to the session
-manager typing it in **only on a definite "not delivered"** (`-32013`, or `-32010` from the harness). A timeout is
+manager typing it in **only when the session is running but has no channel** (`-32013`). A harness that answers
+`-32010` says the session has ended: its terminal may be a plain shell now, where typed text would run as commands, so
+the node never types into it and reports the session as gone. A timeout is
 never a "not delivered": the message may have arrived, so the node reports the timeout and doesn't type it in a second
 time. Plugins don't need to deduplicate.
 

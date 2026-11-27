@@ -381,3 +381,8 @@ managers, machines that sleep.
   a remote machine: Vite refuses host names it doesn't know (403), and `crypto.randomUUID` exists only on HTTPS pages
   or localhost; use the tailnet's full name and allow it. Written: `docs/guides/agents-vm.md`.
 - **Syncing notes, skills and instructions between machines.** Written: `docs/guides/sync.md`.
+- **Never type a message into a terminal whose agent has ended.** A session manager's typing fallback is for a running
+  agent with no messaging channel. Once the agent's process is gone, its pane may be a plain shell, and typed text runs
+  as commands. Fleetlayer types only on "no channel" (the harness sees a live process without a usable socket), never
+  on "gone". Found by Quietdeck's delivery (9f31dd5); Fleetlayer: crates/fleetlayer-node/src/deliver.rs and the
+  claude-code plugin.

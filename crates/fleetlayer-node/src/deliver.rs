@@ -211,7 +211,9 @@ pub async fn deliver(node: &Node, session: &Session, d: &Deliver) -> Result<Deli
     }
     if let Some(h) = &session.harness_plugin {
         match try_plugin(node, h, d).await {
-            Err(e) if e.code == code::NO_CHANNEL || e.code == code::NOT_HERE => {
+            // Only a running session without a usable channel is typed into. A harness that says the session has
+            // gone (NOT_HERE) means its terminal may be a plain shell now, where typed text would run as commands.
+            Err(e) if e.code == code::NO_CHANNEL => {
                 tracing::debug!(session = %session.session_id, "harness {h} couldn't deliver ({e}); typing it in");
             }
             other => return other,
