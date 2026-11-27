@@ -1,5 +1,5 @@
 name: fleetlayer-signin
-summary: One sign-in, with passkeys, for every web service your fleet runs, as an OpenID Connect provider.
+summary: One sign-in, with passkeys or your company's provider, for every web service your fleet runs.
 kind: plugin
 roles: []
 ships_with_fleetlayer: true
@@ -39,5 +39,5 @@ docs: plugins/signin
 description: |
   People sign in once, with a passkey, and use every service that speaks OpenID Connect: the Claude sign-in hub,
   pages, and most self-hosted apps. Who may use which service comes from the same access policy as your agents.
-  Experimental: passkeys, invites, signing in to services and the admin pages work; signing out everywhere at once
-  and Google Workspace sign-in come next.
+  Experimental: passkeys, invites, signing in to services, the admin pages, and signing in with Google Workspace or
+  any OpenID Connect provider work; signing out everywhere at once and Workspace groups as teams come next.
