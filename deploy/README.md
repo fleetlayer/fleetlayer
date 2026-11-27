@@ -71,8 +71,10 @@ SQLite in WAL mode needs its `-shm` file writable even to read.
   `"result":"FAILED"` and how many problems (run `audit verify` in the container to see which rows). It needs an
   admin token: make one for the check alone (`token add audit-check --scope admin`), put it in a Secret, and mount it
   in the CronJob, for example as the file `/run/secrets/audit-check/token`:
-  `curl -fsS -H "Authorization: Bearer $(cat /run/secrets/audit-check/token)" http://<control>:7600/v1/audit/verify`.
-  `curl -f` exits non-zero on the 409, so the CronJob fails and your alerting sees it.
+  `curl -fsS --retry 5 --retry-connrefused -H "Authorization: Bearer $(cat /run/secrets/audit-check/token)" http://<control>:7600/v1/audit/verify`.
+  `curl -f` exits non-zero on the 409, so the CronJob fails and your alerting sees it. Keep the retry on refused
+  connections: with a network policy, a new pod's first connections can be refused until the policy controller has
+  programmed it (k3s takes a few seconds).
 - `acl apply <file> [--check]`: make the access rules match a YAML file exactly (example: `deploy/examples/acl.yaml`),
   printing what changed; running it again changes nothing. Keep the file in git and apply it on every start (an init
   container), so the agents the rules limit can't change them. `acl list|add|remove|default|check` for inspection.
