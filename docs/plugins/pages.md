@@ -204,7 +204,9 @@ what the access policy gives them:
 
 - **Set it up:** add pages as a client of the sign-in service, named `pages`, with
   `redirect_uris: [https://<pages address>/_/auth/callback]`,
-  `post_logout_redirect_uris: [https://<pages address>/_/signed-out]` and a `secret_file`. Give the pages plugin the
+  `post_logout_redirect_uris: [https://<pages address>/_/signed-out]`,
+  `backchannel_logout_uri: https://<pages address>/_/auth/backchannel-logout` (so signing out at the sign-in service,
+  or everywhere, ends the session here and in apps too) and a `secret_file`. Give the pages plugin the
   same secret (`signin.secret_file`) and the `access.check` grant in the node's config. Then, in the policy, say who
   owns each space and let people in:
 

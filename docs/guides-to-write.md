@@ -486,6 +486,26 @@ managers, machines that sleep.
   server-to-server calls `127.0.0.1:<port>` (the sign-in service's `control_plane`), or resolve `*.localhost` to
   loopback in the client, as pages does. Found by the pages tab testing against a real sign-in service. Where it
   lives: `docs/plugins/signin.md` (Settings) and pages' HTTP client.
+
+- **Signing out of one app leaves you signed in to the others.** With single sign-on, each app keeps its own session
+  after the sign-in, so signing out at the identity provider, or of one app, doesn't end the others' sessions, and
+  neither does locking out a compromised account. OpenID Connect Back-Channel Logout fixes it: the provider POSTs a
+  signed logout token to each app the session signed in to. Two traps: an app that's down when the logout is sent
+  keeps honouring the session when it's back, so the provider must keep undelivered logouts and retry them (and alert
+  when one is late); and an app that checks the token loosely can be signed out by anyone, or fooled by an ID token,
+  so it must check the signature, issuer, audience, a recent `iat`, the `events` claim, no `nonce`, and a `jti` used
+  once. Where it lives: `docs/plugins/signin.md` ("Signing out", "For a service"), `plugins/signin/src/logout.rs`,
+  `crates/fleetlayer-oidc` (`verify_logout`).
+- **Moving an identity provider to a new address.** Apps that sign in through it hold its issuer URL, and checking
+  `iss` means a token from the new address fails at the old setting. A redirect at the old address helps browsers and
+  discovery, but an app posting a code to the token endpoint won't follow it, so every app's issuer setting has to be
+  changed before the old name goes away. Also, a reverse proxy that doesn't pass the original `Host` on (nginx without
+  `proxy_set_header Host $host`) makes old-address requests look like new ones. Where it lives:
+  `docs/plugins/signin.md` ("Keep it running", "Change its address").
+- **Rotating a token-signing key.** Publish the new key and keep the old one in the JWKS for as long as tokens it
+  signed live (two weeks here, for safety), so nothing breaks; apps must look the JWKS up again when a token names an
+  unknown key. A key that may have leaked is the exception: take it out at once and accept that everyone signs in to
+  apps again. Where it lives: `docs/plugins/signin.md` ("Keys"), `plugins/signin/src/keys.rs`.
 - **Many agents share one GitHub API limit.** 5,000 requests an hour per user, shared by every session using that
   user's token; `gh run watch` polls every 3 s by default (about 1,200 an hour per watcher), so a few agents watching
   CI exhaust it. Use `--interval 60`, no loops over `gh run list`, `gh api rate_limit` to check, webhooks instead of

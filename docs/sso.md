@@ -2,8 +2,8 @@
 
 Status: design (27 November 2026). Steps 1a (people, tenants, teams, memberships, invites, node owners on the control
 plane), 1b (decisions in the owning tenant, people in the policy, the check call), 1c (the sign-in token and its
-routes), 2a (the sign-in service: OpenID Connect provider, passkeys, invites, the move test), 2b (the admin pages)
-3 (the hub and pages sign in with Fleetlayer, through the shared `crates/fleetlayer-oidc`) and 4a (Google Workspace
+routes), 2a (the sign-in service: OpenID Connect provider, passkeys, invites, the move test), 2b (the admin pages),
+2c (back-channel logout, signing out everywhere, key rotation, `previous_issuers`), 3 (the hub and pages sign in with Fleetlayer, through the shared `crates/fleetlayer-oidc`) and 4a (Google Workspace
 and generic OIDC upstreams, linking by issuer and subject, `join`) are built; the rest follows the steps at the end,
 each one shippable. Workspace groups to teams (4b) come later.
 
@@ -554,7 +554,9 @@ Everything today is in the tenant `default` (nodes, policy, audit log, summaries
    - **2a.** OIDC provider (one token per tenant, PKCE required of every client, `sign_in` checked before any code),
      passkeys, invites, `/api/check`, health and heartbeat, the move test.
    - **2b.** The admin pages (members, invites, clients; teams, tenants and providers under Advanced).
-   - **2c.** Back-channel logout, key rotation, `previous_issuers`.
+   - **2c.** Back-channel logout, key rotation, `previous_issuers`. Built: logouts wait on disk and are retried until
+     delivered or the session would have expired, and one undelivered for an hour fails `/healthz`; receivers in
+     pages and the hub; `fleetlayer-signin keys rotate [--drop-previous]` and `fleetlayer-signin signout --person`.
 3. **The hub signs in with Fleetlayer** (coordinated with the hub's owner): "Sign in with Fleetlayer" next to the
    login key, which keeps working until a deployment turns it off.
 4. **Google Workspace** as an upstream, then generic OIDC.

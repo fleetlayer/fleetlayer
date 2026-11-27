@@ -8,9 +8,8 @@ away, happens in one place.
 Everything a company needs is built on the same service: single sign-on, teams, separate organisations, audit. How it
 fits together, and why, is in [Sign-in and SSO](../sso.md).
 
-Status: experimental. Passkeys, invites, signing in to services, the admin pages, and signing in with Google
-Workspace or another OpenID Connect provider work. Signing out of every service at once, and Workspace groups as
-teams, come next.
+Status: experimental. Passkeys, invites, signing in to services, the admin pages, signing in with Google Workspace or
+another OpenID Connect provider, and signing out of every service at once work. Workspace groups as teams come next.
 
 ## Set it up
 
@@ -39,7 +38,9 @@ teams, come next.
          listen: 127.0.0.1:7680
          clients:
            - name: hub
-             redirect_uris: [https://hub.example.com/auth/callback]
+             redirect_uris: [https://hub.example.com/_/auth/callback]
+             post_logout_redirect_uris: [https://hub.example.com/_/signed-out]
+             backchannel_logout_uri: https://hub.example.com/_/auth/backchannel-logout
              secret_file: ~/.config/fleetlayer/signin-clients/hub
          heartbeat:
            url: https://status.example.com/api/v1/endpoints/signin/external
@@ -111,14 +112,15 @@ true}`: on a public provider that would let in anyone on the internet.
 
 | Setting | What it is |
 |---|---|
-| `dir` | All its state: `people.json` (passkeys), `keys/` (the token-signing key), `sessions.json`. Made readable by this user only. |
+| `dir` | All its state: `people.json` (passkeys), `keys/` (the token-signing keys), `sessions.json`, `logouts.json` (sign-outs still to deliver), `revocations.json` (people signed out by `signout`). Made readable by this user only. |
 | `issuer` | The address people and services use. https, except on this machine (`http://signin.localhost:7680`). |
 | `passkey_domain` | What passkeys are made for. Leave it out: it's the issuer's own domain (`example.com` for `signin.home.example.com`), so sign-in can move anywhere under it. |
 | `control_plane`, `token_file` | The control plane's address and the token from step 1. On one machine, use `http://127.0.0.1:<port>`: a server often can't resolve `*.localhost` names the way a browser does. |
 | `listen` | Where it listens, behind your proxy. |
-| `clients` | Each service that signs people in: `name` (as in the policy, `service:<name>`), its exact `redirect_uris`, a `secret_file` for a service that keeps a secret (leave it out for one that can't, such as an app in a browser), and `post_logout_redirect_uris`. |
+| `clients` | Each service that signs people in: `name` (as in the policy, `service:<name>`), its exact `redirect_uris`, a `secret_file` for a service that keeps a secret (leave it out for one that can't, such as an app in a browser), `post_logout_redirect_uris`, and `backchannel_logout_uri`, where it's told someone signed out (below). |
 | `upstreams` | Providers people may sign in with (above): `name`, `kind` (`google` or `oidc`), `issuer` (oidc), `domain` (required for google), `label`, `tenant`, `client_id`, `client_secret_file`, `join`. |
-| `heartbeat` | Pushed every five minutes; it fails when the folder can't be written or the control plane doesn't answer. |
+| `previous_issuers` | Addresses it had before, still pointed at it while services are repointed (below). |
+| `heartbeat` | Pushed every five minutes; it fails when `/healthz` would. |
 
 ## For a service
 
@@ -141,17 +143,68 @@ with its client ID (the `name`) and secret.
   ```
 
   and the pages plugin gets the `access.check` grant, so it can ask which spaces each person may read.
+- **Signing out:** give the service a `backchannel_logout_uri` and it's told, with an OpenID Connect back-channel
+  logout token (`sid` and `sub`, signed like an ID token, `typ` `logout+jwt`), whenever a sign-in session it signed
+  in through ends. Pages and the hub take them at `/_/auth/backchannel-logout`. A service that checks them itself
+  must check the signature, `iss`, `aud`, an `iat` within a few minutes, the `events` claim, that there's no `nonce`,
+  and that it hasn't seen the `jti` before.
 - The token never says what someone may do. For anything finer, a Fleetlayer plugin asks its node
   (`_fleetlayer.dev/access/check`), and any other service asks `POST /api/check` with its client ID and secret, about
   its own `service:<name>` only.
 
+## Signing out
+
+- **Signing out** of a service, or on the sign-in page, ends the sign-in session and tells every service that
+  session signed in to (those with a `backchannel_logout_uri`), so they end theirs too.
+- **Sign out everywhere**, on the sign-in page, ends every session the person has, on every browser, and tells every
+  service each signed in to.
+- **For an account that may be in someone else's hands**, the operator runs, on the sign-in machine as its user:
+
+  ```sh
+  fleetlayer-signin signout --dir ~/.local/state/fleetlayer/signin --person p_…
+  ```
+
+  The running service signs them out everywhere within seconds. Signing in again afterwards works, so also take the
+  passkey or the upstream account away from whoever has it (`Managing people`).
+- **How long things last after that:** there are no refresh tokens. Access tokens last ten minutes and are dropped at
+  once by signing out everywhere. ID tokens last ten minutes. A service's own session lasts until its logout
+  arrives, or its own limit (pages and the hub: 12 hours).
+- **A service that's down** gets its logout when it's back: they wait in `logouts.json` and are retried, backing off
+  to once an hour, until delivered or the session would have expired anyway. One undelivered for more than an hour
+  fails `/healthz`, because a sign-out that never arrives leaves someone signed in.
+
+## Keys
+
+The token-signing key is replaced every 90 days on its own. The previous key stays in the JWKS for two weeks, so
+tokens it signed still verify, then it's deleted. Services fetch the JWKS again when a token names a key they don't
+have, so nothing changes for them.
+
+If the key may have leaked, replace it now and take the old one out at once:
+
+```sh
+fleetlayer-signin keys rotate --dir ~/.local/state/fleetlayer/signin --drop-previous
+```
+
+The running service uses the new key within a minute. Every token the old key signed stops verifying, so services
+whose sessions check the token again send people to sign in; sessions they already hold carry on until they end
+(sign everyone out with `signout` too, if that matters). Without `--drop-previous` it's an ordinary early rotation.
+
 ## Keep it running
 
-- **Monitoring:** `GET /healthz` is 200 while the folder can be written and the control plane answers, and the
-  heartbeat says the same every five minutes.
+- **Monitoring:** `GET /healthz` is 200 while the folder can be written, the control plane answers, the key can be
+  rotated, and no sign-out has waited more than an hour; otherwise it's 503 with the reasons. The heartbeat says the
+  same every five minutes.
 - **Back it up:** losing the folder means everyone makes new passkeys and every service gets a new secret. Back up
-  `people.json` and `keys/`. Sessions can be lost: people sign in again.
+  `people.json` and `keys/`. Sessions can be lost: people sign in again. Losing `logouts.json` loses sign-outs not yet
+  delivered.
 - **Move it:** stop it, copy the folder and its settings, start it on the other machine and point the address there.
   The key and the passkeys move with the folder, so tokens services hold stay valid and passkeys keep working.
+- **Change its address:** passkeys keep working anywhere under the passkey domain. Set the new `issuer`, and put the
+  old address in `previous_issuers` with the old name still pointing at the service: there, the JWKS is served as
+  is, and everything else is redirected to the same path at the new issuer (only ever there). Then change the issuer
+  in every service's settings (the hub's and pages' `signin.issuer`) before turning the old name off: a service
+  won't follow a redirect when it posts a code to the token endpoint, and new tokens name the new issuer. Your proxy
+  must pass the request's `Host` on (Caddy does; nginx needs `proxy_set_header Host $host`). Sessions on the old
+  address end: people sign in again.
 - **On this machine only** (`localhost`, or a machine's name with no domain of yours), the invite page warns that
   passkeys made there stop working if sign-in moves. Use a domain you own to avoid that.

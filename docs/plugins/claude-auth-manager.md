@@ -121,7 +121,8 @@ plugins:
         signin:                                       # optional: "Sign in with Fleetlayer" (docs/plugins/signin.md)
           issuer: https://signin.example
           secret_file: /etc/claudehub/signin-secret   # the same secret as the hub's client in the sign-in settings
-          base_url: https://hub.example               # register <it>/_/auth/callback and <it>/_/signed-out
+          base_url: https://hub.example               # register <it>/_/auth/callback, <it>/_/signed-out, and
+                                                      # backchannel_logout_uri <it>/_/auth/backchannel-logout
         trusted_proxies: [10.0.0.2]                   # whose X-Forwarded-For is believed
         login_hint: "1Password: infra/claude-hub-login" # optional, shown under the login box; never the key
         heartbeat:                                    # optional, Gatus external-endpoint style
@@ -132,7 +133,8 @@ plugins:
 - **Opening the hub:** with `signin`, the login page offers "Sign in with Fleetlayer". Who may open it is the
   policy's `sign_in` on `service:hub`, which the sign-in service checks before it sends anyone back; by default a
   tenant's admins have it and nobody else does. The login key keeps working beside it until the deployment leaves
-  out `login_file`. Signing out of the hub signs out of Fleetlayer too.
+  out `login_file`. Signing out of the hub signs out of Fleetlayer too, and signing out at Fleetlayer (from another
+  service, or everywhere) ends the hub's session, once the hub's client has a `backchannel_logout_uri`.
 - **The person does every sign-in from their own browser**, in the hub's page: it shows Claude Code's sign-in link,
   they sign in as that account, and paste the code the page shows back into the hub. Each account needs a normal
   sign-in (for usage, monthly) and a setup token (for the agents, yearly). The hub's account numbers are the account
