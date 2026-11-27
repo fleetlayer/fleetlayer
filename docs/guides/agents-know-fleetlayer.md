@@ -35,7 +35,7 @@ machine](agent-instructions.md)), this block goes in the shared one: it's true e
 |---|---|---|
 | `fleetlayer` | `skills/fleetlayer/` | Addresses, messages and replies, who's running and what they did (summaries), starting and resuming sessions, shared tools, readings, outside-data lines, what to do when a call is held or refused |
 | `fleetlayer-browser` | `skills/fleetlayer-browser/` | Using your signed-in Chrome from any machine: adding it, its own tab group, what to ask you before doing |
-| `fleetlayer-folders` | `plugins/folders/skill/` | Your screenshots and downloads: the latest screenshot in one call, uploads and deletes where allowed, the refusals only you can fix |
+| `fleetlayer-shared-folders` | `plugins/shared-folders/skill/` | Your screenshots and downloads: the latest screenshot in one call, uploads and deletes where allowed, the refusals only you can fix |
 | `fleetlayer-claude-accounts` | `plugins/claude-auth-manager/skill/` | Setup-token sessions: never `/login`, what's missing and what replaces it, reading usage |
 | `pages` | `plugins/pages/skill/` | Pages for you to look at: reports, screenshots, mock-ups |
 | `apps` | `plugins/pages/apps-skill/` | Small interactive apps behind your sign-in |
@@ -72,9 +72,9 @@ if you use Codex), on every machine. A self-update restarts the node, so the new
   cp -R /tmp/fleetlayer-skills/* ~/.claude/skills/    # and ~/.agents/skills/ for Codex
   ```
 
-If you sync `~/.claude/skills` between machines with the [files plugin](sync.md), let each node install its own copy
-and leave Fleetlayer's skill folders out of the synced set. The files plugin never overwrites a file it didn't write,
-so the two don't fight, but the copies would only be duplicates.
+If you sync `~/.claude/skills` between machines with the [file-sync plugin](sync.md), let each node install its own copy
+and leave Fleetlayer's skill folders out of the synced set. The file-sync plugin never overwrites a file it didn't
+write, so the two don't fight, but the copies would only be duplicates.
 
 Fleetlayer checks every command a skill names against its own command line in its tests, so a skill never tells an
 agent to run something that doesn't exist.
@@ -91,9 +91,9 @@ Shared tools:
   browser@laptop: allowed (approved until 2026-12-27)
     Your Chrome, signed in to your sites
     Add it: claude mcp add browser -- fleetlayer mcp browser@laptop
-  folders@laptop: your first use asks your person
+  shared-folders@laptop: your first use asks your person
     Folders: screenshots (read), downloads (read, upload)
-    Add it: claude mcp add folders -- fleetlayer mcp folders@laptop
+    Add it: claude mcp add shared-folders -- fleetlayer mcp shared-folders@laptop
 Pages space personal (on home): allowed
     Push a page: fleetlayer pages push <folder> --space personal
 Start or resume sessions on: home (asks your person first), laptop (asks your person first), server (this node) (`fleetlayer session start --on <node>`).

@@ -212,7 +212,7 @@ mod tests {
         let t = crate::db::DEFAULT_TENANT;
         sqlx::query(
             "INSERT INTO approvals (tenant, id, subject, verb, target, status, hold_ms, created_at)
-             VALUES (?, 'ap_1', '-@laptop', 'sync', 'sync:files/skills@server', 'pending', ?, 0)",
+             VALUES (?, 'ap_1', '-@laptop', 'sync', 'sync:file-sync/skills@server', 'pending', ?, 0)",
         )
         .bind(t)
         .bind(30 * DAY)
@@ -222,7 +222,7 @@ mod tests {
         let d = decide(&db, t, "ap_1", true, Some(365 * DAY)).await.unwrap().unwrap();
         assert_eq!(
             (d.subject.as_str(), d.verb.as_str(), d.target.as_str()),
-            ("-@laptop", "sync", "sync:files/skills@server")
+            ("-@laptop", "sync", "sync:file-sync/skills@server")
         );
         let hold: i64 =
             sqlx::query_scalar("SELECT hold_ms FROM approvals WHERE id = 'ap_1'").fetch_one(&db).await.unwrap();

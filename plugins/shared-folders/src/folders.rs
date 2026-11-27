@@ -664,7 +664,7 @@ pub fn upload(folder: &Folder, name: &str, bytes: &[u8], overwrite: bool, min_fr
 #[cfg(target_os = "macos")]
 fn quarantine(f: &File) {
     let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_secs();
-    let value = format!("0081;{now:x};fleetlayer-folders;");
+    let value = format!("0081;{now:x};fleetlayer-shared-folders;");
     let _ = rustix::fs::fsetxattr(f, "com.apple.quarantine", value.as_bytes(), rustix::fs::XattrFlags::empty());
 }
 

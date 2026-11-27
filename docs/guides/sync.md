@@ -18,7 +18,7 @@ Three kinds of files, three answers:
 | What | How it syncs | Why |
 |---|---|---|
 | A notes vault you and your agents both edit | Two-way and live (Syncthing or similar) | Anyone may write anywhere |
-| Skills and shared instructions | One-way from one source (the files plugin) | One place to edit |
+| Skills and shared instructions | One-way from one source (the file-sync plugin) | One place to edit |
 | Sign-ins, per-machine settings, build output | Never | Secret, per machine, or rebuilt |
 
 Under all of it sits a backup with history ([Backups](backups.md)). Sync copies a bad edit or a deletion to every
@@ -92,7 +92,7 @@ The steps below use Syncthing, the simplest fit for a folder that agents write.
 ## 2. Skills and instructions: one-way, from one source
 
 Skills and shared instructions change less often, and when two machines edit them at once you want one clear answer.
-So they're edited in one place and published to the rest. Fleetlayer's files plugin (`fleetlayer-files`,
+So they're edited in one place and published to the rest. Fleetlayer's file-sync plugin (`fleetlayer-file-sync`,
 bundled with every release) does that:
 
 - **The source node watches a folder** and publishes a new version when its contents change (checked every
@@ -113,8 +113,8 @@ Add the plugin to the source's `~/.config/fleetlayer/node.yaml`:
 
 ```yaml
 plugins:
-  - name: files
-    command: fleetlayer-files
+  - name: file-sync
+    command: fleetlayer-file-sync
     grants: [sync.publish]
     config:
       publish:
@@ -122,7 +122,7 @@ plugins:
         - { set: instructions, dir: ~/fleet/instructions, to: [laptop] }
 ```
 
-- `set` names the set. Its bundle is `files/<set>`, which is how access rules name it.
+- `set` names the set. Its bundle is `file-sync/<set>`, which is how access rules name it.
 - `dir` is the folder to publish. `~` is the node user's home.
 - `to` lists the target nodes by name.
 - The `sync.publish` grant lets the plugin publish through the node at all.
@@ -131,8 +131,8 @@ plugins:
 
 ```yaml
 plugins:
-  - name: files
-    command: fleetlayer-files
+  - name: file-sync
+    command: fleetlayer-file-sync
     config:
       apply:
         - { set: skills, dir: ~/.claude/skills }
@@ -140,15 +140,15 @@ plugins:
 ```
 
 The target's `dir` can differ from the source's. Restart each node so it reads the change (`fleetlayer-node install`
-rewrites the service and restarts it, on Linux and macOS), then check that `fleetlayer status` lists `files` with the
-role `sync_source` on the source and `sync_target` on each target.
+rewrites the service and restarts it, on Linux and macOS), then check that `fleetlayer status` lists `file-sync` with
+the role `sync_source` on the source and `sync_target` on each target.
 
 ### Remove hand-made copies once
 
 A target never overwrites a file it didn't write. If `laptop` already has its own `~/.claude/skills/review/SKILL.md`,
-the published one is skipped, and the node's log says `leaving … alone: it wasn't written by fleetlayer-files`. Before
-the first sync, move each target's existing copies aside (or delete the ones the source has too), so the published
-versions land.
+the published one is skipped, and the node's log says `leaving … alone: it wasn't written by fleetlayer-file-sync`.
+Before the first sync, move each target's existing copies aside (or delete the ones the source has too), so the
+published versions land.
 
 ### Only the source may send
 
@@ -162,15 +162,15 @@ deny:
   - who: "*"
     except: "-@server"          # the source node
     can: [sync]
-    to: ["sync:files/*@*"]
+    to: ["sync:file-sync/*@*"]
 ```
 
-A publish is checked as the source node (`-@server`) doing `sync` to `sync:files/<set>@<target>`. Check the rule before
-you apply it:
+A publish is checked as the source node (`-@server`) doing `sync` to `sync:file-sync/<set>@<target>`. Check the rule
+before you apply it:
 
 ```sh
-fleetlayer-control acl explain --from=-@server --can sync --to sync:files/skills@laptop --policy policy.yaml
-fleetlayer-control acl explain --from=-@laptop --can sync --to sync:files/skills@server --policy policy.yaml
+fleetlayer-control acl explain --from=-@server --can sync --to sync:file-sync/skills@laptop --policy policy.yaml
+fleetlayer-control acl explain --from=-@laptop --can sync --to sync:file-sync/skills@server --policy policy.yaml
 fleetlayer-control acl apply policy.yaml
 ```
 
@@ -240,12 +240,12 @@ heartbeats:
 Do the same for the vault: each machine writes its own file (`sync-check/laptop.txt`) and checks the others'. One
 check covers one path, so give each set and each pair of machines you depend on its own.
 
-For the files plugin, Fleetlayer also reports on itself (from v0.3.9). Each bundle and target has a
+For the file-sync plugin, Fleetlayer also reports on itself (from v0.3.9). Each bundle and target has a
 `sync.status` reading (its state, the error, and what to do about it, such as the approve command to run), and each
-set a `files.set` reading (its files, what was skipped and why, its version):
+set a `file-sync.set` reading (its files, what was skipped and why, its version):
 
 ```sh
-fleetlayer readings sync.status files.set
+fleetlayer readings sync.status file-sync.set
 ```
 
 The node's own heartbeat fails when a sync has waited on a person (an approval, a changed key, an access rule) for
@@ -271,7 +271,7 @@ over an hour, so an alert reaches you without a check of your own.
   what it wrote, so `--delete` removes files made by hand on the target, and without `--delete` removed skills linger.
 - **A cloud drive** works for a vault if you already pay for one; see the list in step 1 for its limits on Linux and
   with online-only files.
-- **Syncthing for everything** is simple and many people use it for `~/.claude` too. You trade the files plugin's
+- **Syncthing for everything** is simple and many people use it for `~/.claude` too. You trade the file-sync plugin's
   single source and "never touches files it didn't write" for edits from anywhere and conflict files to clean up.
 
 ## When it doesn't work
@@ -285,7 +285,7 @@ over an hour, so an alert reaches you without a check of your own.
 - **A file is missing on the target.** Files that aren't valid UTF-8 text (images, binaries) are skipped, and anything
   whose name starts with `.` is left out. A symlink that points inside the folder arrives as the same symlink; one that
   points outside it, to nothing, or to a hidden file is skipped. So a skills folder made of links into a repository
-  publishes nothing: publish the folder the links point to. The `files.set` reading lists what was skipped and why
+  publishes nothing: publish the folder the links point to. The `file-sync.set` reading lists what was skipped and why
   (older releases skip every symlink without saying so).
 - **A script in a skill won't run on the target:** the target runs a release older than v0.3.9, which
   writes plain files and drops the executable bit. Upgrade it, or have the skill call its scripts through their

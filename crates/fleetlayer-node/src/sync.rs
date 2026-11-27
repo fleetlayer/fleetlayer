@@ -435,10 +435,10 @@ mod tests {
     fn results_are_read_into_what_to_do() {
         assert_eq!(Got::of(true, None), Got::Applied);
         assert_eq!(Got::of(false, Some("node laptop is offline; it gets this version when it's back")), Got::Offline);
-        let e = "-@laptop needs its person's approval to sync sync:files/skills@server: waiting for the person to \
+        let e = "-@laptop needs its person's approval to sync sync:file-sync/skills@server: waiting for the person to \
                  approve request ap_01JABC. Try again once they've approved it";
         assert_eq!(Got::of(false, Some(e)), Got::Approval("ap_01JABC".into()));
-        let (_, action) = Got::of(false, Some(e)).explain("files/skills", "server");
+        let (_, action) = Got::of(false, Some(e)).explain("file-sync/skills", "server");
         assert!(action.unwrap().contains("fleetlayer-control approvals approve ap_01JABC"));
         let refused = Got::of(false, Some("-@a may not sync sync:x/y@b (access control: …)"));
         assert!(matches!(refused, Got::Refused(_)) && !refused.retried() && refused.needs_person());
@@ -450,14 +450,14 @@ mod tests {
     async fn a_refused_target_is_retried_with_backoff_reported_once_and_cleared_when_it_applies() {
         let s = Sync::default();
         let wait = Got::Approval("ap_1".into());
-        let r = s.record("files/skills", 1, &[("server".into(), wait.clone()), ("pi".into(), Got::Applied)]).await;
+        let r = s.record("file-sync/skills", 1, &[("server".into(), wait.clone()), ("pi".into(), Got::Applied)]).await;
         assert_eq!(r.len(), 2, "each target's first state is a reading");
         assert_eq!(r[0]["data"]["state"], "waiting_for_approval");
         assert!(r[0]["data"]["action"].as_str().unwrap().contains("approve ap_1"));
         assert!(s.due(Instant::now()).await.is_empty(), "not before its backoff");
-        assert_eq!(s.due(Instant::now() + backoff(0)).await, [("files/skills".to_string(), "server".to_string())]);
+        assert_eq!(s.due(Instant::now() + backoff(0)).await, [("file-sync/skills".to_string(), "server".to_string())]);
         // The same refusal again: no new reading, a longer wait.
-        assert!(s.record("files/skills", 1, &[("server".into(), wait.clone())]).await.is_empty());
+        assert!(s.record("file-sync/skills", 1, &[("server".into(), wait.clone())]).await.is_empty());
         assert!(s.due(Instant::now() + backoff(0)).await.is_empty());
         assert!(backoff(1) > backoff(0) && backoff(30) == Duration::from_secs(3600));
         // The link comes back: due at once.
@@ -467,12 +467,12 @@ mod tests {
         assert!(s.problems(Duration::from_secs(3600)).await.is_empty());
         assert_eq!(s.problems(Duration::ZERO).await.len(), 1);
         // Applied: a reading, nothing due, no problem.
-        let r = s.record("files/skills", 1, &[("server".into(), Got::Applied)]).await;
+        let r = s.record("file-sync/skills", 1, &[("server".into(), Got::Applied)]).await;
         assert_eq!(r[0]["data"]["ok"], true);
         assert!(s.due(Instant::now() + Duration::from_secs(7200)).await.is_empty());
         assert!(s.problems(Duration::ZERO).await.is_empty());
         // An offline target is the control plane's to track: never retried here.
-        s.record("files/skills", 2, &[("pi".into(), Got::Offline)]).await;
+        s.record("file-sync/skills", 2, &[("pi".into(), Got::Offline)]).await;
         assert!(s.due(Instant::now() + Duration::from_secs(7200)).await.is_empty());
         assert!(s.problems(Duration::ZERO).await.is_empty());
     }

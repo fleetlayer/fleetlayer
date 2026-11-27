@@ -98,7 +98,9 @@ function indexPage(entries, { link, contributing }) {
 }
 
 export async function directoryPages({ siteUrl, repo }) {
-  const entries = await loadEntries();
+  // Alphabetical by name, or by sort_as where an entry belongs next to another (shared-folders after file-sync).
+  const key = (e) => e.sort_as ?? e.name;
+  const entries = (await loadEntries()).sort((a, b) => key(a).localeCompare(key(b)));
   const forms = {
     site: { link: (n) => `/directory/${n}/`, docsLink: (d) => (/^https?:/.test(d) ? d : `[the docs](/${d}/)`) },
     md: {

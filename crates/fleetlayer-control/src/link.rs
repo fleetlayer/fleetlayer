@@ -624,8 +624,11 @@ mod sync_tests {
 
     #[test]
     fn an_approved_sync_names_its_source_bundle_and_target() {
-        assert_eq!(approved_sync("-@laptop", "sync:files/skills@server"), Some(("laptop", "files/skills", "server")));
-        assert_eq!(approved_sync("ci@laptop", "sync:files/skills@server"), None);
+        assert_eq!(
+            approved_sync("-@laptop", "sync:file-sync/skills@server"),
+            Some(("laptop", "file-sync/skills", "server"))
+        );
+        assert_eq!(approved_sync("ci@laptop", "sync:file-sync/skills@server"), None);
         assert_eq!(approved_sync("-@laptop", "tool:browser@server"), None);
     }
 
@@ -634,7 +637,7 @@ mod sync_tests {
         let db = crate::db::open_memory().await.unwrap();
         let t = crate::db::DEFAULT_TENANT;
         for (b, src, tgt) in
-            [("files/a", "laptop", "server"), ("files/b", "server", "laptop"), ("files/c", "pi", "vps")]
+            [("file-sync/a", "laptop", "server"), ("file-sync/b", "server", "laptop"), ("file-sync/c", "pi", "vps")]
         {
             sqlx::query(
                 "INSERT INTO sync_pending (tenant, bundle, source, target, version, since) VALUES (?, ?, ?, ?, 1, 0)",
@@ -661,8 +664,8 @@ mod sync_tests {
         assert_eq!(
             owed,
             [
-                ("files/a".to_string(), "laptop".to_string(), "server".to_string()),
-                ("files/b".to_string(), "server".to_string(), "laptop".to_string())
+                ("file-sync/a".to_string(), "laptop".to_string(), "server".to_string()),
+                ("file-sync/b".to_string(), "server".to_string(), "laptop".to_string())
             ]
         );
     }

@@ -1,6 +1,6 @@
 [package]
-name = "fleetlayer-files"
-description = "fleetlayer-files: keep a directory (skills, AGENTS.md files) the same on other nodes, sealed in transit"
+name = "fleetlayer-file-sync"
+description = "fleetlayer-file-sync: keep a directory (skills, AGENTS.md files) the same on other nodes, sealed in transit"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

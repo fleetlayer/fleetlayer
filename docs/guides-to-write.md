@@ -7,7 +7,7 @@ managers, machines that sleep.
 
 - **Agents don't know what Fleetlayer gives them.** Without being told, an agent doesn't know it can message other
   sessions, start or resume them, use a shared browser or a laptop's folders, or what an outside-data line or a held
-  call means. Solved with skills (`skills/fleetlayer/`, `skills/fleetlayer-browser/`, `plugins/folders/skill/`,
+  call means. Solved with skills (`skills/fleetlayer/`, `skills/fleetlayer-browser/`, `plugins/shared-folders/skill/`,
   `plugins/claude-auth-manager/skill/`, the pages and apps skills) and a short block for the person's global
   instructions. Claude Code reads skills from `~/.claude/skills/<name>/`, Codex from `~/.agents/skills/<name>/`, and
   Codex's global instructions are `~/.codex/AGENTS.md` (`$CODEX_HOME`). `fleetlayer me` (v0.3.9) lists what a
@@ -65,7 +65,7 @@ managers, machines that sleep.
   downloaded, so they never need the lookup. In CI: a temporary keychain, `security set-key-partition-list` or
   codesign waits for a dialog, and check the submission's status, not notarytool's exit code. The first signed
   release still asks once, since the old answer belonged to a path. Where it lives: `scripts/release/sign-macos.sh`,
-  `docs/releasing.md`. Written: `docs/guides/folders.md` (section 3).
+  `docs/releasing.md`. Written: `docs/guides/shared-folders.md` (section 3).
 - **Testing a release's binaries beside a running node.** Before v0.3.9 a node ignores `FLEETLAYER_INSTANCE`, and any
   node started by hand binds the default socket: it removes the running node's socket file and takes its place, and
   when it stops, the real node is still running with no socket (`fleetlayer status` says it can't reach the node)
@@ -451,8 +451,8 @@ managers, machines that sleep.
   source's node retries targets with backoff and right after an approval, and the control plane asks the source to
   resend when either side links. Each target's state is a `sync.status` reading saying what to do, and a refusal
   lasting an hour fails the heartbeat. Also: a skills folder full of symlinks into a repo syncs nothing for those
-  skills, since links that point outside the folder are never followed (the `files.set` reading lists them). Where it
-  lives: `docs/protocol.md` section 8, `plugins/files/src/main.rs`. To write into: `docs/guides/sync.md`.
+  skills, since links that point outside the folder are never followed (the `file-sync.set` reading lists them). Where it
+  lives: `docs/protocol.md` section 8, `plugins/file-sync/src/main.rs`. To write into: `docs/guides/sync.md`.
 - **A plugin is only as trusted as the agents on its node.** Anything running as the node's Unix user can read its
   token and act as any of its sessions or plugins, so a rule letting `plugin:runner@<untrusted node>` start sessions
   elsewhere lets a prompt injection in that agent's input do it too. Run anything trusted more than its node's agents
@@ -508,8 +508,8 @@ managers, machines that sleep.
   project slug, branch, `pipeline.vcs.revision` for the commit, and a signature in `circleci-signature` (`v1=<hex
   HMAC-SHA256>`). Not parsed yet: add it to the control plane's hooks once the GitHub path has run for a while, mapping
   to the same `<repo>@<branch>` and `<repo>@<sha>` subjects so `--commit` works unchanged.
-- **Agents elsewhere reading your Mac's screenshots and downloads.** `fleetlayer-folders`, a read-only MCP server shared
-  as a node tool (`fleetlayer mcp folders@<mac>`). Footguns: macOS privacy protection (TCC) keeps the node's
+- **Agents elsewhere reading your Mac's screenshots and downloads.** `fleetlayer-shared-folders`, a read-only MCP server shared
+  as a node tool (`fleetlayer mcp shared-folders@<mac>`). Footguns: macOS privacy protection (TCC) keeps the node's
   LaunchAgent, and every tool it starts, out of ~/Downloads, ~/Desktop and ~/Documents until its person allows the node
   once under Files and Folders (or Full Disk Access); a folder of your own (~/Screenshots, set in Shift-Command-5 >
   Options) needs nothing. Confirmed on a real Mac (27 Nov 2026): the prompt names fleetlayer-node by its real versioned
@@ -522,8 +522,8 @@ managers, machines that sleep.
   the policy decides per tool entry, not per MCP tool, so per-agent write rights mean sharing the folder twice (a read
   entry for many, a manage entry for a named session). Uploads are linked into place without clobbering, never
   executable, quarantined on macOS, refused under 1 GB free; deletes go to a hidden trash purged after 30 days, judged
-  by the time in the trashed name (a rename keeps the old modified time). Written: `docs/guides/folders.md`,
-  `docs/plugins/folders.md`.
+  by the time in the trashed name (a rename keeps the old modified time). Written: `docs/guides/shared-folders.md`,
+  `docs/plugins/shared-folders.md`.
 - **A plugin that runs but can't do its job looked healthy.** A session manager whose program isn't on the service's
   PATH (herdr in `~/.local/bin`, which launchd doesn't expand) answered every `session/list` with an error, yet
   `fleetlayer status` said "running" and the heartbeat stayed green. Since then a failing `session/list` shows the
@@ -541,3 +541,10 @@ managers, machines that sleep.
   "You've hit your 5-hour limit". Skip an account whose 5-hour window is full until it resets, and remember a usage
   limit answer so the next call goes elsewhere. Any program that picks accounts for headless calls needs both. Where it
   lives: `plugins/summaries/src/summaries/accounts.rs`, `docs/plugins/summaries.md`.
+- **Renaming a plugin that syncs or is shared as a tool.** `files` became `file-sync` and `folders` became
+  `shared-folders` before v0.3.9 (no backwards compatibility: all beta). What changes with the name: the binary, the
+  node.yaml plugin or tool name, bundle names (`file-sync/<set>`) and so every `sync:` rule and approval (each source
+  asks again once per target), reading kinds (`file-sync.set`), `tool:<name>@<node>` rules and MCP commands
+  (`fleetlayer mcp shared-folders@laptop`), and the macOS signing identifier (`dev.fleetlayer.shared-folders`, so a
+  privacy permission is asked for again). What must not change silently: files a plugin left on disk to recognise its
+  own work (the sync record now `.fleetlayer-file-sync.json`, reading the old `.fleetlayer-files.json` once).

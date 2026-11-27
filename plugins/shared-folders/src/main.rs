@@ -1,15 +1,16 @@
-//! fleetlayer-folders: an MCP server for a few chosen folders, such as your screenshots and downloads, so
-//! agents on other machines can pick up the screenshot you just took. A node shares it as a tool (`docs/plugins/folders.md`):
+//! fleetlayer-shared-folders: an MCP server for a few chosen folders, such as your screenshots and downloads, so
+//! agents on other machines can pick up the screenshot you just took. A node shares it as a tool
+//! (`docs/plugins/shared-folders.md`):
 //!
 //! ```yaml
 //! tools:
-//!   - name: folders
-//!     command: fleetlayer-folders
+//!   - name: shared-folders
+//!     command: fleetlayer-shared-folders
 //!     args: ["--folder", "screenshots=~/Screenshots", "--folder", "downloads=~/Downloads"]
 //!     allow: ["*@server"]
 //! ```
 //!
-//! Agents use it with `fleetlayer mcp folders@<node>`. Tools: `folders`, `list`, `latest`, `find` and `read`, plus
+//! Agents use it with `fleetlayer mcp shared-folders@<node>`. Tools: `folders`, `list`, `latest`, `find` and `read`, plus
 //! `upload` and `delete` for the folders named by `--upload` and `--delete` (read-only otherwise). Only files directly
 //! in each folder are reachable: no subfolders, hidden files or symbolic links. Deleting moves a file to the folder's
 //! hidden trash, kept 30 days. MCP over stdio, one JSON-RPC message per line.
@@ -36,7 +37,7 @@ const HARD_MAX_READ_MB: u64 = 10;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "fleetlayer-folders",
+    name = "fleetlayer-shared-folders",
     version,
     about = "An MCP server for chosen folders: read-only unless --upload or --delete"
 )]
@@ -231,7 +232,7 @@ impl Server {
         json!({
             "protocolVersion": version,
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "fleetlayer-folders", "version": env!("CARGO_PKG_VERSION")},
+            "serverInfo": {"name": "fleetlayer-shared-folders", "version": env!("CARGO_PKG_VERSION")},
             "instructions": format!(
                 "Access to these folders on another machine: {}. `latest` finds the newest files (the screenshot \
                  just taken: latest with folder screenshots, read true), `read` returns a file: images you can see, \

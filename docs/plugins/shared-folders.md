@@ -1,12 +1,12 @@
-# fleetlayer-folders
+# fleetlayer-shared-folders
 
 An MCP server for a few folders you choose, such as your screenshots and downloads. A node shares it as a tool, so an
 agent on any machine can pick up the screenshot you just took or the file you just downloaded, without you copying
 anything across. Every folder is read-only by default; `--upload` and `--delete` turn on adding and deleting files,
-folder by folder. [Your Mac's screenshots and downloads, for agents anywhere](../guides/folders.md) sets it up step by
+folder by folder. [Your Mac's screenshots and downloads, for agents anywhere](../guides/shared-folders.md) sets it up step by
 step.
 
-It ships with Fleetlayer as `fleetlayer-folders`. It isn't a node plugin: the node starts one copy for each connection,
+It ships with Fleetlayer as `fleetlayer-shared-folders`. It isn't a node plugin: the node starts one copy for each connection,
 like any [shared tool](../getting-started.md#using-a-tool-on-another-machine).
 
 ## Configuration
@@ -15,8 +15,8 @@ Each folder is `--folder name=path`; `~` is the home directory of the node's use
 
 ```yaml
 tools:
-  - name: folders
-    command: fleetlayer-folders
+  - name: shared-folders
+    command: fleetlayer-shared-folders
     args: ["--folder", "screenshots=~/Screenshots", "--folder", "downloads=~/Downloads"]
     allow: ["*@server"]                 # which sessions may connect: <tab>@<node> patterns
     networks: ["192.168.1.0/24"]        # optional: only while this machine is on your home network
@@ -34,18 +34,18 @@ tools:
 
 
 The access policy decides per tool entry, so different rights for different agents means several entries, each a copy
-of `fleetlayer-folders` with its own arguments and `allow:` list. To give some agents your screenshots but not your
+of `fleetlayer-shared-folders` with its own arguments and `allow:` list. To give some agents your screenshots but not your
 downloads (bank statements, scans of IDs), make two entries with one folder each, `tool:screenshots@laptop` and
 `tool:downloads@laptop`. To let one agent tidy a folder that others only read, share it twice:
 
 ```yaml
 tools:
   - name: downloads
-    command: fleetlayer-folders
+    command: fleetlayer-shared-folders
     args: ["--folder", "downloads=~/Downloads"]
     allow: ["*@server"]
   - name: downloads-manage
-    command: fleetlayer-folders
+    command: fleetlayer-shared-folders
     args: ["--folder", "downloads=~/Downloads", "--upload", "downloads", "--delete", "downloads"]
     allow: ["planning@server"]
 ```

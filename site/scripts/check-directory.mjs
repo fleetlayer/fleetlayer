@@ -60,6 +60,7 @@ function problems(e, names) {
     p.push(`platforms is a list of ${PLATFORMS.join(", ")}`);
   }
   if (e.min_fleetlayer && !/^\d+\.\d+\.\d+$/.test(String(e.min_fleetlayer))) p.push("min_fleetlayer is a version like 0.3.4");
+  if (e.sort_as !== undefined && typeof e.sort_as !== "string") p.push("sort_as is a string");
   return p;
 }
 

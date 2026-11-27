@@ -3,7 +3,7 @@
 - { from: "quietdeck triage@agents-triage", can: message, to: "billing@nathans-mac", expect: allow }
 - { from: "quietdeck triage@agents-triage", can: message, to: "homeserver pve@agents", expect: allow }
 - { from: "quietdeck triage@agents-triage", can: use_tool, to: "tool:browser@nathans-mac", expect: deny }
-- { from: "quietdeck triage@agents-triage", can: sync, to: "sync:files/skills@nathans-mac", expect: deny }
+- { from: "quietdeck triage@agents-triage", can: sync, to: "sync:file-sync/skills@nathans-mac", expect: deny }
 - { from: "quietdeck triage@agents-triage", can: read, to: "billing@nathans-mac", expect: deny }
 - { from: "quietdeck triage@agents-triage", can: start, to: "billing@nathans-mac", expect: deny }
 - { from: "-@agents-triage", can: read, to: "fleetlayer@agents", expect: deny }
@@ -22,7 +22,7 @@
 - { from: "talira worker@agents-talira-worker", can: message, to: "talira@nathans-mac", expect: allow }
 - { from: "talira worker@agents-talira-worker", can: message, to: "billing@nathans-mac", expect: deny }
 - { from: "talira worker@agents-talira-worker", can: message, to: "homeserver pve@agents", expect: allow }
-- { from: "talira worker@agents-talira-worker", can: sync, to: "sync:files/skills@agents", expect: deny }
+- { from: "talira worker@agents-talira-worker", can: sync, to: "sync:file-sync/skills@agents", expect: deny }
 # Nathan's own sessions: everything.
 - { from: "billing@nathans-mac", can: use_tool, to: "tool:browser@nathans-mac", expect: allow }
 - { from: "fleetlayer@agents", can: read, to: "billing@nathans-mac", expect: allow }
@@ -32,7 +32,7 @@
 - { from: "-@agents-claudehub", can: sync, to: "sync:claude-auth-manager/tokens@nathans-mac", expect: allow }
 - { from: "-@nathans-mac", can: sync, to: "sync:claude-auth-manager/tokens@agents", expect: deny }
 - { from: "-@agents", can: sync, to: "sync:claude-auth-manager/tokens@agents-talira", expect: deny }
-- { from: "-@nathans-mac", can: sync, to: "sync:files/skills@agents", expect: allow }
+- { from: "-@nathans-mac", can: sync, to: "sync:file-sync/skills@agents", expect: allow }
 # Terminals: the person's sessions may drive each other's; restricted agents may not type into any.
 - { from: "-@nathans-mac", can: attach, to: "planning@agents", expect: allow }
 - { from: "quietdeck triage@agents-triage", can: attach, to: "planning@agents", expect: deny }

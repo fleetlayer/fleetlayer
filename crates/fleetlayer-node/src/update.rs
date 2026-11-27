@@ -32,14 +32,14 @@ pub const BINARIES: &[&str] = &[
     "fleetlayer-herdr",
     "fleetlayer-claude-code",
     "fleetlayer-summaries",
-    "fleetlayer-files",
+    "fleetlayer-file-sync",
     "fleetlayer-claude-auth-manager",
     "fleetlayer-claude-accounts",
     "fleetlayer-control",
     "fleetlayer-gateway",
     "fleetlayer-pages",
     "fleetlayer-signin",
-    "fleetlayer-folders",
+    "fleetlayer-shared-folders",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]

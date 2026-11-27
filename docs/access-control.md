@@ -43,7 +43,7 @@ agents they limit can't change.
 | A shell or script | `-@<node>` | `-@server` |
 | A plugin (a runner that carries out approved actions) | `plugin:<name>@<node>` | `plugin:runner@triage` |
 | A shared tool | `tool:<name>@<node>` | `tool:browser@laptop` |
-| A sync bundle | `sync:<bundle>@<node>` | `sync:files/skills@laptop` |
+| A sync bundle | `sync:<bundle>@<node>` | `sync:file-sync/skills@laptop` |
 | A channel | `channel:<name>` | `channel:ci` |
 | A group | `group:<name>` | `group:untrusted-input` |
 | A person, a team, the admins | `person:<handle>`, `team:<name>`, `role:admin` | `person:sam` |

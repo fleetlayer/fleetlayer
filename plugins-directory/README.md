@@ -30,5 +30,6 @@ Listing it is a pull request that adds one file here, `<name>.yaml`. Copy an exi
 | `security` | no | What it can read or do, plainly |
 | `docs` | no | A page on fleetlayer.ai (`plugins/pages`), or a URL |
 | `description` | no | Markdown: more on what it does and how to judge it |
+| `sort_as` | no | Where it sorts in the list, when it belongs next to another entry (`file-sync-shared-folders`) |
 
 `cd site && npm run check-directory` checks every entry (add `-- --network` to check the source URLs too).

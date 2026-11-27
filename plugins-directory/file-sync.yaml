@@ -1,4 +1,4 @@
-name: files
+name: file-sync
 summary: Keeps a folder (skills, AGENTS.md files) the same on other machines, encrypted in transit.
 kind: plugin
 roles: [sync_source, sync_target]
@@ -6,9 +6,9 @@ ships_with_fleetlayer: true
 status: beta
 licence: Apache-2.0
 maintainer: Fleetlayer
-source: https://github.com/fleetlayer/fleetlayer/tree/main/plugins/files
+source: https://github.com/fleetlayer/fleetlayer/tree/main/plugins/file-sync
 install: bundled
-command: fleetlayer-files
+command: fleetlayer-file-sync
 platforms: [linux, macos]
 min_fleetlayer: 0.2.0
 protocol: 1
@@ -16,8 +16,8 @@ needs: []
 grants: [sync.publish]
 config: |
   plugins:
-    - name: files
-      command: fleetlayer-files
+    - name: file-sync
+      command: fleetlayer-file-sync
       grants: [sync.publish]          # on the source node
       config:
         publish:                      # on the source node
@@ -30,4 +30,4 @@ security: >-
   each and 20 MB a set.
 description: |
   The source publishes a new version whenever the folder changes. Each target makes its folder match: files written,
-  and files this plugin wrote for an earlier version removed. Bundles are named `files/<set>`.
+  and files this plugin wrote for an earlier version removed. Bundles are named `file-sync/<set>`.

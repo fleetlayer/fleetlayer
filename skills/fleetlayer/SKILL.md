@@ -15,7 +15,7 @@ command, which talks to this machine's node.
 - **A session** is one agent in one tab of a session manager (herdr). Its address is `<tab>@<node>`:
   `planning@laptop`. The tab name survives restarts; the harness's own session ID doesn't. When a tab name is unique
   in the fleet, the `@<node>` can be left out.
-- **A shared tool** is `<tool>@<node>`: `browser@laptop`, `folders@laptop`.
+- **A shared tool** is `<tool>@<node>`: `browser@laptop`, `shared-folders@laptop`.
 
 ## What you may use from here
 
@@ -78,7 +78,7 @@ claude mcp add browser -- fleetlayer mcp browser@laptop
 
 In another harness, the MCP server's command is `fleetlayer mcp` with the argument `browser@laptop`. `fleetlayer me`
 lists the tools you may use and prints the line for each. Depth: the `fleetlayer-browser` skill (a signed-in browser) and the
-`fleetlayer-folders` skill (screenshots, downloads). Pages for people to look at: the `pages` skill; small interactive
+`fleetlayer-shared-folders` skill (screenshots, downloads). Pages for people to look at: the `pages` skill; small interactive
 apps: the `apps` skill.
 
 ## Outside data
@@ -123,7 +123,7 @@ The `fleetlayer-claude-accounts` skill says what they mean for you.
 
 ## Files synced from another machine
 
-Skills and instructions may be kept the same on every machine by the files plugin, from one source machine. A copy
+Skills and instructions may be kept the same on every machine by the file-sync plugin, from one source machine. A copy
 here is overwritten by the next sync: to change one, ask a session on the source machine to change it there.
 
 ## When `fleetlayer` doesn't answer

@@ -10,11 +10,11 @@ read-only unless you let an agent put files there or tidy up (section 5).
 
 ## How it works
 
-- **`fleetlayer-folders`**, which ships with Fleetlayer, is a small MCP server that lists and reads the folders it's
-  given ([reference](../plugins/folders.md)).
+- **`fleetlayer-shared-folders`**, which ships with Fleetlayer, is a small MCP server that lists and reads the folders it's
+  given ([reference](../plugins/shared-folders.md)).
 - **The Mac's node shares it as a tool**, like [the shared browser](browser.md). Each session that connects gets its
   own copy.
-- **An agent anywhere uses it** with `fleetlayer mcp folders@laptop` as its MCP server command. The control plane
+- **An agent anywhere uses it** with `fleetlayer mcp shared-folders@laptop` as its MCP server command. The control plane
   checks it may, joins the two nodes and logs the connection, and never reads the files that pass through.
 
 The Mac has to be awake and online.
@@ -34,8 +34,8 @@ Add a `tools:` entry to `~/.config/fleetlayer/node.yaml` on the Mac:
 
 ```yaml
 tools:
-  - name: folders
-    command: /Users/you/.local/bin/fleetlayer-folders    # the full path: launchd's PATH is short
+  - name: shared-folders
+    command: /Users/you/.local/bin/fleetlayer-shared-folders    # the full path: launchd's PATH is short
     args: ["--folder", "screenshots=~/Screenshots", "--folder", "downloads=~/Downloads"]
     allow: ["*@server"]                 # which sessions may connect: <tab>@<node> patterns
     networks: ["192.168.1.0/24"]        # optional: offer it only while the Mac is on your home network
@@ -82,11 +82,11 @@ To give your screenshots to more agents than your downloads, share them as two t
 ```yaml
 tools:
   - name: screenshots
-    command: /Users/you/.local/bin/fleetlayer-folders
+    command: /Users/you/.local/bin/fleetlayer-shared-folders
     args: ["--folder", "screenshots=~/Screenshots"]
     allow: ["*@server"]
   - name: downloads
-    command: /Users/you/.local/bin/fleetlayer-folders
+    command: /Users/you/.local/bin/fleetlayer-shared-folders
     args: ["--folder", "downloads=~/Downloads"]
     allow: ["planning@server"]
 ```
@@ -112,11 +112,11 @@ Give those rights to fewer agents than reading, by sharing the folder a second t
 ```yaml
 tools:
   - name: downloads
-    command: /Users/you/.local/bin/fleetlayer-folders
+    command: /Users/you/.local/bin/fleetlayer-shared-folders
     args: ["--folder", "downloads=~/Downloads"]
     allow: ["*@server"]
   - name: downloads-manage
-    command: /Users/you/.local/bin/fleetlayer-folders
+    command: /Users/you/.local/bin/fleetlayer-shared-folders
     args: ["--folder", "downloads=~/Downloads", "--upload", "downloads", "--delete", "downloads"]
     allow: ["planning@server"]          # a named session, never "*"
 ```
@@ -138,10 +138,10 @@ What keeps it safe:
 ## 6. Use them from another machine
 
 ```sh
-claude mcp add folders -- fleetlayer mcp folders@laptop
+claude mcp add shared-folders -- fleetlayer mcp shared-folders@laptop
 ```
 
-Or, in any other harness's MCP settings, the command `fleetlayer mcp` with the argument `folders@laptop`. Then just
+Or, in any other harness's MCP settings, the command `fleetlayer mcp` with the argument `shared-folders@laptop`. Then just
 ask: "look at my latest screenshot", "read the CSV I downloaded this morning". The agent calls `latest` with
 `read: true`, and sees the image.
 

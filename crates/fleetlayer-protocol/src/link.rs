@@ -379,7 +379,7 @@ pub struct ToolInfo {
     /// Why it isn't offered now (off its networks), or None when it is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub not_offered: Option<String>,
-    /// For a fleetlayer-folders tool: its folders and what each allows.
+    /// For a fleetlayer-shared-folders tool: its folders and what each allows.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub folders: Vec<FolderInfo>,
 }

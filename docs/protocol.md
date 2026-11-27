@@ -538,4 +538,4 @@ Not part of the plugin protocol, summarised here for context; `docs/link.md` wil
   from a harness plugin. Not in draft 1.
 - **Bundles the control plane may keep.** A bundle that isn't secret (skills, AGENTS.md files) could be kept by the
   control plane, so a target that comes online gets the latest version even while the source machine is asleep. Not
-  built: every bundle is sealed today (section 8), and the files plugin seals too.
+  built: every bundle is sealed today (section 8), and the file-sync plugin seals too.

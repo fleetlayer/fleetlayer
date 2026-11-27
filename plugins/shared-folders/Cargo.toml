@@ -1,6 +1,6 @@
 [package]
-name = "fleetlayer-folders"
-description = "fleetlayer-folders: a read-only MCP server for chosen folders (screenshots, downloads), shared as a tool"
+name = "fleetlayer-shared-folders"
+description = "fleetlayer-shared-folders: a read-only MCP server for chosen folders (screenshots, downloads), shared as a tool"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

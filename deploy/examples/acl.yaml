@@ -5,8 +5,8 @@
 # a session that messaged it. Every refusal is published as an `access.denied` event on the `access` channel.
 #
 # Put resource denials (tool:, sync:) before broad allows: `*@agents` also matches `tool:browser@agents` and
-# `sync:files/skills@agents`. Sync bundles are guarded only by these rules: a node allowed to send a bundle another node
-# applies (files/skills, say) can overwrite what it applies.
+# `sync:file-sync/skills@agents`. Sync bundles are guarded only by these rules: a node allowed to send a bundle another node
+# applies (file-sync/skills, say) can overwrite what it applies.
 default: allow
 rules:
   # An email triage agent reads untrusted mail: no shared tools (no browser) and no sync, ever. It may message any

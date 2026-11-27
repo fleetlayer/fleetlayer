@@ -1,10 +1,10 @@
-//! fleetlayer-files: keep a directory the same on other nodes, such as skills or a folder of AGENTS.md files. The
+//! fleetlayer-file-sync: keep a directory the same on other nodes, such as skills or a folder of AGENTS.md files. The
 //! publishing node seals each version to the targets' keys (`docs/protocol.md` section 8), so the control plane relays
 //! it without being able to read it.
 //!
 //! ```yaml
-//! - name: files
-//!   command: fleetlayer-files
+//! - name: file-sync
+//!   command: fleetlayer-file-sync
 //!   grants: [sync.publish]
 //!   config:
 //!     publish:                       # on the source node
@@ -13,13 +13,13 @@
 //!       - { set: skills, dir: ~/.claude/skills }
 //! ```
 //!
-//! Bundles are named `files/<set>`. A version is published when the directory's contents change (checked every
+//! Bundles are named `file-sync/<set>`. A version is published when the directory's contents change (checked every
 //! `every_minutes`). Applying makes the target directory match: every file written, and files this plugin wrote for an
 //! earlier version but missing now removed. A file it didn't write (listed in `.fleetlayer-files.json`, its record
 //! of what it wrote) is never touched. Files are text, at most 1 MB each and 20 MB a set, and keep their executable bit.
 //! A symbolic link pointing inside the directory is made as the same link on the target (a node too old for links
 //! writes a copy of the file instead); one pointing outside, to nothing or to a hidden file is never followed. Anything
-//! left out (not text, such a link, a socket) is a warning in the log and listed in the `files.set` reading
+//! left out (not text, such a link, a socket) is a warning in the log and listed in the `file-sync.set` reading
 //! (`{set, files, skipped, version, publishedAt}`, every check). A target that doesn't get a version is retried and
 //! reported by the node (`sync.status` readings), so set it up with the targets upgraded first.
 
@@ -42,7 +42,10 @@ use tokio::sync::Mutex;
 
 const MAX_FILE: u64 = 1024 * 1024;
 const MAX_SET: u64 = 20 * 1024 * 1024;
-const RECORD: &str = ".fleetlayer-files.json";
+/// The record of the files this plugin wrote into a target folder.
+const RECORD: &str = ".fleetlayer-file-sync.json";
+/// Its name before the plugin was renamed from `files`: read when the new one is missing, removed once replaced.
+const OLD_RECORD: &str = ".fleetlayer-files.json";
 
 #[derive(Debug, Clone, Deserialize)]
 struct Publish {
@@ -230,8 +233,12 @@ fn apply_set(dir: &Path, items: &[SyncItem]) -> anyhow::Result<(usize, usize)> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(dir)?;
     let record_path = dir.join(RECORD);
-    let before: BTreeSet<String> =
-        std::fs::read(&record_path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    let old_record = dir.join(OLD_RECORD);
+    let before: BTreeSet<String> = std::fs::read(&record_path)
+        .or_else(|_| std::fs::read(&old_record))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
     let mut now = BTreeSet::new();
     for item in items {
         anyhow::ensure!(safe(&item.name), "refusing the path {:?}", item.name);
@@ -244,7 +251,7 @@ fn apply_set(dir: &Path, items: &[SyncItem]) -> anyhow::Result<(usize, usize)> {
             continue;
         }
         if std::fs::symlink_metadata(&path).is_ok() && !before.contains(&item.name) {
-            tracing::warn!("leaving {} alone: it wasn't written by fleetlayer-files", path.display());
+            tracing::warn!("leaving {} alone: it wasn't written by fleetlayer-file-sync", path.display());
             continue;
         }
         if let Some(parent) = path.parent() {
@@ -271,6 +278,7 @@ fn apply_set(dir: &Path, items: &[SyncItem]) -> anyhow::Result<(usize, usize)> {
         }
     }
     std::fs::write(&record_path, serde_json::to_vec_pretty(&now)?)?;
+    let _ = std::fs::remove_file(&old_record);
     Ok((now.len(), removed))
 }
 
@@ -284,7 +292,7 @@ impl Handler for Shared {
                 let req: InitializeRequest = params(p)?;
                 let node: NodeMeta = ext::get_meta(req.client_capabilities.meta.as_ref(), meta_key::NODE)
                     .map_err(RpcError::invalid_params)?
-                    .ok_or_else(|| RpcError::refused("fleetlayer-files runs under a Fleetlayer node"))?;
+                    .ok_or_else(|| RpcError::refused("fleetlayer-file-sync runs under a Fleetlayer node"))?;
                 let home = PathBuf::from(&node.home);
                 let config: Config = serde_json::from_value(node.config.clone()).map_err(RpcError::invalid_params)?;
                 let apply: Vec<Apply> =
@@ -293,9 +301,10 @@ impl Handler for Shared {
                     config.publish.iter().map(|p| Publish { dir: expand(&home, &p.dir), ..p.clone() }).collect();
                 let roles = Roles {
                     sync_target: (!apply.is_empty())
-                        .then(|| SyncRole { bundles: apply.iter().map(|a| format!("files/{}", a.set)).collect() }),
-                    sync_source: (!publish.is_empty())
-                        .then(|| SyncRole { bundles: publish.iter().map(|p| format!("files/{}", p.set)).collect() }),
+                        .then(|| SyncRole { bundles: apply.iter().map(|a| format!("file-sync/{}", a.set)).collect() }),
+                    sync_source: (!publish.is_empty()).then(|| SyncRole {
+                        bundles: publish.iter().map(|p| format!("file-sync/{}", p.set)).collect(),
+                    }),
                     ..Default::default()
                 };
                 *self.0.apply.lock().await = apply;
@@ -312,7 +321,7 @@ impl Handler for Shared {
                         ..Default::default()
                     },
                     agent_info: Some(Implementation {
-                        name: "fleetlayer-files".into(),
+                        name: "fleetlayer-file-sync".into(),
                         title: Some("Files".into()),
                         version: env!("CARGO_PKG_VERSION").into(),
                     }),
@@ -322,7 +331,7 @@ impl Handler for Shared {
             ext::method::PING => Ok(json!({})),
             ext::method::SYNC_APPLY => {
                 let a: SyncApply = params(p)?;
-                let set = a.bundle.strip_prefix("files/").unwrap_or_default();
+                let set = a.bundle.strip_prefix("file-sync/").unwrap_or_default();
                 let dir = self
                     .0
                     .apply
@@ -345,7 +354,7 @@ impl Handler for Shared {
     }
 }
 
-/// Publish a version whenever the directory's contents change. Each check is a `files.set` reading (what was sent,
+/// Publish a version whenever the directory's contents change. Each check is a `file-sync.set` reading (what was sent,
 /// what was skipped and why). A target that doesn't get a version is the node's to retry (and report, as a
 /// `sync.status` reading), so a version counts as published once the node has it.
 async fn watch(p: Publish, peer: Peer) {
@@ -370,7 +379,7 @@ async fn watch(p: Publish, peer: Peer) {
                         .map(|t| t.as_millis() as u64)
                         .unwrap_or(0);
                     let publish = SyncPublish {
-                        bundle: format!("files/{}", p.set),
+                        bundle: format!("file-sync/{}", p.set),
                         version,
                         secret: true,
                         targets: p.to.iter().map(|n| SyncTarget { node: n.clone() }).collect(),
@@ -395,7 +404,7 @@ async fn watch(p: Publish, peer: Peer) {
                     }
                 }
                 let reading = ext::Reading {
-                    kind: "files.set".into(),
+                    kind: "file-sync.set".into(),
                     key: p.set.clone(),
                     at: jiff::Timestamp::now(),
                     node: None,
@@ -443,6 +452,17 @@ mod tests {
         assert!(!d.path().join("b.md").exists());
         assert!(d.path().join("mine.md").exists());
         assert!(apply_set(d.path(), &[item("../escape", "x")]).is_err());
+    }
+
+    #[test]
+    fn a_target_written_before_the_rename_keeps_updating() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("SKILL.md"), "old").unwrap();
+        std::fs::write(d.path().join(OLD_RECORD), r#"["SKILL.md"]"#).unwrap();
+        apply_set(d.path(), &[item("SKILL.md", "new")]).unwrap();
+        assert_eq!(std::fs::read_to_string(d.path().join("SKILL.md")).unwrap(), "new");
+        assert!(d.path().join(RECORD).exists());
+        assert!(!d.path().join(OLD_RECORD).exists());
     }
 
     #[test]

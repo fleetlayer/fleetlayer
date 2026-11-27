@@ -25,9 +25,9 @@ pub async fn infos(node: &Node) -> Vec<ToolInfo> {
     out
 }
 
-/// The folders of a `fleetlayer-folders` tool, from its arguments: names and grants, never their paths.
+/// The folders of a `fleetlayer-shared-folders` tool, from its arguments: names and grants, never their paths.
 pub fn folders(t: &ToolConfig) -> Vec<FolderInfo> {
-    if Path::new(&t.command).file_name().is_none_or(|n| n != "fleetlayer-folders") {
+    if Path::new(&t.command).file_name().is_none_or(|n| n != "fleetlayer-shared-folders") {
         return vec![];
     }
     let mut out: Vec<FolderInfo> = vec![];
@@ -84,7 +84,7 @@ mod tests {
 
     fn tool(command: &str, args: &[&str]) -> ToolConfig {
         serde_json::from_value(serde_json::json!({
-            "name": "folders", "command": command, "args": args,
+            "name": "shared-folders", "command": command, "args": args,
         }))
         .unwrap()
     }
@@ -92,7 +92,7 @@ mod tests {
     #[test]
     fn folders_are_named_with_their_grants_and_never_their_paths() {
         let t = tool(
-            "/usr/local/bin/fleetlayer-folders",
+            "/usr/local/bin/fleetlayer-shared-folders",
             &[
                 "--folder",
                 "screenshots=~/Screenshots",

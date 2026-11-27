@@ -1,5 +1,5 @@
 ---
-name: fleetlayer-folders
+name: fleetlayer-shared-folders
 description: Read the person's screenshots, downloads or other folders on another machine through Fleetlayer's shared folders tool, and add or delete files where that's allowed. Use when the person says "look at my latest screenshot", "the file I just downloaded", "the PDF in my Downloads", "put this file in my downloads", or names a file on their laptop that you can't reach directly.
 ---
 
@@ -10,10 +10,10 @@ server through Fleetlayer. You reach it with `fleetlayer mcp <tool>@<node>`, lik
 skill). `fleetlayer me` lists each entry you may use, with its folders and what each allows; add it once:
 
 ```sh
-claude mcp add folders -- fleetlayer mcp folders@laptop
+claude mcp add shared-folders -- fleetlayer mcp shared-folders@laptop
 ```
 
-The entry's name isn't a folder's name. The entry may be `folders@laptop` or `downloads-manage@laptop`, with folders
+The entry's name isn't a folder's name. The entry may be `shared-folders@laptop` or `downloads-manage@laptop`, with folders
 called `screenshots` and `downloads` inside. The `folders` tool (and the server's instructions) name the folders; the
 `folder` argument can be left out only when there's one.
 

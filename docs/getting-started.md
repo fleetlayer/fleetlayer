@@ -128,7 +128,7 @@ control plane checks access (`acl` rules on `tool:<name>@<node>`), joins the two
 connection (`fleetlayer-control tools`). It never reads what passes through.
 
 A session finds the tools it may use with `fleetlayer me` (from v0.3.9): each one with its description, whether its
-first use still asks, its folders for `fleetlayer-folders`, and the `claude mcp add` line that adds it. Tools a rule
+first use still asks, its folders for `fleetlayer-shared-folders`, and the `claude mcp add` line that adds it. Tools a rule
 refuses it aren't listed. For agents to know they can, give them the skills and a few lines in their global
 instructions: [Tell your agents about Fleetlayer](guides/agents-know-fleetlayer.md).
 

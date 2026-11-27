@@ -139,7 +139,7 @@ machine may be asleep, or its node restarting)"), and the next call works as usu
 
 `fleetlayer-control tools` on the control plane lists every connection: who used which tool, and when.
 
-The same mechanism shares other things on the laptop: [your screenshots and downloads](folders.md), for example.
+The same mechanism shares other things on the laptop: [your screenshots and downloads](shared-folders.md), for example.
 
 ## What you give up
 
