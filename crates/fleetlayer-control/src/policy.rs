@@ -118,6 +118,10 @@ pub fn default_ask() -> Vec<AskRule> {
     vec![rule(&["start", "attach"], "10m"), rule(&["use_tool", "sync", "admin", "write"], "30d")]
 }
 
+/// The policy of a tenant with neither a version 2 policy nor version 1 rules: agents allowed, people their own
+/// things, and Fleetlayer's default `ask:` rules, so a new fleet asks before sensitive actions.
+pub const BUILTIN: &str = "# Built-in default: no policy is applied.\nversion: 2\ndefault: allow\n";
+
 /// What an approval is held for: one target, except pages, approved per space (`page:<space>/*`).
 pub fn approval_target(target: &str) -> String {
     match target.strip_prefix("page:").and_then(|rest| rest.split_once('/')) {
@@ -424,7 +428,7 @@ impl Compiled {
                 &mut enforced,
                 &mut notes,
                 "default".into(),
-                Some("the default for agents is allow"),
+                Some("the default is allow"),
                 "permit(principal, action, resource) when { !principal.person };".into(),
             )?;
         }

@@ -93,6 +93,13 @@ pub async fn rules(db: &Db, tenant: &str) -> anyhow::Result<Vec<Rule>> {
         .collect()
 }
 
+/// Whether a tenant has version 1 rules or a version 1 default of its own.
+pub async fn configured(db: &Db, tenant: &str) -> anyhow::Result<bool> {
+    let rules = sqlx::query("SELECT 1 FROM acl_rules WHERE tenant = ? LIMIT 1").bind(tenant).fetch_optional(db).await?;
+    let default = sqlx::query("SELECT 1 FROM tenant_settings WHERE tenant = ?").bind(tenant).fetch_optional(db).await?;
+    Ok(rules.is_some() || default.is_some())
+}
+
 pub async fn default(db: &Db, tenant: &str) -> anyhow::Result<Action> {
     let row =
         sqlx::query("SELECT acl_default FROM tenant_settings WHERE tenant = ?").bind(tenant).fetch_optional(db).await?;

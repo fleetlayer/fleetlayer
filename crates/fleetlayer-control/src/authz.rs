@@ -78,9 +78,10 @@ pub async fn remove(db: &Db, tenant: &str) -> anyhow::Result<bool> {
 }
 
 impl Authz {
-    /// A tenant's version 2 policy, reloaded when the stored text changed (`acl apply` from another process).
+    /// A tenant's version 2 policy, reloaded when the stored text changed (`acl apply` from another process). A tenant
+    /// with neither a policy nor version 1 rules gets the built-in default ([`effective`]); None means version 1 rules.
     pub async fn policy(&self, db: &Db, tenant: &str) -> anyhow::Result<Option<Arc<Compiled>>> {
-        let text = stored(db, tenant).await?;
+        let text = effective(db, tenant).await?.map(|(t, _)| t);
         {
             let cur = self.policy.read().await;
             match (cur.get(tenant), &text) {
@@ -122,8 +123,19 @@ impl Authz {
 /// agents as `default: allow`, people their own things, Fleetlayer's default approvals.
 fn builtin() -> Arc<Compiled> {
     static P: OnceLock<Arc<Compiled>> = OnceLock::new();
-    P.get_or_init(|| Arc::new(Compiled::parse("version: 2\ndefault: allow\n").expect("the built-in policy compiles")))
-        .clone()
+    P.get_or_init(|| Arc::new(Compiled::parse(crate::policy::BUILTIN).expect("the built-in policy compiles"))).clone()
+}
+
+/// The policy text that decides in a tenant, and whether it's the built-in default: the stored version 2 policy, or the
+/// built-in default when there are no version 1 rules either. None: version 1 rules decide.
+pub async fn effective(db: &Db, tenant: &str) -> anyhow::Result<Option<(String, bool)>> {
+    if let Some(t) = stored(db, tenant).await? {
+        return Ok(Some((t, false)));
+    }
+    if crate::acl::configured(db, tenant).await? {
+        return Ok(None);
+    }
+    Ok(Some((crate::policy::BUILTIN.to_string(), true)))
 }
 
 /// One tenant's say on a request.
@@ -582,6 +594,22 @@ mod tests {
         // An agent no tenant admitted is refused before any rule.
         let e = check(&app, "default", "x@stranger", "message", "y@stranger").await.unwrap_err();
         assert!(e.message.contains("is a member of any tenant"), "{}", e.message);
+    }
+
+    #[tokio::test]
+    async fn a_fleet_with_no_policy_asks_before_sensitive_actions() {
+        let (app, _) = example().await;
+        let e = check(&app, "default", "recipes@laptop", "use_tool", "tool:browser@laptop").await.unwrap_err();
+        assert!(e.message.contains("needs its person's approval"), "{}", e.message);
+        assert_eq!(log(&app.db, "default").await, ["asked recipes@laptop use_tool tool:browser@laptop"]);
+        check(&app, "default", "recipes@laptop", "message", "recipes@laptop").await.unwrap();
+        // A deployment with version 1 rules keeps them, as before: they never asked.
+        crate::acl::set_default(&app.db, "default", crate::acl::Action::Allow).await.unwrap();
+        check(&app, "default", "recipes@laptop", "use_tool", "tool:shell@laptop").await.unwrap();
+        assert_eq!(effective(&app.db, "default").await.unwrap(), None);
+        // And one with a stored policy decides by it.
+        store(&app.db, "default", "version: 2\ndefault: allow\nask: []\n").await.unwrap();
+        check(&app, "default", "recipes@laptop", "use_tool", "tool:db@laptop").await.unwrap();
     }
 
     #[tokio::test]

@@ -138,8 +138,9 @@ justify:                       # the agent must say why, in one line, and it goe
 
 Approvals are on by default: a policy that leaves `ask:` out asks before `start` and `attach` (an approval holds 10
 minutes) and
-before each agent's first `use_tool` or `sync` to a target (it holds 30 days), the safe start for a fleet you don't know
-yet. A fleet of autonomous agents turns it off with `ask: []` (and
+before each agent's first `use_tool`, `sync`, `admin` or `write` to a target (it holds 30 days), the safe start for a
+fleet you don't know yet. That holds with no policy applied too: a tenant with neither a policy nor version 1 rules is
+decided by the built-in default (`default: allow` and these asks), which `acl show` prints. A fleet of autonomous agents turns it off with `ask: []` (and
 `justify: []`). An `allow` rule doesn't skip an ask: to stop asking for something, list `ask:` without it (`ask: []`
 turns asking off). An `ask` match refuses the request with a request ID and publishes an `access.ask` event on the `access` channel (for
 an Inbox card, a phone push, or whoever subscribes); once the person approves it, the agent tries again and the same

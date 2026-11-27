@@ -875,9 +875,15 @@ async fn main() -> anyhow::Result<()> {
                 AclCommand::Explain { from, can, to, reply, policy } => {
                     let text = match policy {
                         Some(f) => std::fs::read_to_string(f)?,
-                        None => authz::stored(&db, &pt)
-                            .await?
-                            .ok_or_else(|| anyhow::anyhow!("no version 2 policy is applied; pass --policy"))?,
+                        None => match authz::effective(&db, &pt).await? {
+                            Some((text, builtin)) => {
+                                if builtin {
+                                    println!("(no policy is applied: the built-in default decides)");
+                                }
+                                text
+                            }
+                            None => anyhow::bail!("version 1 rules decide here (acl list); pass --policy"),
+                        },
                     };
                     let p = policy::Compiled::parse(&text)?;
                     // Decided in the chosen tenant, with who belongs to it (membership first, people's teams and roles).
@@ -955,15 +961,18 @@ async fn main() -> anyhow::Result<()> {
                 }
                 AclCommand::Unapply => {
                     if authz::remove(&db, &pt).await? {
-                        println!("Removed the version 2 policy; version 1 rules decide again.");
+                        match authz::effective(&db, &pt).await? {
+                            None => println!("Removed the version 2 policy; version 1 rules decide again."),
+                            Some(_) => println!("Removed the version 2 policy; the built-in default decides now."),
+                        }
                     } else {
                         println!("No version 2 policy was applied.");
                     }
                     Ok(())
                 }
                 AclCommand::Show => {
-                    match authz::stored(&db, &pt).await? {
-                        Some(text) => print!("{text}"),
+                    match authz::effective(&db, &pt).await? {
+                        Some((text, _)) => print!("{text}"),
                         None => println!("No version 2 policy is applied; version 1 rules decide (acl list)."),
                     }
                     Ok(())
