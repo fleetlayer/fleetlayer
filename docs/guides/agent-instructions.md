@@ -46,6 +46,9 @@ What goes in the per-machine file is whatever an agent would otherwise get wrong
 
 Write the global file so it never names one machine. When a rule holds only somewhere, it goes in that machine's file.
 
+The shared file is also where every agent learns it's on Fleetlayer and what it may use from here:
+[Tell your agents about Fleetlayer](agents-know-fleetlayer.md) has the block to paste and the skills to install.
+
 ## 2. Two scratchpads per agent
 
 Agents produce two kinds of files that aren't part of a project: intermediate files (a downloaded release, a test

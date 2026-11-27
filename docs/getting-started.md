@@ -129,7 +129,8 @@ connection (`fleetlayer-control tools`). It never reads what passes through.
 
 A session finds the tools it may use with `fleetlayer me` (from v0.3.10): each one with its description, whether its
 first use still asks, its folders for `fleetlayer-folders`, and the `claude mcp add` line that adds it. Tools a rule
-refuses it aren't listed.
+refuses it aren't listed. For agents to know they can, give them the skills and a few lines in their global
+instructions: [Tell your agents about Fleetlayer](guides/agents-know-fleetlayer.md).
 
 ## Monitoring the node
 
