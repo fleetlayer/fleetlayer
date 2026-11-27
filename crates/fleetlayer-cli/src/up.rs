@@ -35,11 +35,16 @@ pub struct UpArgs {
     /// The session (`tab` or `tab@node`) that hears about anything going down.
     #[arg(long)]
     pub alerts_to: Option<String>,
-    /// The gateway's port.
-    #[arg(long, default_value_t = 7680)]
+    /// The gateway's port. Default 7680, or 7690 for a second instance (`$FLEETLAYER_INSTANCE`).
+    #[arg(long = "port")]
+    pub port_arg: Option<u16>,
+    /// The control plane's port, when it runs here; its hooks listen on the next one. Default 7600, or 7700 for a
+    /// second instance.
+    #[arg(long = "control-port")]
+    pub control_port_arg: Option<u16>,
+    #[arg(skip)]
     pub port: u16,
-    /// The control plane's port, when it runs here; its hooks listen on the next one.
-    #[arg(long, default_value_t = 7600)]
+    #[arg(skip)]
     pub control_port: u16,
 }
 
@@ -140,18 +145,12 @@ pub struct Unit {
 impl Unit {
     /// `dev.fleetlayer.control`, or `dev.fleetlayer.<instance>.control` for a second instance.
     fn label(&self) -> String {
-        match fleetlayer_protocol::local::instance() {
-            Some(i) => format!("dev.fleetlayer.{i}.{}", self.name),
-            None => format!("dev.fleetlayer.{}", self.name),
-        }
+        fleetlayer_protocol::local::launchd_label(self.name, fleetlayer_protocol::local::instance().as_deref())
     }
 
     /// `fleetlayer-control.service`, or `fleetlayer-<instance>-control.service`.
     fn unit(&self) -> String {
-        match fleetlayer_protocol::local::instance() {
-            Some(i) => format!("fleetlayer-{i}-{}.service", self.name),
-            None => format!("fleetlayer-{}.service", self.name),
-        }
+        fleetlayer_protocol::local::systemd_unit(self.name, fleetlayer_protocol::local::instance().as_deref())
     }
 
     /// What a second instance adds to the environment: its own HOME (the service manager would set the account's)
@@ -434,7 +433,11 @@ async fn local_get(port: u16, host: &str, path: &str) -> Option<String> {
     Some(body.to_string())
 }
 
-pub async fn up(a: UpArgs) -> anyhow::Result<()> {
+pub async fn up(mut a: UpArgs) -> anyhow::Result<()> {
+    // A second instance moves off the first one's ports unless told otherwise.
+    let second = fleetlayer_protocol::local::instance().is_some();
+    a.port = a.port_arg.unwrap_or(if second { 7690 } else { 7680 });
+    a.control_port = a.control_port_arg.unwrap_or(if second { 7700 } else { 7600 });
     let l = Layout { config: config_dir(), state: state_dir() };
     let node_bin = find_bin("fleetlayer-node")?;
     let gateway_bin = find_bin("fleetlayer-gateway")?;

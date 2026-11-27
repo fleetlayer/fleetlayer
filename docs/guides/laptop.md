@@ -166,12 +166,12 @@ node: true                     # follow the services the node's plugins announce
 - **Cookies on plain HTTP:** browsers refuse `Secure` cookies on subdomains of localhost, so pages and sign-in drop
   `Secure` when their address is `http://…localhost`, and allow plain HTTP only there.
 - **A second copy beside the first** (to try a new version, or test without touching the fleet you use): give it its
-  own name, folder and ports. Its services get their own names (`dev.fleetlayer.try.node`, `fleetlayer-try-node`) and
+  own name and folder. Its services get their own names (`dev.fleetlayer.try.node`, `fleetlayer-try-node`) and
   its node its own socket, and the first copy keeps running untouched:
 
   ```sh
   export FLEETLAYER_INSTANCE=try HOME=~/fleetlayer-try   # in this shell only
-  mkdir -p "$HOME" && fleetlayer up --port 7690 --control-port 7700
+  mkdir -p "$HOME" && fleetlayer up     # ports 7690 and 7700 for a second copy; --port, --control-port for a third
   fleetlayer status; fleetlayer down                     # the same variables pick this copy
   ```
 

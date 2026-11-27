@@ -12,17 +12,11 @@ const LABEL: &str = "dev.fleetlayer.node";
 /// The launchd label and systemd unit: `dev.fleetlayer.node` and `fleetlayer-node.service`, or with
 /// `$FLEETLAYER_INSTANCE` set, `dev.fleetlayer.<instance>.node` and `fleetlayer-<instance>-node.service`.
 fn label() -> String {
-    match fleetlayer_protocol::local::instance() {
-        Some(i) => format!("dev.fleetlayer.{i}.node"),
-        None => LABEL.into(),
-    }
+    fleetlayer_protocol::local::launchd_label("node", fleetlayer_protocol::local::instance().as_deref())
 }
 
 fn unit_name() -> String {
-    match fleetlayer_protocol::local::instance() {
-        Some(i) => format!("fleetlayer-{i}-node.service"),
-        None => "fleetlayer-node.service".into(),
-    }
+    fleetlayer_protocol::local::systemd_unit("node", fleetlayer_protocol::local::instance().as_deref())
 }
 
 pub struct Values {
