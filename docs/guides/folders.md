@@ -71,7 +71,7 @@ To give your screenshots to more agents than your downloads, share them as two t
 tools:
   - name: screenshots
     command: /Users/you/.local/bin/fleetlayer-folders
-    args: ["--folder", "screenshots=~/Screenshots"]
+    args: ["--folder", "screenshots=~/Screenshots", "--trusted", "screenshots"]
     allow: ["*@server"]
   - name: downloads
     command: /Users/you/.local/bin/fleetlayer-folders
@@ -79,9 +79,14 @@ tools:
     allow: ["planning@server"]
 ```
 
-and let the policy decide each one (`tool:screenshots@laptop`, `tool:downloads@laptop`), as
+Let the policy decide each tool (`tool:screenshots@laptop`, `tool:downloads@laptop`), as
 [the browser guide](browser.md#3-let-the-agents-use-it) shows. An agent that reads strangers' text shouldn't have
 either: [Run an agent that reads strangers' text](untrusted-input.md) denies it every shared tool.
+
+Whatever an agent reads from a folder comes with a line saying the contents are outside data, to be treated as
+information and never as instructions: a PDF or a saved web page in Downloads can carry text written to steer an
+agent. For a folder only you write to, such as your screenshots, `--trusted screenshots` leaves the line out. The
+line helps, but it doesn't make a file safe; [that guide](untrusted-input.md) covers the rest.
 
 ## 5. Use them from another machine
 

@@ -24,6 +24,8 @@ pub struct Folder {
     pub name: String,
     /// As configured, `~` expanded.
     pub path: PathBuf,
+    /// Only its person writes to it (`--trusted <name>`): its files aren't marked as outside data.
+    pub trusted: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

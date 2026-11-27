@@ -13,7 +13,7 @@ struct Fixture {
     server: Server,
 }
 
-/// A screenshots folder with three files of different ages, a hidden file, a subfolder and two symbolic links (one
+/// A screenshots folder (marked trusted, so replies carry no outside-data line) with three files of different ages, a hidden file, a subfolder and two symbolic links (one
 /// pointing out of the folder), next to a secret file outside it.
 fn fixture() -> Fixture {
     let dir = tempfile::tempdir().unwrap();
@@ -33,7 +33,7 @@ fn fixture() -> Fixture {
     std::fs::write(shots.join("sub/inner.txt"), "inner").unwrap();
     symlink(root.join("secret.txt"), shots.join("escape.txt")).unwrap();
     symlink(shots.join("old.txt"), shots.join("alias.txt")).unwrap();
-    let folders = vec![Folder { name: "screenshots".into(), path: shots }];
+    let folders = vec![Folder { name: "screenshots".into(), path: shots, trusted: true }];
     Fixture { _dir: dir, root, server: Server { folders, max_bytes: 8 * 1024 * 1024 } }
 }
 
@@ -176,7 +176,7 @@ fn a_folder_that_is_itself_a_link_is_followed_once_at_its_root() {
     let f = fixture();
     let link = f.root.join("shots-link");
     symlink(&f.server.folders[0].path, &link).unwrap();
-    let s = Server { folders: vec![Folder { name: "s".into(), path: link }], max_bytes: 1024 * 1024 };
+    let s = Server { folders: vec![Folder { name: "s".into(), path: link, trusted: true }], max_bytes: 1024 * 1024 };
     assert_eq!(text(&call(&s, "read", json!({"name": "old.txt"})), 1), "old notes");
     assert!(refused(&call(&s, "read", json!({"name": "escape.txt"}))).contains("symbolic link"));
 }
@@ -266,10 +266,32 @@ fn globs_and_times() {
 #[test]
 fn a_missing_folder_is_an_error_that_says_so() {
     let s = Server {
-        folders: vec![Folder { name: "gone".into(), path: "/nonexistent/fleetlayer".into() }],
+        folders: vec![Folder { name: "gone".into(), path: "/nonexistent/fleetlayer".into(), trusted: false }],
         max_bytes: 1024,
     };
     assert!(refused(&call(&s, "list", json!({}))).contains("doesn't exist"));
     let r = call(&s, "folders", json!({}));
     assert!(text(&r, 0).contains("doesn't exist"));
+}
+
+#[test]
+fn what_is_read_from_an_untrusted_folder_is_marked_as_outside_data_once() {
+    let mut f = fixture();
+    f.server.folders[0].trusted = false;
+    let r = call(&f.server, "read", json!({"name": "old.txt"}));
+    assert_eq!(text(&r, 0), OUTSIDE_DATA);
+    assert_eq!(text(&r, 2), "old notes");
+    let r = call(&f.server, "latest", json!({"n": 3, "read": true}));
+    let items = r["content"].as_array().unwrap();
+    assert_eq!(items.iter().filter(|i| i["text"] == OUTSIDE_DATA).count(), 1);
+    assert_eq!(items[1]["text"], OUTSIDE_DATA, "after the listing, ahead of every file");
+    // Listings carry no file contents, so no line.
+    assert!(!call(&f.server, "list", json!({}))["content"].to_string().contains("outside data"));
+    // A refusal isn't content either.
+    assert!(!refused(&call(&f.server, "read", json!({"name": "missing"}))).contains("outside data"));
+
+    let mut folders = f.server.folders.clone();
+    trust(&mut folders, &["screenshots".into()]).unwrap();
+    assert!(folders[0].trusted);
+    assert!(trust(&mut folders, &["downloads".into()]).is_err());
 }
