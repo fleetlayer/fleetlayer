@@ -1,6 +1,6 @@
 ---
 name: fleetlayer
-description: Work with the other agent sessions and shared tools on a Fleetlayer fleet. Use when you need to message another session or reply to one, find out what other sessions are doing or have done, start or resume a session on this or another machine, use a tool another machine shares (a signed-in browser, a laptop's screenshots and downloads), read usage readings, or when a message says it carries outside data or a call is waiting for the person's approval or was refused by access control.
+description: Work with the other agent sessions and shared tools on a Fleetlayer fleet. Use when you need to message another session or reply to one, find out what other sessions are doing or have done, start or resume a session on this or another machine, use a tool another machine shares (a signed-in browser, a laptop's screenshots and downloads), read usage readings, use a secret delivered to your role (an `op://` reference, `fleetlayer secrets run`), or when a message says it carries outside data or a call is waiting for the person's approval or was refused by access control.
 ---
 
 # Fleetlayer
@@ -136,6 +136,23 @@ fleetlayer readings claude.usage claude.token_health
 ```
 
 The `fleetlayer-claude-accounts` skill says what they mean for you.
+
+## Secrets
+
+Secrets (tokens, keys, cookies) may be delivered to your Unix user's role by the person's secrets sources. Use them by
+reference, so the value never appears in your commands or your context:
+
+```sh
+fleetlayer secrets list                                    # what this role has, by reference
+GITHUB_TOKEN=op://github/deploy-bot/token fleetlayer secrets run -- gh api user
+fleetlayer secrets run --env-file .env.secrets -- terraform plan   # lines like NAME=op://vault/item/field
+```
+
+Its output reaches you with every delivered secret replaced by `[REDACTED <reference>]`. Never print, echo, copy or
+send a secret's value, and never decode a redacted one. "not delivered to this node" means your role has no grant for
+it: tell your person which reference you need and why (`fleetlayer secrets grants` shows who has what). The node also
+redacts delivered secrets from your messages and summaries; if it does, it raises an alert to rotate that secret, so
+say so to your person too.
 
 ## Files synced from another machine
 

@@ -1,0 +1,22 @@
+[package]
+name = "fleetlayer-secrets"
+description = "Shared by Fleetlayer's secret-delivering plugins, the node and the CLI: the registry of secrets delivered to a node, the scrubber that redacts them, and private atomic file writes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+jiff.workspace = true
+aho-corasick = "1.1.5"
+base64 = "0.23.1"
+percent-encoding = "2.3.2"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[lints]
+workspace = true

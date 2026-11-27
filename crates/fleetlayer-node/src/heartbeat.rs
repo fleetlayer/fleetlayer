@@ -32,6 +32,8 @@ pub async fn health(node: &Node, has_control: bool) -> Option<String> {
     }
     // A sync a person must unblock (an approval, a changed key, an access rule) for over an hour.
     problems.extend(node.sync.problems(Duration::from_secs(3600)).await);
+    // A delivered secret redacted from what was leaving the node in the last day: rotate it.
+    problems.extend(node.secrets.problems());
     if has_control && node.link.peer().await.is_none() {
         problems.push("not linked to the control plane".into());
     }

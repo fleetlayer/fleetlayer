@@ -112,8 +112,16 @@ async fn connect_once(node: &Arc<Node>, cfg: &ControlConfig) -> anyhow::Result<(
     let (mut sink, mut stream) = ws.split();
     let (in_tx, in_rx) = mpsc::channel::<String>(256);
     let (out_tx, mut out_rx) = mpsc::channel::<String>(256);
+    let scrub_node = node.clone();
     let writer = tokio::spawn(async move {
         while let Some(frame) = out_rx.recv().await {
+            // Everything this node sends the control plane passes here: no delivered secret leaves in it.
+            let frame = if scrub_node.secrets.scrubber().finds(&frame) {
+                let context = crate::secrets::frame_context(&frame);
+                crate::secrets::scrub(&scrub_node, &frame, &context).into_owned()
+            } else {
+                frame
+            };
             if sink.send(Message::Text(frame.into())).await.is_err() {
                 break;
             }

@@ -1736,6 +1736,7 @@ dependencies = [
  "crossterm",
  "fleetlayer-plugin",
  "fleetlayer-protocol",
+ "fleetlayer-secrets",
  "hex",
  "jiff 1.0.3",
  "nix 0.32.0",
@@ -1873,6 +1874,7 @@ dependencies = [
  "clap",
  "fleetlayer-plugin",
  "fleetlayer-protocol",
+ "fleetlayer-secrets",
  "futures",
  "hex",
  "jiff 1.0.3",
@@ -1990,6 +1992,19 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "yaml_serde",
+]
+
+[[package]]
+name = "fleetlayer-secrets"
+version = "0.3.12"
+dependencies = [
+ "aho-corasick",
+ "base64 0.23.1",
+ "jiff 1.0.3",
+ "percent-encoding",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

@@ -44,6 +44,8 @@ pub mod method {
     pub const ACTION_PROGRESS: &str = "_fleetlayer.dev/action/progress";
     pub const SYNC_PUBLISH: &str = "_fleetlayer.dev/sync/publish";
     pub const SYNC_APPLY: &str = "_fleetlayer.dev/sync/apply";
+    /// Node to a `sync_target` plugin: remove everything you wrote from every bundle (a role's window ended).
+    pub const SYNC_FORGET: &str = "_fleetlayer.dev/sync/forget";
     pub const READING_PUBLISH: &str = "_fleetlayer.dev/reading/publish";
     /// Plugin → node (notification): whether it's doing its job. `PluginStatusReport`; the node shows `problem` in its
     /// status and health and publishes the report as a `plugin.status` reading keyed by the plugin's name.

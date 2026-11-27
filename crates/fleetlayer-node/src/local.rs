@@ -196,6 +196,10 @@ impl Handler for Local {
                 peer.request::<_, Value>(m, &p).await
             }
             "node/readings" => crate::readings::latest(node, &p).await,
+            "node/secrets_forget" => match crate::sync::forget_all(node).await {
+                Ok(n) => answer(&json!({"forgotten": n})),
+                Err(e) => Err(RpcError::refused(e.to_string())),
+            },
             "node/me" => {
                 let c =
                     self.caller(p.get("caller").and_then(|c| serde_json::from_value(c.clone()).ok()).as_ref()).await;

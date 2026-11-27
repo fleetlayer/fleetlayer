@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 fleetlayer-protocol.workspace = true
 fleetlayer-plugin.workspace = true
+fleetlayer-secrets.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 jiff.workspace = true

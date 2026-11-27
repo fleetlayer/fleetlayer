@@ -54,6 +54,7 @@ export const pages = [
   { file: "plugins/scheduler", group: "Plugins", label: "Scheduler" },
   { file: "plugins/cookies", group: "Plugins", label: "Cookies" },
   { file: "credentials", group: "Reference", label: "Credentials" },
+  { file: "secrets", group: "Reference", label: "Secrets" },
   { file: "access-control", group: "Reference", label: "Access control" },
   { file: "protocol", group: "Reference", label: "Plugin protocol" },
   { file: "link", group: "Reference", label: "Node link" },

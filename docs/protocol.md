@@ -465,6 +465,20 @@ never does.**
   files: `mode` (Unix permission bits) and `link` (a symbolic link's relative target). A node older than those fields
   ignores them, so a plugin that sends a link also puts the linked file's text in `content`.
 
+### Secrets a target writes: the registry, and forgetting
+
+A target plugin that writes secret values (a token, a cookie, a password-manager item) also lists each one, with the
+reference it's known by (`op://vault/item/field`, `cookie://x/ct0`, `claude://account/2`), in
+`~/.local/state/fleetlayer/secrets/<source>.json` (mode 0600, written in one rename; the `fleetlayer-secrets` crate's
+`registry::register`), and clears its list when the bundle no longer has any. The node reads that folder to redact
+those values from everything it sends the control plane ([secrets](secrets.md#scrubbing)), and `fleetlayer secrets run`
+reads it to fill in references.
+
+`_fleetlayer.dev/sync/forget` `{}` asks a `sync_target` plugin to remove everything it wrote, from every bundle, and its
+registry list; it answers `{forgotten: true}` or `{forgotten: false, error}`. The node sends it when a role's window
+ends and on `fleetlayer secrets forget`, then removes whatever is left in the registry and counts the bundles as never
+applied, so the next delivery of the same version is applied again.
+
 ### Trusting keys
 
 A control plane that lied about a node's key could read secrets meant for it. So the sending node pins each target's

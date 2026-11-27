@@ -2,6 +2,7 @@
 
 mod mcp_bridge;
 mod pages;
+mod secrets;
 #[cfg(test)]
 mod skill_check;
 #[cfg(test)]
@@ -47,6 +48,12 @@ enum Command {
     /// What this session may use from here: sessions to message, shared tools (with the line that adds each one),
     /// pages spaces, subscriptions, and whether its messages arrive as outside data. Asking files no approval request.
     Me,
+    /// The secrets delivered to this node's role: run a command with them (the `op run` replacement), scrub files of
+    /// them, list them by reference, see who may read what, or remove them all.
+    Secrets {
+        #[command(subcommand)]
+        command: secrets::SecretsCommand,
+    },
     /// Every session on this node.
     Sessions {
         /// Include sessions that ended.
@@ -674,6 +681,13 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Services { rest } => return up::services(rest),
         _ => {}
     }
+    if let Command::Secrets { command } = &cli.command
+        && !matches!(command, secrets::SecretsCommand::Grants | secrets::SecretsCommand::Forget)
+    {
+        let Command::Secrets { command } = cli.command else { unreachable!() };
+        let code = secrets::run(command).await?;
+        std::process::exit(code);
+    }
     let socket = cli.socket.clone().unwrap_or_else(default_socket);
     if let Command::Attach { target, observe, raw, why } = &cli.command {
         return attach(&socket.with_extension("tools.sock"), target, *observe, *raw, why.as_deref()).await;
@@ -801,6 +815,21 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                         s["summary"]["sentence"].as_str().unwrap_or("")
                     );
                 }
+            }
+        }
+        Command::Secrets { command: secrets::SecretsCommand::Forget } => {
+            let v: Value = peer.request("node/secrets_forget", &json!({})).await?;
+            println!(
+                "Removed what {} bundle(s) delivered to this node; the next delivery of each puts it back.",
+                v["forgotten"]
+            );
+        }
+        Command::Secrets { .. } => {
+            let v: Value = peer.request("node/readings", &json!({"kinds": ["secrets.grants"]})).await?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&v["readings"])?);
+            } else {
+                secrets::print_grants(&v["readings"]);
             }
         }
         Command::Readings { kinds } => {

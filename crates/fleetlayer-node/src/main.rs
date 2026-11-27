@@ -13,6 +13,7 @@ mod me;
 mod pages;
 mod plugins;
 mod readings;
+mod secrets;
 mod service;
 mod sessions;
 mod skills;
@@ -83,6 +84,8 @@ pub struct Node {
     pub sync: sync::Sync,
     pub opt_ins: tools::OptIns,
     pub readings: readings::Readings,
+    /// Every secret delivered to this node, redacted from what leaves it (`secrets.rs`).
+    pub secrets: secrets::Secrets,
     /// What installing the release's skills did at start (`fleetlayer status`).
     pub skills: skills::Report,
 }
@@ -181,6 +184,7 @@ async fn run(cfg: NodeConfig) -> anyhow::Result<()> {
         sync: sync::Sync::default(),
         opt_ins: tools::OptIns::default(),
         readings: readings::Readings::default(),
+        secrets: secrets::Secrets::new(config::home()),
         skills: skills::at_start(cfg.skills, &config::home(), env!("CARGO_PKG_VERSION")),
     });
     tracing::info!(node = %node.name, machine = %node.machine, plugins = node.plugins.len(), "fleetlayer-node starting");
@@ -197,6 +201,7 @@ async fn run(cfg: NodeConfig) -> anyhow::Result<()> {
         tokio::spawn(heartbeat::run(node.clone(), h, cfg.control.is_some()));
     }
     tokio::spawn(sync::retry(node.clone()));
+    tokio::spawn(secrets::run(node.clone()));
     tokio::spawn(act::fill_menus(node.clone()));
     let update = cfg.update.clone().unwrap_or(update::UpdateConfig { mode: None, every_hours: 6 });
     tokio::spawn(update::run(node.clone(), update));

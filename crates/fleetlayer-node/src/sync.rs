@@ -411,8 +411,56 @@ pub async fn deliver(node: &Arc<Node>, d: SyncDeliver) -> Result<Value, RpcError
         applied.insert(d.bundle.clone(), json!(d.version));
         write_map(&applied_path, &applied).map_err(RpcError::internal)?;
     }
+    // A plugin that delivers secrets lists them in the registry as it applies: redact them from now on.
+    node.secrets.refresh();
     tracing::info!(bundle = %d.bundle, version = d.version, from = %d.from, applied = %r["applied"], "applied a bundle");
     Ok(r)
+}
+
+/// Remove everything delivered to this node: each `sync_target` plugin removes the files it wrote and its registry
+/// entry, the registry's leftovers go, and the bundles count as never applied, so a later delivery of the same version
+/// is applied again. The values stay redacted until the node restarts, since its sessions saw them. Answers how many
+/// bundles the plugins forgot; an error names the plugins that couldn't (not running, too old to know the request).
+pub async fn forget_all(node: &Arc<Node>) -> anyhow::Result<usize> {
+    node.secrets.remember_all();
+    let _guard = node.sync.lock.lock().await;
+    let mut count = 0;
+    let mut failed = vec![];
+    let mut forgotten: Vec<String> = vec![];
+    for p in &node.plugins {
+        let Some(role) = p.roles().await.sync_target else { continue };
+        let r = match p.peer().await {
+            None => Err(format!("{} isn't running", p.name())),
+            Some(peer) => peer
+                .request_within::<_, Value>(ext::method::SYNC_FORGET, &json!({}), Duration::from_secs(60))
+                .await
+                .map_err(|e| format!("{}: {}", p.name(), e.message)),
+        };
+        match r {
+            Ok(v) if v["forgotten"].as_bool() == Some(true) => {
+                count += role.bundles.len();
+                forgotten.extend(role.bundles);
+            }
+            Ok(v) => failed.push(format!("{}: {}", p.name(), v["error"].as_str().unwrap_or("didn't forget"))),
+            Err(e) => failed.push(e),
+        }
+    }
+    let applied_path = state_dir(node).join("applied.json");
+    let mut applied = read_map(&applied_path);
+    applied.retain(|b, _| !forgotten.contains(b));
+    write_map(&applied_path, &applied)?;
+    // Whatever a plugin left in the registry (one that failed, or a source that no longer runs).
+    let dir = fleetlayer_secrets::registry::dir(&node.home);
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            if let Err(err) = std::fs::remove_file(e.path()) {
+                failed.push(format!("removing {}: {err}", e.path().display()));
+            }
+        }
+    }
+    node.secrets.refresh();
+    tracing::warn!(bundles = count, failed = failed.len(), "forgot everything delivered to this node");
+    if failed.is_empty() { Ok(count) } else { Err(anyhow::anyhow!("{}", failed.join("; "))) }
 }
 
 #[cfg(test)]
