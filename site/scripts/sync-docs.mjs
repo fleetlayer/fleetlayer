@@ -168,6 +168,7 @@ async function main() {
   }
   groups.push({ name: "Plugin directory entries", docs: children });
   const homepage = await readFile(join(siteDir, "src/homepage.md"), "utf8");
+  // An uptime check expects llms.txt to start with "# Fleetlayer": tell the homeserver session before changing it.
   const index = [
     `# ${SITE.title}`,
     "",

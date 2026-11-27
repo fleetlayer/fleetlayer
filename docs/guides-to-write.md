@@ -355,3 +355,21 @@ managers, machines that sleep.
   (`projects.<absolute path>.hasTrustDialogAccepted: true` in `~/.claude.json`, written atomically), and start
   sessions in a project or scratch folder, never the home folder. Where it lives: Quietdeck's session start
   (control.rs `trust_in`); Fleetlayer's `fleetlayer session start` (planned).
+- **Per-machine instructions for agents.** One shared global instructions file for every machine, plus one file per
+  machine (`CLAUDE.this-machine.md`, left out of the sync and pulled in from the global one) for what holds only there:
+  no browser, no Touch ID, how to reach the other machines. From Quietdeck's list, 27 Nov 2026.
+  Written: `docs/guides/agent-instructions.md`.
+- **Two scratchpads per agent.** A wiped one (`/tmp` or the session's scratchpad) for intermediate files, and a kept,
+  synced one in the notes vault, named after the agent's role, for working notes worth keeping.
+  Written: `docs/guides/agent-instructions.md`.
+- **Secrets the person pastes in: create the stub item first.** The agent creates the secrets-manager item (right
+  vault, kebab-case name, the field its code reads, empty) and names it, so the person only opens it and pastes.
+  Written: `docs/guides/agent-instructions.md`.
+- **Continuous deployment without races.** CI builds the image and commits its digest to the infra repo with a deploy
+  key; production only moves forward (an ancestry check before each push); main's runs queue; migrations may only add
+  during a rolling deploy; Argo CD backs up before and checks after. Why not an image updater (build order isn't commit
+  order). Where it lives: Quietdeck's `deploy/README.md` ("Continuous deployment"). Written: `docs/guides/continuous-deployment.md`.
+- **A server VM for agents.** A login user without sudo, lingering, Tailscale SSH, herdr, the node. Plus dev servers on
+  a remote machine: Vite refuses host names it doesn't know (403), and `crypto.randomUUID` exists only on HTTPS pages
+  or localhost; use the tailnet's full name and allow it. Written: `docs/guides/agents-vm.md`.
+- **Syncing notes, skills and instructions between machines.** Written: `docs/guides/sync.md`.
