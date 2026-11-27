@@ -1,0 +1,47 @@
+[package]
+name = "fleetlayer-signin"
+description = "fleetlayer-signin: one sign-in, with passkeys, for every web service a fleet runs, as an OpenID Connect provider whose permissions come from the fleet's access policy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+fleetlayer-protocol.workspace = true
+fleetlayer-plugin.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+jiff.workspace = true
+async-trait = "0.1.92"
+axum = "0.8.9"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json"] }
+form_urlencoded = "1.2.3"
+sha2 = "0.11"
+hex = "0.4"
+rand = "0.9"
+base64 = "0.23.1"
+url = "2"
+psl = "2"
+rsa = "0.10"
+# The OS random source, as rsa 0.10 takes it.
+crypto-common = { version = "0.2", features = ["getrandom"] }
+webauthn-rs-proto = "0.6"
+subtle = "2"
+# Passkeys: MPL-2.0, used unmodified (NOTICE). Its core uses OpenSSL, built from source into the binary (`vendored`)
+# so a release links no system OpenSSL.
+webauthn-rs = { version = "0.6", features = ["danger-allow-state-serialisation", "conditional-ui"] }
+openssl = { version = "0.10", features = ["vendored"] }
+
+[dev-dependencies]
+# A software passkey for the tests (MPL-2.0, unmodified, tests only).
+webauthn-authenticator-rs = { version = "0.6", default-features = false, features = ["softpasskey"] }
+tempfile = "3.27.0"
+tower = { version = "0.5", features = ["util"] }
+
+[lints]
+workspace = true

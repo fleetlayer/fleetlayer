@@ -1,8 +1,9 @@
 # Fleetlayer sign-in: one sign-in for every service
 
 Status: design (27 November 2026). Steps 1a (people, tenants, teams, memberships, invites, node owners on the control
-plane), 1b (decisions in the owning tenant, people in the policy, the check call) and 1c (the sign-in token and its
-routes) are built; the rest follows the steps at the end, each one shippable.
+plane), 1b (decisions in the owning tenant, people in the policy, the check call), 1c (the sign-in token and its
+routes) and 2a (the sign-in service: OpenID Connect provider, passkeys, invites, the move test) are built; the rest
+follows the steps at the end, each one shippable.
 
 People sign in once, with Fleetlayer, to every web service the fleet runs: the Claude sign-in hub, pages, and any
 other service someone chooses to run. Who may use what comes from the same access policy that decides what agents may
@@ -316,7 +317,7 @@ tenant per request. No dynamic registration.
   invites, clients; for the operator, `/operator` (people, sessions, the upstreams and the deployment's own settings).
 - **CLI:** `fleetlayer-control tenant add`, `member add|remove|role`, `team add|remove|member`, `invite`, `node add
   --tenant --owner`, run with the control plane's admin token; `fleetlayer-control signin token` makes the sign-in
-  service's token. The first admin of a deployment: `fleetlayer-control invite --tenant home --handle a --role admin`
+  service's token. The first admin of a deployment: `fleetlayer-control --tenant home invite add --handle a --role admin`
   prints their link.
 - **The control plane's side** (built in 1c), `POST` with the sign-in token as a bearer token; no node, API or admin
   token reaches these, and the sign-in token reaches nothing else:
@@ -397,22 +398,22 @@ request's headers; the service is found by host (`forward_auth: [{host: grafana.
 
 ## The plugin
 
+Set up and settings: [`plugins/signin.md`](plugins/signin.md). In short:
+
 ```yaml
 plugins:
   - name: signin
     command: fleetlayer-signin
-    grants: [reading.publish]
     config:
-      dir: ~/.local/state/fleetlayer/signin     # made 0700: people.json (credentials), keys/, sessions
+      dir: ~/.local/state/fleetlayer/signin     # made 0700: people.json (credentials), keys/, sessions.json
       issuer: https://signin.example
       control_plane: https://control.example
-      token_file: /etc/fleetlayer-signin/token  # the sign-in token
-      listen: 10.0.0.5:7670                     # behind a private HTTPS proxy
-      trusted_proxies: [10.0.0.2]
+      token_file: ~/.config/fleetlayer/signin-token   # the sign-in token
+      listen: 127.0.0.1:7680                    # behind a private HTTPS proxy
       clients:
         - name: hub
           redirect_uris: [https://hub.example/auth/callback]
-          secret_file: /etc/fleetlayer-signin/clients/hub
+          secret_file: ~/.config/fleetlayer/signin-clients/hub
       heartbeat: {url: …, token_file: …}
 ```
 
@@ -534,8 +535,11 @@ Everything today is in the tenant `default` (nodes, policy, audit log, summaries
      `link/access_check {tenant, who, can, to}` and `_fleetlayer.dev/access/check`; `acl explain`/`acl test` for
      people.
    - **1c.** The sign-in token and `signin/*`.
-2. **The sign-in service:** OIDC provider (one token per tenant), passkeys, invites, the admin pages, `/api/check`,
-   health and heartbeat.
+2. **The sign-in service**, in three releases:
+   - **2a.** OIDC provider (one token per tenant, PKCE required of every client, `sign_in` checked before any code),
+     passkeys, invites, `/api/check`, health and heartbeat, the move test.
+   - **2b.** The admin pages (members, invites, clients; teams, tenants and providers under Advanced).
+   - **2c.** Back-channel logout, key rotation, `previous_issuers`.
 3. **The hub signs in with Fleetlayer** (coordinated with the hub's owner): "Sign in with Fleetlayer" next to the
    login key, which keeps working until a deployment turns it off.
 4. **Google Workspace** as an upstream, then generic OIDC.

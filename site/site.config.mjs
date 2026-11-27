@@ -37,6 +37,7 @@ export const pages = [
   { file: "plugins/pages", group: "Plugins", label: "Pages" },
   { file: "plugins/apps", group: "Plugins", label: "Apps" },
   { file: "plugins/claude-auth-manager", group: "Plugins", label: "Claude accounts" },
+  { file: "plugins/signin", group: "Plugins", label: "Sign-in" },
   { file: "access-control", group: "Reference", label: "Access control" },
   { file: "protocol", group: "Reference", label: "Plugin protocol" },
   { file: "link", group: "Reference", label: "Node link" },

@@ -411,3 +411,9 @@ managers, machines that sleep.
   elsewhere lets a prompt injection in that agent's input do it too. Run anything trusted more than its node's agents
   under its own Unix user and node. Found by homeserver and Quietdeck reviewing the triage setup before the
   session-start release. Where it lives: AGENTS.md, docs/access-control.md.
+  sessions in a project or scratch folder, never the home folder. Where it lives: Quietdeck's session start
+  (control.rs `trust_in`); Fleetlayer's `fleetlayer session start` (planned).
+- **One sign-in for self-hosted services, with passkeys.** Point a service's OpenID Connect settings at the sign-in
+  plugin, register it as a client with its exact return address, and give people `sign_in` on `service:<name>` in
+  the policy; without that rule a person reaches nothing, by design. A service that keeps no secret (a browser app)
+  is a public client, and PKCE is required of every client either way. Where it lives: `docs/plugins/signin.md`.

@@ -56,3 +56,11 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+fleetlayer-signin (plugins/signin) depends on webauthn-rs, webauthn-rs-core and webauthn-rs-proto
+(https://github.com/kanidm/webauthn-rs), under the Mozilla Public License 2.0, used unmodified as libraries; their
+source is available there. No MPL code is copied into Fleetlayer's own files. Its tests use webauthn-authenticator-rs
+from the same project, also MPL-2.0 and unmodified.
+
+Through webauthn-rs-core, fleetlayer-signin's release binary includes OpenSSL (https://www.openssl.org), built from
+source and linked statically, under the Apache License 2.0.
