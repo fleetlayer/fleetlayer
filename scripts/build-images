@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Builds and pushes a commit's images on the build host, in the background there:
 #   <registry>/fleetlayer/control:<sha>   (deploy/Dockerfile)
-#   <registry>/fleetlayer/node-bin:<sha>  (the Linux fleetlayer, fleetlayer-node and plugin binaries, FROM scratch)
+#   <registry>/fleetlayer/node-bin:<sha>  (the Linux fleetlayer, fleetlayer-node and plugin binaries, and the release's
+#                                          skills in /skills: put that folder beside the binaries, FROM scratch)
 # Progress: /opt/code/fleetlayer/images/<sha>.log on the build host; <sha>.status there says "done 0" when both are
 # pushed (anything else is a failure).
 #
@@ -29,8 +30,8 @@ nohup sh -c "
 DOCKER_BUILDKIT=1 docker build -f deploy/Dockerfile -t $R/control:$SHA . > $ROOT/$SHA.log 2>&1 &&
 docker run --rm $R/control:$SHA --help > /dev/null 2>&1 &&
 $PUSH docker push $R/control:$SHA >> $ROOT/$SHA.log 2>&1 &&
-docker run --rm -v $ROOT/src:/src -v fleetlayer-cargo-registry:/usr/local/cargo/registry -w /src rust:1.99.1-bookworm sh -c 'cargo build --release --locked -j 8 -p fleetlayer-cli -p fleetlayer-node -p fleetlayer-herdr -p fleetlayer-rex -p fleetlayer-claude-code -p fleetlayer-summaries -p fleetlayer-file-sync -p fleetlayer-claude-auth-manager -p fleetlayer-accounts -p fleetlayer-pages -p fleetlayer-signin -p fleetlayer-shared-folders -p fleetlayer-gateway && rm -rf dist && mkdir dist && cp target/release/fleetlayer target/release/fleetlayer-node target/release/fleetlayer-herdr target/release/fleetlayer-rex target/release/fleetlayer-claude-code target/release/fleetlayer-summaries target/release/fleetlayer-file-sync target/release/fleetlayer-claude-auth-manager target/release/fleetlayer-claude-accounts target/release/fleetlayer-pages target/release/fleetlayer-signin target/release/fleetlayer-shared-folders target/release/fleetlayer-gateway dist/' >> $ROOT/$SHA.log 2>&1 &&
-cd dist && printf 'FROM scratch\nCOPY fleetlayer fleetlayer-node fleetlayer-herdr fleetlayer-rex fleetlayer-claude-code fleetlayer-summaries fleetlayer-file-sync fleetlayer-claude-auth-manager fleetlayer-claude-accounts fleetlayer-pages fleetlayer-signin fleetlayer-shared-folders fleetlayer-gateway /\n' > Dockerfile.node-bin &&
+docker run --rm -v $ROOT/src:/src -v fleetlayer-cargo-registry:/usr/local/cargo/registry -w /src rust:1.99.1-bookworm sh -c 'cargo build --release --locked -j 8 -p fleetlayer-cli -p fleetlayer-node -p fleetlayer-herdr -p fleetlayer-rex -p fleetlayer-claude-code -p fleetlayer-summaries -p fleetlayer-file-sync -p fleetlayer-claude-auth-manager -p fleetlayer-accounts -p fleetlayer-pages -p fleetlayer-signin -p fleetlayer-shared-folders -p fleetlayer-gateway && rm -rf dist && mkdir dist && cp target/release/fleetlayer target/release/fleetlayer-node target/release/fleetlayer-herdr target/release/fleetlayer-rex target/release/fleetlayer-claude-code target/release/fleetlayer-summaries target/release/fleetlayer-file-sync target/release/fleetlayer-claude-auth-manager target/release/fleetlayer-claude-accounts target/release/fleetlayer-pages target/release/fleetlayer-signin target/release/fleetlayer-shared-folders target/release/fleetlayer-gateway dist/ && bash scripts/collect-skills dist/skills' >> $ROOT/$SHA.log 2>&1 &&
+cd dist && printf 'FROM scratch\nCOPY fleetlayer fleetlayer-node fleetlayer-herdr fleetlayer-rex fleetlayer-claude-code fleetlayer-summaries fleetlayer-file-sync fleetlayer-claude-auth-manager fleetlayer-claude-accounts fleetlayer-pages fleetlayer-signin fleetlayer-shared-folders fleetlayer-gateway /\nCOPY skills /skills\n' > Dockerfile.node-bin &&
 DOCKER_BUILDKIT=1 docker build --platform linux/amd64 -f Dockerfile.node-bin -t $R/node-bin:$SHA . >> $ROOT/$SHA.log 2>&1 &&
 $PUSH docker push $R/node-bin:$SHA >> $ROOT/$SHA.log 2>&1
 echo done \$? > $ROOT/$SHA.status" < /dev/null > /dev/null 2>&1 &
