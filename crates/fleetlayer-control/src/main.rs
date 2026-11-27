@@ -24,6 +24,7 @@ mod readings;
 mod route;
 mod settings;
 mod signin;
+mod stepup;
 mod streams;
 mod summaries;
 mod windows;
@@ -261,11 +262,16 @@ enum SigninCommand {
 
 #[derive(Subcommand)]
 enum TokenCommand {
-    /// Add a token and print it (shown once). `read`: every GET and catch-ups; `admin`: everything.
+    /// Add a token and print it (shown once). `read`: every GET and catch-ups; `admin`: everything; `send`: only
+    /// sends messages; `approve`: reads and decides approvals and closes role windows, as its --owner (one of the
+    /// tenant's admins), with a passkey step-up to open a window. Recorded in the audit log.
     Add {
         name: String,
         #[arg(long, default_value = "read")]
         scope: String,
+        /// For an approve token: the person (handle) it decides as, one of the tenant's admins.
+        #[arg(long)]
+        owner: Option<String>,
     },
     List,
     Remove {
@@ -1076,9 +1082,24 @@ async fn main() -> anyhow::Result<()> {
             }
         },
         Command::Token { command } => match command {
-            TokenCommand::Add { name, scope } => {
-                println!("{}", db::add_token(&db, t, &name, &scope).await?);
-                eprintln!("Token {name} ({scope}) added. It isn't shown again.");
+            TokenCommand::Add { name, scope, owner } => {
+                let owner = match owner {
+                    Some(o) => {
+                        let fleet = directory::Fleet::load(&db).await?;
+                        let person = stepup::owner_may_approve(&fleet, t, Some(&o))
+                            .map_err(|e| anyhow::anyhow!("{}", e.replace("this approve token's owner", "the owner")))?;
+                        Some(person)
+                    }
+                    None => None,
+                };
+                let token = db::add_owned_token(&db, t, &name, &scope, owner.as_deref()).await?;
+                let what = match &owner {
+                    Some(o) => format!("scope {scope}, owner {o}"),
+                    None => format!("scope {scope}"),
+                };
+                people::log(&db, t, &cli.actor, "token.add", &format!("token:{name}"), &what).await?;
+                println!("{token}");
+                eprintln!("Token {name} ({what}) added. It isn't shown again.");
                 Ok(())
             }
             TokenCommand::List => {
@@ -1090,6 +1111,7 @@ async fn main() -> anyhow::Result<()> {
             }
             TokenCommand::Remove { name } => {
                 anyhow::ensure!(db::remove_token(&db, t, &name).await?, "no token {name}");
+                people::log(&db, t, &cli.actor, "token.remove", &format!("token:{name}"), "removed").await?;
                 Ok(())
             }
         },
@@ -1373,6 +1395,8 @@ async fn serve(
         .route("/v1/signin/invite_redeem", axum::routing::post(signin::post_invite_redeem))
         .route("/v1/signin/check", axum::routing::post(signin::post_check))
         .route("/v1/signin/event", axum::routing::post(signin::post_event))
+        .route("/v1/signin/approval_view", axum::routing::post(signin::post_approval_view))
+        .route("/v1/signin/stepup", axum::routing::post(signin::post_stepup))
         .route("/v1/signin/join", axum::routing::post(signin::post_join))
         .route("/v1/signin/teams_sync", axum::routing::post(signin::post_teams_sync))
         .route("/v1/signin/admin/view", axum::routing::post(signin::post_admin_view))

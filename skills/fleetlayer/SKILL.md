@@ -155,10 +155,16 @@ fleetlayer role activate admin --for 1h --why "upgrade postgres to 17 and restar
 fleetlayer role list        # off, waiting for the person (with the request ID), or open until when
 ```
 
-Tell your person the request ID and wait; don't ask again in a loop, and ask for no longer than the job needs. Once
+Tell your person the request ID and what it's for, and wait. They approve it from their deck or inbox, and opening a
+window asks for their passkey, so it can take a minute. Don't ask again in a loop, and ask for no longer than the job
+needs. Once
 it's open, work quickly and close it when you're done: `fleetlayer role deactivate admin`. At the end, every session in
 the role is closed and what was delivered to it is removed, so save your work and notes before the window ends
 (`fleetlayer me` shows when).
+
+If you're setting up the deck or inbox the person approves from, give it an approve token (`fleetlayer-control token
+add deck --scope approve --owner <their handle>`), never the admin token: [Approving from a deck or an
+inbox](https://fleetlayer.ai/docs/access-control/#approving-from-a-deck-or-an-inbox).
 
 ## Readings
 

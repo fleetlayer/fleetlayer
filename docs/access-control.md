@@ -262,26 +262,52 @@ Prefer credentials whose lifetime is the window, so the end is real even for a c
 tokens (an hour), short-lived database users. A static key the role saw could have been copied: rotate the important
 ones on a schedule. The whole setup, sudo rule included: [An admin role that's off until you open it](guides/admin-window.md).
 
-### Windows in a deck or an inbox
+### Approving from a deck or an inbox
 
-Whatever shows the person approvals can show windows too: a card for each request, a card for each open window with
-its end time, and a Close button. Everything it needs:
+Whatever shows the person approvals (a deck, an inbox, a phone app) can decide them too, and show windows: a card for
+each request, a card for each open window with its end time, and a Close button.
+
+**Its token.** Give it an `approve` token, never the admin token:
+
+```sh
+fleetlayer-control token add deck --scope approve --owner sam
+```
+
+An approve token reads approvals and windows, approves and refuses requests, and closes windows. Nothing else: no
+fleet view, no events, no policy. It decides as its owner, who must be one of the tenant's admins when it's used (a
+token whose owner left or stopped being an admin is refused), and each decision is recorded as `person:sam (token
+deck)`, with the approval and in the audit log. Making and removing tokens is recorded in the audit log too.
+
+**A passkey to open a window.** Approving a role window (a request with verb `activate` on `window:<role>`) with an
+approve token needs the owner to confirm that one request with their passkey first, at the sign-in service's
+`/stepup?tenant=<slug>&approval=<id>&return=<url>` page ([the sign-in service](plugins/signin.md), "Confirming a
+request with a passkey"). The sign-in service reports it to the control plane,
+which accepts the approval within 5 minutes, once; without it the approval is refused with a 403 that says so. The
+control plane enforces this, not the deck. Refusing a window, closing one and every other approval need no passkey.
+The admin token needs none either: it's the operator's, and stays on the server.
+
+**The API:**
 
 - **The request** is an ordinary approval with verb `activate` and target `window:<role>`. `GET /v1/approvals` lists it
   (`{"id": "ap_…", "from": "ops@server-admin", "verb": "activate", "to": "window:admin", "status": "pending", …}`), the
-  `access.ask` event announces it, and `POST /v1/approvals/<id>` `{"approve": true, "for": "1h"}` (admin token) opens
-  the window. `for` can shorten it; the window never runs past the role's `longest:`. The reason the agent gave is in
-  the audit log (`asked for admin's window for 1h; why: …`).
-- **`GET /v1/windows`** (read token): `{"roles": [{"role", "state", "endsAt"?, "id"?, "longestMs", "member"}],
-  "windows": [{"id", "role", "requestedBy", "openedAt", "endsAt", "closedAt", "closedBy", "unconfirmed", "problem"}]}`.
-  `state` is `open`, `pending` (a request waiting, `id` is its approval) or `off`. `windows` lists the 50 most recent,
-  newest first: `closedAt` is null while open, `unconfirmed` lists the nodes (the role's, and those watching it) that haven't confirmed closing it,
-  and `problem` says what went wrong if one reported a problem. Times are milliseconds since the epoch.
-- **`DELETE /v1/windows/<role>`** (admin token): close it now. `{"role", "closed"}`, with `closed` false when none was
-  open. A pending request for the role is withdrawn too.
+  `access.ask` event announces it, and `POST /v1/approvals/<id>` `{"approve": true, "for": "1h"}` (admin or approve
+  token) opens the window. `for` can shorten it; the window never runs past the role's `longest:`. The reason the agent
+  gave is in the audit log (`asked for admin's window for 1h; why: …`).
+- **`GET /v1/windows`** (read, admin or approve token): `{"roles": [{"role", "state", "endsAt"?, "id"?, "longestMs",
+  "member"}], "windows": [{"id", "role", "requestedBy", "openedAt", "endsAt", "closedAt", "closedBy", "unconfirmed",
+  "problem"}]}`. `state` is `open`, `pending` (a request waiting, `id` is its approval) or `off`. `windows` lists the 50
+  most recent, newest first: `closedAt` is null while open, `unconfirmed` lists the nodes (the role's, and those
+  watching it) that haven't confirmed closing it, and `problem` says what went wrong if one reported a problem. Times
+  are milliseconds since the epoch.
+- **`DELETE /v1/windows/<role>`** (admin or approve token): close it now. `{"role", "closed"}`, with `closed` false
+  when none was open. A pending request for the role is withdrawn too.
 - **Events** on the `access` channel: `access.window.opened` and `access.window.closed`, with subject
   `window:<role>`, body `{"id", "role", "endsAt"}` and dedupe key `<kind>:<id>`. Subscribe to the channel to update a
   card without polling.
+- **For the sign-in service** (its own token): `POST /v1/signin/approval_view {tenant, approval}` → the approval
+  (`{id, from, verb, to, detail, status, holdMs, createdAt}`, 404 when missing or another tenant's), and `POST
+  /v1/signin/stepup {tenant, person, approval}` → `{approval, person, expiresAt}`, 403 with the reason when the person
+  isn't one of the tenant's admins or the request isn't a pending role window.
 
 ## Roles that never ask
 

@@ -233,24 +233,51 @@ pub async fn remove_node(db: &Db, tenant: &str, name: &str) -> anyhow::Result<bo
 
 // ---------------------------------------------------------------- API tokens
 
-/// Add an API token (`read`, `admin`, or `send`: a service that only sends messages, as `service:<name>`): returns it,
-/// shown once. Adding a name again replaces its token.
+/// Add an API token (`read`, `admin`, `send`: a service that only sends messages, as `service:<name>`, or `approve`:
+/// a deck that decides approvals, owned by `owner`, `person:<handle>`): returns it, shown once. Adding a name again
+/// replaces its token.
+#[cfg(test)]
 pub async fn add_token(db: &Db, tenant: &str, name: &str, scope: &str) -> anyhow::Result<String> {
+    add_owned_token(db, tenant, name, scope, None).await
+}
+
+pub async fn add_owned_token(
+    db: &Db,
+    tenant: &str,
+    name: &str,
+    scope: &str,
+    owner: Option<&str>,
+) -> anyhow::Result<String> {
     anyhow::ensure!(valid_name(name), "a token name is letters, digits, - and _");
-    anyhow::ensure!(matches!(scope, "read" | "admin" | "send"), "a scope is read, admin or send");
+    anyhow::ensure!(matches!(scope, "read" | "admin" | "send" | "approve"), "a scope is read, admin, send or approve");
+    anyhow::ensure!(
+        (scope == "approve") == owner.is_some(),
+        "an approve token needs an owner (--owner <handle>: who it approves as), and only an approve token has one"
+    );
     let token = format!("flt_{}", new_secret());
     sqlx::query(
-        "INSERT INTO api_tokens (tenant, name, token_hash, scope, created_at) VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT (tenant, name) DO UPDATE SET token_hash = excluded.token_hash, scope = excluded.scope",
+        "INSERT INTO api_tokens (tenant, name, token_hash, scope, created_at, owner) VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT (tenant, name) DO UPDATE SET token_hash = excluded.token_hash, scope = excluded.scope,
+         owner = excluded.owner",
     )
     .bind(tenant)
     .bind(name)
     .bind(hash(&token))
     .bind(scope)
     .bind(now_ms())
+    .bind(owner)
     .execute(db)
     .await?;
     Ok(token)
+}
+
+/// An API token's tenant, scope, name and owner.
+pub async fn token_owner(db: &Db, token: &str) -> anyhow::Result<Option<(String, String, String, Option<String>)>> {
+    let row = sqlx::query("SELECT tenant, scope, name, owner FROM api_tokens WHERE token_hash = ?")
+        .bind(hash(token))
+        .fetch_optional(db)
+        .await?;
+    Ok(row.map(|r| (r.get(0), r.get(1), r.get(2), r.get(3))))
 }
 
 /// The tenant and scope of an API token.
@@ -803,7 +830,10 @@ mod tests {
         let db = open_memory().await.unwrap();
         let read = add_token(&db, DEFAULT_TENANT, "deck-read", "read").await.unwrap();
         let send = add_token(&db, DEFAULT_TENANT, "quietdeck", "send").await.unwrap();
-        assert!(add_token(&db, DEFAULT_TENANT, "x", "write").await.is_err(), "only read, admin and send");
+        assert!(add_token(&db, DEFAULT_TENANT, "x", "write").await.is_err(), "only read, admin, send and approve");
+        assert!(add_token(&db, DEFAULT_TENANT, "x", "approve").await.is_err(), "an approve token needs an owner");
+        let deck = add_owned_token(&db, DEFAULT_TENANT, "deck", "approve", Some("person:sam")).await.unwrap();
+        assert_eq!(token_owner(&db, &deck).await.unwrap().unwrap().3.as_deref(), Some("person:sam"));
         assert_eq!(token_info(&db, &send).await.unwrap(), Some(("default".into(), "send".into(), "quietdeck".into())));
         assert_eq!(token_scope(&db, &read).await.unwrap(), Some(("default".into(), "read".into())));
         let before = crate::directory::Fleet::version(&db).await.unwrap();

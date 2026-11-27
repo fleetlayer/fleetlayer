@@ -22,6 +22,8 @@ enum Scope {
     Admin,
     /// A service that only sends messages, as `service:<token name>`.
     Send,
+    /// A deck that reads approvals and windows, decides approvals and closes windows (`stepup.rs`).
+    Approve,
 }
 
 /// The scope the request's bearer token has: the admin token file's, or an API token's.
@@ -36,6 +38,7 @@ async fn scope_of(app: &App, headers: &HeaderMap) -> Option<Scope> {
         Some((tenant, scope)) if tenant == DEFAULT_TENANT => Some(match scope.as_str() {
             "admin" => Scope::Admin,
             "send" => Scope::Send,
+            "approve" => Scope::Approve,
             _ => Scope::Read,
         }),
         _ => None,
@@ -51,7 +54,48 @@ async fn guard(app: &App, headers: &HeaderMap) -> Result<(), (StatusCode, String
         Some(Scope::Send) => {
             Err((StatusCode::FORBIDDEN, "a send token only sends messages (POST /v1/messages)".into()))
         }
+        Some(Scope::Approve) => Err((
+            StatusCode::FORBIDDEN,
+            "an approve token only reads and decides approvals and windows (/v1/approvals, /v1/windows)".into(),
+        )),
         None => Err((StatusCode::UNAUTHORIZED, "a read or admin token is needed".into())),
+    }
+}
+
+/// The routes an approve token reaches too: reading approvals and windows.
+async fn guard_approvals(app: &App, headers: &HeaderMap) -> Result<(), (StatusCode, String)> {
+    match scope_of(app, headers).await {
+        Some(Scope::Approve) => Ok(()),
+        _ => guard(app, headers).await,
+    }
+}
+
+/// Who decides with the request's token: the admin token (`admin token`), or an approve token's owner, checked to be
+/// one of the tenant's admins now (`person:<handle> (token <name>)`, and the owner alone). Anything else is refused.
+async fn approver(
+    app: &App,
+    headers: &HeaderMap,
+    what: &str,
+) -> Result<(String, Option<String>), (StatusCode, String)> {
+    match scope_of(app, headers).await {
+        Some(Scope::Admin) => Ok(("admin token".into(), None)),
+        Some(Scope::Approve) => {
+            let token = headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.strip_prefix("Bearer "))
+                .unwrap_or_default();
+            let (_, _, name, owner) = db::token_owner(&app.db, token)
+                .await
+                .map_err(internal)?
+                .ok_or((StatusCode::UNAUTHORIZED, "unknown token".to_string()))?;
+            let fleet = app.authz.fleet(&app.db).await.map_err(internal)?;
+            let person = crate::stepup::owner_may_approve(&fleet, DEFAULT_TENANT, owner.as_deref())
+                .map_err(|e| (StatusCode::FORBIDDEN, e))?;
+            Ok((format!("{person} (token {name})"), Some(person)))
+        }
+        Some(_) => Err((StatusCode::FORBIDDEN, format!("{what} needs an admin or approve token"))),
+        None => Err((StatusCode::UNAUTHORIZED, format!("{what} needs an admin or approve token"))),
     }
 }
 
@@ -178,7 +222,7 @@ pub async fn post_catchup(
 }
 
 pub async fn get_approvals(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
-    guard(&app, &headers).await?;
+    guard_approvals(&app, &headers).await?;
     Ok(Json(json!({"approvals": crate::approvals::list(&app.db, DEFAULT_TENANT, false).await.map_err(internal)?})))
 }
 
@@ -198,18 +242,53 @@ pub async fn post_approval(
     axum::extract::Path(id): axum::extract::Path<String>,
     Json(body): Json<ApprovalBody>,
 ) -> ApiResult {
-    if scope_of(&app, &headers).await != Some(Scope::Admin) {
-        return Err((StatusCode::FORBIDDEN, "approving needs an admin token".into()));
-    }
+    let (by, person) = approver(&app, &headers, "deciding a request").await?;
     let hold = body
         .hold
         .as_deref()
         .map(crate::policy::parse_duration_ms)
         .transpose()
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-    let done = crate::approvals::decide(&app.db, DEFAULT_TENANT, &id, body.approve, hold, "admin token")
+    let view = crate::stepup::view(&app.db, DEFAULT_TENANT, &id)
         .await
-        .map_err(internal)?;
+        .map_err(internal)?
+        .filter(|v| v["status"] == "pending")
+        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("no pending request {id}")))?;
+    // Opening a role window from a deck needs its owner's passkey for this very request (`stepup.rs`).
+    let window = crate::stepup::needs_stepup(view["verb"].as_str().unwrap_or(""), view["to"].as_str().unwrap_or(""));
+    if body.approve
+        && window
+        && let Some(p) = &person
+        && !crate::stepup::consume(&app.db, DEFAULT_TENANT, &id, p).await.map_err(internal)?
+    {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!(
+                "opening a role window needs {p} to confirm request {id} with their passkey first, at the sign-in \
+                 service's /stepup page; then approve within 5 minutes"
+            ),
+        ));
+    }
+    // Fail closed, like every decision: nothing is approved without its entry in the audit log.
+    let entry = crate::audit::Entry {
+        decision: if body.approve { "approved" } else { "refused" }.into(),
+        subject: by.clone(),
+        verb: "approve".into(),
+        target: id.clone(),
+        reason: format!(
+            "{} may {} {}{}",
+            view["from"].as_str().unwrap_or("?"),
+            view["verb"].as_str().unwrap_or("?"),
+            view["to"].as_str().unwrap_or("?"),
+            if body.approve && window && person.is_some() { " (confirmed with a passkey)" } else { "" }
+        ),
+    };
+    app.audit.record(&app.db, DEFAULT_TENANT, entry).await.map_err(|e| {
+        tracing::error!(id, "the audit log can't be written, so refusing to decide a request: {e}");
+        (StatusCode::SERVICE_UNAVAILABLE, "the control plane's audit log can't be written now".to_string())
+    })?;
+    let done =
+        crate::approvals::decide(&app.db, DEFAULT_TENANT, &id, body.approve, hold, &by).await.map_err(internal)?;
     let Some(d) = done else {
         return Err((StatusCode::NOT_FOUND, format!("no pending request {id}")));
     };
@@ -224,7 +303,7 @@ pub async fn post_approval(
 
 /// `GET /v1/windows`: the windowed roles and their state, and the recent windows (`docs/access-control.md`).
 pub async fn get_windows(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
-    guard(&app, &headers).await?;
+    guard_approvals(&app, &headers).await?;
     let roles = match app.authz.policy(&app.db, DEFAULT_TENANT).await.map_err(internal)? {
         Some(p) => crate::windows::list_for(&app.db, DEFAULT_TENANT, &p, None).await.map_err(internal)?,
         None => vec![],
@@ -239,10 +318,8 @@ pub async fn delete_window(
     headers: HeaderMap,
     axum::extract::Path(role): axum::extract::Path<String>,
 ) -> ApiResult {
-    if scope_of(&app, &headers).await != Some(Scope::Admin) {
-        return Err((StatusCode::FORBIDDEN, "closing a window needs an admin token".into()));
-    }
-    let closed = crate::windows::deactivate(&app, DEFAULT_TENANT, &role, "person (API)").await.map_err(internal)?;
+    let (by, _) = approver(&app, &headers, "closing a window").await?;
+    let closed = crate::windows::deactivate(&app, DEFAULT_TENANT, &role, &by).await.map_err(internal)?;
     Ok(Json(json!({"role": role, "closed": closed})))
 }
 
@@ -424,5 +501,108 @@ mod tests {
         let mut h = HeaderMap::new();
         h.insert("authorization", format!("Bearer {read}").parse().unwrap());
         assert_eq!(get_audit_verify(State(app), h).await.unwrap_err().0, StatusCode::FORBIDDEN);
+    }
+
+    fn bearer(token: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert("authorization", format!("Bearer {token}").parse().unwrap());
+        h
+    }
+
+    async fn pending(app: &App, id: &str, verb: &str, target: &str) {
+        sqlx::query(
+            "INSERT INTO approvals (tenant, id, subject, verb, target, status, hold_ms, created_at)
+             VALUES ('default', ?, 'ops@admin', ?, ?, 'pending', 3600000, 0)",
+        )
+        .bind(id)
+        .bind(verb)
+        .bind(target)
+        .execute(&app.db)
+        .await
+        .unwrap();
+    }
+
+    fn body(approve: bool) -> Json<ApprovalBody> {
+        Json(ApprovalBody { approve, hold: None })
+    }
+
+    #[tokio::test]
+    async fn an_approve_token_decides_as_its_owner_and_opens_windows_only_after_a_passkey() {
+        let app = app().await;
+        let db = &app.db;
+        let i = crate::people::NewInvite { handle: "sam", role: "admin", teams: &[], person: None };
+        let code = crate::people::invite(db, DEFAULT_TENANT, i, "admin").await.unwrap();
+        crate::people::invite_redeem(db, &code, crate::people::Redeemer::New { display_name: "Sam" }).await.unwrap();
+        let deck = db::add_owned_token(db, DEFAULT_TENANT, "deck", "approve", Some("person:sam")).await.unwrap();
+        let h = bearer(&deck);
+        // It reads approvals and windows, and nothing else.
+        assert!(get_approvals(State(app.clone()), h.clone()).await.is_ok());
+        assert!(get_windows(State(app.clone()), h.clone()).await.is_ok());
+        assert_eq!(get_fleet(State(app.clone()), h.clone()).await.unwrap_err().0, StatusCode::FORBIDDEN);
+        assert_eq!(get_events(State(app.clone()), h.clone()).await.unwrap_err().0, StatusCode::FORBIDDEN);
+        // An ordinary request: approved as its owner, and audited.
+        pending(&app, "ap_tool", "use_tool", "tool:browser@laptop").await;
+        let _ = post_approval(State(app.clone()), h.clone(), axum::extract::Path("ap_tool".into()), body(true))
+            .await
+            .unwrap();
+        let by: String =
+            sqlx::query_scalar("SELECT decided_by FROM approvals WHERE id = 'ap_tool'").fetch_one(db).await.unwrap();
+        assert_eq!(by, "person:sam (token deck)");
+        let audited: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM audit_log WHERE verb = 'approve' AND target = 'ap_tool' AND subject = 'person:sam (token deck)'",
+        )
+        .fetch_one(db)
+        .await
+        .unwrap();
+        assert_eq!(audited, 1);
+        // A window: refused without a passkey step-up, refusing needs none, and with one it's approved, once.
+        pending(&app, "ap_win", "activate", "window:admin").await;
+        let e = post_approval(State(app.clone()), h.clone(), axum::extract::Path("ap_win".into()), body(true))
+            .await
+            .unwrap_err();
+        assert_eq!(e.0, StatusCode::FORBIDDEN);
+        assert!(e.1.contains("passkey"), "{}", e.1);
+        crate::stepup::record(db, DEFAULT_TENANT, "ap_win", "person:kim", "signin").await.unwrap();
+        assert!(
+            post_approval(State(app.clone()), h.clone(), axum::extract::Path("ap_win".into()), body(true))
+                .await
+                .is_err(),
+            "someone else's passkey doesn't count"
+        );
+        crate::stepup::record(db, DEFAULT_TENANT, "ap_win", "person:sam", "signin").await.unwrap();
+        let _ = post_approval(State(app.clone()), h.clone(), axum::extract::Path("ap_win".into()), body(true))
+            .await
+            .unwrap();
+        // The admin token needs no step-up; it's the operator's.
+        pending(&app, "ap_win2", "activate", "window:admin").await;
+        let _ =
+            post_approval(State(app.clone()), bearer("admin-token"), axum::extract::Path("ap_win2".into()), body(true))
+                .await
+                .unwrap();
+        // Refusing a window needs no passkey.
+        pending(&app, "ap_win3", "activate", "window:admin").await;
+        let _ = post_approval(State(app.clone()), h.clone(), axum::extract::Path("ap_win3".into()), body(false))
+            .await
+            .unwrap();
+        // An owner who's no longer an admin can't decide anything with it.
+        let i = crate::people::NewInvite { handle: "kim", role: "admin", teams: &[], person: None };
+        let code = crate::people::invite(db, DEFAULT_TENANT, i, "admin").await.unwrap();
+        crate::people::invite_redeem(db, &code, crate::people::Redeemer::New { display_name: "Kim" }).await.unwrap();
+        crate::people::member_role(db, DEFAULT_TENANT, "sam", "member", "admin").await.unwrap();
+        pending(&app, "ap_tool2", "use_tool", "tool:browser@laptop").await;
+        let e = post_approval(State(app.clone()), h.clone(), axum::extract::Path("ap_tool2".into()), body(true))
+            .await
+            .unwrap_err();
+        assert_eq!(e.0, StatusCode::FORBIDDEN);
+        assert!(e.1.contains("isn't one of the tenant's admins"), "{}", e.1);
+        // A read token decides nothing.
+        let read = db::add_token(db, DEFAULT_TENANT, "reader", "read").await.unwrap();
+        assert_eq!(
+            post_approval(State(app.clone()), bearer(&read), axum::extract::Path("ap_tool2".into()), body(true))
+                .await
+                .unwrap_err()
+                .0,
+            StatusCode::FORBIDDEN
+        );
     }
 }

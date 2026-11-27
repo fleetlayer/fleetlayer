@@ -812,3 +812,10 @@ managers, machines that sleep.
   interrupted move can be resumed or rolled back, and never restart the old copy until the new one is confirmed
   stopped. Where it lives:
   `docs/guides/moving.md`, `crates/fleetlayer-cli/src/relocate/`.
+- **Approving agents' requests from a phone, without handing it the keys.** A deck or phone app that approves requests
+  shouldn't hold the control plane's admin token. Fleetlayer's `approve` tokens read and decide approvals and close
+  role windows, nothing else, as a named owner who must still be an admin; opening an admin window also needs that
+  owner's passkey for that one request, checked at the sign-in service and enforced by the control plane, so a stolen
+  deck token can't open one. Footgun: the passkey page's return address must be on the sign-in service's allow list
+  (`stepup_return_origins`). Written: `docs/access-control.md` ("Approving from a deck or an inbox"),
+  `docs/plugins/signin.md`.

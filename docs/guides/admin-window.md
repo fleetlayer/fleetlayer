@@ -132,6 +132,11 @@ the role's grants apply, and secrets granted to it are delivered. Closing early:
 
 To open one yourself without the request: `fleetlayer-control role activate admin --for 1h`.
 
+To approve from your phone or a deck instead of the server's command line, give the deck an approve token
+(`fleetlayer-control token add deck --scope approve --owner <your handle>`): it approves requests as you, and opening a
+window asks for your passkey first, enforced by the control plane ([Approving from a deck or an
+inbox](../access-control.md#approving-from-a-deck-or-an-inbox)).
+
 ## Credentials that end with the window
 
 The sudo rule and Fleetlayer's grants end on time. A long-lived token the agent read during the window doesn't: it

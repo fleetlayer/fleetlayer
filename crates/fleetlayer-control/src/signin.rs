@@ -8,6 +8,9 @@
 //! - `POST /v1/signin/invite_redeem {code, display_name? | person?}` → `{tenant, person, handle, recovery}`
 //! - `POST /v1/signin/check {tenant, who, can, to}` → `{allowed, rules, reason}`
 //! - `POST /v1/signin/event {tenant, person, kind, client?, detail?}` → `{}`, into the tenant's audit log
+//! - `POST /v1/signin/approval_view {tenant, approval}` → the approval, for the step-up page
+//! - `POST /v1/signin/stepup {tenant, person, approval}` → `{approval, person, expiresAt}`: the person confirmed a
+//!   role-window approval with their passkey (`stepup.rs`)
 //! - `POST /v1/signin/admin/view {tenant, as}` and `/v1/signin/admin/<action> {tenant, as, …}` for the admin pages:
 //!   the control plane checks `as` may administer the tenant (an admin, or `admin` on `service:signin`), and records
 //!   each change as that person
@@ -231,6 +234,67 @@ pub async fn post_event(State(app): State<Arc<App>>, headers: HeaderMap, Json(e)
     };
     app.audit.record(&app.db, &tenant.id, entry).await.map_err(internal)?;
     Ok(Json(json!({})))
+}
+
+#[derive(Deserialize)]
+pub struct ApprovalViewRequest {
+    tenant: String,
+    approval: String,
+}
+
+/// `POST /v1/signin/approval_view {tenant, approval}`: one approval, for the step-up page to show what's being
+/// approved. 404 when there's none by that ID in the tenant.
+pub async fn post_approval_view(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(r): Json<ApprovalViewRequest>,
+) -> ApiResult {
+    guard(&app, &headers).await?;
+    let fleet = app.authz.fleet(&app.db).await.map_err(internal)?;
+    let tenant = fleet.tenant(&r.tenant).ok_or((StatusCode::NOT_FOUND, format!("no tenant {}", r.tenant)))?;
+    let v = crate::stepup::view(&app.db, &tenant.id, &r.approval)
+        .await
+        .map_err(internal)?
+        .ok_or((StatusCode::NOT_FOUND, format!("no request {}", r.approval)))?;
+    Ok(Json(v))
+}
+
+#[derive(Deserialize)]
+pub struct StepupRequest {
+    tenant: String,
+    /// The person's ID (the sign-in's `sub`).
+    person: String,
+    approval: String,
+}
+
+/// `POST /v1/signin/stepup {tenant, person, approval}`: the person just confirmed this approval with a fresh passkey
+/// check. Recorded for 5 minutes, single use (`stepup.rs`), and audited. 403 with the reason when the person isn't one
+/// of the tenant's admins or the approval isn't a pending role-window request; 404 when there's no such approval.
+pub async fn post_stepup(State(app): State<Arc<App>>, headers: HeaderMap, Json(r): Json<StepupRequest>) -> ApiResult {
+    let by = guard(&app, &headers).await?;
+    let fleet = app.authz.fleet(&app.db).await.map_err(internal)?;
+    let tenant = fleet.tenant(&r.tenant).ok_or((StatusCode::NOT_FOUND, format!("no tenant {}", r.tenant)))?;
+    if crate::stepup::view(&app.db, &tenant.id, &r.approval).await.map_err(internal)?.is_none() {
+        return Err((StatusCode::NOT_FOUND, format!("no request {}", r.approval)));
+    }
+    let (handle, role) = match tenant.handles.get(&r.person).and_then(|h| tenant.people.get(h).map(|p| (h, p))) {
+        Some((h, p)) => (h.clone(), p.role.clone()),
+        None => return Err((StatusCode::FORBIDDEN, "this person isn't a member of the tenant".into())),
+    };
+    if let Some(why) = crate::stepup::refusal(&app.db, &tenant.id, &r.approval, &role).await.map_err(internal)? {
+        return Err((StatusCode::FORBIDDEN, why));
+    }
+    let person = format!("person:{handle}");
+    let entry = crate::audit::Entry {
+        decision: "recorded".into(),
+        subject: person.clone(),
+        verb: "signin.stepup".into(),
+        target: r.approval.clone(),
+        reason: format!("confirmed with a passkey, for 5 minutes (by signin:{by})"),
+    };
+    app.audit.record(&app.db, &tenant.id, entry).await.map_err(internal)?;
+    let expires = crate::stepup::record(&app.db, &tenant.id, &r.approval, &person, &by).await.map_err(internal)?;
+    Ok(Json(json!({"approval": r.approval, "person": person, "expiresAt": expires})))
 }
 
 #[derive(Deserialize)]
@@ -639,5 +703,68 @@ mod tests {
         // Not an API token: the read and admin routes don't take it.
         assert!(crate::db::token_scope(&db, &t).await.unwrap().is_none());
         assert!(token_remove(&db, "signin").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn the_signin_service_records_a_passkey_stepup_for_an_admin_and_a_pending_window_request() {
+        let app = Arc::new(App {
+            db: crate::db::open_memory().await.unwrap(),
+            links: Default::default(),
+            hook_limits: Default::default(),
+            admin_token_hash: None,
+            streams: Default::default(),
+            authz: Default::default(),
+            audit: crate::audit::Audit::new(None),
+        });
+        let t = token_add(&app.db, "signin").await.unwrap();
+        let mut h = HeaderMap::new();
+        h.insert("authorization", format!("Bearer {t}").parse().unwrap());
+        let join = |handle: &'static str, role: &'static str| {
+            let app = app.clone();
+            async move {
+                let i = NewInvite { handle, role, teams: &[], person: None };
+                let code = people::invite(&app.db, "default", i, "admin").await.unwrap();
+                people::invite_redeem(&app.db, &code, Redeemer::New { display_name: handle }).await.unwrap().person
+            }
+        };
+        let a = join("a", "admin").await;
+        let b = join("b", "member").await;
+        sqlx::query(
+            "INSERT INTO approvals (tenant, id, subject, verb, target, status, hold_ms, created_at, detail)
+             VALUES ('default', 'ap_w', 'ops@admin', 'activate', 'window:admin', 'pending', 3600000, 0, 'upgrade postgres')",
+        )
+        .execute(&app.db)
+        .await
+        .unwrap();
+        let view = |tenant: &str, approval: &str| {
+            Json(ApprovalViewRequest { tenant: tenant.into(), approval: approval.into() })
+        };
+        let Json(v) = post_approval_view(State(app.clone()), h.clone(), view("default", "ap_w")).await.unwrap();
+        assert_eq!(
+            (v["to"].as_str(), v["status"].as_str(), v["detail"].as_str()),
+            (Some("window:admin"), Some("pending"), Some("upgrade postgres"))
+        );
+        assert_eq!(
+            post_approval_view(State(app.clone()), h.clone(), view("default", "ap_x")).await.unwrap_err().0,
+            StatusCode::NOT_FOUND
+        );
+        assert!(
+            post_approval_view(State(app.clone()), HeaderMap::new(), view("default", "ap_w")).await.is_err(),
+            "the sign-in token only"
+        );
+        let step = |person: &str| {
+            Json(StepupRequest { tenant: "default".into(), person: person.into(), approval: "ap_w".into() })
+        };
+        let e = post_stepup(State(app.clone()), h.clone(), step(&b)).await.unwrap_err();
+        assert_eq!(e.0, StatusCode::FORBIDDEN, "a member isn't an admin: {}", e.1);
+        let Json(ok) = post_stepup(State(app.clone()), h.clone(), step(&a)).await.unwrap();
+        assert_eq!(ok["person"], "person:a");
+        assert!(crate::stepup::consume(&app.db, "default", "ap_w", "person:a").await.unwrap());
+        let logged: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM audit_log WHERE verb = 'signin.stepup' AND target = 'ap_w'")
+                .fetch_one(&app.db)
+                .await
+                .unwrap();
+        assert_eq!(logged, 1);
     }
 }
