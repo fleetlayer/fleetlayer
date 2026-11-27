@@ -50,6 +50,36 @@ time they start and tell the node where they are; the gateway follows them. `fle
 **Plain HTTP, on purpose.** Browsers send `*.localhost` to your own machine and treat it as a secure context, so
 sign-ins and passkeys work without certificates. TLS belongs on a server, in front of whatever you move there.
 
+## When an agent asks first
+
+A new fleet asks you before an agent does something sensitive: starting or attaching to a session on another machine
+(an approval holds 10 minutes), and each agent's first use of a shared tool, a sync, an admin action or a write to a
+target (it holds 30 days). Sessions on the same machine aren't checked. The agent's request is refused with a request
+ID until you answer:
+
+```sh
+fleetlayer-control approvals list            # pending requests: id, who, what, to what
+fleetlayer-control approvals approve <id>    # or: approvals deny <id> (it stands for an hour)
+```
+
+Then the agent tries again. `--for 1h` on `approve` changes how long it holds.
+
+If your agents work on their own and you'd rather not be asked, apply a policy that turns asking off:
+
+```yaml
+# policy.yaml
+version: 2
+default: allow
+ask: []
+```
+
+```sh
+fleetlayer-control acl apply policy.yaml
+```
+
+`fleetlayer-control acl show` prints the policy in force. Who may do what, and how to ask before only some things,
+is in [Access control](../access-control.md).
+
 ## When something stops
 
 The gateway checks each service's health every 30 seconds and asks the node how it is (its plugins, its link to the
