@@ -48,6 +48,18 @@ pub mod method {
     /// Plugin → node (notification): whether it's doing its job. `PluginStatusReport`; the node shows `problem` in its
     /// status and health and publishes the report as a `plugin.status` reading keyed by the plugin's name.
     pub const PLUGIN_STATUS: &str = "_fleetlayer.dev/plugin/status";
+    /// Plugin → node: answer a session's blocked prompt, here or on another node (grant `session.answer`).
+    /// `{to, prompt, answers, why?}` → `link::SessionActed`.
+    pub const SESSION_ANSWER: &str = "_fleetlayer.dev/session/answer";
+    /// Plugin → node: close a session, here or on another node (grant `session.close`). `{to, why?}` →
+    /// `link::SessionActed`.
+    pub const SESSION_CLOSE: &str = "_fleetlayer.dev/session/close";
+    /// Node → session manager: press keys in a session, or type literal text (no Enter unless a key says so).
+    /// `SessionKeys` → `{}`.
+    pub const SESSION_KEYS: &str = "_fleetlayer.dev/session/keys";
+    /// Node → session manager: the last `lines` lines of a session's screen as plain text. `{sessionId, lines}` →
+    /// `{text}`.
+    pub const SESSION_SCREEN: &str = "_fleetlayer.dev/session/screen";
     pub const READING_SUBSCRIBE: &str = "_fleetlayer.dev/reading/subscribe";
     pub const READING_UPDATE: &str = "_fleetlayer.dev/reading/update";
     /// Plugin → node: may this person or agent do this? `link::AccessCheck` → `link::AccessDecision`, decided by the
@@ -149,6 +161,9 @@ pub struct SessionManagerRole {
     /// It answers `TERMINAL_COMMAND`: its sessions' terminals can be watched and driven.
     #[serde(default)]
     pub terminal: bool,
+    /// It answers `SESSION_KEYS` (press keys and type text in a session) and `SESSION_SCREEN` (read its screen).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub keys: bool,
 }
 
 /// Watching a terminal, or driving it too.
@@ -301,6 +316,108 @@ pub struct SessionMeta {
     /// A harness plugin can deliver into it through the agent's own channel.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deliverable: Option<bool>,
+    /// What the agent is waiting for the person to answer (a question, a permission prompt, a plan). In an update,
+    /// `null` clears it and absent leaves it as it was.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "double_option")]
+    pub prompt: Option<Option<BlockedPrompt>>,
+    /// Background work still running when the agent last stopped (best effort: from the harness's own report). `[]`:
+    /// none; absent: not known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<Vec<BackgroundTask>>,
+}
+
+/// A prompt an agent is blocked on, as its harness reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockedPrompt {
+    /// Stable while it shows, new for every prompt (the harness's tool call ID when it has one).
+    pub id: String,
+    pub kind: PromptKind,
+    /// When it appeared.
+    pub at: Timestamp,
+    /// `hook` (the harness said so), or `screen` (read off the terminal: less sure).
+    pub source: String,
+    /// For `question`: each question, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub questions: Vec<PromptQuestion>,
+    /// For `permission`: the tool it asks to run, and its input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<PromptTool>,
+    /// For `plan`: the plan's text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+    /// For `permission` and `plan`: the menu's options, as the terminal shows them (`optionsFrom: "screen"`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<PromptOption>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options_from: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptKind {
+    Question,
+    Permission,
+    Plan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptQuestion {
+    #[serde(default)]
+    pub header: String,
+    pub question: String,
+    #[serde(default)]
+    pub multi_select: bool,
+    pub options: Vec<PromptOption>,
+    /// The option number that takes free text ("Type something"), when there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub other: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptOption {
+    pub n: u32,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptTool {
+    pub name: String,
+    #[serde(default)]
+    pub input: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackgroundTask {
+    /// The harness's own word for it (`bash`, `agent`, `monitor`...).
+    pub kind: String,
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+}
+
+/// Absent → None; `null` → Some(None); a value → Some(Some(v)).
+mod double_option {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<T: Serialize, S: Serializer>(v: &Option<Option<T>>, s: S) -> Result<S::Ok, S::Error> {
+        match v {
+            Some(inner) => inner.serialize(s),
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, T: Deserialize<'de>, D: Deserializer<'de>>(d: D) -> Result<Option<Option<T>>, D::Error> {
+        Option::<T>::deserialize(d).map(Some)
+    }
 }
 
 impl SessionMeta {
@@ -322,8 +439,18 @@ impl SessionMeta {
             open_url,
             opens_in,
             resume_command,
-            deliverable
+            deliverable,
+            background
         );
+        // A prompt cleared (`null`) is gone, not unknown.
+        if let Some(p) = &update.prompt {
+            self.prompt = p.clone().map(Some);
+        }
+    }
+
+    /// The prompt it's blocked on now, if any.
+    pub fn blocked_prompt(&self) -> Option<&BlockedPrompt> {
+        self.prompt.as_ref().and_then(Option::as_ref)
     }
 }
 
@@ -505,6 +632,33 @@ pub struct Reading {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node: Option<String>,
     pub data: Value,
+}
+
+/// One question's answer to a blocked prompt: the option number, several for a multiple choice, or free text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptAnswer {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pick: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub picks: Vec<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
+/// `_fleetlayer.dev/session/keys`: each step is a key (`1`, `enter`, `down`, `space`, `tab`, `esc`) or literal text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionKeys {
+    pub session_id: String,
+    pub steps: Vec<KeyStep>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyStep {
+    Key(String),
+    Text(String),
 }
 
 /// `_fleetlayer.dev/plugin/status`: a running plugin's own word on whether it does its job.

@@ -45,6 +45,8 @@ pub const LINK_METHODS: &[(&str, Option<&str>)] = &[
     (m::PAGES_SPACES, None),
     (m::PAGES_OPEN, Some("write")),
     (m::SESSION_START, Some("start")),
+    (m::SESSION_CLOSE, Some("close")),
+    (m::SESSION_ANSWER, Some("answer")),
     (m::TOOLS, None),
     // About the caller's own session only, decided item by item without asking (`me.rs`).
     (m::ME, None),
@@ -756,6 +758,8 @@ mod tests {
             m::PAGES_SPACES,
             m::PAGES_OPEN,
             m::SESSION_START,
+            m::SESSION_CLOSE,
+            m::SESSION_ANSWER,
             m::TOOLS,
             m::ME,
         ];

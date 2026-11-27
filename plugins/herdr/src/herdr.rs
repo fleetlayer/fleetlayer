@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use fleetlayer_protocol::ext::{How, OpenSession, Status};
+use fleetlayer_protocol::ext::{self, How, OpenSession, Status};
 use jiff::Timestamp;
 use serde::Deserialize;
 use serde_json::Value;
@@ -383,6 +383,39 @@ pub fn tab_create(open: &OpenSession) -> Vec<String> {
 /// Press Esc in a pane: the agent stops its turn.
 pub async fn interrupt(herdr: &str, pane: &str) -> Result<(), Failure> {
     run_plain(herdr, &["agent", "send-keys", pane, "esc"]).await
+}
+
+/// Press keys and type text in a pane, one step at a time with a moment between, so the agent's menu redraws before
+/// the next key: `herdr agent send-keys` for a key, `herdr pane send-text` for literal text (no Enter).
+pub async fn keys(herdr: &str, pane: &str, steps: &[ext::KeyStep]) -> Result<(), Failure> {
+    for (i, step) in steps.iter().enumerate() {
+        if i > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+        }
+        match step {
+            ext::KeyStep::Key(k) => run_plain(herdr, &["agent", "send-keys", pane, k]).await?,
+            ext::KeyStep::Text(t) => run_plain(herdr, &["pane", "send-text", pane, t]).await?,
+        }
+    }
+    Ok(())
+}
+
+/// What a pane shows now, as plain text: the visible screen, its last `lines` lines (herdr can't read history while
+/// an agent is blocked at a menu, and the menu is on screen anyway).
+pub async fn screen(herdr: &str, pane: &str, lines: u64) -> Result<String, Failure> {
+    let n = lines.to_string();
+    let out = tokio::process::Command::new(herdr)
+        .args(["agent", "read", pane, "--source", "visible", "--lines", &n])
+        .kill_on_drop(true)
+        .output();
+    let out = tokio::time::timeout(std::time::Duration::from_secs(5), out)
+        .await
+        .map_err(|_| Failure::Other(format!("{herdr} agent read didn't finish within 5 seconds")))?
+        .map_err(|e| Failure::Other(spawn_error(herdr, &e)))?;
+    if !out.status.success() {
+        return Err(classify(herdr_error(&out.stderr)));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Close a tab.

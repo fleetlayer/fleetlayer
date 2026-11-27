@@ -72,6 +72,14 @@ pub mod method {
     pub const SESSION_START: &str = "link/session_start";
     /// Control plane → node: start or resume one of its sessions for a caller. `SessionServe` → `SessionStarted`.
     pub const SESSION_SERVE: &str = "link/session_serve";
+    /// Node → control plane: close a session on another node, after `close` on `<session>@<node>`.
+    /// `SessionActRequest` (action `close`) → `SessionActed`.
+    pub const SESSION_CLOSE: &str = "link/session_close";
+    /// Node → control plane: answer a session's blocked prompt on another node, after `answer` on `<session>@<node>`.
+    /// `SessionActRequest` (action `answer`) → `SessionActed`.
+    pub const SESSION_ANSWER: &str = "link/session_answer";
+    /// Control plane → node: close or answer one of its sessions for a caller. `SessionActServe` → `SessionActed`.
+    pub const SESSION_ACT_SERVE: &str = "link/session_act_serve";
     /// Node → control plane (notification): the tools this node shares, `Tools`, replacing its earlier list. Sent when
     /// it links and when an opt-in changes. Names, descriptions and folder names only: never paths or secrets.
     pub const TOOLS: &str = "link/tools";
@@ -469,4 +477,61 @@ pub struct MeTool {
     pub not_offered: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub folders: Vec<FolderInfo>,
+}
+
+/// Something done to a running session for a caller.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum SessionAction {
+    /// Close its tab or pane.
+    Close,
+    /// Answer its blocked prompt `prompt` (the `id` of the session's `meta.prompt`), one answer per question.
+    Answer { prompt: String, answers: Vec<crate::ext::PromptAnswer> },
+}
+
+impl SessionAction {
+    /// The access policy's verb for it.
+    pub fn verb(&self) -> &'static str {
+        match self {
+            SessionAction::Close => "close",
+            SessionAction::Answer { .. } => "answer",
+        }
+    }
+}
+
+/// `link/session_close` and `link/session_answer`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionActRequest {
+    pub node: String,
+    /// Its tab or session ID on `node`.
+    pub session: String,
+    #[serde(flatten)]
+    pub action: SessionAction,
+    /// The calling session's name (its tab), `plugin:<name>` for a plugin, or `-` for a shell.
+    pub caller: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub justification: Option<String>,
+}
+
+/// `link/session_act_serve`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionActServe {
+    pub session: String,
+    #[serde(flatten)]
+    pub action: SessionAction,
+    /// `<name>@<node>` of the caller.
+    pub caller: String,
+}
+
+/// What was closed or answered.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionActed {
+    pub node: String,
+    pub session_id: String,
+    pub tab: Option<String>,
+    /// `closed` or `answered`.
+    pub done: String,
 }

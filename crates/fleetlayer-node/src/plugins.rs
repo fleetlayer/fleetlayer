@@ -478,6 +478,21 @@ impl Handler for FromPlugin {
                 }
                 answer(&json!({"sessions": self.node.registry.all().await, "ownMessages": own}))
             }
+            ext::method::SESSION_ANSWER | ext::method::SESSION_CLOSE => {
+                let close = method == ext::method::SESSION_CLOSE;
+                self.grant(if close { "session.close" } else { "session.answer" })?;
+                let to = p["to"].as_str().ok_or_else(|| RpcError::invalid_params("to"))?.to_string();
+                let why = p["why"].as_str().map(str::to_string);
+                let action = if close {
+                    fleetlayer_protocol::link::SessionAction::Close
+                } else {
+                    let prompt = p["prompt"].as_str().ok_or_else(|| RpcError::invalid_params("prompt"))?.to_string();
+                    let answers = serde_json::from_value(p["answers"].clone()).map_err(RpcError::invalid_params)?;
+                    fleetlayer_protocol::link::SessionAction::Answer { prompt, answers }
+                };
+                let caller = format!("plugin:{}", self.plugin.name());
+                answer(&crate::act::act(&self.node, &to, action, why, caller).await?)
+            }
             ext::method::LOG => {
                 tracing::info!(
                     plugin = self.plugin.name(),

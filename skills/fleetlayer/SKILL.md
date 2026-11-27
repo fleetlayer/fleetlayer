@@ -65,6 +65,21 @@ The folder must be absolute and not the home folder; a tab name already running 
 agent takes input and never takes focus from the person. The node adds the agent's permission flags from its own
 config: you can't pass any. Starting a session on another node asks the person first by default.
 
+## A session that's waiting on the person (from v0.3.10)
+
+A Claude Code session blocked on a question, a permission prompt or a plan shows it in `fleetlayer sessions --json`
+as `meta.prompt` (`id`, `kind`, the questions and numbered options), and `meta.background` lists work it left running
+when it stopped. Answer one only when the person asked you to, or your instructions say you speak for them:
+
+```sh
+fleetlayer session answer review@server --prompt <meta.prompt.id> --pick 2              # one option
+fleetlayer session answer review@server --prompt <id> --pick 2 --pick 1,3 --pick "=free text"   # one per question
+fleetlayer session close review@server
+```
+
+Answering a permission prompt approves what it asks. A prompt that's no longer showing is refused (`-32015`); look
+again rather than retrying. Both ask the person first on another node by default.
+
 To watch a session's terminal: `fleetlayer attach review@server --observe` (Ctrl-] leaves). Without `--observe` you
 type into it, which also asks first; prefer a message.
 

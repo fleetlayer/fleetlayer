@@ -123,13 +123,22 @@ impl Registry {
                     entry.title = info.title.or(entry.title.take());
                     entry.updated_at = info.updated_at.or(entry.updated_at);
                     let deliverable = entry.meta.deliverable;
+                    // What the harness reports (a blocked prompt, background work) isn't the manager's to replace.
+                    let (prompt, background) = (entry.meta.prompt.take(), entry.meta.background.take());
                     entry.meta = meta;
                     entry.meta.deliverable = entry.meta.deliverable.or(deliverable);
+                    entry.meta.prompt = prompt;
+                    entry.meta.background = background;
                     entry.ended = None;
                 }
                 Role::Harness => {
                     entry.harness_plugin = meta.deliverable.unwrap_or(false).then(|| plugin.to_string());
                     entry.meta.deliverable = meta.deliverable;
+                    // The harness's list is the whole truth about its prompt: absent there means none now.
+                    entry.meta.prompt = meta.prompt.clone().flatten().map(Some);
+                    if meta.background.is_some() {
+                        entry.meta.background = meta.background.clone();
+                    }
                     if entry.manager.is_none() {
                         entry.cwd = info.cwd.or(entry.cwd.take());
                         entry.meta.harness = meta.harness.or(entry.meta.harness.take());
@@ -146,6 +155,7 @@ impl Registry {
                 Role::Harness if s.harness_plugin.as_deref() == Some(plugin) => {
                     s.harness_plugin = None;
                     s.meta.deliverable = None;
+                    s.meta.prompt = None;
                 }
                 _ => {}
             }
@@ -205,6 +215,27 @@ impl Registry {
         drop(sessions);
         self.emit(Change::Updated { session });
         true
+    }
+
+    /// The options of the prompt `prompt_id` a session is blocked on, read from elsewhere (its screen).
+    pub async fn set_prompt_options(
+        &self,
+        session_id: &str,
+        prompt_id: &str,
+        options: Vec<fleetlayer_protocol::ext::PromptOption>,
+        from: &str,
+    ) {
+        let mut sessions = self.sessions.write().await;
+        let Some(s) = sessions.get_mut(session_id) else { return };
+        let Some(Some(p)) = s.meta.prompt.as_mut() else { return };
+        if p.id != prompt_id {
+            return;
+        }
+        p.options = options;
+        p.options_from = Some(from.into());
+        let session = Box::new(s.clone());
+        drop(sessions);
+        self.emit(Change::Updated { session });
     }
 
     pub async fn ended(&self, e: &SessionEnded) {

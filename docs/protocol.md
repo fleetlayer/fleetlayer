@@ -201,6 +201,51 @@ A plugin that can't stream (`"events": false`) is polled with `session/list` eve
   caller, adds permission flags from its own config. A failure is `-32011` with a sentence saying why. A session that
   started but whose `prompt` couldn't be typed in is still an answer, with `promptError` saying why.
 
+### Blocked prompts: what a session waits for, and answering it
+
+A harness plugin that knows when its agent is waiting on the person puts it in the session's meta, so a person (or an
+overseer agent speaking for them) can answer from anywhere:
+
+```json
+"prompt": {"id": "toolu_01Emf9…", "kind": "question", "at": "2026-11-27T10:42:37Z", "source": "hook",
+  "questions": [{"header": "Colour", "question": "Which colour?", "multiSelect": false, "other": 3,
+    "options": [{"n": 1, "label": "Red", "description": "Pick red"}, {"n": 2, "label": "Blue"}]}]},
+"background": [{"kind": "bash", "id": "b1", "description": "cargo test", "status": "running"}]
+```
+
+- `kind` is `question` (with `questions`; `other` is the option number for free text), `permission` (with `tool`:
+  `{name, input}`) or `plan` (with `plan`, the text). For `permission` and `plan` the node reads the menu's `options`
+  off the session's screen once it draws (`optionsFrom: "screen"`), since the agent's own report doesn't list them.
+- `id` stays the same while the prompt shows and is new for every prompt. `source` is `hook` when the agent's own
+  hooks said so; `screen` would mark a prompt only read off the terminal.
+- In a `session/update`, `"prompt": null` clears it and an absent `prompt` leaves it as it was. The harness's
+  `session/list` is the whole truth: a session it lists with no prompt has none.
+- `background` is best effort: the work the agent reported still running when it last stopped (`[]`: none; absent:
+  not known).
+
+Claude Code's plugin gets these from hooks it installs in `~/.claude/settings.json` (every other key and hook kept,
+the file replaced in one rename, put back if something rewrites the file; `hooks: false` in its config takes them
+out): `PreToolUse` for `AskUserQuestion` and `ExitPlanMode`, `PermissionRequest`, then `PostToolUse`,
+`PostToolUseFailure`, `PermissionDenied`, `UserPromptSubmit`, `Stop` (with its `background_tasks`) and `SessionEnd`
+to clear. Each runs `fleetlayer-claude-code hook` asynchronously: it passes the event to the plugin's socket and exits
+0 with no output, so it never holds Claude up or changes what it does.
+
+**Answering.** `fleetlayer session answer <session> --prompt <id> --pick N …` asks its node with
+`node/session_answer` `{to, prompt, answers, why?}` (a plugin: `_fleetlayer.dev/session/answer`, grant
+`session.answer`), one answer per question: `{pick: n}`, `{picks: [n, …]}` for a multiple choice, or `{text}`. For
+another node it goes through the control plane (`link/session_answer` → `link/session_act_serve`), checked as
+`answer` on `<session>@<node>`, asked by default, and written to the audit log with what was picked. The session's
+node then reads the screen, and refuses with `-32015` unless that same prompt shows (an answered or replaced prompt
+is never answered again), and types the answer through its session manager: `_fleetlayer.dev/session/keys`
+`{sessionId, steps: [{key: "2"} | {text: "…"}]}`, with `_fleetlayer.dev/session/screen` `{sessionId, lines}` →
+`{text}` to read it (a manager announces both with `keys: true`). In Claude Code's menus a digit picks an option
+(toggles one in a multiple choice, then Tab), free text is the "Type something" option, the text and Enter, and a form
+with several questions or a multiple choice ends on a review the node submits once it shows.
+
+**Closing.** `fleetlayer session close <session>` (`node/session_close` `{to}`; a plugin: `_fleetlayer.dev/session/close`,
+grant `session.close`; across nodes `link/session_close`, verb `close`, asked by default) asks its session manager for
+`session/close`.
+
 ### Starting sessions
 
 `fleetlayer session start|resume` asks its node on the local socket: `node/session_open` `{tab?, cwd?, harness?,
@@ -463,6 +508,8 @@ Numbers, never secrets, flow with readings: account usage and reset times, healt
 | `_fleetlayer.dev/service/listening` `{name, url, health?, hosts?}` | A notification: this plugin serves HTTP (below) |
 | `_fleetlayer.dev/pages/spaces` `{spaces}` | A notification: the pages spaces this plugin hosts, so `fleetlayer pages push` from other machines reaches them. The node runs the plugin's command as `<command> receive …` for each push ([`plugins/pages.md`](plugins/pages.md)) |
 | `_fleetlayer.dev/plugin/status` `{problem, detail}` | A notification: whether this plugin does its job (below) |
+| `_fleetlayer.dev/session/answer` `{to, prompt, answers, why?}` | Answer a session's blocked prompt, here or on another node (grant `session.answer`; [Blocked prompts](#blocked-prompts-what-a-session-waits-for-and-answering-it)) |
+| `_fleetlayer.dev/session/close` `{to, why?}` | Close a session, here or on another node (grant `session.close`) |
 
 Each is allowed only if the node's config grants it to that plugin (`grants:` in its plugin section), and the control
 plane's ACLs decide who may message whom. `service/listening`, `pages/spaces` and `plugin/status` need no grant: they

@@ -1683,6 +1683,7 @@ dependencies = [
  "fleetlayer-plugin",
  "fleetlayer-protocol",
  "hex",
+ "jiff 1.0.3",
  "nix 0.32.0",
  "rand 0.9.5",
  "serde",

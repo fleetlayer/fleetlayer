@@ -469,6 +469,14 @@ impl Handler for FromNode {
                 }
                 answer(&l::ToolOpened { stream_id: id })
             }
+            l::method::SESSION_CLOSE | l::method::SESSION_ANSWER => {
+                let r: l::SessionActRequest = params(p)?;
+                let expect = if method == l::method::SESSION_CLOSE { "close" } else { "answer" };
+                if r.action.verb() != expect {
+                    return Err(RpcError::invalid_params(format!("{method} carries action {expect}")));
+                }
+                answer(&crate::route::act_session(app, tenant, &self.node, r).await?)
+            }
             l::method::SESSION_START => {
                 answer(&crate::route::start_session(app, tenant, &self.node, params(p)?).await?)
             }

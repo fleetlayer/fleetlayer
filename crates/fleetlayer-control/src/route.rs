@@ -148,6 +148,50 @@ pub async fn start_session(
     })
 }
 
+/// Close or answer a session on another node for a caller on `from_node`, after `close` or `answer` on
+/// `<session>@<node>`. An answer, once typed in, is written to the audit log with what was picked.
+pub async fn act_session(
+    app: &App,
+    tenant: &str,
+    from_node: &str,
+    r: l::SessionActRequest,
+) -> Result<l::SessionActed, RpcError> {
+    let caller = format!("{}@{from_node}", r.caller);
+    let target = format!("{}@{}", r.session, r.node);
+    let verb = r.action.verb();
+    crate::authz::check_why(app, tenant, &caller, verb, &target, r.justification.as_deref()).await?;
+    let server = app
+        .links
+        .peer(tenant, &r.node)
+        .await
+        .ok_or_else(|| RpcError::not_here(format!("node {} is offline", r.node)))?;
+    let serve = l::SessionActServe { session: r.session.clone(), action: r.action.clone(), caller: caller.clone() };
+    let done: l::SessionActed =
+        server.request_within(l::method::SESSION_ACT_SERVE, &serve, Duration::from_secs(35)).await.map_err(|e| {
+            if e.code == fleetlayer_protocol::rpc::code::METHOD_NOT_FOUND {
+                RpcError::refused(format!("node {} is too old to {verb} sessions: update it", r.node))
+            } else {
+                e
+            }
+        })?;
+    if let l::SessionAction::Answer { prompt, answers } = &r.action {
+        let entry = crate::audit::Entry {
+            decision: "allowed".into(),
+            subject: caller,
+            verb: verb.into(),
+            target,
+            reason: format!(
+                "carried out: answered prompt {prompt} with {}",
+                serde_json::to_string(answers).unwrap_or_default()
+            ),
+        };
+        if let Err(e) = app.audit.record(&app.db, tenant, entry).await {
+            tracing::error!("recording an answer in the audit log: {e}");
+        }
+    }
+    Ok(done)
+}
+
 /// A node gets up to two and a half minutes to start a session; this is a little more.
 const START_TIMEOUT: Duration = Duration::from_secs(160);
 
@@ -402,8 +446,12 @@ mod tests {
         #[async_trait]
         impl Handler for FakeNode {
             async fn request(&self, _peer: &Peer, method: &str, p: Value) -> Result<Value, RpcError> {
-                assert_eq!(method, l::method::SESSION_SERVE);
                 self.served.lock().await.push(p.clone());
+                if method == l::method::SESSION_ACT_SERVE {
+                    let done = if p["action"] == "close" { "closed" } else { "answered" };
+                    return Ok(json!({"node": "home", "sessionId": "s1", "tab": p["session"], "done": done}));
+                }
+                assert_eq!(method, l::method::SESSION_SERVE);
                 Ok(json!({"node": "home", "tab": p["tab"], "address": "w1-1", "sessionId": "s1", "promptError": null}))
             }
         }
@@ -472,6 +520,48 @@ mod tests {
             app.links.nodes.lock().await.remove(&("default".into(), "home".into()));
             let e = start_session(&app, "default", "laptop", req("planning", "review")).await.unwrap_err();
             assert!(e.message.contains("node home is offline"), "{}", e.message);
+        }
+
+        fn act(caller: &str, action: l::SessionAction) -> l::SessionActRequest {
+            l::SessionActRequest {
+                node: "home".into(),
+                session: "review".into(),
+                action,
+                caller: caller.into(),
+                justification: None,
+            }
+        }
+
+        fn answer_two() -> l::SessionAction {
+            let pick = fleetlayer_protocol::ext::PromptAnswer { pick: Some(2), ..Default::default() };
+            l::SessionAction::Answer { prompt: "toolu_1".into(), answers: vec![pick] }
+        }
+
+        /// Answering and closing are asked by default, then served on the session's node; an answer is audited with
+        /// its pick, and a policy can keep everyone but the runner from answering.
+        #[tokio::test]
+        async fn answers_and_closes_are_asked_by_default_and_audited_with_the_pick() {
+            let (app, home) = fleet().await;
+            let e = act_session(&app, "default", "laptop", act("planning", answer_two())).await.unwrap_err();
+            assert!(e.message.to_lowercase().contains("approv"), "{}", e.message);
+            let e = act_session(&app, "default", "laptop", act("planning", l::SessionAction::Close)).await.unwrap_err();
+            assert!(e.message.to_lowercase().contains("approv"), "{}", e.message);
+            assert!(home.served.lock().await.is_empty());
+
+            let policy = "version: 2\ndefault: allow\nask: []\ndeny:\n  - { who: \"*\", except: \"plugin:runner@*\", can: answer }\n";
+            crate::authz::store(&app.db, "default", policy).await.unwrap();
+            let e = act_session(&app, "default", "laptop", act("triage", answer_two())).await.unwrap_err();
+            assert!(e.message.contains("deny[0]"), "{}", e.message);
+            let done = act_session(&app, "default", "laptop", act("plugin:runner", answer_two())).await.unwrap();
+            assert_eq!(done.done, "answered");
+            let served = home.served.lock().await.clone();
+            assert_eq!((served[0]["action"].as_str(), served[0]["prompt"].as_str()), (Some("answer"), Some("toolu_1")));
+            assert_eq!(served[0]["caller"], "plugin:runner@laptop");
+            let closed = act_session(&app, "default", "laptop", act("triage", l::SessionAction::Close)).await.unwrap();
+            assert_eq!(closed.done, "closed");
+            let log: Vec<String> =
+                sqlx::query_scalar("SELECT reason FROM audit_log").fetch_all(&app.db).await.unwrap_or_default();
+            assert!(log.iter().any(|r| r.contains("answered prompt toolu_1 with [{\"pick\":2}]")), "{log:?}");
         }
 
         #[tokio::test]

@@ -98,6 +98,8 @@ pub mod code {
     /// Fleetlayer: no session or node has that name (a typo, not an outage). `data.suggestions` lists up to three
     /// running names that contain it.
     pub const NO_SUCH: i64 = -32014;
+    /// The blocked prompt an answer was for isn't showing any more: answered already, or gone.
+    pub const PROMPT_GONE: i64 = -32015;
     /// Fleetlayer: the other side went away before answering.
     pub const CLOSED: i64 = -32099;
 }

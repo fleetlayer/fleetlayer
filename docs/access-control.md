@@ -129,8 +129,10 @@ audit:
 
 Verbs: `message`, `use_tool`, `sync`, `read` (the fleet view, summaries, catch-ups; a node that may read nothing of
 another, not even `-@<node>`, doesn't see that node in the fleet view at all), `subscribe`, `publish`, and
-`start` (start, resume, close or interrupt a session on another node), and `attach` (type into a session's
-terminal; watching it is `read`).
+`start` (start, resume or interrupt a session on another node), `close` (close one), `answer` (answer the prompt a
+session is blocked on: a question, a plan, or a permission prompt, which approves what it asks), and `attach` (type
+into a session's terminal; watching it is `read`). Give an overseer that answers for the person `answer` by name, never
+through a broad rule: `allow: [{ who: "plugin:runner@<node>", can: answer }]` with `answer` denied to everyone else.
 
 ## Asking the person: approval and justification
 
@@ -149,8 +151,8 @@ justify:                       # the agent must say why, in one line, and it goe
     can: [use_tool, sync, start]
 ```
 
-Approvals are on by default: a policy that leaves `ask:` out asks before `start` and `attach` (an approval holds 10
-minutes) and
+Approvals are on by default: a policy that leaves `ask:` out asks before `start`, `attach`, `answer` and `close` (an
+approval holds 10 minutes) and
 before each agent's first `use_tool`, `sync`, `admin` or `write` to a target (it holds 30 days; one for `use_tool` or
 `sync` renews while it's used, so it lapses only after 30 days unused), the safe start for a
 fleet you don't know yet. That holds with no policy applied too: a tenant with neither a policy nor version 1 rules is

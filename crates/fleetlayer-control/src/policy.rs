@@ -22,8 +22,21 @@ use serde::{Deserialize, Serialize};
 use crate::directory::Fleet;
 
 /// What a subject may do.
-pub const VERBS: &[&str] =
-    &["message", "use_tool", "sync", "read", "subscribe", "publish", "start", "attach", "sign_in", "admin", "write"];
+pub const VERBS: &[&str] = &[
+    "message",
+    "use_tool",
+    "sync",
+    "read",
+    "subscribe",
+    "publish",
+    "start",
+    "attach",
+    "answer",
+    "close",
+    "sign_in",
+    "admin",
+    "write",
+];
 
 /// One string or a list of them.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -115,7 +128,7 @@ pub fn default_ask() -> Vec<AskRule> {
         except: None,
         hold: hold.into(),
     };
-    vec![rule(&["start", "attach"], "10m"), rule(&["use_tool", "sync", "admin", "write"], "30d")]
+    vec![rule(&["start", "attach", "answer", "close"], "10m"), rule(&["use_tool", "sync", "admin", "write"], "30d")]
 }
 
 /// The policy of a tenant with neither a version 2 policy nor version 1 rules: agents allowed, people their own

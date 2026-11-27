@@ -157,6 +157,31 @@ enum SessionCommand {
         #[arg(long, env = "FLEETLAYER_WHY")]
         why: Option<String>,
     },
+    /// Answer the prompt a session is blocked on (a question, a permission prompt, a plan), as shown in its
+    /// `meta.prompt`: `fleetlayer session answer review@server --prompt toolu_01… --pick 2`. Refused when that prompt
+    /// isn't showing any more.
+    Answer {
+        /// `<tab>@<node>`, a tab on this node, or a session ID.
+        to: String,
+        /// The prompt's `id`.
+        #[arg(long)]
+        prompt: String,
+        /// One per question, in order: an option's number, numbers with commas for a multiple choice (`1,3`), or
+        /// `=` and free text (`=Use the staging database`).
+        #[arg(long = "pick", alias = "answer")]
+        picks: Vec<String>,
+        /// Free text: the answer to a one-question form, or a plan's "Tell Claude what to change".
+        #[arg(long)]
+        text: Option<String>,
+        #[arg(long, env = "FLEETLAYER_WHY")]
+        why: Option<String>,
+    },
+    /// Close a session's tab (asked by default from another node).
+    Close {
+        to: String,
+        #[arg(long, env = "FLEETLAYER_WHY")]
+        why: Option<String>,
+    },
     /// Resume a stored session in a new tab, in the folder it worked in. Finds the node from the session ID when
     /// --on is left out.
     Resume {
@@ -589,6 +614,28 @@ impl Handler for NoRequests {
     }
 }
 
+/// One `--pick`: `2`, `1,3` or `=free text`.
+fn parse_answer(p: &str) -> anyhow::Result<Value> {
+    if let Some(text) = p.strip_prefix('=') {
+        return Ok(json!({"text": text}));
+    }
+    let picks: Vec<u32> = p
+        .split(',')
+        .map(|n| n.trim().parse::<u32>().map_err(|_| anyhow::anyhow!("--pick {p}: give option numbers, or =text")))
+        .collect::<anyhow::Result<_>>()?;
+    Ok(if picks.len() == 1 && !p.contains(',') { json!({"pick": picks[0]}) } else { json!({"picks": picks}) })
+}
+
+fn print_acted(v: &Value, json: bool) {
+    if json {
+        println!("{v}");
+        return;
+    }
+    let tab = v["tab"].as_str().or(v["sessionId"].as_str()).unwrap_or("?");
+    let done = if v["done"] == "closed" { "Closed" } else { "Answered" };
+    println!("{done} {tab}@{}.", v["node"].as_str().unwrap_or("?"));
+}
+
 /// A folder on this machine made absolute; one on another node is passed as it is (that node checks it).
 fn absolute(dir: &str, elsewhere: bool) -> String {
     if elsewhere || dir.starts_with('/') {
@@ -870,8 +917,24 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 println!("{} is offered only on its listed networks again.", v["tool"].as_str().unwrap_or("?"));
             }
         }
+        Command::Session { command: SessionCommand::Answer { to, prompt, picks, text, why } } => {
+            let mut answers = picks.iter().map(|p| parse_answer(p)).collect::<anyhow::Result<Vec<Value>>>()?;
+            if let Some(t) = text {
+                answers.push(json!({"text": t}));
+            }
+            anyhow::ensure!(!answers.is_empty(), "give an answer with --pick or --text");
+            let req = json!({"to": to, "prompt": prompt, "answers": answers, "why": why, "caller": caller()});
+            let v: Value = peer.request_within("node/session_answer", &req, std::time::Duration::from_secs(60)).await?;
+            print_acted(&v, cli.json);
+        }
+        Command::Session { command: SessionCommand::Close { to, why } } => {
+            let req = json!({"to": to, "why": why, "caller": caller()});
+            let v: Value = peer.request_within("node/session_close", &req, std::time::Duration::from_secs(60)).await?;
+            print_acted(&v, cli.json);
+        }
         Command::Session { command } => {
             let req = match command {
+                SessionCommand::Answer { .. } | SessionCommand::Close { .. } => unreachable!("handled above"),
                 SessionCommand::Start { tab, cwd, on, harness, prompt, why } => json!({
                     "tab": tab, "cwd": absolute(&cwd, on.is_some()), "on": on, "harness": harness, "prompt": prompt,
                     "why": why, "caller": caller(),

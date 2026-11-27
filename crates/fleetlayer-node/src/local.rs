@@ -8,6 +8,8 @@
 //! - `node/readings` `{kinds}` → `{readings}`: the newest of each kind from every node this one may read.
 //! - `node/session_open` `{tab?, cwd?, harness?, prompt?, resume?, on?, why?, caller?}` → `SessionStarted`: start or
 //!   resume a session here or on node `on` (`crate::start`).
+//! - `node/session_close` `{to, why?, caller?}` and `node/session_answer` `{to, prompt, answers, why?, caller?}` →
+//!   `SessionActed`: close a session, or answer the prompt it's blocked on, here or on another node (`crate::act`).
 //! - `_fleetlayer.dev/message/send` `{to, text, caller?: {sessionId?, address?}}` → `{via}`.
 //!
 //! Only the node's own Unix user can open the socket, so the caller's claim about which session it runs in
@@ -66,6 +68,17 @@ struct Send {
     untrusted: bool,
     #[serde(default)]
     subkind: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SessionAct {
+    to: String,
+    #[serde(default)]
+    prompt: Option<String>,
+    #[serde(default)]
+    answers: Vec<ext::PromptAnswer>,
+    why: Option<String>,
+    caller: Option<Caller>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -214,6 +227,18 @@ impl Handler for Local {
                 let o: SessionOpen = params(p)?;
                 let caller = self.caller(o.caller.as_ref()).await;
                 answer(&crate::start::open(node, o.spec, o.on.as_deref(), o.why, caller.as_ref()).await?)
+            }
+            "node/session_close" | "node/session_answer" => {
+                let a: SessionAct = params(p)?;
+                let caller = self.caller(a.caller.as_ref()).await;
+                let name = caller.as_ref().and_then(|c| c.tab().map(str::to_string)).unwrap_or_else(|| "-".into());
+                let action = if method == "node/session_close" {
+                    l::SessionAction::Close
+                } else {
+                    let prompt = a.prompt.ok_or_else(|| RpcError::invalid_params("say which prompt with --prompt"))?;
+                    l::SessionAction::Answer { prompt, answers: a.answers }
+                };
+                answer(&crate::act::act(node, &a.to, action, a.why, name).await?)
             }
             "node/sessions" => answer(&json!({"node": node.name, "sessions": node.registry.all().await})),
             ext::method::MESSAGE_SEND => {

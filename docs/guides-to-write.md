@@ -596,3 +596,10 @@ managers, machines that sleep.
   the time of the last summary. Summaries also retry a waiting session by themselves now. The guide on monitoring a
   fleet should show a check on that reading. Where it lives: `docs/protocol.md` (section 10),
   `docs/plugins/summaries.md` ("Watching it").
+- **Answering Claude Code's prompts from somewhere else.** Learn that a session is blocked from Claude Code's hooks
+  (`PreToolUse` for `AskUserQuestion` and `ExitPlanMode`, `PermissionRequest`), not the screen; run them `async` with
+  no output so they can't change what Claude does; and clear on `PostToolUse`, `UserPromptSubmit` and `Stop`. The
+  permission dialog's options aren't in any hook and change between versions ("Yes, and switch to auto mode" is one),
+  so read them off the screen and check the screen again before typing: a late answer must never land on the next
+  prompt. herdr can't read scrollback while an agent is blocked; read the visible screen. Where it lives:
+  `docs/protocol.md` ("Blocked prompts"), `crates/fleetlayer-node/src/act.rs`, `plugins/claude-code/src/hooks.rs`.

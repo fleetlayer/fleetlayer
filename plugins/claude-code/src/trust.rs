@@ -13,6 +13,8 @@ use serde_json::{Map, Value};
 /// Mark `dir` trusted in the Claude Code config at `path`, keeping every other key. The file is replaced in one
 /// rename, so Claude Code never reads half of it. A missing file is created.
 pub fn mark_trusted(path: &Path, dir: &str) -> Result<(), String> {
+    // Through a symlink to the file it names, so a linked config stays linked.
+    let path = &std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let mut root: Value = match std::fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{} isn't JSON: {e}", path.display()))?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Value::Object(Map::new()),
@@ -31,7 +33,7 @@ pub fn mark_trusted(path: &Path, dir: &str) -> Result<(), String> {
     write_atomic(path, &serde_json::to_vec_pretty(&root).map_err(|e| e.to_string())?)
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("claude.json");

@@ -248,6 +248,7 @@ impl Handler for Shared {
                     deliver: true,
                     events: true,
                     terminal: true,
+                    keys: false,
                     own_messages: vec![],
                 };
                 let meta = PluginMeta {

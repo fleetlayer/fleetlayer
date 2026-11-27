@@ -2,6 +2,7 @@
 //! enables, keeps a registry of the sessions they report, delivers messages into sessions, and serves the `fleetlayer`
 //! CLI on a local socket. Linking to the control plane comes next.
 
+mod act;
 mod config;
 mod deliver;
 mod heartbeat;
@@ -196,6 +197,7 @@ async fn run(cfg: NodeConfig) -> anyhow::Result<()> {
         tokio::spawn(heartbeat::run(node.clone(), h, cfg.control.is_some()));
     }
     tokio::spawn(sync::retry(node.clone()));
+    tokio::spawn(act::fill_menus(node.clone()));
     let update = cfg.update.clone().unwrap_or(update::UpdateConfig { mode: None, every_hours: 6 });
     tokio::spawn(update::run(node.clone(), update));
     {

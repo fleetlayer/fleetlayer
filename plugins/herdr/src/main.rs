@@ -177,6 +177,7 @@ impl Handler for Shared {
                     deliver: true,
                     events: true,
                     terminal: true,
+                    keys: true,
                     own_messages: herdr::auto_continue_message(&PathBuf::from(&node.home)).into_iter().collect(),
                 };
                 let meta = PluginMeta {
@@ -241,6 +242,21 @@ impl Handler for Shared {
                     prompt_error = Some(failure(e).message);
                 }
                 answer(&OpenedSession { address: pane, session_id, prompt_error })
+            }
+            ext::method::SESSION_KEYS => {
+                let k: ext::SessionKeys = params(p)?;
+                let s = plugin.settings().await?;
+                let pane = plugin.pane_of(&k.session_id).await?;
+                herdr::keys(&s.program, &pane, &k.steps).await.map_err(failure)?;
+                Ok(json!({}))
+            }
+            ext::method::SESSION_SCREEN => {
+                let id = p["sessionId"].as_str().ok_or_else(|| RpcError::invalid_params("sessionId"))?.to_string();
+                let lines = p["lines"].as_u64().unwrap_or(60).clamp(1, 400);
+                let s = plugin.settings().await?;
+                let pane = plugin.pane_of(&id).await?;
+                let text = herdr::screen(&s.program, &pane, lines).await.map_err(failure)?;
+                Ok(json!({"text": text}))
             }
             ext::method::SESSION_DELIVER => {
                 let d: Deliver = params(p)?;

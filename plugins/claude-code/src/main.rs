@@ -12,6 +12,7 @@
 //! A machine whose sessions run in bypass-permissions mode needs `"crossSessionInbound": "accept"` in
 //! `~/.claude/settings.json`, or Claude Code holds every message for the person's approval in the tab.
 
+mod hooks;
 mod socket;
 mod trust;
 
@@ -24,6 +25,7 @@ use async_trait::async_trait;
 use fleetlayer_plugin::{Handler, Peer, answer, params};
 use fleetlayer_protocol::acp::{
     self, Capabilities, Implementation, InitializeRequest, InitializeResponse, ListSessionsResponse, SessionInfo,
+    SessionInfoTag, SessionInfoUpdate, SessionNotification, SessionUpdate,
 };
 use fleetlayer_protocol::ext::{
     self, Deliver, Delivered, HarnessRole, NodeMeta, PluginMeta, Roles, SessionMeta, Via, meta_key,
@@ -37,6 +39,8 @@ use tokio::sync::Mutex;
 struct Config {
     claude_dir: Option<PathBuf>,
     claude_json: Option<PathBuf>,
+    /// Install the hooks that report blocked prompts and background work (default true); false takes them out.
+    hooks: Option<bool>,
 }
 
 #[derive(Default)]
@@ -44,6 +48,9 @@ struct Plugin {
     claude_dir: Mutex<Option<PathBuf>>,
     claude_json: Mutex<Option<PathBuf>>,
     watching: Mutex<bool>,
+    /// What each session is blocked on, from the hooks.
+    tracker: std::sync::Mutex<hooks::Tracker>,
+    hooks_started: Mutex<bool>,
 }
 
 impl Plugin {
@@ -79,8 +86,11 @@ impl Handler for Shared {
                     None => PathBuf::from(&node.home).join(".claude.json"),
                 });
                 *plugin.claude_json.lock().await = Some(claude_json);
+                let want_hooks = config.hooks.unwrap_or(true);
                 *plugin.claude_dir.lock().await =
                     Some(config.claude_dir.unwrap_or_else(|| PathBuf::from(&node.home).join(".claude")));
+                let settings_file = plugin.dir().await?.join("settings.json");
+                start_hooks(plugin.clone(), peer.clone(), PathBuf::from(&node.home), settings_file, want_hooks).await;
                 let meta = PluginMeta {
                     protocol: fleetlayer_protocol::PROTOCOL,
                     roles: Roles {
@@ -118,19 +128,22 @@ impl Handler for Shared {
                 }
                 let sessions = regs
                     .into_iter()
-                    .map(|r| SessionInfo {
-                        session_id: r.session_id,
-                        cwd: r.cwd,
-                        title: r.name,
-                        updated_at: None,
-                        meta: Some(ext::meta_with(
-                            meta_key::SESSION,
-                            &SessionMeta {
-                                harness: Some("claude".into()),
-                                deliverable: Some(true),
-                                ..Default::default()
-                            },
-                        )),
+                    .map(|r| {
+                        let waiting = plugin.tracker.lock().expect("tracker").get(&r.session_id).cloned();
+                        let meta = SessionMeta {
+                            harness: Some("claude".into()),
+                            deliverable: Some(true),
+                            prompt: waiting.as_ref().and_then(|w| w.prompt.clone()).map(Some),
+                            background: waiting.and_then(|w| w.background),
+                            ..Default::default()
+                        };
+                        SessionInfo {
+                            session_id: r.session_id,
+                            cwd: r.cwd,
+                            title: r.name,
+                            updated_at: None,
+                            meta: Some(ext::meta_with(meta_key::SESSION, &meta)),
+                        }
                     })
                     .collect();
                 answer(&ListSessionsResponse { sessions, next_cursor: None })
@@ -187,6 +200,89 @@ impl Handler for Shared {
     }
 }
 
+/// Install (or take out) the hooks, keep them installed, and follow what they report.
+async fn start_hooks(plugin: Arc<Plugin>, peer: Peer, home: PathBuf, settings: PathBuf, want: bool) {
+    {
+        let mut started = plugin.hooks_started.lock().await;
+        if *started {
+            return;
+        }
+        *started = true;
+    }
+    if !want {
+        match hooks::uninstall(&settings) {
+            Ok(true) => tracing::info!("took Fleetlayer's hooks out of {}", settings.display()),
+            Ok(false) => {}
+            Err(e) => tracing::warn!("taking the hooks out of {}: {e}", settings.display()),
+        }
+        return;
+    }
+    // Something else may rewrite the settings file (a config manager, a sync): put them back when they go missing.
+    tokio::spawn(async move {
+        loop {
+            match hooks::install(&settings) {
+                Ok(true) => tracing::info!("installed the prompt hooks in {}", settings.display()),
+                Ok(false) => {}
+                Err(e) => tracing::warn!("installing the prompt hooks in {}: {e}", settings.display()),
+            }
+            tokio::time::sleep(Duration::from_secs(300)).await;
+        }
+    });
+    let path = hooks::socket_path(&home);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    // A socket nobody answers on is left over from an earlier run.
+    if path.exists() && std::os::unix::net::UnixStream::connect(&path).is_err() {
+        let _ = std::fs::remove_file(&path);
+    }
+    let listener = match tokio::net::UnixListener::bind(&path) {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::warn!("listening for hooks on {}: {e} (another node on this account has it?)", path.display());
+            return;
+        }
+    };
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    tracing::info!("listening for Claude Code's hooks on {}", path.display());
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let (plugin, peer) = (plugin.clone(), peer.clone());
+            tokio::spawn(async move {
+                use tokio::io::{AsyncBufReadExt, AsyncReadExt};
+                let mut line = String::new();
+                let mut r = tokio::io::BufReader::new(stream).take(4 << 20);
+                if r.read_line(&mut line).await.is_err() {
+                    return;
+                }
+                let Ok(v) = serde_json::from_str::<Value>(&line) else { return };
+                let changed = plugin.tracker.lock().expect("tracker").event(&v, jiff::Timestamp::now());
+                if let Some(session) = changed {
+                    let waiting = plugin.tracker.lock().expect("tracker").get(&session).cloned().unwrap_or_default();
+                    let meta = SessionMeta {
+                        prompt: Some(waiting.prompt),
+                        background: waiting.background,
+                        ..Default::default()
+                    };
+                    let n = SessionNotification {
+                        session_id: session,
+                        update: SessionUpdate::Info(SessionInfoUpdate {
+                            session_update: SessionInfoTag::SessionInfoUpdate,
+                            title: None,
+                            updated_at: None,
+                            meta: Some(ext::meta_with(meta_key::SESSION, &meta)),
+                        }),
+                    };
+                    peer.notify(acp::method::SESSION_UPDATE, &n);
+                }
+            });
+        }
+    });
+}
+
 /// Say when the set of deliverable sessions changes (a session started, ended or was resumed).
 async fn watch(plugin: Arc<Plugin>, peer: Peer) {
     let mut last: Option<BTreeSet<String>> = None;
@@ -209,5 +305,10 @@ async fn main() {
         .with_ansi(false)
         .with_env_filter(tracing_subscriber::EnvFilter::from_env("FLEETLAYER_LOG"))
         .init();
+    // Claude Code runs `fleetlayer-claude-code hook` for each event the plugin installed a hook for.
+    if std::env::args().nth(1).as_deref() == Some("hook") {
+        hooks::run_hook();
+        return;
+    }
     fleetlayer_plugin::serve_stdio(Arc::new(Shared(Arc::new(Plugin::default())))).await;
 }
