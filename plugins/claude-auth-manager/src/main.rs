@@ -121,6 +121,8 @@ struct Plugin {
     node: Mutex<String>,
     /// Where the last applied bundle is kept, in the same store as the slots.
     kept: Mutex<Option<String>>,
+    /// The node user's home, for the secrets registry.
+    home: Mutex<Option<PathBuf>>,
 }
 
 impl Default for Plugin {
@@ -132,6 +134,7 @@ impl Default for Plugin {
             coordinator: coordinator::Slot::default(),
             node: Mutex::default(),
             kept: Mutex::default(),
+            home: Mutex::default(),
         }
     }
 }
@@ -149,6 +152,21 @@ fn yes() -> bool {
 /// the keychain item named from it, on Linux `.credentials.json` in it, 0600), never a slot Claude Code reads.
 fn kept_key(home: &Path) -> String {
     home.join(".local/state/fleetlayer/claude-auth-manager/last-bundle").display().to_string()
+}
+
+/// List the setup tokens in the node's secrets registry as `claude://account/<slot>`, so the node redacts them from
+/// what it sends and `fleetlayer secrets forget` knows them.
+fn register(home: &Path, accounts: &[slots::Account]) {
+    let secrets: Vec<fleetlayer_secrets::Secret> = accounts
+        .iter()
+        .map(|a| fleetlayer_secrets::Secret {
+            reference: format!("claude://account/{}", a.slot),
+            value: a.token.clone(),
+        })
+        .collect();
+    if let Err(e) = fleetlayer_secrets::registry::register(home, "claude-auth-manager", &secrets) {
+        tracing::warn!("listing the tokens in the secrets registry: {e}");
+    }
 }
 
 fn keep(store: &dyn store::Store, key: &str, accounts_json: &str) {
@@ -219,6 +237,7 @@ impl Handler for Shared {
                     if let Ok(Some(text)) = store.read(&kept)
                         && let Ok(accounts) = serde_json::from_str::<Vec<slots::Account>>(&text)
                     {
+                        register(&home, &accounts);
                         match slots::apply(&layout, store.as_ref(), &accounts) {
                             Ok(r) => tracing::info!(
                                 written = r.written,
@@ -230,6 +249,7 @@ impl Handler for Shared {
                         }
                     }
                     *self.0.kept.lock().await = Some(kept);
+                    *self.0.home.lock().await = Some(home.clone());
                     let claude = health::Claude { bin: find_claude(&home, config.claude.as_deref()) };
                     *self.0.node.lock().await = node.node.clone();
                     let env = coordinator::NodeEnv {
@@ -348,6 +368,9 @@ impl Handler for Shared {
                     .ok_or_else(|| RpcError::invalid_params("no accounts.json"))?;
                 let accounts: Vec<slots::Account> =
                     serde_json::from_str(&item.content).map_err(RpcError::invalid_params)?;
+                if let Some(home) = self.0.home.lock().await.clone() {
+                    register(&home, &accounts);
+                }
                 match slots::apply(&layout, store.as_ref(), &accounts) {
                     Ok(r) => {
                         if let Some(kept) = self.0.kept.lock().await.clone() {
@@ -364,6 +387,25 @@ impl Handler for Shared {
                         Ok(json!({"applied": true, "written": r.written, "removed": r.removed, "skipped": r.skipped}))
                     }
                     Err(e) => Ok(json!({"applied": false, "error": e.to_string()})),
+                }
+            }
+            ext::method::SYNC_FORGET => {
+                // A role's window ended: every managed slot goes, as an empty bundle would remove them.
+                let layout = self.0.layout.lock().await.clone().ok_or_else(|| RpcError::refused("not a node"))?;
+                let store = self.0.store.lock().await.clone().ok_or_else(|| RpcError::refused("not a node"))?;
+                if let Some(home) = self.0.home.lock().await.clone() {
+                    register(&home, &[]);
+                }
+                if let Some(kept) = self.0.kept.lock().await.clone() {
+                    keep(store.as_ref(), &kept, "[]");
+                }
+                match slots::apply(&layout, store.as_ref(), &[]) {
+                    Ok(r) => {
+                        self.0.applied.send_modify(|v| *v += 1);
+                        tracing::warn!(removed = r.removed, "forgot every token delivered to this node");
+                        Ok(json!({"forgotten": true}))
+                    }
+                    Err(e) => Ok(json!({"forgotten": false, "error": e.to_string()})),
                 }
             }
             _ => Err(RpcError::method_not_found(method)),

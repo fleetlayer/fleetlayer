@@ -125,7 +125,10 @@ A source's first bundle to each target waits for your approval, like any sync (t
 rule for `sync`; [access control](../access-control.md)). `fleetlayer readings sync.status` shows the waiting target
 and the command that approves it. Each delivery is checked against your policy and written to the control plane's
 audit log (the bundle, `cookies/<set>`, and the target), and the source's log names the domains and targets of every
-version it sends. Cookie values never appear in logs, messages, readings or the plugin's state files.
+version it sends. Cookie values never appear in logs, messages, readings or the plugin's state files. Each target also lists the values it
+received in the node's secrets registry, as `cookie://<set>/<name>`, so the node redacts them from everything it sends
+the control plane ([scrubbing](../credentials.md#scrubbing-what-leaves-a-node)), and `fleetlayer secrets forget` (or a
+role's window ending) removes every file the plugin wrote.
 
 The control plane relays each bundle as ciphertext sealed to the target node's key and never stores it. A target that
 was offline gets the latest version when it's back, while the source is online.

@@ -3,9 +3,8 @@
 //! Each file is written mode 0600 and replaced in one rename.
 
 use std::collections::BTreeMap;
-use std::io::Write as _;
-use std::path::Path;
 
+use fleetlayer_secrets::write::env_value;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -65,12 +64,6 @@ pub fn json(cookies: &[Cookie]) -> String {
     s
 }
 
-/// A value as a shell and dotenv readers take it: bare when it's plain, else in single quotes.
-fn env_value(v: &str) -> String {
-    let plain = !v.is_empty() && v.chars().all(|c| c.is_ascii_alphanumeric() || "_-.%:/+=~@,".contains(c));
-    if plain { v.to_string() } else { format!("'{}'", v.replace('\'', r"'\''")) }
-}
-
 /// `VAR=value` lines, one per entry of `values` (variable → cookie name); an error names the cookies that are missing.
 pub fn env(cookies: &[Cookie], values: &BTreeMap<String, String>) -> Result<String, String> {
     let mut out = String::from("# Written by fleetlayer-cookies, and replaced whenever the cookies change.\n");
@@ -85,25 +78,7 @@ pub fn env(cookies: &[Cookie], values: &BTreeMap<String, String>) -> Result<Stri
     if missing.is_empty() { Ok(out) } else { Err(format!("no cookie named {} in what was sent", missing.join(", "))) }
 }
 
-/// Write `content` to `path`, mode 0600, through a file beside it and one rename. A missing folder is made, mode
-/// 0700.
-pub fn atomic(path: &Path, content: &str) -> std::io::Result<()> {
-    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-    let parent = path.parent().ok_or_else(|| std::io::Error::other("a path with no folder"))?;
-    if !parent.exists() {
-        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(parent)?;
-    }
-    let tmp = parent.join(format!(
-        ".{}.fleetlayer-tmp",
-        path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
-    ));
-    let _ = std::fs::remove_file(&tmp);
-    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
-    f.write_all(content.as_bytes())?;
-    f.sync_all()?;
-    drop(f);
-    std::fs::rename(&tmp, path)
-}
+pub use fleetlayer_secrets::write::atomic;
 
 #[cfg(test)]
 mod tests {
@@ -152,23 +127,5 @@ mod tests {
         assert!(s.contains(r#"CT0='it'\''s "odd"'"#), "{s}");
         let missing: BTreeMap<_, _> = [("X".to_string(), "nope".to_string())].into();
         assert_eq!(env(&cookies, &missing).unwrap_err(), "no cookie named nope in what was sent");
-    }
-
-    #[test]
-    fn atomic_writes_are_private_and_replace_links_rather_than_follow_them() {
-        use std::os::unix::fs::PermissionsExt;
-        let d = tempfile::tempdir().unwrap();
-        let p = d.path().join("new/dir/cookies.txt");
-        atomic(&p, "one").unwrap();
-        assert_eq!(std::fs::read_to_string(&p).unwrap(), "one");
-        assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
-        assert_eq!(std::fs::metadata(p.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
-        let elsewhere = d.path().join("elsewhere");
-        std::fs::write(&elsewhere, "untouched").unwrap();
-        let link = d.path().join("link.txt");
-        std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
-        atomic(&link, "two").unwrap();
-        assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "untouched");
-        assert_eq!(std::fs::read_to_string(&link).unwrap(), "two");
     }
 }

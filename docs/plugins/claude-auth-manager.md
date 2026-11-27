@@ -60,6 +60,10 @@ node leaves that alone.
   could be lost (unlikely: setup-token slots never refresh).
 - **Linux:** `<slot>/.credentials.json`, mode 0600.
 - The entry has no refresh token; Claude Code uses it as it is and leaves it alone.
+- Each token is also listed in the node's secrets registry as `claude://account/<slot>`, so the node redacts it from
+  everything it sends the control plane ([scrubbing](../credentials.md#scrubbing-what-leaves-a-node)).
+  `_fleetlayer.dev/sync/forget` (`fleetlayer secrets forget`, a role's window ending) removes every managed slot, as
+  an empty bundle would.
 - **Replacing a token under a running session works** (tested 26 November 2026). A session keeps the token it holds
   in memory while that token works; once it's rejected (401), the session reads the slot again on its retry and
   carries on with the new one, so nobody sees a failure. Still untested: how fast revoking a setup token takes

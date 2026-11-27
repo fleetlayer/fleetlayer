@@ -473,12 +473,52 @@ impl Handler for Shared {
                 let snapshot = st.clone();
                 drop(rec);
                 plugin.save(&set, &snapshot);
+                // The node redacts these values from what it sends, and `fleetlayer secrets forget` knows them.
+                let secrets: Vec<fleetlayer_secrets::Secret> = body
+                    .cookies
+                    .iter()
+                    .map(|c| fleetlayer_secrets::Secret {
+                        reference: format!("cookie://{set}/{}", c.name),
+                        value: c.value.clone(),
+                    })
+                    .collect();
+                if let Err(e) =
+                    fleetlayer_secrets::registry::register(&plugin.home, &format!("cookies-{set}"), &secrets)
+                {
+                    tracing::warn!(set, "listing the cookies in the secrets registry: {e}");
+                }
                 tracing::info!(set, version = a.version, cookies = body.cookies.len(), domains = ?body.domains,
                     files = snapshot.written.len(), errors = errors.len(), "received");
                 if errors.is_empty() {
                     Ok(json!({"applied": true, "written": snapshot.written.len()}))
                 } else {
                     Ok(json!({"applied": false, "error": errors.join("; ")}))
+                }
+            }
+            ext::method::SYNC_FORGET => {
+                // A role's window ended: every file written and every registry list goes.
+                let plugin = self.0.lock().await.clone().ok_or_else(|| RpcError::refused("not initialised"))?;
+                let mut errors = vec![];
+                let mut rec = plugin.received.lock().await;
+                for r in &plugin.receive {
+                    let st = rec.entry(r.set.clone()).or_default();
+                    for (p, e) in fleetlayer_secrets::write::remove_stale(&st.written, &[]) {
+                        errors.push(format!("removing {}: {e}", p.display()));
+                    }
+                    if let Err(e) =
+                        fleetlayer_secrets::registry::register(&plugin.home, &format!("cookies-{}", r.set), &[])
+                    {
+                        errors.push(format!("the secrets registry: {e}"));
+                    }
+                    *st = Received::default();
+                    plugin.save(&r.set, st);
+                }
+                drop(rec);
+                tracing::warn!(errors = errors.len(), "forgot every cookie delivered to this node");
+                if errors.is_empty() {
+                    Ok(json!({"forgotten": true}))
+                } else {
+                    Ok(json!({"forgotten": false, "error": errors.join("; ")}))
                 }
             }
             _ => Err(RpcError::method_not_found(method)),
