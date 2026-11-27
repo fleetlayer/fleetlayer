@@ -105,6 +105,9 @@ Marked **(planned)** where it isn't built yet.
 21. **Adopting a new tool means abandoning the ones you use.** Fleetlayer attaches to your session manager without
     taking it over; your apps and terminals keep working beside it. Plugins are separate processes in any language,
     speaking the Agent Client Protocol.
+21a. **Starting needs a server, or outgrowing a laptop means starting over.** Start with everything on your Mac and
+    move any one piece (the control plane, sign-in, the Claude hub, pages) to a home server or a VPS when you outgrow
+    it, by asking an agent: each piece keeps its state in one place and has a tested move. **(planned)**
 22. **Keeping every machine up to date.** Releases with notes, signed builds and self-update.
 
 ## The server setup (planned: `fleetlayer/server-iac-example`)

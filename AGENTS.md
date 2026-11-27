@@ -22,6 +22,12 @@ tokens, private repo names, customer data or anything from Nathan's private note
   ("everything a company needs: single sign-on, teams, separate organisations, audit"), and their settings under an
   **Advanced** section, collapsed by default. Never show an empty "Tenants" or "Identity providers" screen to someone
   who has one of each.
+- **Every component can move.** Someone can start with everything on their Mac (control plane, node, sign-in, the
+  Claude hub, pages, apps) and later move any one piece to a home server or a VPS by asking an agent. So each
+  component keeps all its state in one directory and its settings in one file, never assumes a hostname or that it
+  shares a machine with another component, and has a documented, tested move (stop, copy the state, start elsewhere,
+  repoint the address) that keeps identities and keys (a node keeps its key; tokens sealed to it stay readable).
+  Secrets move only sealed or through the secrets manager.
 - **Everything in the background is monitored.** Every daemon, sync or scheduled job gets a health check or heartbeat
   that catches real failure (it stopped doing its job, not only that it stopped running), in the same change.
 
