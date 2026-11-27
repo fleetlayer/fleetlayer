@@ -368,12 +368,16 @@ pub async fn handle(app: Arc<App>, host: String, space: String, name: String, re
         return send_to_sign_in(&app, &space, &name, &req);
     };
     // The access may have been withdrawn since the session started.
-    if !app.auth.may_read(&viewer, &space).await {
-        return plain(StatusCode::FORBIDDEN, "You can't open this app any more.");
+    match app.auth.may(&viewer, &format!("app:{space}/{name}")).await {
+        crate::auth::Access::Yes => {}
+        crate::auth::Access::No => return plain(StatusCode::FORBIDDEN, "You can't open this app any more."),
+        crate::auth::Access::CantTell(_) => {
+            return plain(StatusCode::SERVICE_UNAVAILABLE, "Can't check your access right now: try again in a minute.");
+        }
     }
     match path.as_str() {
         "/_fl/me" => {
-            let body = serde_json::json!({"principal": viewer.principal, "app": name, "space": space});
+            let body = serde_json::json!({"principal": viewer.principal(), "app": name, "space": space});
             return with_headers(
                 ([(header::CONTENT_TYPE, "application/json")], body.to_string()).into_response(),
                 &csp,

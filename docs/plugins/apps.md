@@ -100,12 +100,13 @@ opens the app full screen. An app may ship its own manifest or service worker; t
 
 ## Sign-in
 
-Shaped like OpenID Connect, so moving to Fleetlayer sign-in is a swap:
+Apps sign in through the pages site, which signs people in through Fleetlayer (`docs/plugins/pages.md`, "Sign-in").
+The handshake is shaped like OpenID Connect:
 
 1. An app with no session for you sends the browser to the pages site's `/_/apps/authorize` with a random `state`,
    kept in a short-lived cookie on the app's origin.
-2. The pages site signs you in if needed, checks you may read the app (`read` on `app:<space>/<name>` once sign-in
-   goes through Fleetlayer; with the login key, the key holder reads every app), shows the notice for an untrusted
+2. The pages site signs you in if needed, checks you may read the app (`read` on `app:<space>/<name>` for someone
+   signed in through Fleetlayer; the login key's holder reads every app), shows the notice for an untrusted
    space, and sends you back to the app's own host, worked out from its name and never taken from the request, with a
    code that is single-use, under a minute old and bound to that host and `state`.
 3. The app's origin exchanges the code for its own session cookie: `__Host-`, Secure, HttpOnly, SameSite=Lax, 12

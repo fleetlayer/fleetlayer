@@ -12,13 +12,14 @@
 <body class="login-body">
 <main class="login">
   <div class="login-brand"><img src="/_/assets/icon.svg" alt="" width="40" height="40"><h1>Pages</h1></div>
-  <form class="login-card" method="post" action="/_/login">
+  {sso}
+  <!--key--><form class="login-card" method="post" action="/_/login">
     <input type="hidden" name="next" value="{next}">
     <label class="label" for="login">Login key</label>
     <input class="input mono" type="password" id="login" name="login" autocomplete="current-password" autofocus required spellcheck="false"{invalid}>
     {msg}
     <button class="btn btn-primary btn-block" type="submit">Sign in</button>
-  </form>
+  </form><!--/key-->
   {hint}
 </main>
 </body>

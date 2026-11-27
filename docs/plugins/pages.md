@@ -1,7 +1,7 @@
 # Pages
 
-Status: built (27 November 2026): the renderer, the web app, live updates, the login key and `fleetlayer pages push`.
-Sign-in through Fleetlayer next. The same service hosts **apps** (interactive HTML and JavaScript, each on a
+Status: built (27 November 2026): the renderer, the web app, live updates, `fleetlayer pages push`, and signing in
+through Fleetlayer (or with a login key). The same service hosts **apps** (interactive HTML and JavaScript, each on a
 subdomain of its own): `docs/plugins/apps.md`.
 
 Pages are for people to look at: QA screenshots, reports, mock-ups, decision write-ups. Any agent or script that can
@@ -121,7 +121,10 @@ plugins:
       spaces:
         personal: { dir: /srv/pages/personal, title: Personal, owner: "person:alice", apps: /srv/apps/personal }
         triage:   { dir: /srv/pages/triage, apps: /srv/apps/triage, untrusted: true }
-      login_file: /etc/fleetlayer-pages/login   # at least 32 random characters, 0600
+      signin:                                   # people sign in through Fleetlayer (docs/plugins/signin.md)
+        issuer: https://signin.example
+        secret_file: /etc/fleetlayer-pages/signin-secret   # this site's client secret there, 0600
+      login_file: /etc/fleetlayer-pages/login   # optional with signin: a key that reads everything; drop it to turn it off
       trusted_proxies: [10.0.0.2]               # whose X-Forwarded-For is believed
       login_hint: "1Password: infra/pages-login"  # optional, shown under the login box; never the key
       heartbeat:                                # optional, Gatus external-endpoint style
@@ -196,10 +199,46 @@ space of the same name, the first keeps it and the control plane logs an error.
 
 ### Sign-in
 
-Until Fleetlayer's single sign-on is built, the service has the hub's kind of login: one long random key, compared in
-constant time, five failures in 15 minutes lock that address out for 15 minutes, and a session cookie (HttpOnly,
-Secure, SameSite=Strict) lasting 12 hours, kept in memory. Whoever has the key reads every space. With single sign-on,
-each person reads the spaces the access policy gives them (`read` on `page:<space>/*`).
+People sign in through Fleetlayer's sign-in service ([`signin.md`](signin.md)) with a passkey, and each person reads
+what the access policy gives them:
+
+- **Set it up:** add pages as a client of the sign-in service, named `pages`, with
+  `redirect_uris: [https://<pages address>/_/auth/callback]`,
+  `post_logout_redirect_uris: [https://<pages address>/_/signed-out]` and a `secret_file`. Give the pages plugin the
+  same secret (`signin.secret_file`) and the `access.check` grant in the node's config. Then allow people in, in the
+  policy:
+
+  ```yaml
+  allow:
+    - { who: role:admin, can: [sign_in], to: ["service:pages"] }
+    - { who: team:family, can: [read], to: ["page:family/*", "app:family/*"] }
+  ```
+
+- **What they see:** a space appears when they may read `page:<space>/*`, a page when they may read
+  `page:<space>/<folder>`, an app when they may read `app:<space>/<name>`. Anything else is "not found". The service
+  asks its node on each request and remembers the answer for a minute, so taking access away works within a minute.
+  If the question can't be answered (the control plane is down), the page says it can't check your access and shows
+  nothing.
+- **Signing out** here signs you out of the sign-in service too.
+- **The login key** (`login_file`) still works beside it, for scripts and for getting in while setting up: one long
+  random key, compared in constant time, five failures in 15 minutes lock that address out for 15 minutes. Whoever has
+  it reads every space. With `signin` set, drop `login_file` to turn the key off.
+
+Either way the session is a cookie (HttpOnly, Secure, SameSite=Strict) lasting 12 hours, kept in memory.
+Sign-in through Fleetlayer needs pages to run under a node (it asks the node about access), so
+`fleetlayer-pages serve` accepts only the login key.
+
+<details>
+<summary>Advanced: how it signs in</summary>
+
+The authorization code flow with PKCE (S256). The state and nonce are kept by the service for ten minutes, used once,
+and the state is tied to the browser that started the sign-in by a cookie. The ID token is checked with
+`jsonwebtoken`, pinned to RS256 and to keys from the issuer's own JWKS (found through its discovery document), with
+`iss`, `aud`, `exp` and `nbf` checked (60 seconds' leeway) and the nonce compared. The token says who you are
+(`sub`, `fleetlayer.dev/tenant`); what you may read is always asked
+(`_fleetlayer.dev/access/check {tenant, who: <sub>, can: read, to: …}`).
+
+</details>
 
 ### Security
 

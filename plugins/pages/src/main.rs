@@ -16,6 +16,7 @@
 
 mod apps;
 mod auth;
+mod oidc;
 mod receive;
 mod render;
 mod space;
@@ -50,13 +51,35 @@ struct Config {
     #[serde(default)]
     apps_domain: Option<String>,
     spaces: BTreeMap<String, SpaceConfig>,
-    login_file: PathBuf,
+    /// The login key's file (at least 32 random characters). Optional once `signin` is set: drop it to turn the key off.
+    #[serde(default)]
+    login_file: Option<PathBuf>,
+    /// Sign people in through Fleetlayer's sign-in service (`docs/plugins/signin.md`).
+    #[serde(default)]
+    signin: Option<Signin>,
     #[serde(default)]
     trusted_proxies: Vec<IpAddr>,
     #[serde(default)]
     login_hint: Option<String>,
     #[serde(default)]
     heartbeat: Option<Heartbeat>,
+}
+
+/// The sign-in service, and this site's client there.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Signin {
+    /// Its address (`https://signin.example`).
+    issuer: String,
+    /// The client's name in the sign-in service's `clients` (and `service:<name>` in the policy).
+    #[serde(default = "pages_client")]
+    client: String,
+    /// The client's secret, in a file only this user reads.
+    secret_file: PathBuf,
+}
+
+fn pages_client() -> String {
+    "pages".into()
 }
 
 /// Pushed every minute (Gatus external-endpoint style: `?success=true|false&error=…`, with a bearer token), failing
@@ -75,7 +98,11 @@ fn expand(home: &Path, p: &Path) -> PathBuf {
     }
 }
 
-fn build(mut cfg: Config, home: &Path) -> anyhow::Result<(Arc<web::App>, SocketAddr, Option<Heartbeat>)> {
+fn build(
+    mut cfg: Config,
+    home: &Path,
+    peer: Option<&Peer>,
+) -> anyhow::Result<(Arc<web::App>, SocketAddr, Option<Heartbeat>)> {
     anyhow::ensure!(!cfg.spaces.is_empty(), "no spaces configured");
     for (name, s) in cfg.spaces.iter_mut() {
         anyhow::ensure!(
@@ -102,12 +129,32 @@ fn build(mut cfg: Config, home: &Path) -> anyhow::Result<(Arc<web::App>, SocketA
             "apps need base_url (the pages site's own address, such as https://pages.example)"
         );
     }
-    let login_file = expand(home, &cfg.login_file);
-    let key = std::fs::read_to_string(&login_file)
-        .map_err(|e| anyhow::anyhow!("reading the login file {}: {e}", login_file.display()))?;
+    let key = match &cfg.login_file {
+        Some(f) => {
+            let f = expand(home, f);
+            let key = std::fs::read_to_string(&f)
+                .map_err(|e| anyhow::anyhow!("reading the login file {}: {e}", f.display()))?;
+            Some(auth::LoginKey::new(key)?)
+        }
+        None => None,
+    };
+    let oidc = match &cfg.signin {
+        Some(s) => {
+            let base = cfg
+                .base_url
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("signin needs base_url (the pages site's own address)"))?;
+            let f = expand(home, &s.secret_file);
+            let secret = std::fs::read_to_string(&f)
+                .map_err(|e| anyhow::anyhow!("reading the sign-in client secret {}: {e}", f.display()))?;
+            Some(oidc::Oidc::new(&s.issuer, &s.client, &secret, base)?)
+        }
+        None => None,
+    };
+    let checker = peer.map(|p| auth::Checker::Node(p.clone()));
     let app = web::App {
         spaces: cfg.spaces,
-        auth: auth::Auth::LoginKey(auth::LoginKey::new(key)?),
+        auth: auth::Auth::new(key, oidc, checker)?,
         trusted_proxies: cfg.trusted_proxies,
         login_hint: cfg.login_hint,
         cache: Cache::default(),
@@ -202,7 +249,7 @@ impl Handler for Shared {
                     .ok_or_else(|| RpcError::refused("fleetlayer-pages runs under a Fleetlayer node"))?;
                 let cfg: Config = serde_json::from_value(node.config.clone()).map_err(RpcError::invalid_params)?;
                 let (app, listen, heartbeat) =
-                    build(cfg, Path::new(&node.home)).map_err(|e| RpcError::refused(e.to_string()))?;
+                    build(cfg, Path::new(&node.home), Some(peer)).map_err(|e| RpcError::refused(e.to_string()))?;
                 let mut started = self.0.started.lock().await;
                 if !*started {
                     *started = true;
@@ -341,7 +388,7 @@ async fn main() {
             let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
             let result = async {
                 let cfg: Config = serde_json::from_slice(&std::fs::read(path)?)?;
-                let (app, listen, heartbeat) = build(cfg, &home)?;
+                let (app, listen, heartbeat) = build(cfg, &home, None)?;
                 run(app, listen, heartbeat, None).await
             }
             .await;

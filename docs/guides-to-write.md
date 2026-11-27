@@ -416,3 +416,19 @@ managers, machines that sleep.
   plugin, register it as a client with its exact return address, and give people `sign_in` on `service:<name>` in
   the policy; without that rule a person reaches nothing, by design. A service that keeps no secret (a browser app)
   is a public client, and PKCE is required of every client either way. Where it lives: `docs/plugins/signin.md`.
+
+## Signing a web app in with OpenID Connect: three browser and server footguns
+
+- **What:** wiring pages to Fleetlayer's sign-in turned up three problems any self-hosted app hits:
+  1. A SameSite=Strict session cookie set on the callback isn't sent with the redirect that follows, because the whole
+     redirect chain counts as the identity provider's cross-site navigation, so the person lands on the login page
+     again.
+  2. A `form-action 'self'` CSP blocks the sign-out form's redirect to the provider's logout, and nothing happens.
+  3. On a laptop, the server can't resolve `signin.localhost`: browsers treat every `*.localhost` name as this machine,
+     but glibc without systemd-resolved doesn't.
+- **How it was solved:** (1) and (2): answer with a tiny page that moves on (`<meta http-equiv="refresh">`) instead
+  of a redirect. (3): the server's HTTP client resolves `*.localhost` to 127.0.0.1 itself. Server-to-server addresses
+  can be 127.0.0.1 directly where a setting allows it.
+- **Where it lives:** `plugins/pages/src/web.rs` (`auth_callback`, `logout`) and `oidc.rs` (`client_for`);
+  `docs/plugins/pages.md`, "Sign-in".
+

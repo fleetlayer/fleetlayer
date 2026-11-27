@@ -20,7 +20,7 @@ use futures::Stream;
 use serde::Deserialize;
 
 use crate::apps;
-use crate::auth::{self, Auth, Viewer};
+use crate::auth::{self, Access, Auth, Viewer};
 use crate::render::{self, Kind, Rendered};
 use crate::space::{self, Cache, SpaceConfig, Summary};
 
@@ -44,6 +44,9 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/healthz", get(healthz))
         .route("/_/healthz", get(healthz))
         .route("/_/login", get(login_page).post(login))
+        .route("/_/login/start", get(login_start))
+        .route("/_/auth/callback", get(auth_callback))
+        .route("/_/signed-out", get(signed_out))
         .route("/_/logout", post(logout))
         .route("/_/assets/{name}", get(asset))
         .route("/_/events", get(events))
@@ -203,6 +206,15 @@ fn safe_next(next: Option<&str>) -> String {
 }
 
 fn login_html(app: &App, msg: &str, next: &str) -> Html<String> {
+    let enc_next: String = form_urlencoded::byte_serialize(next.as_bytes()).collect();
+    let sso = if app.auth.oidc.is_some() {
+        format!(
+            r#"<a class="btn btn-primary btn-block" href="/_/login/start?next={}">Sign in with Fleetlayer</a>"#,
+            esc(&enc_next)
+        )
+    } else {
+        String::new()
+    };
     let hint = app.login_hint.as_deref().map_or(String::new(), |h| format!(r#"<p class="login-hint">{}</p>"#, esc(h)));
     let (msg, invalid) = if msg.is_empty() {
         (String::new(), "")
@@ -212,8 +224,19 @@ fn login_html(app: &App, msg: &str, next: &str) -> Html<String> {
             r#" aria-invalid="true" aria-describedby="login-error""#,
         )
     };
+    let mut page = LOGIN_HTML.to_string();
+    if app.auth.key.is_none() {
+        // Only Fleetlayer's sign-in: no key form.
+        if let (Some(a), Some(b)) = (page.find("<!--key-->"), page.find("<!--/key-->")) {
+            page.replace_range(a..b + "<!--/key-->".len(), "");
+        }
+    } else if app.auth.oidc.is_some() {
+        page = page
+            .replace(">Sign in</button>", ">Sign in with the login key</button>")
+            .replace("btn btn-primary btn-block\" type=\"submit\"", "btn btn-ghost btn-block\" type=\"submit\"");
+    }
     Html(
-        LOGIN_HTML
+        page.replace("{sso}", &sso)
             .replace("{hint}", &hint)
             .replace("{msg}", &msg)
             .replace("{invalid}", invalid)
@@ -226,8 +249,103 @@ struct NextQuery {
     next: Option<String>,
 }
 
-async fn login_page(State(app): Ctx, Query(q): Query<NextQuery>) -> Html<String> {
-    login_html(&app, "", &safe_next(q.next.as_deref()))
+async fn login_page(State(app): Ctx, Query(q): Query<NextQuery>) -> Response {
+    let next = safe_next(q.next.as_deref());
+    if app.auth.oidc.is_some() && app.auth.key.is_none() {
+        // Fleetlayer's sign-in only: straight there.
+        let enc: String = form_urlencoded::byte_serialize(next.as_bytes()).collect();
+        return Redirect::to(&format!("/_/login/start?next={enc}")).into_response();
+    }
+    login_html(&app, "", &next).into_response()
+}
+
+async fn signed_out(State(app): Ctx) -> Response {
+    let Html(page) = login_html(&app, "", "/");
+    Html(page.replacen("</h1></div>", r#"</h1></div><p class="login-hint">You're signed out.</p>"#, 1)).into_response()
+}
+
+/// The cookie that ties a sign-in to the browser that started it. Lax, since the issuer sends the browser back with
+/// a cross-site navigation; scoped to the callback.
+const OIDC_COOKIE: &str = "pages_oidc";
+
+fn oidc_cookie(state: &str, secure: bool, max_age: u64) -> String {
+    let s = if secure { "; Secure" } else { "" };
+    format!("{OIDC_COOKIE}={state}; HttpOnly{s}; SameSite=Lax; Path=/_/auth; Max-Age={max_age}")
+}
+
+async fn login_start(State(app): Ctx, Query(q): Query<NextQuery>) -> Response {
+    let next = safe_next(q.next.as_deref());
+    let Some(oidc) = &app.auth.oidc else { return Redirect::to("/_/login").into_response() };
+    match oidc.start(&next).await {
+        Ok((url, state)) => (
+            StatusCode::SEE_OTHER,
+            [(header::SET_COOKIE, oidc_cookie(&state, app.secure_cookies(), 600)), (header::LOCATION, url)],
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::warn!("starting a sign-in: {e:#}");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                login_html(&app, "The sign-in service can't be reached right now. Try again in a minute.", &next),
+            )
+                .into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct CallbackQuery {
+    #[serde(default)]
+    code: Option<String>,
+    #[serde(default)]
+    state: Option<String>,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
+    let c = headers.get(header::COOKIE)?.to_str().ok()?;
+    c.split(';').find_map(|p| p.trim().strip_prefix(&format!("{name}=")).map(str::to_string))
+}
+
+async fn auth_callback(State(app): Ctx, headers: HeaderMap, Query(q): Query<CallbackQuery>) -> Response {
+    let Some(oidc) = &app.auth.oidc else { return Redirect::to("/_/login").into_response() };
+    let secure = app.secure_cookies();
+    let fail = |status: StatusCode, msg: &str| {
+        ([(header::SET_COOKIE, oidc_cookie("", secure, 0))], (status, login_html(&app, msg, "/"))).into_response()
+    };
+    if let Some(e) = &q.error {
+        tracing::info!("the sign-in service sent back {e:?}");
+        return fail(
+            StatusCode::FORBIDDEN,
+            "Signing in didn't finish. Try again, or ask whoever runs this service for access.",
+        );
+    }
+    let (Some(code), Some(state)) = (&q.code, &q.state) else {
+        return fail(StatusCode::BAD_REQUEST, "That sign-in link isn't complete. Sign in again.");
+    };
+    let bound = cookie_value(&headers, OIDC_COOKIE);
+    match oidc.finish(code, state, bound.as_deref()).await {
+        Ok((person, next)) => {
+            tracing::info!(who = %person.sub, handle = ?person.handle, "signed in to pages");
+            let sid = app.auth.start(Viewer { person: Some(person) }).await;
+            // A page, not a redirect: the session cookie is SameSite=Strict, and a redirect still counts as the
+            // issuer's cross-site navigation, so the browser wouldn't send the cookie with it.
+            let body = format!(
+                r#"<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url={0}"><title>Signed in · Pages</title><p><a href="{0}">Continue</a></p>"#,
+                esc(&next)
+            );
+            let mut res = Html(body).into_response();
+            let h = res.headers_mut();
+            h.append(header::SET_COOKIE, auth::cookie(&sid, secure).parse().expect("a cookie"));
+            h.append(header::SET_COOKIE, oidc_cookie("", secure, 0).parse().expect("a cookie"));
+            res
+        }
+        Err(e) => {
+            tracing::warn!("a sign-in failed: {e:#}");
+            fail(StatusCode::FORBIDDEN, "Signing in didn't work. Sign in again.")
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -244,7 +362,7 @@ async fn login(
     Form(f): Form<LoginForm>,
 ) -> Response {
     let next = safe_next(f.next.as_deref());
-    let Auth::LoginKey(key) = &app.auth;
+    let Some(key) = &app.auth.key else { return Redirect::to("/_/login").into_response() };
     let ip = auth::client_ip(peer.ip(), &headers, &app.trusted_proxies);
     if key.locked_out(ip).await {
         return (StatusCode::TOO_MANY_REQUESTS, login_html(&app, "Too many tries: wait 15 minutes.", &next))
@@ -256,14 +374,26 @@ async fn login(
         return (StatusCode::UNAUTHORIZED, login_html(&app, "That isn't the login key for pages.", &next))
             .into_response();
     }
-    let sid = key.start().await;
+    let sid = app.auth.start(Viewer { person: None }).await;
     ([(header::SET_COOKIE, auth::cookie(&sid, app.secure_cookies()))], Redirect::to(&next)).into_response()
 }
 
 async fn logout(State(app): Ctx, headers: HeaderMap) -> Response {
-    let Auth::LoginKey(key) = &app.auth;
-    key.end(&headers).await;
-    ([(header::SET_COOKIE, auth::clear_cookie(app.secure_cookies()))], Redirect::to("/_/login")).into_response()
+    let ended = app.auth.end(&headers).await;
+    let clear = [(header::SET_COOKIE, auth::clear_cookie(app.secure_cookies()))];
+    // Someone who signed in through Fleetlayer signs out there too. A page that moves on, not a redirect: the form's
+    // `form-action 'self'` would stop a redirect to the sign-in service.
+    if ended.is_some_and(|v| v.person.is_some())
+        && let Some(oidc) = &app.auth.oidc
+        && let Some(url) = oidc.logout_url().await
+    {
+        let body = format!(
+            r#"<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url={0}"><title>Signing out · Pages</title><p><a href="{0}">Continue signing out</a></p>"#,
+            esc(&url)
+        );
+        return (clear, Html(body)).into_response();
+    }
+    (StatusCode::SEE_OTHER, clear, [(header::LOCATION, "/_/signed-out")]).into_response()
 }
 
 /// The viewer, or the response that sends them to sign in.
@@ -278,10 +408,37 @@ async fn viewer(app: &App, headers: &HeaderMap, here: &str) -> Result<Viewer, Re
     }
 }
 
-/// The space's config, when it exists and the viewer may read it. A space they may not read is "not found".
-async fn readable<'a>(app: &'a App, v: &Viewer, name: &str) -> Option<&'a SpaceConfig> {
-    let cfg = app.spaces.get(name)?;
-    app.auth.may_read(v, name).await.then_some(cfg)
+/// The space's config, when it exists and the viewer may read `target` in it (`page:<space>/*`,
+/// `page:<space>/<folder>`, `app:<space>/<name>`). Something they may not read is "not found"; when access can't be
+/// checked, a page that says so (never the content).
+#[allow(clippy::result_large_err)] // the response is built once per request either way
+async fn readable<'a>(
+    app: &'a App,
+    v: &Viewer,
+    name: &str,
+    target: &str,
+    missing: &str,
+) -> Result<&'a SpaceConfig, Response> {
+    let Some(cfg) = app.spaces.get(name) else { return Err(not_found(missing)) };
+    match app.auth.may(v, target).await {
+        Access::Yes => Ok(cfg),
+        Access::No => Err(not_found(missing)),
+        Access::CantTell(_) => Err(cant_check()),
+    }
+}
+
+/// When the access check can't be made: fail closed, and say why.
+pub(crate) fn cant_check() -> Response {
+    html_page(
+        StatusCode::SERVICE_UNAVAILABLE,
+        layout(
+            "Can't check your access · Pages",
+            &[],
+            r#"<main class="wrap empty-page"><div class="empty"><h1>Can't check your access right now</h1><p>Fleetlayer didn't answer when asked who may read this, so it isn't shown. Try again in a minute.</p></div></main>"#,
+            None,
+            true,
+        ),
+    )
 }
 
 // ------------------------------------------------------------ layout
@@ -378,8 +535,10 @@ async fn spaces_page(State(app): Ctx, headers: HeaderMap) -> Response {
     };
     let mut rows = vec![];
     for (name, cfg) in &app.spaces {
-        if !app.auth.may_read(&v, name).await {
-            continue;
+        match app.auth.may(&v, &format!("page:{name}/*")).await {
+            Access::Yes => {}
+            Access::No => continue,
+            Access::CantTell(_) => return cant_check(),
         }
         rows.push((name.clone(), cfg.clone(), app.cache.list(cfg)));
     }
@@ -509,7 +668,10 @@ async fn space_page(
         Ok(v) => v,
         Err(r) => return r,
     };
-    let Some(cfg) = readable(&app, &v, &name).await else { return not_found("There's no space by that name.") };
+    let cfg = match readable(&app, &v, &name, &format!("page:{name}/*"), "There's no space by that name.").await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
     let pages = app.cache.list(cfg);
     let app_list = apps::list(&name, cfg);
     let mut list = apps_html(&app, &app_list);
@@ -599,7 +761,9 @@ fn apps_html(app: &App, list: &[apps::Info]) -> String {
 
 async fn app_icon(State(app): Ctx, headers: HeaderMap, UrlPath((space, name)): UrlPath<(String, String)>) -> Response {
     let Some(v) = app.auth.viewer(&headers).await else { return StatusCode::UNAUTHORIZED.into_response() };
-    let Some(cfg) = readable(&app, &v, &space).await else { return StatusCode::NOT_FOUND.into_response() };
+    let Ok(cfg) = readable(&app, &v, &space, &format!("app:{space}/{name}"), "").await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
     let Some(info) = apps::inspect(&space, cfg, &name) else { return StatusCode::NOT_FOUND.into_response() };
     let file = info.manifest.icon.as_deref().and_then(|i| space::resolve(&info.root, i));
     let (kind, body) = match file {
@@ -644,8 +808,10 @@ async fn authorize_inner(app: &App, headers: &HeaderMap, q: AuthorizeQuery, conf
         Err(r) => return r,
     };
     let Some((space, name)) = q.app.split_once('/') else { return not_found("There's no app by that name.") };
-    let (Some(domain), Some(cfg)) = (app.apps_domain.as_deref(), readable(app, &v, space).await) else {
-        return not_found("There's no app by that name.");
+    let Some(domain) = app.apps_domain.as_deref() else { return not_found("There's no app by that name.") };
+    let cfg = match readable(app, &v, space, &format!("app:{space}/{name}"), "There's no app by that name.").await {
+        Ok(c) => c,
+        Err(r) => return r,
     };
     let Some(info) = apps::inspect(space, cfg, name) else { return not_found("There's no app by that name.") };
     if q.state.len() < 32 || q.state.len() > 128 || !q.state.chars().all(|c| c.is_ascii_alphanumeric()) {
@@ -727,7 +893,10 @@ async fn page_view(
         Ok(v) => v,
         Err(r) => return r,
     };
-    let Some(cfg) = readable(&app, &v, &name).await else { return not_found("There's no space by that name.") };
+    let cfg = match readable(&app, &v, &name, &format!("page:{name}/{folder}"), "There's no page by that name.").await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
     if !space::valid_folder(&folder) || !cfg.dir.join(&folder).is_dir() {
         return not_found("There's no page by that name in this space.");
     }
@@ -801,7 +970,10 @@ async fn file(
         Ok(v) => v,
         Err(r) => return r,
     };
-    let Some(cfg) = readable(&app, &v, &name).await else { return not_found("There's no space by that name.") };
+    let cfg = match readable(&app, &v, &name, &format!("page:{name}/{folder}"), "There's no file by that name.").await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
     let rel = format!("{folder}/{rest}");
     let Some(path) = space::resolve(&cfg.dir, &rel) else { return not_found("There's no file by that name.") };
     if path.is_dir() {
@@ -839,7 +1011,14 @@ async fn events(State(app): Ctx, headers: HeaderMap, Query(q): Query<EventsQuery
     let mut parts = q.path.splitn(2, '/');
     let name = parts.next().unwrap_or_default().to_string();
     let folder = parts.next().map(str::to_string);
-    let Some(cfg) = readable(&app, &v, &name).await else { return StatusCode::NOT_FOUND.into_response() };
+    let target = match &folder {
+        Some(f) => format!("page:{name}/{f}"),
+        None => format!("page:{name}/*"),
+    };
+    let cfg = match readable(&app, &v, &name, &target, "").await {
+        Ok(c) => c,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
     let (dir, every) = match &folder {
         Some(f) if space::valid_folder(f) => (cfg.dir.join(f), Duration::from_secs(1)),
         Some(_) => return StatusCode::NOT_FOUND.into_response(),
@@ -906,7 +1085,7 @@ mod tests {
         );
         let app = App {
             spaces,
-            auth: Auth::LoginKey(auth::LoginKey::new(KEY.into()).unwrap()),
+            auth: auth::Auth::new(Some(auth::LoginKey::new(KEY.into()).unwrap()), None, None).unwrap(),
             trusted_proxies: vec![],
             login_hint: None,
             cache: Cache::default(),
@@ -932,8 +1111,7 @@ mod tests {
     }
 
     async fn signed_in(app: &Arc<App>) -> String {
-        let Auth::LoginKey(k) = &app.auth;
-        k.start().await
+        app.auth.start(Viewer { person: None }).await
     }
 
     #[tokio::test]
@@ -1032,7 +1210,7 @@ mod tests {
         );
         let app = App {
             spaces,
-            auth: Auth::LoginKey(auth::LoginKey::new(KEY.into()).unwrap()),
+            auth: auth::Auth::new(Some(auth::LoginKey::new(KEY.into()).unwrap()), None, None).unwrap(),
             trusted_proxies: vec![],
             login_hint: None,
             cache: Cache::default(),
@@ -1269,5 +1447,104 @@ mod tests {
         assert_eq!(safe_next(Some("//evil.example")), "/");
         assert_eq!(safe_next(Some("https://evil.example")), "/");
         assert_eq!(safe_next(None), "/");
+    }
+
+    /// A site with Fleetlayer's sign-in only, against a fake issuer; the checker lets alice read `personal` only, and
+    /// can't be reached for `down`.
+    async fn signin_app() -> (Arc<App>, tempfile::TempDir, Arc<crate::oidc::tests::FakeIssuer>) {
+        let (base, d) = app();
+        let f = crate::oidc::tests::FakeIssuer::start().await;
+        let oidc = crate::oidc::Oidc::new(&f.url, "pages", "s3cret", "https://pages.test").unwrap();
+        let checker = auth::Checker::Fixed(Box::new(|t: &str| match t {
+            "page:personal/*" | "page:personal/2026-11-27-qa" => Ok(true),
+            t if t.starts_with("page:down/") => Err("no answer".into()),
+            _ => Ok(false),
+        }));
+        let mut spaces = base.spaces.clone();
+        let mut down = spaces["personal"].clone();
+        down.title = Some("Down".into());
+        spaces.insert("down".into(), down);
+        let app = App {
+            spaces,
+            auth: auth::Auth::new(None, Some(oidc), Some(checker)).unwrap(),
+            trusted_proxies: vec![],
+            login_hint: None,
+            cache: Cache::default(),
+            base_url: Some("https://pages.test".into()),
+            apps_domain: None,
+            broker: apps::Broker::default(),
+        };
+        (Arc::new(app), d, f)
+    }
+
+    async fn get_with(app: &Arc<App>, path: &str, cookie: &str) -> Response {
+        let mut req = Request::get(path).header(header::COOKIE, cookie).body(Body::empty()).unwrap();
+        req.extensions_mut().insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 9))));
+        router(app.clone()).oneshot(req).await.unwrap()
+    }
+
+    fn cookie_set(r: &Response, name: &str) -> Option<String> {
+        r.headers().get_all(header::SET_COOKIE).iter().filter_map(|v| v.to_str().ok()).find_map(|c| {
+            c.strip_prefix(&format!("{name}=")).map(|rest| rest.split(';').next().unwrap_or_default().to_string())
+        })
+    }
+
+    #[tokio::test]
+    async fn signing_in_through_fleetlayer_then_reading_what_the_policy_allows() {
+        let (app, _d, f) = signin_app().await;
+        // No key: the login page goes straight to the sign-in service.
+        let r = get(&app, "/_/login?next=/personal/", None).await;
+        assert_eq!(r.headers()[header::LOCATION], "/_/login/start?next=%2Fpersonal%2F");
+        let r = get(&app, "/_/login/start?next=/personal/", None).await;
+        assert_eq!(r.status(), StatusCode::SEE_OTHER);
+        let to = r.headers()[header::LOCATION].to_str().unwrap().to_string();
+        assert!(to.starts_with(&format!("{}/authorize?", f.url)), "{to}");
+        let bound = cookie_set(&r, "pages_oidc").unwrap();
+        let state = crate::oidc::tests::param(&to, "state");
+        assert_eq!(bound, state);
+        *f.token.lock().unwrap() =
+            Some(crate::oidc::tests::good(&f, f.claims(&crate::oidc::tests::param(&to, "nonce"))));
+
+        // Coming back without the browser's cookie fails; with it, signed in.
+        let cb = format!("/_/auth/callback?code=c1&state={state}");
+        assert_eq!(get(&app, &cb, None).await.status(), StatusCode::FORBIDDEN);
+        let r = get(&app, "/_/login/start?next=/personal/", None).await;
+        let to = r.headers()[header::LOCATION].to_str().unwrap().to_string();
+        let state = crate::oidc::tests::param(&to, "state");
+        *f.token.lock().unwrap() =
+            Some(crate::oidc::tests::good(&f, f.claims(&crate::oidc::tests::param(&to, "nonce"))));
+        let r =
+            get_with(&app, &format!("/_/auth/callback?code=c2&state={state}"), &format!("pages_oidc={state}")).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let sid = cookie_set(&r, auth::COOKIE).unwrap();
+        assert!(body(r).await.contains(r#"url=/personal/"#));
+        // The same state again is refused.
+        let r =
+            get_with(&app, &format!("/_/auth/callback?code=c2&state={state}"), &format!("pages_oidc={state}")).await;
+        assert_eq!(r.status(), StatusCode::FORBIDDEN);
+
+        // Alice reads personal, not work-only spaces, and sees "can't check" (not the page) when the check fails.
+        assert_eq!(get(&app, "/personal/", Some(&sid)).await.status(), StatusCode::OK);
+        assert_eq!(get(&app, "/personal/2026-11-27-qa/", Some(&sid)).await.status(), StatusCode::OK);
+        assert_eq!(get(&app, "/personal/2026-11-26-mock/", Some(&sid)).await.status(), StatusCode::NOT_FOUND);
+        let r = get(&app, "/down/2026-11-27-qa/", Some(&sid)).await;
+        assert_eq!(r.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(!body(r).await.contains("QA round"));
+        assert_eq!(get(&app, "/", Some(&sid)).await.status(), StatusCode::SERVICE_UNAVAILABLE);
+        // The key form isn't there, and posting a key does nothing.
+        let r = get(&app, "/_/signed-out", None).await;
+        let b = body(r).await;
+        assert!(b.contains("Sign in with Fleetlayer") && !b.contains("Login key"), "{b}");
+
+        // Signing out ends the session here and sends the browser to the sign-in service's logout.
+        let mut req = Request::post("/_/logout")
+            .header(header::COOKIE, format!("{}={sid}", auth::COOKIE))
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut().insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 9))));
+        let r = router(app.clone()).oneshot(req).await.unwrap();
+        let b = body(r).await;
+        assert!(b.contains(&format!("url={}/logout?", f.url)) && b.contains("signed-out"), "{b}");
+        assert_eq!(get(&app, "/personal/", Some(&sid)).await.status(), StatusCode::SEE_OTHER);
     }
 }
