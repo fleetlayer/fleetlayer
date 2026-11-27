@@ -500,6 +500,22 @@ mod tests {
         assert_eq!(parse_event("not json"), Event::Other);
     }
 
+    /// herdr can't start an agent with a first prompt that has newlines in it, so the prompt never goes on the command
+    /// line: it's typed with `herdr agent prompt` once the agent takes input, where newlines stay in one turn.
+    #[test]
+    fn the_first_prompt_never_goes_on_the_command_line() {
+        let open = OpenSession {
+            label: "t".into(),
+            cwd: "/w".into(),
+            harness: "claude".into(),
+            args: vec![],
+            prompt: Some("Message from planning (laptop) via Fleetlayer:\n\nfirst line\nsecond line".into()),
+        };
+        let args = tab_create(&open);
+        assert!(args.iter().all(|a| !a.contains("Message from") && !a.contains('\n')), "{args:?}");
+        assert_eq!(args.last().map(String::as_str), Some("--"));
+    }
+
     #[test]
     fn a_tab_runs_the_agent_with_its_own_arguments_after_the_separator() {
         let open = OpenSession {

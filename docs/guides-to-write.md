@@ -478,3 +478,9 @@ managers, machines that sleep.
   plugin as `failing` with the reason, turns the node's health red until a list works again (retried every 30
   seconds), and herdr's error says to give the plugin `config: { program: <full path> }`. Where it lives:
   `crates/fleetlayer-node/src/plugins.rs`, `plugins/herdr/src/herdr.rs`.
+- **herdr can't start an agent with a multi-line first prompt.** `herdr tab create --agent claude -- … "<prompt>"`
+  breaks when the prompt has newlines. Start the agent with no prompt, wait for it to take input (`--agent` waits),
+  then type the prompt with `herdr agent prompt <pane> "<text>"`, which keeps newlines in one turn. Fleetlayer's herdr
+  plugin does it this way, so `fleetlayer session start --prompt` takes any text (a prompt from another node always has
+  several lines: the sender's header, then the text). Where it lives: `plugins/herdr/src/main.rs` (`SESSION_OPEN`),
+  test `the_first_prompt_never_goes_on_the_command_line`.
