@@ -450,4 +450,8 @@ managers, machines that sleep.
   on a real Mac at the first deploy). iCloud/Dropbox placeholders are refused rather than downloaded. A reply is one
   WebSocket message (16 MiB limit), so reads are capped at 8-10 MB and images downscaled to 1568 px. Downloads holds
   strangers' files and private documents: decode images with limits, and share it as its own tool when it needs
-  stricter access than screenshots. Written: `docs/guides/folders.md`, `docs/plugins/folders.md`.
+  stricter access than screenshots. Writing (`--upload`, `--delete` per folder): the policy decides per tool entry, not
+  per MCP tool, so per-agent write rights mean sharing the folder twice (a read entry for many, a manage entry for a
+  named session). Uploads are linked into place without clobbering, never executable, quarantined on macOS, refused
+  under 1 GB free; deletes go to a hidden trash purged after 30 days, judged by the time in the trashed name (a rename
+  keeps the old modified time). Written: `docs/guides/folders.md`, `docs/plugins/folders.md`.

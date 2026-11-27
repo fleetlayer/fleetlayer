@@ -1,4 +1,4 @@
-//! fleetlayer-folders: a read-only MCP server for a few chosen folders, such as your screenshots and downloads, so
+//! fleetlayer-folders: an MCP server for a few chosen folders, such as your screenshots and downloads, so
 //! agents on other machines can pick up the screenshot you just took. A node shares it as a tool (`docs/plugins/folders.md`):
 //!
 //! ```yaml
@@ -9,9 +9,10 @@
 //!     allow: ["*@server"]
 //! ```
 //!
-//! Agents use it with `fleetlayer mcp folders@<node>`. Tools: `folders`, `list`, `latest`, `find` and `read`. Only
-//! files directly in each folder are reachable: no subfolders, hidden files or symbolic links, and nothing is ever
-//! written. MCP over stdio, one JSON-RPC message per line.
+//! Agents use it with `fleetlayer mcp folders@<node>`. Tools: `folders`, `list`, `latest`, `find` and `read`, plus
+//! `upload` and `delete` for the folders named by `--upload` and `--delete` (read-only otherwise). Only files directly
+//! in each folder are reachable: no subfolders, hidden files or symbolic links. Deleting moves a file to the folder's
+//! hidden trash, kept 30 days. MCP over stdio, one JSON-RPC message per line.
 
 mod folders;
 
@@ -19,6 +20,7 @@ use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
+use base64::Engine;
 use clap::Parser;
 use folders::{Folder, Kind, ReadOptions, Refusal};
 use serde_json::{Value, json};
@@ -26,13 +28,18 @@ use serde_json::{Value, json};
 /// The protocol versions this server speaks, newest first.
 const PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 /// The largest request line read from the caller.
-const MAX_REQUEST: usize = 256 * 1024;
+/// Big enough for an upload at the largest cap, in base64.
+const MAX_REQUEST: usize = 15 * 1024 * 1024;
 /// A reply line becomes one WebSocket message on the way to the caller, and those are refused over 16 MiB: base64
 /// adds a third, so a reply carries at most 10 MiB of file.
 const HARD_MAX_READ_MB: u64 = 10;
 
 #[derive(Parser, Debug)]
-#[command(name = "fleetlayer-folders", version, about = "A read-only MCP server for chosen folders")]
+#[command(
+    name = "fleetlayer-folders",
+    version,
+    about = "An MCP server for chosen folders: read-only unless --upload or --delete"
+)]
 struct Args {
     /// A folder agents may read, as name=path (`screenshots=~/Screenshots`). Repeat for each folder.
     #[arg(long = "folder", value_name = "NAME=PATH", required = true)]
@@ -40,6 +47,12 @@ struct Args {
     /// A folder only you write to: what's read from it isn't marked as outside data. Repeat for each.
     #[arg(long = "trusted", value_name = "NAME")]
     trusted: Vec<String>,
+    /// A folder agents may add files to. Repeat for each.
+    #[arg(long = "upload", value_name = "NAME")]
+    upload: Vec<String>,
+    /// A folder agents may delete files from (into its trash, kept 30 days). Repeat for each.
+    #[arg(long = "delete", value_name = "NAME")]
+    delete: Vec<String>,
     /// The most megabytes of one file a reply carries (at most 10).
     #[arg(long, default_value_t = 8)]
     max_read_mb: u64,
@@ -49,8 +62,17 @@ fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let mut folders = parse_folders(&args.folders, home.as_deref())?;
-    trust(&mut folders, &args.trusted)?;
-    let server = Server { folders, max_bytes: args.max_read_mb.clamp(1, HARD_MAX_READ_MB) * 1024 * 1024 };
+    grant(&mut folders, "--trusted", &args.trusted, |f| f.trusted = true)?;
+    grant(&mut folders, "--upload", &args.upload, |f| f.upload = true)?;
+    grant(&mut folders, "--delete", &args.delete, |f| f.delete = true)?;
+    for f in &folders {
+        folders::purge_trash(f, SystemTime::now());
+    }
+    let server = Server {
+        folders,
+        max_bytes: args.max_read_mb.clamp(1, HARD_MAX_READ_MB) * 1024 * 1024,
+        min_free: folders::MIN_FREE,
+    };
     let stdin = std::io::stdin().lock();
     let mut stdout = std::io::stdout().lock();
     let mut reader = std::io::BufReader::new(stdin);
@@ -140,19 +162,19 @@ fn parse_folders(specs: &[String], home: Option<&std::path::Path>) -> anyhow::Re
             _ => PathBuf::from(path),
         };
         anyhow::ensure!(path.is_absolute(), "--folder {spec:?}: the path must be absolute or start with ~");
-        out.push(Folder { name: name.to_string(), path, trusted: false });
+        out.push(Folder { name: name.to_string(), path, trusted: false, upload: false, delete: false });
     }
     Ok(out)
 }
 
-/// Mark the folders named by `--trusted`.
-fn trust(folders: &mut [Folder], names: &[String]) -> anyhow::Result<()> {
+/// Apply a per-folder flag (`--trusted`, `--upload`, `--delete`) to the folders it names.
+fn grant(folders: &mut [Folder], flag: &str, names: &[String], set: impl Fn(&mut Folder)) -> anyhow::Result<()> {
     for n in names {
         let f = folders
             .iter_mut()
             .find(|f| &f.name == n)
-            .ok_or_else(|| anyhow::anyhow!("--trusted {n}: there's no --folder called {n}"))?;
-        f.trusted = true;
+            .ok_or_else(|| anyhow::anyhow!("{flag} {n}: there's no --folder called {n}"))?;
+        set(f);
     }
     Ok(())
 }
@@ -173,6 +195,8 @@ fn error_reply(id: Value, code: i64, message: &str) -> Value {
 struct Server {
     folders: Vec<Folder>,
     max_bytes: u64,
+    /// Space an upload must leave free on the folder's disk.
+    min_free: u64,
 }
 
 impl Server {
@@ -192,7 +216,7 @@ impl Server {
         let result = match method {
             "initialize" => self.initialize(&msg["params"]),
             "ping" => json!({}),
-            "tools/list" => json!({"tools": tool_list()}),
+            "tools/list" => json!({"tools": self.tool_list()}),
             "tools/call" => self.call(&msg["params"]),
             "" => return Some(error_reply(id, -32600, "no method")),
             other => return Some(error_reply(id, -32601, &format!("unknown method {other}"))),
@@ -209,12 +233,20 @@ impl Server {
             "capabilities": {"tools": {}},
             "serverInfo": {"name": "fleetlayer-folders", "version": env!("CARGO_PKG_VERSION")},
             "instructions": format!(
-                "Read-only access to these folders on another machine: {}. `latest` finds the newest files (the \
-                 screenshot just taken: latest with folder screenshots, read true), `read` returns a file: images \
-                 you can see, text as text.",
-                names.join(", ")
+                "Access to these folders on another machine: {}. `latest` finds the newest files (the screenshot \
+                 just taken: latest with folder screenshots, read true), `read` returns a file: images you can see, \
+                 text as text.{}{}",
+                names.join(", "),
+                self.rights("upload", |f| f.upload),
+                self.rights("delete (into the folder's trash)", |f| f.delete),
             ),
         })
+    }
+
+    /// " You may upload to: a, b." when some folder allows it.
+    fn rights(&self, what: &str, pick: fn(&Folder) -> bool) -> String {
+        let names: Vec<&str> = self.folders.iter().filter(|f| pick(f)).map(|f| f.name.as_str()).collect();
+        if names.is_empty() { String::new() } else { format!(" You may {what} in: {}.", names.join(", ")) }
     }
 
     fn call(&self, params: &Value) -> Value {
@@ -226,7 +258,9 @@ impl Server {
             "latest" => self.latest(args),
             "find" => self.find(args),
             "read" => self.read(args),
-            other => Err(Refusal(format!("there's no tool called {other:?}: use folders, list, latest, find or read"))),
+            "upload" if self.folders.iter().any(|f| f.upload) => self.upload(args),
+            "delete" if self.folders.iter().any(|f| f.delete) => self.delete(args),
+            other => Err(Refusal(format!("there's no tool called {other:?} here"))),
         };
         match out {
             Ok(content) => json!({"content": content}),
@@ -252,7 +286,7 @@ impl Server {
             .folders
             .iter()
             .map(|f| match f.scan() {
-                Ok(l) => json!({"name": f.name, "path": f.path, "files": l.total,
+                Ok(l) => json!({"name": f.name, "path": f.path, "files": l.total, "upload": f.upload, "delete": f.delete,
                                 "newest": l.files.first().map(|e| json!({"name": e.name, "modified": e.modified, "ago": e.ago}))}),
                 Err(r) => json!({"name": f.name, "path": f.path, "error": r.0}),
             })
@@ -348,6 +382,64 @@ impl Server {
         }
         Ok(content)
     }
+
+    fn upload(&self, args: &Value) -> Result<Vec<Value>, Refusal> {
+        let folder = self.folder(args)?;
+        let name = args["name"].as_str().ok_or_else(|| Refusal("name is missing: the new file's name".into()))?;
+        let bytes = match (args["text"].as_str(), args["base64"].as_str()) {
+            (Some(t), None) => t.as_bytes().to_vec(),
+            (None, Some(b)) => base64::engine::general_purpose::STANDARD
+                .decode(b.trim())
+                .map_err(|e| Refusal(format!("base64 doesn't decode: {e}")))?,
+            _ => return Err(Refusal("give the contents as text or as base64, one of them".into())),
+        };
+        if bytes.len() as u64 > self.max_bytes {
+            return Err(Refusal(format!(
+                "that's {} bytes, more than the {} bytes this tool takes in one upload",
+                bytes.len(),
+                self.max_bytes
+            )));
+        }
+        let overwrite = args["overwrite"].as_bool().unwrap_or(false);
+        let done = folders::upload(folder, name, &bytes, overwrite, self.min_free)?;
+        Ok(vec![json!({"type": "text", "text": done})])
+    }
+
+    fn delete(&self, args: &Value) -> Result<Vec<Value>, Refusal> {
+        let folder = self.folder(args)?;
+        let name = args["name"].as_str().ok_or_else(|| Refusal("name is missing: the file to delete".into()))?;
+        Ok(vec![json!({"type": "text", "text": folders::delete(folder, name)?})])
+    }
+
+    /// The read tools, and upload and delete when some folder allows them.
+    fn tool_list(&self) -> Value {
+        let mut tools = read_tools();
+        let folder = json!({"type": "string", "description": "The folder's name, from the folders tool."});
+        let list = tools.as_array_mut().expect("an array");
+        let names = |pick: fn(&Folder) -> bool| {
+            self.folders.iter().filter(|f| pick(f)).map(|f| f.name.as_str()).collect::<Vec<_>>().join(", ")
+        };
+        if self.folders.iter().any(|f| f.upload) {
+            list.push(json!({"name": "upload",
+                "description": format!("Add a file to a folder that takes uploads ({}). Never replaces a file unless overwrite is true (where deleting is allowed too; the old file goes to the trash).", names(|f| f.upload)),
+                "inputSchema": {"type": "object", "required": ["name"], "properties": {
+                    "folder": folder,
+                    "name": {"type": "string", "description": "The new file's name: no slashes, not starting with a dot."},
+                    "text": {"type": "string", "description": "The contents, as text."},
+                    "base64": {"type": "string", "description": "The contents, base64-encoded (for anything that isn't text)."},
+                    "overwrite": {"type": "boolean", "description": "Replace an existing file of that name."}}},
+                "annotations": {"readOnlyHint": false, "destructiveHint": false, "openWorldHint": false}}));
+        }
+        if self.folders.iter().any(|f| f.delete) {
+            list.push(json!({"name": "delete",
+                "description": format!("Move a file to the folder's trash, where it's kept 30 days ({}).", names(|f| f.delete)),
+                "inputSchema": {"type": "object", "required": ["name"], "properties": {
+                    "folder": folder,
+                    "name": {"type": "string", "description": "The file's name, from list, latest or find."}}},
+                "annotations": {"readOnlyHint": false, "destructiveHint": true, "openWorldHint": false}}));
+        }
+        tools
+    }
 }
 
 fn uint(args: &Value, key: &str, default: usize) -> Result<usize, Refusal> {
@@ -376,7 +468,7 @@ fn text_json(v: &Value) -> Value {
     json!({"type": "text", "text": serde_json::to_string_pretty(v).unwrap_or_default()})
 }
 
-fn tool_list() -> Value {
+fn read_tools() -> Value {
     let folder = json!({"type": "string", "description": "The folder's name, from the folders tool (such as screenshots or downloads). May be left out when there's only one."});
     let ro = json!({"readOnlyHint": true, "openWorldHint": false});
     let max_px = json!({"type": "integer", "minimum": 0, "description": "Images are downscaled to this many pixels on their longest side (default 1568); 0 sends the original."});

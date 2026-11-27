@@ -33,8 +33,8 @@ fn fixture() -> Fixture {
     std::fs::write(shots.join("sub/inner.txt"), "inner").unwrap();
     symlink(root.join("secret.txt"), shots.join("escape.txt")).unwrap();
     symlink(shots.join("old.txt"), shots.join("alias.txt")).unwrap();
-    let folders = vec![Folder { name: "screenshots".into(), path: shots, trusted: true }];
-    Fixture { _dir: dir, root, server: Server { folders, max_bytes: 8 * 1024 * 1024 } }
+    let folders = vec![Folder { name: "screenshots".into(), path: shots, trusted: true, upload: false, delete: false }];
+    Fixture { _dir: dir, root, server: Server { folders, max_bytes: 8 * 1024 * 1024, min_free: 0 } }
 }
 
 fn call(s: &Server, tool: &str, args: Value) -> Value {
@@ -176,7 +176,11 @@ fn a_folder_that_is_itself_a_link_is_followed_once_at_its_root() {
     let f = fixture();
     let link = f.root.join("shots-link");
     symlink(&f.server.folders[0].path, &link).unwrap();
-    let s = Server { folders: vec![Folder { name: "s".into(), path: link, trusted: true }], max_bytes: 1024 * 1024 };
+    let s = Server {
+        folders: vec![Folder { name: "s".into(), path: link, trusted: true, upload: false, delete: false }],
+        max_bytes: 1024 * 1024,
+        min_free: 0,
+    };
     assert_eq!(text(&call(&s, "read", json!({"name": "old.txt"})), 1), "old notes");
     assert!(refused(&call(&s, "read", json!({"name": "escape.txt"}))).contains("symbolic link"));
 }
@@ -186,7 +190,7 @@ fn big_files_are_refused_with_their_size() {
     let f = fixture();
     let shots = &f.server.folders[0].path;
     std::fs::write(shots.join("big.zip"), vec![7u8; 2 * 1024 * 1024]).unwrap();
-    let small = Server { folders: f.server.folders.clone(), max_bytes: 1024 * 1024 };
+    let small = Server { folders: f.server.folders.clone(), max_bytes: 1024 * 1024, min_free: 0 };
     assert!(refused(&call(&small, "read", json!({"name": "big.zip"}))).contains("2.0 MB"));
     // Long text is cut, with a note.
     std::fs::write(shots.join("long.log"), "é".repeat(folders::MAX_TEXT)).unwrap();
@@ -266,8 +270,15 @@ fn globs_and_times() {
 #[test]
 fn a_missing_folder_is_an_error_that_says_so() {
     let s = Server {
-        folders: vec![Folder { name: "gone".into(), path: "/nonexistent/fleetlayer".into(), trusted: false }],
+        folders: vec![Folder {
+            name: "gone".into(),
+            path: "/nonexistent/fleetlayer".into(),
+            trusted: false,
+            upload: false,
+            delete: false,
+        }],
         max_bytes: 1024,
+        min_free: 0,
     };
     assert!(refused(&call(&s, "list", json!({}))).contains("doesn't exist"));
     let r = call(&s, "folders", json!({}));
@@ -291,7 +302,165 @@ fn what_is_read_from_an_untrusted_folder_is_marked_as_outside_data_once() {
     assert!(!refused(&call(&f.server, "read", json!({"name": "missing"}))).contains("outside data"));
 
     let mut folders = f.server.folders.clone();
-    trust(&mut folders, &["screenshots".into()]).unwrap();
+    grant(&mut folders, "--trusted", &["screenshots".into()], |f| f.trusted = true).unwrap();
     assert!(folders[0].trusted);
-    assert!(trust(&mut folders, &["downloads".into()]).is_err());
+    assert!(grant(&mut folders, "--upload", &["downloads".into()], |f| f.upload = true).is_err());
+}
+
+/// The fixture's folder with uploads and/or deleting allowed.
+fn writable(f: &Fixture, upload: bool, delete: bool) -> Server {
+    let mut folder = f.server.folders[0].clone();
+    folder.upload = upload;
+    folder.delete = delete;
+    Server { folders: vec![folder], max_bytes: 1024 * 1024, min_free: 0 }
+}
+
+fn tool_names(s: &Server) -> Vec<String> {
+    let list = s.handle(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).unwrap();
+    list["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect()
+}
+
+#[test]
+fn upload_and_delete_exist_only_where_a_folder_allows_them() {
+    let f = fixture();
+    assert!(!tool_names(&f.server).contains(&"upload".to_string()));
+    assert!(refused(&call(&f.server, "upload", json!({"name": "x.txt", "text": "x"}))).contains("no tool called"));
+    assert_eq!(tool_names(&writable(&f, true, false)).last().unwrap(), "upload");
+    assert_eq!(tool_names(&writable(&f, false, true)).last().unwrap(), "delete");
+    // A second folder without the right refuses, naming the flag.
+    let mut s = writable(&f, true, true);
+    s.folders.push(Folder { name: "ro".into(), path: f.root.clone(), trusted: false, upload: false, delete: false });
+    assert!(
+        refused(&call(&s, "upload", json!({"folder": "ro", "name": "a.txt", "text": "a"}))).contains("--upload ro")
+    );
+    assert!(refused(&call(&s, "delete", json!({"folder": "ro", "name": "secret.txt"}))).contains("--delete ro"));
+    assert!(f.root.join("secret.txt").exists());
+}
+
+#[test]
+fn uploads_land_whole_and_never_replace_a_file_unasked() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = fixture();
+    let s = writable(&f, true, false);
+    let dir = &s.folders[0].path;
+    let r = call(&s, "upload", json!({"name": "report.md", "text": "# Hi"}));
+    assert!(text(&r, 0).contains("wrote report.md"), "{r}");
+    assert_eq!(std::fs::read_to_string(dir.join("report.md")).unwrap(), "# Hi");
+    assert_eq!(std::fs::metadata(dir.join("report.md")).unwrap().permissions().mode() & 0o777, 0o644);
+    call(&s, "upload", json!({"name": "blob.bin", "base64": "AAECA/8="}));
+    assert_eq!(std::fs::read(dir.join("blob.bin")).unwrap(), [0, 1, 2, 3, 255]);
+    // No temporary files left behind.
+    assert!(
+        !std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .any(|e| e.file_name().to_string_lossy().starts_with(".fleetlayer-upload"))
+    );
+
+    assert!(refused(&call(&s, "upload", json!({"name": "old.txt", "text": "new"}))).contains("already exists"));
+    assert!(
+        refused(&call(&s, "upload", json!({"name": "old.txt", "text": "new", "overwrite": true}))).contains("--delete")
+    );
+    assert_eq!(std::fs::read_to_string(dir.join("old.txt")).unwrap(), "old notes");
+    for name in ["../escape.txt", ".bashrc", "sub/x", ""] {
+        refused(&call(&s, "upload", json!({"name": name, "text": "x"})));
+    }
+    assert!(!f.root.join("escape.txt").exists());
+    assert!(
+        refused(&call(&s, "upload", json!({"name": "escape.txt", "text": "x", "overwrite": true})))
+            .contains("--delete")
+    );
+    assert!(refused(&call(&s, "upload", json!({"name": "sub", "text": "x"}))).contains("isn't a regular file"));
+    assert!(refused(&call(&s, "upload", json!({"name": "a", "base64": "!!"}))).contains("base64"));
+    assert!(refused(&call(&s, "upload", json!({"name": "a"}))).contains("text or as base64"));
+    let big = "x".repeat(1024 * 1024 + 1);
+    assert!(refused(&call(&s, "upload", json!({"name": "big.txt", "text": big}))).contains("more than"));
+}
+
+#[test]
+fn overwriting_keeps_the_old_file_in_the_trash() {
+    let f = fixture();
+    let s = writable(&f, true, true);
+    let dir = &s.folders[0].path;
+    let r = call(&s, "upload", json!({"name": "old.txt", "text": "new notes", "overwrite": true}));
+    assert!(text(&r, 0).contains(".fleetlayer-trash/"), "{r}");
+    assert_eq!(std::fs::read_to_string(dir.join("old.txt")).unwrap(), "new notes");
+    let trashed: Vec<_> = std::fs::read_dir(dir.join(folders::TRASH)).unwrap().flatten().collect();
+    assert_eq!(trashed.len(), 1);
+    assert_eq!(std::fs::read_to_string(trashed[0].path()).unwrap(), "old notes");
+    // Symbolic links are never overwritten, even with overwrite: true.
+    assert!(
+        refused(&call(&s, "upload", json!({"name": "escape.txt", "text": "x", "overwrite": true})))
+            .contains("isn't a regular file")
+    );
+    assert_eq!(std::fs::read_to_string(f.root.join("secret.txt")).unwrap(), "outside");
+}
+
+#[test]
+fn an_upload_that_would_nearly_fill_the_disk_is_refused() {
+    let f = fixture();
+    let mut s = writable(&f, true, false);
+    s.min_free = u64::MAX / 2;
+    let why = refused(&call(&s, "upload", json!({"name": "a.txt", "text": "a"})));
+    assert!(why.contains("free") && why.contains("keeps at least"), "{why}");
+    assert!(!s.folders[0].path.join("a.txt").exists());
+    assert!(folders::free_bytes(&s.folders[0].path).unwrap() > 0);
+}
+
+#[test]
+fn deleting_moves_to_the_trash_and_says_where() {
+    let f = fixture();
+    let s = writable(&f, false, true);
+    let dir = &s.folders[0].path;
+    let r = call(&s, "delete", json!({"name": "old.txt"}));
+    assert!(text(&r, 0).contains("kept 30 days"), "{r}");
+    assert!(!dir.join("old.txt").exists());
+    let trashed: Vec<String> = std::fs::read_dir(dir.join(folders::TRASH))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(trashed[0].ends_with("-old.txt"));
+    assert!(folders::trashed_at(&trashed[0]).is_some(), "{}", trashed[0]);
+    // The trash isn't listed.
+    assert!(!call(&s, "list", json!({}))["content"].to_string().contains("fleetlayer-trash"));
+    assert!(refused(&call(&s, "delete", json!({"name": "escape.txt"}))).contains("symbolic link"));
+    assert!(refused(&call(&s, "delete", json!({"name": "sub"}))).contains("isn't a file"));
+    assert!(refused(&call(&s, "delete", json!({"name": "../secret.txt"}))).contains("isn't a file name"));
+    assert!(refused(&call(&s, "delete", json!({"name": ".fleetlayer-trash"}))).contains("hidden"));
+    assert!(
+        f.root.join("secret.txt").exists() && dir.join("escape.txt").exists() && dir.join("sub/inner.txt").exists()
+    );
+}
+
+#[test]
+fn a_file_that_disappears_between_list_and_delete_is_a_clear_refusal() {
+    let f = fixture();
+    let s = writable(&f, false, true);
+    assert!(call(&s, "list", json!({}))["content"].to_string().contains("middle.bin"));
+    std::fs::remove_file(s.folders[0].path.join("middle.bin")).unwrap();
+    assert!(refused(&call(&s, "delete", json!({"name": "middle.bin"}))).contains("no file called"));
+}
+
+#[test]
+fn the_trash_is_purged_after_30_days_by_the_time_in_each_name() {
+    let f = fixture();
+    let s = writable(&f, false, true);
+    let folder = &s.folders[0];
+    call(&s, "delete", json!({"name": "old.txt"}));
+    let trash = folder.path.join(folders::TRASH);
+    std::fs::write(trash.join("2026-01-01T00-00-00.000Z-ancient.txt"), "x").unwrap();
+    std::fs::write(trash.join("not-a-trashed-name.txt"), "x").unwrap();
+    std::fs::write(folder.path.join(".fleetlayer-upload-1-2"), "half").unwrap();
+    set_mtime(&folder.path.join(".fleetlayer-upload-1-2"), 2 * 86_400);
+    // old.txt was modified 3 days ago, but it was trashed just now: it stays.
+    assert_eq!(folders::purge_trash(folder, SystemTime::now()), 1);
+    let left: Vec<String> =
+        std::fs::read_dir(&trash).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    assert_eq!(left.len(), 2, "{left:?}");
+    assert!(left.iter().any(|n| n.ends_with("-old.txt")));
+    assert!(!folder.path.join(".fleetlayer-upload-1-2").exists());
+    // 31 days on, the rest of what it trashed goes too; names it didn't write stay.
+    assert_eq!(folders::purge_trash(folder, SystemTime::now() + Duration::from_secs(31 * 86_400)), 1);
+    assert!(trash.join("not-a-trashed-name.txt").exists());
 }

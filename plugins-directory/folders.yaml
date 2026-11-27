@@ -1,5 +1,5 @@
 name: folders
-summary: Lets agents on other machines read folders you choose on yours, such as your screenshots and downloads.
+summary: Lets agents on other machines read, and if you allow it upload to or delete from, folders you choose such as screenshots.
 kind: shared_tool
 ships_with_fleetlayer: true
 status: beta
@@ -18,11 +18,13 @@ config: |
       args: ["--folder", "screenshots=~/Screenshots", "--folder", "downloads=~/Downloads"]
       allow: ["*@server"]
 security: >-
-  Read-only, and only files directly inside the folders you name: no subfolders, hidden files or symbolic links, and
-  no tool that writes. Whoever may use the tool can read everything in those folders, so share Downloads (strangers'
-  files, private documents) as its own tool when it needs stricter access than your screenshots.
+  Only files directly inside the folders you name: no subfolders, hidden files or symbolic links. Read-only unless a
+  folder is given --upload (new files, never executable, quarantined on macOS, refused under 1 GB free) or --delete
+  (into a trash kept 30 days). Whoever may use the tool can read everything in those folders, so share Downloads
+  (strangers' files, private documents) as its own tool when it needs stricter access than your screenshots, and
+  give writing rights through a separate entry for named sessions.
 docs: plugins/folders
 description: |
   An MCP server the node shares with agents anywhere (`fleetlayer mcp folders@<node>`): list a folder newest first,
   the latest files, find by name or time, and read a file. Images come back as images the agent can see, downscaled
-  to 1568 pixels; text as text; anything else as base64, up to 8 MB.
+  to 1568 pixels; text as text; anything else as base64, up to 8 MB. With --upload and --delete, agents can add files and move them to the trash.

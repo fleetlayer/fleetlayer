@@ -26,6 +26,10 @@ pub struct Folder {
     pub path: PathBuf,
     /// Only its person writes to it (`--trusted <name>`): its files aren't marked as outside data.
     pub trusted: bool,
+    /// Agents may add files (`--upload <name>`).
+    pub upload: bool,
+    /// Agents may delete files, into the folder's trash (`--delete <name>`). Also needed to overwrite on upload.
+    pub delete: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -549,4 +553,225 @@ fn decode_limits() -> image::Limits {
     limits.max_image_height = Some(20_000);
     limits.max_alloc = Some(512 * 1024 * 1024);
     limits
+}
+
+// ---------------------------------------------------------------- writing
+
+/// Deleted files go here, inside the folder (hidden, so never listed), and are purged after `TRASH_DAYS`.
+pub const TRASH: &str = ".fleetlayer-trash";
+pub const TRASH_DAYS: u64 = 30;
+/// An upload is refused when the volume would have less than this free after it.
+pub const MIN_FREE: u64 = 1024 * 1024 * 1024;
+
+/// Bytes free to an unprivileged user on the folder's volume.
+pub fn free_bytes(dir: &Path) -> std::io::Result<u64> {
+    let v = rustix::fs::statvfs(dir)?;
+    Ok(v.f_bavail.saturating_mul(v.f_frsize))
+}
+
+/// Add `bytes` as `name`. Written to a hidden temporary file, then linked into place without replacing anything, so
+/// nobody ever sees half a file. `overwrite` replaces an existing file, which goes to the trash first.
+pub fn upload(folder: &Folder, name: &str, bytes: &[u8], overwrite: bool, min_free: u64) -> Result<String, Refusal> {
+    if !folder.upload {
+        return refuse(format!(
+            "the {} folder doesn't take uploads (its owner allows them with --upload {})",
+            folder.name, folder.name
+        ));
+    }
+    check_name(name)?;
+    if name.len() > 255 {
+        return refuse("that name is longer than 255 bytes");
+    }
+    if overwrite && !folder.delete {
+        return refuse(format!(
+            "overwriting destroys the old file, so it needs deleting allowed too (--delete {})",
+            folder.name
+        ));
+    }
+    let dir = folder.canonical()?;
+    let free = free_bytes(&dir).map_err(|e| explain(folder, &e))?;
+    if free < bytes.len() as u64 + min_free {
+        return refuse(format!(
+            "the disk holding {} has {} free, and this tool keeps at least {} free after an upload",
+            folder.name,
+            human(free),
+            human(min_free)
+        ));
+    }
+    let dest = dir.join(name);
+    let existing = match std::fs::symlink_metadata(&dest) {
+        Ok(m) => Some(m),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(explain(folder, &e)),
+    };
+    if let Some(m) = &existing {
+        if !m.file_type().is_file() {
+            return refuse(format!("{name:?} in {} exists and isn't a regular file", folder.name));
+        }
+        if !overwrite {
+            return refuse(format!(
+                "{name:?} already exists in {}: pick another name, or overwrite: true",
+                folder.name
+            ));
+        }
+    }
+    let temp = dir.join(format!(
+        ".fleetlayer-upload-{}-{}",
+        std::process::id(),
+        SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_nanos()
+    ));
+    let write = || -> std::io::Result<()> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o644).open(&temp)?;
+        f.write_all(bytes)?;
+        quarantine(&f);
+        f.sync_all()
+    };
+    if let Err(e) = write() {
+        let _ = std::fs::remove_file(&temp);
+        return Err(explain(folder, &e));
+    }
+    let mut trashed = None;
+    if existing.is_some() {
+        match trash(folder, &dir, name) {
+            Ok(t) => trashed = Some(t),
+            Err(r) => {
+                let _ = std::fs::remove_file(&temp);
+                return Err(r);
+            }
+        }
+    }
+    // A hard link never replaces an existing file: if one appeared meanwhile, the upload fails instead.
+    let linked = std::fs::hard_link(&temp, &dest);
+    let _ = std::fs::remove_file(&temp);
+    match linked {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            return refuse(format!("{name:?} appeared in {} while uploading: pick another name", folder.name));
+        }
+        Err(e) => return Err(explain(folder, &e)),
+    }
+    Ok(match trashed {
+        Some(t) => {
+            format!("wrote {name} in {} ({}); the old file is in {TRASH}/{t}", folder.name, human(bytes.len() as u64))
+        }
+        None => format!("wrote {name} in {} ({})", folder.name, human(bytes.len() as u64)),
+    })
+}
+
+/// Mark an upload as downloaded from elsewhere, so macOS's Gatekeeper asks before anyone opens it as an app or script.
+#[cfg(target_os = "macos")]
+fn quarantine(f: &File) {
+    let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_secs();
+    let value = format!("0081;{now:x};fleetlayer-folders;");
+    let _ = rustix::fs::fsetxattr(f, "com.apple.quarantine", value.as_bytes(), rustix::fs::XattrFlags::empty());
+}
+
+#[cfg(not(target_os = "macos"))]
+fn quarantine(_f: &File) {}
+
+/// Move a file to the folder's trash. Not permanent: the reply says where it went.
+pub fn delete(folder: &Folder, name: &str) -> Result<String, Refusal> {
+    if !folder.delete {
+        return refuse(format!(
+            "the {} folder doesn't allow deleting (its owner allows it with --delete {})",
+            folder.name, folder.name
+        ));
+    }
+    check_name(name)?;
+    let dir = folder.canonical()?;
+    let meta = match std::fs::symlink_metadata(dir.join(name)) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return refuse(format!("there's no file called {name:?} in {}", folder.name));
+        }
+        Err(e) => return Err(explain(folder, &e)),
+    };
+    if meta.file_type().is_symlink() {
+        return refuse(format!("{name:?} in {} is a symbolic link, which this tool never touches", folder.name));
+    }
+    if !meta.file_type().is_file() {
+        return refuse(format!("{name:?} in {} isn't a file", folder.name));
+    }
+    let t = trash(folder, &dir, name)?;
+    Ok(format!(
+        "moved {name} to {}/{TRASH}/{t} (kept {TRASH_DAYS} days; move it back to restore it)",
+        folder.path.display()
+    ))
+}
+
+fn trash_dir(folder: &Folder, dir: &Path) -> Result<PathBuf, Refusal> {
+    let t = dir.join(TRASH);
+    match std::fs::symlink_metadata(&t) {
+        Ok(m) if m.file_type().is_dir() => Ok(t),
+        Ok(_) => refuse(format!("{} in {} isn't a folder; its owner should look at it", TRASH, folder.name)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            use std::os::unix::fs::DirBuilderExt;
+            std::fs::DirBuilder::new().mode(0o700).create(&t).map_err(|e| explain(folder, &e))?;
+            Ok(t)
+        }
+        Err(e) => Err(explain(folder, &e)),
+    }
+}
+
+/// Rename `name` into the trash as `<UTC time>-<name>`; returns the trashed name.
+fn trash(folder: &Folder, dir: &Path, name: &str) -> Result<String, Refusal> {
+    let t = trash_dir(folder, dir)?;
+    let stamp = jiff::Timestamp::now().strftime("%Y-%m-%dT%H-%M-%S%.3fZ").to_string();
+    let trashed = format!("{stamp}-{name}");
+    match std::fs::rename(dir.join(name), t.join(&trashed)) {
+        Ok(()) => Ok(trashed),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            refuse(format!("{name:?} disappeared from {} before it could be deleted", folder.name))
+        }
+        Err(e) => Err(explain(folder, &e)),
+    }
+}
+
+/// Remove trashed files older than `TRASH_DAYS`, judged by the time in their name (a rename keeps the file's own
+/// modified time, which can be years old). Runs when the server starts; never fails it.
+pub fn purge_trash(folder: &Folder, now: SystemTime) -> usize {
+    let Ok(dir) = folder.canonical() else { return 0 };
+    let t = dir.join(TRASH);
+    let cutoff = now.checked_sub(Duration::from_secs(TRASH_DAYS * 86_400)).unwrap_or(SystemTime::UNIX_EPOCH);
+    let mut removed = 0;
+    let trashed = if std::fs::symlink_metadata(&t).is_ok_and(|m| m.file_type().is_dir()) {
+        std::fs::read_dir(&t).ok()
+    } else {
+        None
+    };
+    for item in trashed.into_iter().flatten().flatten() {
+        let Some(name) = item.file_name().to_str().map(str::to_string) else { continue };
+        let Some(when) = trashed_at(&name) else { continue };
+        if when < cutoff
+            && std::fs::symlink_metadata(item.path()).is_ok_and(|m| m.file_type().is_file())
+            && std::fs::remove_file(item.path()).is_ok()
+        {
+            removed += 1;
+        }
+    }
+    // Uploads interrupted before they were linked into place.
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        let day = now.checked_sub(Duration::from_secs(86_400)).unwrap_or(SystemTime::UNIX_EPOCH);
+        for item in rd.flatten() {
+            let leftover = item.file_name().to_str().is_some_and(|n| n.starts_with(".fleetlayer-upload-"));
+            if leftover
+                && std::fs::symlink_metadata(item.path())
+                    .is_ok_and(|m| m.file_type().is_file() && m.modified().is_ok_and(|t| t < day))
+            {
+                let _ = std::fs::remove_file(item.path());
+            }
+        }
+    }
+    removed
+}
+
+/// The time at the start of a trashed file's name (`2026-11-27T07-15-00.123Z-name`).
+pub fn trashed_at(name: &str) -> Option<SystemTime> {
+    let stamp = name.get(..24)?;
+    let (date, time) = stamp.split_once('T')?;
+    let time = time.strip_suffix('Z')?.replacen('-', ":", 2);
+    let ts: jiff::Timestamp = format!("{date}T{time}Z").parse().ok()?;
+    Some(system_time(ts))
 }

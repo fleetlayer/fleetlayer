@@ -5,7 +5,8 @@ the agent runs on the same Mac, you paste the path. When it runs on your home se
 around, every time.
 
 This guide shares a few chosen folders on your Mac with the agents you pick, wherever they run. You say "look at the
-screenshot I just took", and the agent fetches it and sees it. It's read-only and reaches only the folders you name.
+screenshot I just took", and the agent fetches it and sees it. It reaches only the folders you name, and it's
+read-only unless you let an agent put files there or tidy up (section 5).
 
 ## How it works
 
@@ -89,7 +90,41 @@ agent, and so can a screenshot of an email or a chat, since agents read the text
 write to, such as your own notes, `--trusted <name>` leaves the line out. The line helps, but it doesn't make a file
 safe; [that guide](untrusted-input.md) covers the rest.
 
-## 5. Use them from another machine
+## 5. Letting agents put files there, or tidy up
+
+Each folder is read-only until you say otherwise, folder by folder: `--upload <name>` lets agents add files to it, and
+`--delete <name>` lets them delete files from it. An agent can then hand you a report, a generated image or a fixed
+spreadsheet straight into Downloads, or clear out the screenshots it has dealt with.
+
+Give those rights to fewer agents than reading, by sharing the folder a second time under another name:
+
+```yaml
+tools:
+  - name: downloads
+    command: /Users/you/.local/bin/fleetlayer-folders
+    args: ["--folder", "downloads=~/Downloads"]
+    allow: ["*@server"]
+  - name: downloads-manage
+    command: /Users/you/.local/bin/fleetlayer-folders
+    args: ["--folder", "downloads=~/Downloads", "--upload", "downloads", "--delete", "downloads"]
+    allow: ["planning@server"]          # a named session, never "*"
+```
+
+The policy decides each entry on its own (`tool:downloads-manage@laptop`), so only the agents you name can write.
+
+What keeps it safe:
+
+- **Uploads never replace a file** unless the agent asks to overwrite, which needs `--delete` too, and the old file
+  goes to the trash first. Nobody ever sees half a file.
+- **Uploads aren't trusted:** they're never executable, and macOS marks them as downloaded, so it asks before anyone
+  opens one as an app or a script. Still, a file an agent writes lands on your Mac: give `--upload` only to agents you
+  trust to put files there.
+- **Deleting moves files to a hidden trash** inside the folder, `.fleetlayer-trash/`, for 30 days. Shift-Command-.
+  in Finder shows it; move a file back out to restore it.
+- **A full disk is refused:** an upload that would leave less than 1 GB free fails with the reason, so an agent stuck
+  in a loop can't fill your Mac.
+
+## 6. Use them from another machine
 
 ```sh
 claude mcp add folders -- fleetlayer mcp folders@laptop
@@ -106,5 +141,7 @@ ask: "look at my latest screenshot", "read the CSV I downloaded this morning". T
   Finder once to download it, and ask again. The tool never starts a download itself.
 - **"more than the 8.0 MB this tool sends in one reply"**: big files don't fit through one reply. Images are scaled
   down, so this only hits other files; `--max-read-mb` raises it to 10 at most.
+- **"doesn't take uploads" or "doesn't allow deleting"**: that folder hasn't got `--upload` or `--delete` in the
+  entry the agent connected to (section 5).
 - **Refused, with a reason**: the Mac is asleep, off the networks you listed, or the session isn't allowed. The refusal
   says which.
