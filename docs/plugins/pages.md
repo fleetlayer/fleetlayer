@@ -1,4 +1,4 @@
-# pages
+# Pages
 
 Status: built (27 November 2026): the renderer, the web app, live updates and the login key. `fleetlayer pages push`
 and sign-in through Fleetlayer next. The same service hosts **apps** (interactive HTML and JavaScript, each on a
