@@ -482,11 +482,12 @@ async fn the_runner_saves_state_reloads_settings_and_takes_fire_requests() {
     let saved: State = serde_json::from_slice(&std::fs::read(dir.path().join("state/state.json")).unwrap()).unwrap();
     assert_eq!(saved.manual[0].result, Outcome::Sent);
 
-    // A broken edit keeps the last good entries and says so.
-    std::thread::sleep(std::time::Duration::from_millis(20));
+    // A broken edit keeps the last good entries and says so. Its modification time is the same as the last good
+    // file's: the content is what counts.
+    let mtime = std::fs::metadata(dir.path().join("scheduler.yaml")).unwrap().modified().unwrap();
     std::fs::write(dir.path().join("scheduler.yaml"), "entries:\n  - name: x\n").unwrap();
     let f = std::fs::File::options().append(true).open(dir.path().join("scheduler.yaml")).unwrap();
-    f.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5)).unwrap();
+    f.set_modified(mtime).unwrap();
     *node.answer.lock().unwrap() = Some((code::NOT_HERE, "worker isn't running".into()));
     r.step(start + mins(360), &node).await;
     assert_eq!(node.sent.lock().unwrap().len(), 3, "the old entry still fires");

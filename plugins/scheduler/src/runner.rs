@@ -3,7 +3,6 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::SystemTime;
 
 use async_trait::async_trait;
 use fleetlayer_protocol::rpc::RpcError;
@@ -49,8 +48,9 @@ pub struct Runner {
     pub paths: Paths,
     pub engine: Mutex<Engine>,
     tz: TimeZone,
-    /// The settings file's modification time when it was last read (None: it didn't exist).
-    seen: Mutex<Option<Option<SystemTime>>>,
+    /// The settings file's text when it was last read (None: it didn't exist). Compared by content, not by
+    /// modification time, so two edits within one timestamp tick are both seen.
+    seen: Mutex<Option<Option<String>>>,
     reported: Mutex<Option<(Option<String>, Timestamp)>>,
 }
 
@@ -71,21 +71,22 @@ impl Runner {
     /// Read the settings file again if it changed. A file that can't be read leaves the last good entries running,
     /// and the problem in the status. No file means no entries.
     pub async fn reload(&self) {
-        let mtime = std::fs::metadata(&self.paths.settings).and_then(|m| m.modified()).ok();
-        let mut seen = self.seen.lock().await;
-        if *seen == Some(mtime) {
-            return;
-        }
-        *seen = Some(mtime);
-        let mut engine = self.engine.lock().await;
-        let text = match std::fs::read_to_string(&self.paths.settings) {
-            Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        let read = match std::fs::read_to_string(&self.paths.settings) {
+            Ok(t) => Some(t),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
             Err(e) => {
-                engine.settings_problem = Some(format!("{}: {e}", self.paths.settings.display()));
+                self.engine.lock().await.settings_problem = Some(format!("{}: {e}", self.paths.settings.display()));
+                *self.seen.lock().await = None;
                 return;
             }
         };
+        let mut seen = self.seen.lock().await;
+        if seen.as_ref() == Some(&read) {
+            return;
+        }
+        let text = read.clone().unwrap_or_default();
+        *seen = Some(read);
+        let mut engine = self.engine.lock().await;
         match settings::parse(&text, &self.tz) {
             Ok(s) => {
                 tracing::info!(entries = s.entries.len(), "read {}", self.paths.settings.display());
