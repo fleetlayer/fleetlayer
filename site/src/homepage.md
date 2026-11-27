@@ -68,7 +68,7 @@ team would ask for, an agent sets them up for you, and each one can be switched 
 - **One sign-in, one sign-out.** One sign-in for your self-hosted services (experimental), and signing out of one
   signs you out of all of them.
 
-Coming next: secrets granted by role and scrubbed from everything that leaves a machine; an allowlist of where agents
+[Coming next](https://fleetlayer.ai/credentials.md): secrets granted by role and scrubbed from everything that leaves a machine; an allowlist of where agents
 may connect, with you approving new hosts; an admin role that stays switched off until you open a time-limited window.
 
 ## A foundation for your own agent workflows
