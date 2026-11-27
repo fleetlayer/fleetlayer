@@ -559,7 +559,11 @@ pub async fn up(a: UpArgs) -> anyhow::Result<()> {
         anyhow::bail!("fleetlayer-node install: {}", String::from_utf8_lossy(&out.stderr).trim());
     }
     println!("Started the node.");
-    if !macos() {
+    let lingering = || {
+        let user = std::env::var("USER").unwrap_or_default();
+        run(Command::new("loginctl").args(["show-user", &user, "-p", "Linger"])).is_ok_and(|o| o.trim() == "Linger=yes")
+    };
+    if !macos() && !lingering() {
         notes.push("To keep everything running while you're logged out: loginctl enable-linger \"$USER\"".into());
     }
 
