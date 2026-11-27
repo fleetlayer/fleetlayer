@@ -89,7 +89,10 @@ async fn receive(
         return StatusCode::OK;
     }
     let _ = db::endpoint_hit(&app.db, &id).await;
-    let event = to_event(&endpoint.channel, &headers, &query, &body);
+    let mut event = to_event(&endpoint.channel, &headers, &query, &body);
+    // A payload can carry the endpoint's own URL (GitHub's ping has it in hook.config.url): its path holds the secret,
+    // which must never reach a session.
+    redact_event(&mut event, &secret);
     let source = format!("{} webhook", endpoint.label);
     // Deliver in the background: the sender gets its 200 at once.
     tokio::spawn(handle(app, tenant, endpoint, event, source));
@@ -213,7 +216,13 @@ pub fn to_event(channel: &str, headers: &HeaderMap, query: &HashMap<String, Stri
     let body_value = json.clone().unwrap_or_else(|| Value::String(String::from_utf8_lossy(body).into_owned()));
     if let (Some(kind), Some(j)) = (header(headers, "x-github-event"), json.as_ref()) {
         let (subject, summary) = github(kind, j);
-        let body_value = if kind == "workflow_run" { workflow_run_body(j).unwrap_or(body_value) } else { body_value };
+        // Only what a session needs, never GitHub's raw payload: it's long, and full of URLs (a ping's includes the
+        // endpoint's own).
+        let body_value = match kind {
+            "workflow_run" => workflow_run_body(j).unwrap_or_else(|| github_body(kind, j)),
+            "ping" => Value::Null,
+            _ => github_body(kind, j),
+        };
         return Event {
             channel: channel.into(),
             kind: format!("github.{kind}"),
@@ -245,6 +254,60 @@ pub fn to_event(channel: &str, headers: &HeaderMap, query: &HashMap<String, Stri
         dedupe_key: header(headers, "x-fleetlayer-dedupe").map(str::to_string).or_else(|| field("dedupe_key")),
         summary: if summary.is_empty() { "(empty)".into() } else { summary },
         body: body_value,
+    }
+}
+
+/// The fields of any other GitHub event a session can use: the event, action, repository, branch, commit,
+/// conclusion and the one page about it.
+fn github_body(kind: &str, j: &Value) -> Value {
+    let s = |p: &str| j.pointer(p).and_then(Value::as_str);
+    let first = |ps: &[&str]| ps.iter().find_map(|p| s(p));
+    let mut out = serde_json::Map::new();
+    out.insert("event".into(), json!(kind));
+    let fields = [
+        ("action", first(&["/action"])),
+        ("repository", first(&["/repository/full_name"])),
+        (
+            "branch",
+            first(&[
+                "/check_suite/head_branch",
+                "/check_run/check_suite/head_branch",
+                "/pull_request/head/ref",
+                "/ref",
+            ])
+            .map(|r| r.strip_prefix("refs/heads/").unwrap_or(r)),
+        ),
+        ("sha", first(&["/check_suite/head_sha", "/check_run/head_sha", "/pull_request/head/sha", "/after"])),
+        ("conclusion", first(&["/check_suite/conclusion", "/check_run/conclusion"])),
+        ("url", first(&["/check_run/html_url", "/pull_request/html_url", "/issue/html_url", "/compare"])),
+    ];
+    for (k, v) in fields {
+        if let Some(v) = v {
+            out.insert(k.into(), json!(v));
+        }
+    }
+    Value::Object(out)
+}
+
+/// Replace the endpoint's secret wherever it appears in what's delivered: the summary, subject and every string in
+/// the body.
+fn redact_event(e: &mut Event, secret: &str) {
+    const MARK: &str = "[redacted]";
+    if secret.is_empty() {
+        return;
+    }
+    fn walk(v: &mut Value, secret: &str) {
+        match v {
+            Value::String(s) if s.contains(secret) => *s = s.replace(secret, MARK),
+            Value::Array(a) => a.iter_mut().for_each(|v| walk(v, secret)),
+            Value::Object(o) => o.values_mut().for_each(|v| walk(v, secret)),
+            _ => {}
+        }
+    }
+    walk(&mut e.body, secret);
+    e.summary = e.summary.replace(secret, MARK);
+    if let Some(s) = &mut e.subject {
+        *s = s.replace(secret, MARK);
     }
 }
 
@@ -287,6 +350,14 @@ fn github(kind: &str, j: &Value) -> (Option<String>, String) {
         (Some(r), None) => Some(r.to_string()),
         _ => None,
     };
+    if kind == "ping" {
+        let what = s("/hook/type").unwrap_or("hook");
+        let summary = match &subject {
+            Some(r) => format!("GitHub's webhook ping: the {what} hook for {r} reaches Fleetlayer"),
+            None => format!("GitHub's webhook ping: the {what} hook reaches Fleetlayer"),
+        };
+        return (subject, summary);
+    }
     if kind == "workflow_run"
         && let (Some(subj), Some(sha)) = (&subject, s("/workflow_run/head_sha"))
     {
@@ -369,6 +440,65 @@ mod tests {
             run("CI", 7, "in_progress", None).to_string().as_bytes(),
         );
         assert!(e.summary.starts_with("CI in_progress on fleetlayer/fleetlayer@main 1a2b3c4"), "{}", e.summary);
+    }
+
+    #[test]
+    fn a_ping_never_passes_on_the_endpoints_url() {
+        const SECRET: &str = "5f0c9a1e7b2d4c6f8a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f";
+        // The shape of a real ping to a repository hook (identifiers and the secret made up).
+        let body = serde_json::json!({
+            "zen": "Keep it logically awesome.",
+            "hook_id": 717540000,
+            "hook": {"type": "Repository", "id": 717540000, "name": "web", "active": true, "events": ["workflow_run"],
+                "config": {"content_type": "json", "insecure_ssl": "0", "secret": "********",
+                    "url": format!("https://hooks.example.com/hooks/0011223344556677/{SECRET}")},
+                "updated_at": "2026-11-27T10:44:52Z", "created_at": "2026-11-27T10:44:52Z",
+                "url": "https://api.github.com/repos/fleetlayer/fleetlayer/hooks/717540000",
+                "test_url": "https://api.github.com/repos/fleetlayer/fleetlayer/hooks/717540000/test",
+                "ping_url": "https://api.github.com/repos/fleetlayer/fleetlayer/hooks/717540000/pings",
+                "deliveries_url": "https://api.github.com/repos/fleetlayer/fleetlayer/hooks/717540000/deliveries",
+                "last_response": {"code": null, "status": "unused", "message": null}},
+            "repository": {"id": 1, "name": "fleetlayer", "full_name": "fleetlayer/fleetlayer",
+                "html_url": "https://github.com/fleetlayer/fleetlayer"},
+            "sender": {"login": "someone", "id": 2}
+        });
+        let mut h = HeaderMap::new();
+        h.insert("x-github-event", "ping".parse().unwrap());
+        h.insert("x-github-delivery", "p1".parse().unwrap());
+        let mut e = to_event("ci", &h, &HashMap::new(), body.to_string().as_bytes());
+        redact_event(&mut e, SECRET);
+        assert_eq!(
+            e.summary,
+            "GitHub's webhook ping: the Repository hook for fleetlayer/fleetlayer reaches Fleetlayer"
+        );
+        assert_eq!(e.body, Value::Null, "a ping delivers its summary only");
+        let text = crate::route::render_event(&e, "github webhook");
+        assert!(!text.contains(SECRET) && !text.contains("/hooks/"), "{text}");
+    }
+
+    #[test]
+    fn the_endpoint_secret_is_redacted_from_anything_delivered() {
+        const SECRET: &str = "abcdef0123456789";
+        let body = serde_json::json!({"message": format!("see https://x.example/hooks/id/{SECRET}"),
+            "nested": [{"u": format!("{SECRET}{SECRET}")}]});
+        let mut e = to_event("alerts", &HeaderMap::new(), &HashMap::new(), body.to_string().as_bytes());
+        redact_event(&mut e, SECRET);
+        let all = format!("{} {} {:?}", e.summary, e.body, e.subject);
+        assert!(!all.contains(SECRET), "{all}");
+        assert!(e.summary.ends_with("/hooks/id/[redacted]"), "{}", e.summary);
+
+        // Another GitHub event: a short body, not the raw payload.
+        let mut h = HeaderMap::new();
+        h.insert("x-github-event", "check_run".parse().unwrap());
+        let body = serde_json::json!({"action": "completed", "repository": {"full_name": "o/r"},
+            "check_run": {"name": "lint", "conclusion": "failure", "head_sha": "abc", "html_url": "https://github.com/o/r/runs/1",
+                "check_suite": {"head_branch": "fix"}, "output": {"text": "a long log"}}});
+        let e = to_event("ci", &h, &HashMap::new(), body.to_string().as_bytes());
+        assert_eq!(
+            e.body,
+            serde_json::json!({"event": "check_run", "action": "completed", "repository": "o/r",
+            "branch": "fix", "sha": "abc", "conclusion": "failure", "url": "https://github.com/o/r/runs/1"})
+        );
     }
 
     #[test]

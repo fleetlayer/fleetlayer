@@ -89,7 +89,10 @@ Each result arrives as one message, marked as outside data:
 CI failure on your-org/your-repo@main 1a2b3c4 "Fix the login form" https://github.com/your-org/your-repo/actions/runs/123
 ```
 
-followed by the details (workflow, conclusion, branch, commit, run URL, attempt). Only completed runs are delivered;
+followed by the details (workflow, conclusion, branch, commit, run URL, attempt). Sessions never get GitHub's raw
+payload, which is long and full of URLs (a ping's includes the webhook's own URL, secret path and all): other GitHub
+events arrive as a short summary of the same fields, a ping as one line, and the endpoint's secret is removed from
+anything delivered. Only completed runs are delivered;
 `endpoint add --all-actions` delivers `requested` and `in_progress` too. GitHub's workflow run events don't list the
 jobs, so the message names the workflow, not which job failed: the agent opens the run (`gh run view <id>
 --log-failed`, one API call) to see why.
