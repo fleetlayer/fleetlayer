@@ -14,8 +14,12 @@ fleetlayer move pages server
 
 ## Before you start
 
-- **Fleetlayer on the other machine**, the same version or newer: `curl -fsSL https://raw.githubusercontent.com/fleetlayer/fleetlayer/main/install.sh | sh`
-  there.
+- **Fleetlayer on the other machine**, the same version or newer. There:
+
+  ```sh
+  curl -fsSL https://raw.githubusercontent.com/fleetlayer/fleetlayer/main/install.sh | sh
+  ```
+
 - **SSH without a password prompt**: `ssh server true` should just work (a key, or your SSH agent). The move runs
   with `BatchMode`, so it never stops to ask.
 - **On a Linux server, lingering on** (`loginctl enable-linger "$USER"` there), so the user services it starts keep
@@ -84,8 +88,10 @@ Nodes keep their tokens: the database moves with the control plane.
 
 ## Sign-in and passkeys
 
-A passkey belongs to the address sign-in answers at. Moved to another machine with the same issuer address (your DNS
-name now points at the new machine), everyone's passkeys keep working. Changing its address is the hard case:
+A passkey belongs to a domain: by default the issuer's parent domain (`example.com` for `signin.example.com`), so it
+works for any address under it. Moved to another machine with the same issuer address (your DNS name now points at
+the new machine), everyone's passkeys keep working, and so they do at a new address under the same domain. Changing
+the issuer address still means repointing every service that signs in through it:
 [Sign-in: moving it](../sso.md#moving-it) explains it, and the plan reminds you.
 
 ## Pages and the agents that write them
