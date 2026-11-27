@@ -22,6 +22,7 @@ export const pages = [
   { file: "guides/day-to-day", group: "Guides", label: "Watch, steer and message" },
   { file: "guides/ci-results", group: "Guides", label: "CI results to the right agent" },
   { file: "guides/agent-instructions", group: "Guides", label: "Instructions on every machine" },
+  { file: "guides/agents-know-fleetlayer", group: "Guides", label: "Tell your agents about Fleetlayer" },
   { file: "guides/sync", group: "Guides", label: "Sync notes and skills" },
   { file: "guides/claude-accounts", group: "Guides", label: "Many Claude accounts" },
   { file: "guides/browser", group: "Guides", label: "Share your browser" },

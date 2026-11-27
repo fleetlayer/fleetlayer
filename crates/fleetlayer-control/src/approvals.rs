@@ -82,6 +82,38 @@ pub async fn check(
     Ok(Status::Pending(id))
 }
 
+/// An approval's state, looked up without filing a request or renewing one (`fleetlayer me`).
+pub enum Peek {
+    /// Approved until then (milliseconds).
+    Approved(i64),
+    Pending(String),
+    Denied(String),
+    /// Never asked, or the last answer has lapsed: the next use asks.
+    None,
+}
+
+pub async fn peek(db: &Db, tenant: &str, who: &str, verb: &str, target: &str) -> anyhow::Result<Peek> {
+    let row = sqlx::query(
+        "SELECT id, status, expires_at FROM approvals WHERE tenant = ? AND subject = ? AND verb = ? AND target = ?
+         ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(tenant)
+    .bind(who)
+    .bind(verb)
+    .bind(target)
+    .fetch_optional(db)
+    .await?;
+    let Some(r) = row else { return Ok(Peek::None) };
+    let (id, status, expires): (String, String, Option<i64>) = (r.get(0), r.get(1), r.get(2));
+    let now = now_ms();
+    Ok(match (status.as_str(), expires) {
+        ("approved", Some(e)) if e > now => Peek::Approved(e),
+        ("pending", _) => Peek::Pending(id),
+        ("denied", Some(e)) if e > now => Peek::Denied(id),
+        _ => Peek::None,
+    })
+}
+
 /// Approvals for work that runs unattended and repeats (a sync, a tool an agent uses) renew while they're used: each
 /// use pushes the expiry to a full hold from now, so one lapses only after a hold's length unused, rather than stopping
 /// a sync silently mid-use. The new expiry, when it moves by more than an hour (no write on every use).

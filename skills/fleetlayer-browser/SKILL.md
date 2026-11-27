@@ -11,7 +11,8 @@ You use it from any machine, whatever account or model you run on.
 
 ## Add it
 
-Your person's setup instructions name it (usually `browser@<their laptop's node>`). Add it once as an MCP server:
+`fleetlayer me` lists it if you may use it (usually `browser@<their laptop's node>`), with the line that adds it. Add
+it once as an MCP server:
 
 ```sh
 claude mcp add browser -- fleetlayer mcp browser@laptop

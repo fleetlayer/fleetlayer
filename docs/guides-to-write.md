@@ -10,8 +10,9 @@ managers, machines that sleep.
   call means. Solved with skills (`skills/fleetlayer/`, `skills/fleetlayer-browser/`, `plugins/folders/skill/`,
   `plugins/claude-auth-manager/skill/`, the pages and apps skills) and a short block for the person's global
   instructions. Claude Code reads skills from `~/.claude/skills/<name>/`, Codex from `~/.agents/skills/<name>/`, and
-  Codex's global instructions are `~/.codex/AGENTS.md` (`$CODEX_HOME`). To write: "Tell your agents about Fleetlayer"
-  (`docs/guides/agents-know-fleetlayer.md`), with `fleetlayer me` (v0.3.10).
+  Codex's global instructions are `~/.codex/AGENTS.md` (`$CODEX_HOME`). `fleetlayer me` (v0.3.10) lists what a
+  session may use, so neither the skills nor the instructions keep a list that goes stale. Written:
+  `docs/guides/agents-know-fleetlayer.md`. Still to come: the node installing the skills itself.
 - **A GitHub organization can't be created from the CLI or the API on github.com.** `POST /admin/organizations`
   exists only on GitHub Enterprise Server (it answers 404 on github.com, whatever the token's scopes). An agent can
   create repos with `gh repo create <org>/<name>`, but a person makes the organization once in the web UI

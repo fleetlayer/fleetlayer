@@ -41,6 +41,9 @@ enum Command {
     },
     /// The node and its plugins.
     Status,
+    /// What this session may use from here: sessions to message, shared tools (with the line that adds each one),
+    /// pages spaces, subscriptions, and whether its messages arrive as outside data. Asking files no approval request.
+    Me,
     /// Every session on this node.
     Sessions {
         /// Include sessions that ended.
@@ -263,6 +266,124 @@ async fn mcp(socket: &std::path::Path, target: &str, why: Option<&str>) -> anyho
     tokio::spawn(up);
     down.await;
     Ok(())
+}
+
+/// `fleetlayer me` for a person or an agent to read.
+fn me_text(v: &Value) -> String {
+    use std::fmt::Write;
+    let mut o = String::new();
+    let address = v["address"].as_str().unwrap_or("?");
+    let harness = v["harness"].as_str().map(|h| format!(" ({h})")).unwrap_or_default();
+    let node = v["node"].as_str().unwrap_or("?");
+    if v["caller"] == "-" {
+        let _ = writeln!(
+            o,
+            "You aren't in a session this node knows, so this is what a shell on {node} (-@{node}) may use."
+        );
+    } else {
+        let _ = writeln!(o, "You are {address}{harness}, on node {node}.");
+    }
+    if v["offline"] == true {
+        let _ = writeln!(o, "{node} isn't linked to a control plane now: you can reach only this node's sessions.");
+        return o;
+    }
+    let me = &v["me"];
+    let list = |k: &str| me[k].as_array().cloned().unwrap_or_default();
+    let message = list("message");
+    let refused = me["messageRefused"].as_u64().unwrap_or(0);
+    let _ = match (message.len(), refused) {
+        (0, 0) => writeln!(o, "Messages: no running sessions on other nodes that you can see."),
+        (n, 0) => writeln!(
+            o,
+            "Messages: you may message all {n} running sessions on other nodes (`fleetlayer fleet` lists them)."
+        ),
+        (0, _) => writeln!(
+            o,
+            "Messages: you may message none of the sessions on other nodes, only reply to ones that wrote to you."
+        ),
+        _ => writeln!(
+            o,
+            "Messages: you may message {}.",
+            message.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")
+        ),
+    };
+    let _ = writeln!(
+        o,
+        "Your messages arrive {}.",
+        if me["untrusted"] == true { "marked as outside data (you read untrusted input)" } else { "as from you" }
+    );
+    let justify: Vec<String> = list("justify").iter().filter_map(Value::as_str).map(String::from).collect();
+    if !justify.is_empty() {
+        let _ = writeln!(o, "Give a reason with --why for: {}.", justify.join(", "));
+    }
+    let state = |t: &Value| -> String {
+        let mut s = match t["state"].as_str().unwrap_or("?") {
+            "allowed" => match t["until"].as_i64().and_then(|ms| jiff::Timestamp::from_millisecond(ms).ok()) {
+                Some(u) => format!("allowed (approved until {})", u.strftime("%Y-%m-%d")),
+                None => "allowed".into(),
+            },
+            "ask" => "your first use asks your person".into(),
+            "pending" => format!("waiting for your person to approve request {}", t["request"].as_str().unwrap_or("?")),
+            "refused" => format!(
+                "your person refused request {} (ask again after an hour)",
+                t["request"].as_str().unwrap_or("?")
+            ),
+            other => other.into(),
+        };
+        if t["offline"] == true {
+            s.push_str("; its node is offline");
+        }
+        s
+    };
+    let tools = list("tools");
+    if tools.is_empty() {
+        let _ = writeln!(o, "Shared tools: none you may use.");
+    } else {
+        let _ = writeln!(o, "Shared tools:");
+        for t in &tools {
+            let name = t["name"].as_str().unwrap_or("?");
+            let _ = writeln!(o, "  {name}: {}", state(t));
+            if let Some(d) = t["description"].as_str() {
+                let _ = writeln!(o, "    {d}");
+            }
+            if let Some(n) = t["notOffered"].as_str() {
+                let _ = writeln!(o, "    Not offered now: {n}");
+            }
+            let folders: Vec<String> = t["folders"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|f| {
+                    let mut can = vec!["read"];
+                    if f["upload"] == true {
+                        can.push("upload");
+                    }
+                    if f["delete"] == true {
+                        can.push("delete");
+                    }
+                    format!("{} ({})", f["name"].as_str().unwrap_or("?"), can.join(", "))
+                })
+                .collect();
+            if !folders.is_empty() {
+                let _ = writeln!(o, "    Folders: {}", folders.join(", "));
+            }
+            let short = name.split('@').next().unwrap_or(name);
+            let _ = writeln!(o, "    Add it: claude mcp add {short} -- fleetlayer mcp {name}");
+        }
+    }
+    for p in list("pages") {
+        let space = p["name"].as_str().unwrap_or("?");
+        let _ = writeln!(o, "Pages space {space} (on {}): {}", p["node"].as_str().unwrap_or("?"), state(&p));
+        let _ = writeln!(o, "    Push a page: fleetlayer pages push <folder> --space {space}");
+    }
+    for u in list("unknown") {
+        let _ = writeln!(o, "Can't tell what {} shares.", u.as_str().unwrap_or("?"));
+    }
+    let subs: Vec<&str> = me["subscriptions"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    if !subs.is_empty() {
+        let _ = writeln!(o, "Subscribed to: {}.", subs.join(", "));
+    }
+    o
 }
 
 /// Ctrl-]: leave an attached terminal.
@@ -543,6 +664,14 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 }
                 println!("{line}");
             }
+        }
+        Command::Me => {
+            let v: Value = peer.request("node/me", &json!({"caller": caller()})).await?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&v)?);
+                return Ok(());
+            }
+            print!("{}", me_text(&v));
         }
         Command::Sessions { all } => {
             let v: Value = peer.request("node/sessions", &json!({})).await?;

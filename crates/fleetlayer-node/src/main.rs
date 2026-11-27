@@ -8,6 +8,7 @@ mod heartbeat;
 mod keys;
 mod link;
 mod local;
+mod me;
 mod pages;
 mod plugins;
 mod readings;

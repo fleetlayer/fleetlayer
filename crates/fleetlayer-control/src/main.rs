@@ -15,6 +15,7 @@ mod db;
 mod directory;
 mod hooks;
 mod link;
+mod me;
 mod pages;
 mod people;
 mod policy;

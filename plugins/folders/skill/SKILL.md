@@ -7,7 +7,7 @@ description: Read the person's screenshots, downloads or other folders on anothe
 
 A machine (usually the person's laptop) can share a few folders, such as its screenshots and downloads, as an MCP
 server through Fleetlayer. You reach it with `fleetlayer mcp <tool>@<node>`, like any shared tool (the `fleetlayer`
-skill). Your person's setup instructions name the entry; add it once:
+skill). `fleetlayer me` lists each entry you may use, with its folders and what each allows; add it once:
 
 ```sh
 claude mcp add folders -- fleetlayer mcp folders@laptop

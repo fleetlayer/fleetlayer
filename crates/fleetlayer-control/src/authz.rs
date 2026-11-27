@@ -45,6 +45,9 @@ pub const LINK_METHODS: &[(&str, Option<&str>)] = &[
     (m::PAGES_SPACES, None),
     (m::PAGES_OPEN, Some("write")),
     (m::SESSION_START, Some("start")),
+    (m::TOOLS, None),
+    // About the caller's own session only, decided item by item without asking (`me.rs`).
+    (m::ME, None),
 ];
 
 #[derive(Default)]
@@ -277,50 +280,10 @@ async fn decide_in(
     // Each tenant's say, from its rules alone.
     let mut says = vec![];
     for id in tenants {
-        let Some(tenant) = fleet.tenant(id) else { continue };
-        let scope = Scope { fleet, tenant };
-        let policy = app.authz.policy(&app.db, id).await.map_err(RpcError::internal)?;
-        let people_or_tenant_thing = who.starts_with("person:") || crate::directory::is_tenant_thing(target);
-        let say = match policy {
-            Some(p) => {
-                let d = p.decide_in(Some(scope), who, verb, target, reply).map_err(RpcError::internal)?;
-                if d.allowed && !d.audit_would_deny.is_empty() {
-                    audit(app, home.unwrap_or(id), who, verb, target, &d.audit_would_deny).await;
-                }
-                Say {
-                    tenant: id.clone(),
-                    slug: tenant.slug.clone(),
-                    allowed: d.allowed,
-                    because: d.because.join(", "),
-                    policy: Some(p),
-                }
-            }
-            None if people_or_tenant_thing => {
-                let p = builtin();
-                let d = p.decide_in(Some(scope), who, verb, target, reply).map_err(RpcError::internal)?;
-                Say {
-                    tenant: id.clone(),
-                    slug: tenant.slug.clone(),
-                    allowed: d.allowed,
-                    because: d.because.join(", "),
-                    policy: Some(p),
-                }
-            }
-            None => {
-                // Version 1: membership, then rules on messages, tools (tool:…) and sync (sync:…); else allowed.
-                let (ok, because) = match builtin().refused_up_front(scope, who, target) {
-                    Some(r) => (false, r),
-                    None => {
-                        let v1 = matches!(verb, "message" | "use_tool" | "sync");
-                        let ok = !v1
-                            || reply
-                            || crate::acl::allowed(&app.db, id, who, target).await.map_err(RpcError::internal)?;
-                        (ok, "a version 1 rule".to_string())
-                    }
-                };
-                Say { tenant: id.clone(), slug: tenant.slug.clone(), allowed: ok, because, policy: None }
-            }
-        };
+        let Some((say, would_deny)) = say_in(app, fleet, id, (who, verb, target), reply).await? else { continue };
+        if say.allowed && !would_deny.is_empty() {
+            audit(app, home.unwrap_or(id), who, verb, target, &would_deny).await;
+        }
         says.push(say);
     }
     let named = |s: &Say| {
@@ -408,6 +371,106 @@ async fn decide_in(
         });
     }
     Ok(Outcome { allowed: true, because, refusal: None })
+}
+
+/// One tenant's say on a request, from its rules alone, with the audit rules that would have refused it. No side
+/// effects: [`decide_in`] records and publishes, [`dry`] doesn't.
+async fn say_in(
+    app: &App,
+    fleet: &Fleet,
+    id: &str,
+    (who, verb, target): (&str, &str, &str),
+    reply: bool,
+) -> Result<Option<(Say, Vec<String>)>, RpcError> {
+    let Some(tenant) = fleet.tenant(id) else { return Ok(None) };
+    let scope = Scope { fleet, tenant };
+    let policy = app.authz.policy(&app.db, id).await.map_err(RpcError::internal)?;
+    let people_or_tenant_thing = who.starts_with("person:") || crate::directory::is_tenant_thing(target);
+    let compiled = match policy {
+        Some(p) => Some(p),
+        None if people_or_tenant_thing => Some(builtin()),
+        None => None,
+    };
+    if let Some(p) = compiled {
+        let d = p.decide_in(Some(scope), who, verb, target, reply).map_err(RpcError::internal)?;
+        let say = Say {
+            tenant: id.to_string(),
+            slug: tenant.slug.clone(),
+            allowed: d.allowed,
+            because: d.because.join(", "),
+            policy: Some(p),
+        };
+        return Ok(Some((say, d.audit_would_deny)));
+    }
+    // Version 1: membership, then rules on messages, tools (tool:…) and sync (sync:…); else allowed.
+    let (ok, because) = match builtin().refused_up_front(scope, who, target) {
+        Some(r) => (false, r),
+        None => {
+            let v1 = matches!(verb, "message" | "use_tool" | "sync");
+            let ok = !v1 || reply || crate::acl::allowed(&app.db, id, who, target).await.map_err(RpcError::internal)?;
+            (ok, "a version 1 rule".to_string())
+        }
+    };
+    Ok(Some((Say { tenant: id.to_string(), slug: tenant.slug.clone(), allowed: ok, because, policy: None }, vec![])))
+}
+
+/// What the person would decide on a request, without asking: nothing recorded, published or filed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Dry {
+    /// Refused by a rule (or no tenant decides it).
+    Denied,
+    Allowed {
+        why: bool,
+        until: Option<i64>,
+    },
+    /// Allowed once the person approves; `pending` names a request already waiting.
+    Ask {
+        why: bool,
+        pending: Option<String>,
+    },
+    /// The person refused it within the hour.
+    Refused {
+        why: bool,
+        request: String,
+    },
+}
+
+/// [`decide_in`]'s answer for `who` doing `verb` to `target`, for `fleetlayer me`: no audit entry, no event, no
+/// approval request, and no renewal of one.
+pub async fn dry(app: &App, home: &str, who: &str, verb: &str, target: &str) -> Dry {
+    let Ok(fleet) = app.authz.fleet(&app.db).await else { return Dry::Denied };
+    let tenants: Vec<String> = fleet.deciders(who, target).iter().map(|t| t.id.clone()).collect();
+    if tenants.is_empty() {
+        return Dry::Denied;
+    }
+    let reply = crate::acl::replying(&app.db, home, who, target).await.unwrap_or(false);
+    let mut says = vec![];
+    for id in &tenants {
+        match say_in(app, &fleet, id, (who, verb, target), reply).await {
+            Ok(Some((say, _))) if say.allowed => says.push(say),
+            Ok(None) => {}
+            _ => return Dry::Denied,
+        }
+    }
+    let why = says.iter().any(|s| {
+        let (Some(p), Some(t)) = (&s.policy, fleet.tenant(&s.tenant)) else { return false };
+        p.needs_justification_in(Some(Scope { fleet: &fleet, tenant: t }), who, verb, target)
+    });
+    let mut until: Option<i64> = None;
+    for s in &says {
+        let (Some(p), Some(t)) = (&s.policy, fleet.tenant(&s.tenant)) else { continue };
+        if p.ask_for_in(Some(Scope { fleet: &fleet, tenant: t }), who, verb, target).is_none() {
+            continue;
+        }
+        let held = crate::policy::approval_target(target);
+        match crate::approvals::peek(&app.db, &s.tenant, who, verb, &held).await {
+            Ok(crate::approvals::Peek::Approved(e)) => until = Some(until.map_or(e, |u| u.min(e))),
+            Ok(crate::approvals::Peek::Pending(id)) => return Dry::Ask { why, pending: Some(id) },
+            Ok(crate::approvals::Peek::Denied(id)) => return Dry::Refused { why, request: id },
+            Ok(crate::approvals::Peek::None) | Err(_) => return Dry::Ask { why, pending: None },
+        }
+    }
+    Dry::Allowed { why, until }
 }
 
 async fn audit(app: &App, tenant: &str, who: &str, verb: &str, target: &str, rules: &[String]) {
@@ -693,6 +756,8 @@ mod tests {
             m::PAGES_SPACES,
             m::PAGES_OPEN,
             m::SESSION_START,
+            m::TOOLS,
+            m::ME,
         ];
         for method in node_to_control {
             assert!(listed.contains(&method), "{method} isn't in LINK_METHODS");

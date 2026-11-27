@@ -72,6 +72,12 @@ pub mod method {
     pub const SESSION_START: &str = "link/session_start";
     /// Control plane → node: start or resume one of its sessions for a caller. `SessionServe` → `SessionStarted`.
     pub const SESSION_SERVE: &str = "link/session_serve";
+    /// Node → control plane (notification): the tools this node shares, `Tools`, replacing its earlier list. Sent when
+    /// it links and when an opt-in changes. Names, descriptions and folder names only: never paths or secrets.
+    pub const TOOLS: &str = "link/tools";
+    /// Node → control plane: what one of its sessions may use (`fleetlayer me`). `MeRequest` → `Me`. Read-only: it
+    /// files no approval request and counts as nobody's first use.
+    pub const ME: &str = "link/me";
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -351,4 +357,112 @@ pub struct SessionStarted {
     pub session_id: Option<String>,
     /// The session started, but its first prompt couldn't be typed in: why.
     pub prompt_error: Option<String>,
+}
+
+/// `link/tools`: what a node shares, for `fleetlayer me`. The control plane keeps it in memory only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct Tools {
+    pub tools: Vec<ToolInfo>,
+}
+
+/// One tool a node shares.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolInfo {
+    pub name: String,
+    /// One line from node.yaml's `description:`, for agents choosing a tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// The node's own `allow:` patterns: both they and the access policy must let a caller in.
+    #[serde(default)]
+    pub allow: Vec<String>,
+    /// Why it isn't offered now (off its networks), or None when it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_offered: Option<String>,
+    /// For a fleetlayer-folders tool: its folders and what each allows.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub folders: Vec<FolderInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct FolderInfo {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub upload: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub delete: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub trusted: bool,
+}
+
+/// `link/me`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MeRequest {
+    /// The calling session's name (its tab), or `-` for a shell.
+    pub caller: String,
+}
+
+/// What a session may use, as the control plane sees it now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Me {
+    /// `<tab>@<node>`.
+    pub address: String,
+    /// Its messages are delivered as outside data (the policy's `untrusted:`).
+    pub untrusted: bool,
+    /// Verbs it must give a reason for (`--why`).
+    #[serde(default)]
+    pub justify: Vec<String>,
+    /// Running sessions on other nodes it may message.
+    #[serde(default)]
+    pub message: Vec<String>,
+    /// Of the running sessions on other nodes it can see, how many it may not message.
+    #[serde(default)]
+    pub message_refused: usize,
+    /// Shared tools it may use or could ask for. Refused ones are left out.
+    #[serde(default)]
+    pub tools: Vec<MeTool>,
+    /// Pages spaces it may push to, or could ask for.
+    #[serde(default)]
+    pub pages: Vec<MeTarget>,
+    /// Nodes it can see that are too old to say what they share.
+    #[serde(default)]
+    pub unknown: Vec<String>,
+    /// Its subscriptions: `channel` or `channel (subject)`.
+    #[serde(default)]
+    pub subscriptions: Vec<String>,
+}
+
+/// A target and the decision on it, without asking.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MeTarget {
+    /// `browser@laptop`, or a pages space's name.
+    pub name: String,
+    pub node: String,
+    /// `allowed`, `ask` (the first use asks the person), `pending` (asked, not answered) or `refused` (the person
+    /// said no, within the hour).
+    pub state: String,
+    /// The approval's or request's ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<String>,
+    /// Until when an approval holds (milliseconds since 1970).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<i64>,
+    /// The node is offline now.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub offline: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MeTool {
+    #[serde(flatten)]
+    pub target: MeTarget,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_offered: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub folders: Vec<FolderInfo>,
 }

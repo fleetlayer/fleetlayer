@@ -17,6 +17,17 @@ command, which talks to this machine's node.
   in the fleet, the `@<node>` can be left out.
 - **A shared tool** is `<tool>@<node>`: `browser@laptop`, `folders@laptop`.
 
+## What you may use from here
+
+```sh
+fleetlayer me
+```
+
+It says who you are (`<tab>@<node>`), which sessions you may message, whether your messages arrive as outside data,
+each shared tool you may use (with its folders, whether your first use still asks your person, and the line that adds
+it), the pages spaces you may push to, and your subscriptions. Asking files no approval request. What a rule refuses
+you isn't listed. From v0.3.10; on an older node, ask your person what's shared.
+
 ## See who's there and what they're doing
 
 ```sh
@@ -65,8 +76,8 @@ A tool another machine shares becomes your MCP server through `fleetlayer mcp <t
 claude mcp add browser -- fleetlayer mcp browser@laptop
 ```
 
-In another harness, the MCP server's command is `fleetlayer mcp` with the argument `browser@laptop`. Your person's
-setup instructions name the tools in this fleet. Depth: the `fleetlayer-browser` skill (a signed-in browser) and the
+In another harness, the MCP server's command is `fleetlayer mcp` with the argument `browser@laptop`. `fleetlayer me`
+lists the tools you may use and prints the line for each. Depth: the `fleetlayer-browser` skill (a signed-in browser) and the
 `fleetlayer-folders` skill (screenshots, downloads). Pages for people to look at: the `pages` skill; small interactive
 apps: the `apps` skill.
 

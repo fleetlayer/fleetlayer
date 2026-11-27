@@ -38,6 +38,9 @@ use crate::Node;
 #[serde(deny_unknown_fields)]
 pub struct ToolConfig {
     pub name: String,
+    /// One line for agents choosing a tool (`fleetlayer me` shows it): "Nathan's Chrome, signed in to his sites".
+    #[serde(default)]
+    pub description: Option<String>,
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
@@ -666,6 +669,7 @@ mod tests {
     fn the_allow_list_is_patterns_and_empty_means_nobody() {
         let mut t = ToolConfig {
             name: "browser".into(),
+            description: None,
             command: "x".into(),
             args: vec![],
             env: HashMap::new(),

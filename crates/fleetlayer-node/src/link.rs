@@ -161,6 +161,7 @@ async fn connect_once(node: &Arc<Node>, cfg: &ControlConfig) -> anyhow::Result<(
     crate::readings::resubscribe(node, &peer).await;
     crate::sync::relinked(node).await;
     crate::pages::announce_to(node, &peer).await;
+    crate::me::announce_to(node, &peer).await;
     let pusher = {
         let (node, peer) = (node.clone(), peer.clone());
         tokio::spawn(async move {

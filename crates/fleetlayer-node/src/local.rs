@@ -137,11 +137,19 @@ impl Handler for Local {
                 if method == "node/tools_disable" {
                     node.opt_ins.disable(name).await;
                     tracing::info!(tool = name, "opt-in ended by hand");
+                    crate::me::announce(node).await;
                     return answer(&json!({"tool": name, "enabled": false}));
                 }
                 let minutes = p["minutes"].as_u64().unwrap_or(120).clamp(1, 24 * 60);
                 node.opt_ins.enable(name, std::time::Duration::from_secs(minutes * 60)).await;
                 tracing::warn!(tool = name, minutes, networks = ?tool.networks, "opted in: offered on any network");
+                crate::me::announce(node).await;
+                // Say so again when it lapses.
+                let n = node.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(minutes * 60 + 1)).await;
+                    crate::me::announce(&n).await;
+                });
                 answer(&json!({"tool": name, "enabled": true, "minutes": minutes}))
             }
             "node/summaries_import" => {
@@ -180,6 +188,21 @@ impl Handler for Local {
                 peer.request::<_, Value>(m, &p).await
             }
             "node/readings" => crate::readings::latest(node, &p).await,
+            "node/me" => {
+                let c =
+                    self.caller(p.get("caller").and_then(|c| serde_json::from_value(c.clone()).ok()).as_ref()).await;
+                let caller = c.as_ref().map(|s| s.tab().unwrap_or(&s.session_id).to_string()).unwrap_or("-".into());
+                let mut local = json!({"node": node.name, "caller": caller, "address": format!("{caller}@{}", node.name),
+                    "harness": c.as_ref().and_then(|s| s.meta.harness.clone())});
+                match node.link.peer().await {
+                    Some(peer) => {
+                        let me: Value = peer.request(l::method::ME, &l::MeRequest { caller }).await?;
+                        local["me"] = me;
+                    }
+                    None => local["offline"] = json!(true),
+                }
+                answer(&local)
+            }
             "node/services" => {
                 let mut services = vec![];
                 for p in &node.plugins {

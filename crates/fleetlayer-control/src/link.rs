@@ -39,6 +39,9 @@ pub struct Links {
     /// Which node hosts each pages space, by (tenant, space), from `link/pages_spaces`. Kept when the node unlinks, so
     /// a push can say the space's node is offline.
     pub pages: Mutex<HashMap<(String, String), String>>,
+    /// What each node shares, by (tenant, node), from `link/tools`, for `fleetlayer me`. Kept when the node unlinks,
+    /// so its tools show as offline; rebuilt as nodes link.
+    pub tools: Mutex<HashMap<(String, String), Vec<l::ToolInfo>>>,
     next: AtomicU64,
 }
 
@@ -505,6 +508,10 @@ impl Handler for FromNode {
                 }
                 answer(&fleet)
             }
+            l::method::ME => {
+                let req: l::MeRequest = params(p)?;
+                answer(&crate::me::answer(app, tenant, &self.node, &req.caller).await?)
+            }
             l::method::ACCESS_CHECK => {
                 let req: l::AccessCheck = params(p)?;
                 answer(&crate::authz::access_check(app, &self.node, &req).await?)
@@ -533,6 +540,13 @@ impl Handler for FromNode {
                 let readings = p["readings"].as_array().cloned().unwrap_or_default();
                 crate::readings::publish(&self.app, tenant, node, readings).await
             }
+            l::method::TOOLS => match serde_json::from_value::<l::Tools>(p) {
+                Ok(t) => {
+                    self.app.links.tools.lock().await.insert((tenant.to_string(), node.to_string()), t.tools);
+                    Ok(())
+                }
+                Err(e) => Err(e.into()),
+            },
             l::method::PAGES_SPACES => {
                 let spaces: Vec<String> = serde_json::from_value(p["spaces"].clone()).unwrap_or_default();
                 crate::pages::claim(&self.app, tenant, node, &spaces).await;
