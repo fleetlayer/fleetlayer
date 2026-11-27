@@ -16,6 +16,7 @@
 
 mod apps;
 mod auth;
+mod receive;
 mod render;
 mod space;
 mod web;
@@ -163,6 +164,9 @@ async fn run(
                 hosts,
             },
         );
+        // So `fleetlayer pages push` from other machines finds these spaces.
+        let spaces: Vec<&String> = app.spaces.keys().collect();
+        peer.notify(ext::method::PAGES_SPACES, &json!({ "spaces": spaces }));
     }
     let a = app.clone();
     tokio::spawn(async move {
@@ -234,6 +238,89 @@ impl Handler for Shared {
     }
 }
 
+/// `fleetlayer-pages receive --space <space> --name <name> [--new] [--date YYYY-MM-DD] [--caller <tab@node>]`: one push on stdin and
+/// stdout (`receive.rs`). The node that hosts the space starts it for `link/pages_serve`, with the plugin's config as
+/// JSON in `FLEETLAYER_PAGES_CONFIG`.
+fn receive_main(args: &[String]) -> i32 {
+    let mut space = None;
+    let mut name = None;
+    let mut caller = String::from("-");
+    let mut new = false;
+    let mut date: Option<String> = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--space" => space = it.next().cloned(),
+            "--name" => name = it.next().cloned(),
+            "--caller" => caller = it.next().cloned().unwrap_or_default(),
+            "--date" => date = it.next().cloned(),
+            "--new" => new = true,
+            other => {
+                eprintln!("fleetlayer-pages receive: unknown argument {other:?}");
+                return 2;
+            }
+        }
+    }
+    let (Some(space), Some(name)) = (space, name) else {
+        eprintln!(
+            "usage: fleetlayer-pages receive --space <space> --name <name> [--new] [--date YYYY-MM-DD] [--caller <tab@node>]"
+        );
+        return 2;
+    };
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    let fail = |out: &mut dyn std::io::Write, msg: String| {
+        let _ = out.write_all(format!("{}\n", json!({ "error": msg })).as_bytes());
+        eprintln!("fleetlayer-pages receive: {msg}");
+        1
+    };
+    let cfg: Config = match std::env::var("FLEETLAYER_PAGES_CONFIG")
+        .map_err(|_| "FLEETLAYER_PAGES_CONFIG isn't set".to_string())
+        .and_then(|c| serde_json::from_str(&c).map_err(|e| format!("the pages config: {e}")))
+    {
+        Ok(c) => c,
+        Err(e) => return fail(&mut out, e),
+    };
+    let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    let Some(mut sc) = cfg.spaces.get(&space).cloned() else {
+        return fail(&mut out, format!("this pages service has no space {space:?}"));
+    };
+    sc.dir = expand(&home, &sc.dir);
+    // The pushing machine's own date when it sent one, so a page dates from the pusher's day, else today in UTC.
+    let today = match date {
+        Some(d) if space::folder_date(&d) == Some(d.as_str()) => d,
+        Some(d) => return fail(&mut out, format!("--date {d:?}: use YYYY-MM-DD")),
+        None => space::day(
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+        ),
+    };
+    let req = receive::Request {
+        space_name: &space,
+        space: &sc,
+        base_url: cfg.base_url.as_deref(),
+        name: &name,
+        new,
+        today: &today,
+    };
+    let stdin = std::io::stdin();
+    match receive::run(&req, &mut stdin.lock(), &mut out) {
+        Ok(done) => {
+            eprintln!(
+                "fleetlayer-pages receive: {caller} pushed {space}/{} ({} written, {} kept, {} removed)",
+                done["folder"].as_str().unwrap_or_default(),
+                done["written"],
+                done["kept"],
+                done["removed"]
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("fleetlayer-pages receive: {caller} → {space}/{name}: {e}");
+            1
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -263,10 +350,11 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+        Some("receive") => std::process::exit(receive_main(&args[1..])),
         Some("--version") => println!("fleetlayer-pages {}", env!("CARGO_PKG_VERSION")),
         Some(other) => {
             eprintln!(
-                "fleetlayer-pages: unknown command {other:?} (run by a Fleetlayer node, or `serve <config.json>`)"
+                "fleetlayer-pages: unknown command {other:?} (run by a Fleetlayer node, `serve <config.json>` or `receive`)"
             );
             std::process::exit(2);
         }

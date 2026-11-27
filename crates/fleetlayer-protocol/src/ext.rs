@@ -47,6 +47,9 @@ pub mod method {
     /// Plugin → node (notification): this plugin serves HTTP here (`ServiceListening`), sent after it has bound.
     /// Idempotent: resending replaces the entry of that name; the node drops a plugin's entries when it exits.
     pub const SERVICE_LISTENING: &str = "_fleetlayer.dev/service/listening";
+    /// Plugin → node (notification): the pages spaces this plugin hosts, `{spaces: [name]}`, replacing its earlier list,
+    /// so `fleetlayer pages push` from other machines reaches them. The node drops them when the plugin exits.
+    pub const PAGES_SPACES: &str = "_fleetlayer.dev/pages/spaces";
 }
 
 pub mod meta_key {

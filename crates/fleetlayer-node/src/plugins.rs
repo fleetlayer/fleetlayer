@@ -66,6 +66,8 @@ struct Inner {
     relist_pending: bool,
     /// HTTP services it announced (`_fleetlayer.dev/service/listening`), by name; cleared when it exits.
     services: std::collections::BTreeMap<String, ext::ServiceListening>,
+    /// Pages spaces it hosts (`_fleetlayer.dev/pages/spaces`); cleared when it exits.
+    pages_spaces: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -96,6 +98,7 @@ impl PluginHandle {
                 stderr: VecDeque::new(),
                 relist_pending: false,
                 services: Default::default(),
+                pages_spaces: vec![],
             }),
         })
     }
@@ -141,6 +144,11 @@ impl PluginHandle {
         }
     }
 
+    /// The pages spaces it hosts.
+    pub async fn pages_spaces(&self) -> Vec<String> {
+        self.inner.lock().await.pages_spaces.clone()
+    }
+
     /// The HTTP services it announced.
     pub async fn services(&self) -> Vec<ext::ServiceListening> {
         self.inner.lock().await.services.values().cloned().collect()
@@ -165,7 +173,12 @@ pub async fn supervise(node: Arc<Node>, plugin: Arc<PluginHandle>) {
             Err(Fatal(reason)) => {
                 tracing::error!(plugin = plugin.name(), "{reason}; not restarting it");
                 plugin.set_state(State::Broken { reason }).await;
-                plugin.inner.lock().await.services.clear();
+                {
+                    let mut i = plugin.inner.lock().await;
+                    i.services.clear();
+                    i.pages_spaces.clear();
+                }
+                crate::pages::announce(&node).await;
                 node.registry.plugin_gone(plugin.name()).await;
                 return;
             }
@@ -175,7 +188,9 @@ pub async fn supervise(node: Arc<Node>, plugin: Arc<PluginHandle>) {
             i.peer = None;
             i.restarts += 1;
             i.services.clear();
+            i.pages_spaces.clear();
         }
+        crate::pages::announce(&node).await;
         node.registry.plugin_gone(plugin.name()).await;
         if started.elapsed() >= HEALTHY_RUN {
             backoff = Duration::from_secs(1);
@@ -468,6 +483,14 @@ impl Handler for FromPlugin {
                         plugin.inner.lock().await.services.insert(s.name.clone(), s);
                     }
                 },
+                Err(e) => tracing::warn!(plugin = plugin.name(), "bad {method}: {e}"),
+            },
+            ext::method::PAGES_SPACES => match serde_json::from_value::<Vec<String>>(p["spaces"].clone()) {
+                Ok(spaces) => {
+                    tracing::info!(plugin = plugin.name(), ?spaces, "pages spaces");
+                    plugin.inner.lock().await.pages_spaces = spaces;
+                    crate::pages::announce(&node).await;
+                }
                 Err(e) => tracing::warn!(plugin = plugin.name(), "bad {method}: {e}"),
             },
             ext::method::READING_PUBLISH => {

@@ -69,9 +69,16 @@ should be kept beside the old one gets a new folder (a new date or name).
 
 ## With no file sync
 
-On a machine without the vault (a cloud VM with a Fleetlayer node), `fleetlayer pages push <folder> --space <space>
---name <name>` sends the folder to the pages node (planned), checked against the access policy; pushing again sends
-only what changed.
+On a machine without the vault (a cloud VM with a Fleetlayer node), write the page in a folder anywhere, then:
+
+```sh
+fleetlayer pages push ./2026-11-27-signing-flow-qa --space <space>
+```
+
+It prints the page's link and any problems; fix them and push again (only changed files travel, and the link stays
+the same). `--new` starts a fresh dated folder instead of updating the page with that name. If it says it's waiting
+for approval, tell your person the request it names and push again once they've approved it: one approval covers the
+space.
 
 ## Keep the record
 

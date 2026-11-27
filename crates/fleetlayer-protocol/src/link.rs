@@ -59,6 +59,14 @@ pub mod method {
     /// Node → control plane: may this person or agent do this to something a tenant owns (a service's data, a page, an
     /// app)? Answered only if the node's `-@<node>` is a member of that tenant. `AccessCheck` → `AccessDecision`.
     pub const ACCESS_CHECK: &str = "link/access_check";
+    /// Node → control plane (notification): the pages spaces its plugins host, `{spaces: [name]}`, replacing its earlier
+    /// list. Sent when it links and when the list changes.
+    pub const PAGES_SPACES: &str = "link/pages_spaces";
+    /// Node → control plane: push a page into a space another node hosts (`fleetlayer pages push`), after `write` on
+    /// `page:<space>/<name>`. `PagesOpen` → `ToolOpened`.
+    pub const PAGES_OPEN: &str = "link/pages_open";
+    /// Control plane → node: receive a page push into one of its spaces on stream `streamId`. `PagesServe` → `{}`.
+    pub const PAGES_SERVE: &str = "link/pages_serve";
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -241,4 +249,38 @@ pub struct AccessDecision {
     pub rules: Vec<String>,
     /// One line for a person to read.
     pub reason: String,
+}
+
+/// `link/pages_open`: a session asks to push a page into a space.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PagesOpen {
+    pub space: String,
+    /// The page's short name (`signing-flow-qa`); its folder is `<date>-<name>`.
+    pub name: String,
+    /// The calling session's name (its tab), or `-` for a shell.
+    pub caller: String,
+    /// A new dated folder even when one with this name exists.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub new: bool,
+    /// The pushing machine's date (`YYYY-MM-DD`), for a new folder's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub justification: Option<String>,
+}
+
+/// `link/pages_serve`: the hosting node receives the push on stream `streamId`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PagesServe {
+    pub stream_id: String,
+    pub space: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub new: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
+    /// `<tab>@<node>` of the caller.
+    pub caller: String,
 }

@@ -42,6 +42,8 @@ pub const LINK_METHODS: &[(&str, Option<&str>)] = &[
     (m::READING_LATEST, Some("read")),
     // Decided as the person or agent it names, in the tenant it names, once the asking node is a member there.
     (m::ACCESS_CHECK, None),
+    (m::PAGES_SPACES, None),
+    (m::PAGES_OPEN, Some("write")),
 ];
 
 #[derive(Default)]
@@ -674,6 +676,8 @@ mod tests {
             m::READING_SUBSCRIBE,
             m::READING_LATEST,
             m::ACCESS_CHECK,
+            m::PAGES_SPACES,
+            m::PAGES_OPEN,
         ];
         for method in node_to_control {
             assert!(listed.contains(&method), "{method} isn't in LINK_METHODS");

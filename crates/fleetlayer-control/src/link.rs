@@ -36,6 +36,9 @@ pub struct Links {
     pub nodes: Mutex<HashMap<(String, String), NodeConn>>,
     /// The reading kinds each linked node subscribed to.
     pub reading_kinds: Mutex<HashMap<(String, String), Vec<String>>>,
+    /// Which node hosts each pages space, by (tenant, space), from `link/pages_spaces`. Kept when the node unlinks, so
+    /// a push can say the space's node is offline.
+    pub pages: Mutex<HashMap<(String, String), String>>,
     next: AtomicU64,
 }
 
@@ -449,6 +452,7 @@ impl Handler for FromNode {
                 let req: l::AccessCheck = params(p)?;
                 answer(&crate::authz::access_check(app, &self.node, &req).await?)
             }
+            l::method::PAGES_OPEN => answer(&crate::pages::open(app, tenant, &self.node, params(p)?).await?),
             _ => Err(RpcError::method_not_found(method)),
         }
     }
@@ -471,6 +475,11 @@ impl Handler for FromNode {
             l::method::READINGS => {
                 let readings = p["readings"].as_array().cloned().unwrap_or_default();
                 crate::readings::publish(&self.app, tenant, node, readings).await
+            }
+            l::method::PAGES_SPACES => {
+                let spaces: Vec<String> = serde_json::from_value(p["spaces"].clone()).unwrap_or_default();
+                crate::pages::claim(&self.app, tenant, node, &spaces).await;
+                Ok(())
             }
             l::method::SUMMARY => {
                 match serde_json::from_value::<fleetlayer_protocol::summary::SummaryEvent>(p["event"].clone()) {

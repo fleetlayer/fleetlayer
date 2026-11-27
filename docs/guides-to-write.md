@@ -338,3 +338,14 @@ managers, machines that sleep.
   callers only (`['*@agents']`) refused the sharing machine's own sessions, which looked like a policy denial. Prefer
   `allow: ['*']` on the node and let the policy be the one place that says who (deny untrusted-input agents there).
   The error names the node's list ("may not use browser on <node>") when it's the node refusing.
+
+## Pushing pages to a service that only reads its folders
+
+- **What:** a pages service set up to read its spaces through a read-only view (a read-only bind mount, so the web
+  service can never change what agents wrote) can't receive `fleetlayer pages push`, because the receiver runs as the
+  same user.
+- **How it was solved:** push checks that it can write before asking for any file and answers "this space doesn't
+  accept pushes". The deployment gives the service a writable view of only the spaces that accept pushes, and keeps
+  the rest read-only.
+- **Where it lives:** `docs/plugins/pages.md`, "From another machine".
+

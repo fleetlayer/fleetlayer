@@ -1,5 +1,6 @@
 //! fleetlayer: the command line. It talks to this machine's node over its local socket.
 
+mod pages;
 mod up;
 
 use std::path::PathBuf;
@@ -104,6 +105,11 @@ enum Command {
         #[arg(long, env = "FLEETLAYER_WHY")]
         why: Option<String>,
     },
+    /// Pages for people, hosted by a pages service anywhere in the fleet.
+    Pages {
+        #[command(subcommand)]
+        command: PagesCommand,
+    },
     /// Messages between sessions.
     Msg {
         #[command(subcommand)]
@@ -119,6 +125,28 @@ struct SubscribeArgs {
     /// `<tab>@<node>`. Default: the session this runs in.
     #[arg(long)]
     target: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum PagesCommand {
+    /// Send a page folder (index.md and its images) to a space on another machine: only changed files travel, and a
+    /// page of the same name is updated in place. Prints its link and any problems the service found.
+    Push {
+        /// The page's folder.
+        dir: PathBuf,
+        /// The space it goes in.
+        #[arg(long)]
+        space: String,
+        /// The page's short name (lower case, hyphens). Default: the folder's name without its date.
+        #[arg(long)]
+        name: Option<String>,
+        /// Start a new dated folder even if a page with this name exists.
+        #[arg(long)]
+        new: bool,
+        /// Why, in one line, when the access rules ask for a reason. Default: $FLEETLAYER_WHY.
+        #[arg(long, env = "FLEETLAYER_WHY")]
+        why: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -394,6 +422,10 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     if let Command::Attach { target, observe, raw, why } = &cli.command {
         return attach(&socket.with_extension("tools.sock"), target, *observe, *raw, why.as_deref()).await;
     }
+    if let Command::Pages { command: PagesCommand::Push { dir, space, name, new, why } } = &cli.command {
+        let push = pages::Push { dir, space, name: name.as_deref(), new: *new, why: why.as_deref(), caller: caller() };
+        return pages::push(&socket.with_extension("tools.sock"), push).await;
+    }
     if let Command::Mcp { target, why } = &cli.command {
         return mcp(&socket.with_extension("tools.sock"), target, why.as_deref()).await;
     }
@@ -580,7 +612,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 }
             }
         }
-        Command::Mcp { .. } | Command::Attach { .. } => {}
+        Command::Mcp { .. } | Command::Attach { .. } | Command::Pages { .. } => {}
         Command::Tools { command } => {
             let (method, args) = match &command {
                 ToolsCommand::Enable { tool, duration } => {

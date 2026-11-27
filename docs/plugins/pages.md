@@ -1,7 +1,7 @@
 # Pages
 
-Status: built (27 November 2026): the renderer, the web app, live updates and the login key. `fleetlayer pages push`
-and sign-in through Fleetlayer next. The same service hosts **apps** (interactive HTML and JavaScript, each on a
+Status: built (27 November 2026): the renderer, the web app, live updates, the login key and `fleetlayer pages push`.
+Sign-in through Fleetlayer next. The same service hosts **apps** (interactive HTML and JavaScript, each on a
 subdomain of its own): `docs/plugins/apps.md`.
 
 Pages are for people to look at: QA screenshots, reports, mock-ups, decision write-ups. Any agent or script that can
@@ -97,7 +97,7 @@ the page:
 - neither `index.md` nor `index.html` in the folder.
 
 Agents check their page by fetching it (the problems box has `id="problems"`). An agent that can't sign in checks the
-folder against the list above.
+folder against the list above. `fleetlayer pages push` prints the same problems.
 
 ## Live
 
@@ -158,8 +158,41 @@ Every part of Fleetlayer can move between machines (a laptop today, a home serve
 
 Every agent writes straight into its own space's folder. An agent you trust less, with its own Unix user, gets only
 its own space (a mounted sub-folder or a synced folder of its own), so the filesystem keeps it out of the others. An
-agent with no file sync (a cloud machine on your network with a Fleetlayer node) uses `fleetlayer pages push`
-(planned), checked against the access policy.
+agent with no file sync (a cloud machine on your network with a Fleetlayer node) uses `fleetlayer pages push`, below.
+
+### From another machine: `fleetlayer pages push`
+
+```sh
+fleetlayer pages push ./2026-11-27-signing-qa --space personal
+# Pushed personal/2026-11-27-signing-qa: 3 sent, 0 unchanged, 0 removed.
+# https://pages.example/personal/2026-11-27-signing-qa/
+```
+
+Write the page in a folder anywhere, as above, then push it. Any machine with a Fleetlayer node linked to the same
+control plane can push, whether or not it has the vault.
+
+- **Only what changed travels.** The command sends a list of the page's files with their SHA-256. The pages service
+  asks for the ones that differ, then checks every file it receives before moving any into place, so a push that
+  breaks off part-way leaves the page as it was. Files the page no longer has are removed.
+- **The same name updates the same page**, so its link stays the same: the name is the folder's name without its date
+  (`signing-qa`), or `--name`. A first push makes `<today>-<name>/`. `--new` starts a fresh dated folder.
+- **Left out:** hidden (`.`) and private (`_`) files, `node_modules`, and symbolic links. Up to 200 files and 50 MB.
+- **It prints the page's problems** (a missing image, no title), the same ones the page shows.
+- **Who may push:** it's a `write` on `page:<space>/<name>`, checked by the control plane and recorded in the audit
+  log. An agent is asked for by default, and one approval covers its whole space (`page:<space>/*`) for 30 days; a
+  fleet that doesn't ask (`ask: []`) pushes straight away. `--why` gives the reason a `justify:` rule asks for
+  ([`access-control.md`](../access-control.md)).
+
+How it runs: the pages service tells its node which spaces it hosts (`_fleetlayer.dev/pages/spaces`), and the node
+tells the control plane. A push goes from the CLI to its own node, then to the control plane (`link/pages_open`),
+which checks it and asks the space's node to receive it (`link/pages_serve`). That node runs
+`fleetlayer-pages receive` with its input and output on the stream ([`link.md`](../link.md)). If two nodes host a
+space of the same name, the first keeps it and the control plane logs an error.
+
+> [!IMPORTANT]
+> The receiver runs as the pages service's user, so that user needs write access to the spaces that accept pushes.
+> If the service only reads its spaces (a read-only mount, say), give it a writable view of those spaces only, or
+> pushes answer "this space doesn't accept pushes".
 
 ### Sign-in
 

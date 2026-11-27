@@ -159,6 +159,7 @@ async fn connect_once(node: &Arc<Node>, cfg: &ControlConfig) -> anyhow::Result<(
     push_all(node, &peer).await;
     node.link.flush(&peer).await;
     crate::readings::resubscribe(node, &peer).await;
+    crate::pages::announce_to(node, &peer).await;
     let pusher = {
         let (node, peer) = (node.clone(), peer.clone());
         tokio::spawn(async move {
@@ -205,6 +206,7 @@ impl Handler for FromControl {
             l::method::SYNC_DELIVER => crate::sync::deliver(&self.node, params(p)?).await,
             l::method::TOOL_SERVE => crate::tools::serve(self.node.clone(), params(p)?).await,
             l::method::TERMINAL_SERVE => crate::terminals::serve(self.node.clone(), params(p)?).await,
+            l::method::PAGES_SERVE => crate::pages::serve(self.node.clone(), params(p)?).await,
             l::method::CATCHUP => {
                 self.node.ask_observer(ext::method::SUMMARY_CATCHUP, &p, Duration::from_secs(480)).await
             }

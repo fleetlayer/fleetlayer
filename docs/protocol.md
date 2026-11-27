@@ -417,9 +417,10 @@ Numbers, never secrets, flow with readings: account usage and reset times, healt
 | `_fleetlayer.dev/access/check` `{tenant, who, can, to}` | `{allowed, rules, reason}`: may this person (`person:<handle>` or their ID) or agent do this to something the tenant owns (`service:…`, `page:…`, `app:…`)? Grant `access.check`; answered only if the node is a member of that tenant ([`sso.md`](sso.md)) |
 | `_fleetlayer.dev/log` `{level, message}` | A structured log line (stderr works too) |
 | `_fleetlayer.dev/service/listening` `{name, url, health?, hosts?}` | A notification: this plugin serves HTTP (below) |
+| `_fleetlayer.dev/pages/spaces` `{spaces}` | A notification: the pages spaces this plugin hosts, so `fleetlayer pages push` from other machines reaches them. The node runs the plugin's command as `<command> receive …` for each push ([`plugins/pages.md`](plugins/pages.md)) |
 
 Each is allowed only if the node's config grants it to that plugin (`grants:` in its plugin section), and the control
-plane's ACLs decide who may message whom. `service/listening` needs no grant: it only says where the plugin listens.
+plane's ACLs decide who may message whom. `service/listening` and `pages/spaces` need no grant: they only say what the plugin serves.
 
 ### Announcing an HTTP service: `_fleetlayer.dev/service/listening`
 

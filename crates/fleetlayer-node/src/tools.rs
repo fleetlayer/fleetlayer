@@ -567,6 +567,11 @@ pub async fn listen(node: Arc<Node>, path: &Path) -> anyhow::Result<()> {
             if r.read_line(&mut line).await.unwrap_or(0) == 0 {
                 return;
             }
+            // A page push (`{"pages": …}`) rather than a tool.
+            if let Ok(p) = serde_json::from_str::<crate::pages::OpenRequest>(&line) {
+                crate::pages::handle(node, p, r, w).await;
+                return;
+            }
             // A terminal (`{"terminal": …}`) rather than a tool.
             if let Ok(t) = serde_json::from_str::<crate::terminals::OpenRequest>(&line) {
                 crate::terminals::handle(node, t, r, w).await;
