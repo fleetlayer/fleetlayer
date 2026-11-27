@@ -174,8 +174,8 @@ default. Rate limits apply to whatever is allowed.
 | `acl apply <file> [--check]` | Make the stored policy match the file; `--check` prints the difference without applying |
 | `acl explain --from <who> --can <verb> --to <what>` | The decision, and the rules that made it |
 | `acl test <tests.yaml>` | Check expected decisions (`{from, can, to, expect: allow\|deny}`) against a policy file, offline; exits non-zero on a mismatch |
-| `acl suggest [--since 7d]` | The smallest `only` rules that allow what each agent actually did, from the message log |
-| `acl log [--denied] [--audit]` | Recent decisions: refusals, and what audit rules would have refused |
+| `acl suggest [--days 7]` | The smallest `only` rules that allow what each agent actually did, from the message log |
+| `acl log [--limit 30]` | Recent refusals, and what audit rules would have refused |
 
 ## How it's built
 
@@ -204,6 +204,6 @@ have refused as `access.audit`.
 - **A team sharing one control plane:** each person's machines in a group; people message across groups, agents stay
   inside their person's group unless allowed.
 - **Rolling out least privilege on a fleet that already runs:** write the rules under `audit:`, run `acl suggest`,
-  watch `acl log --audit` for a week, then promote them.
+  watch `acl log` for a week, then promote them.
 - **An agent renamed:** rules name tabs, and anyone with the node's user can rename a tab. Put rules on nodes (or
   groups of nodes) for anything that matters; tab rules are for convenience inside a trusted node.

@@ -26,7 +26,8 @@ managers, machines that sleep.
   that reads untrusted input joins (an email triage agent), add rules: `fleetlayer-control acl add --from
   '*@triage-node' --to 'inbox@main' allow`, then `--from '*@triage-node' --to '*' deny`, or set `acl default deny`
   and list what's allowed. A node sees only the sessions it may message, and subscribes only its own. Where it
-  lives: `crates/fleetlayer-control/src/acl.rs`.
+  lives: `crates/fleetlayer-control/src/acl.rs`. Written: `docs/guides/untrusted-input.md` (version 2 policy, tested with `acl test`
+  against v0.3.7).
 - **A browser MCP server started by launchd can't find Chrome's profile.** macOS doesn't let a launchd-spawned process
   read Chrome's profile folders, so Playwright MCP's extension mode fails with "Playwright Extension not found". Fix:
   set `PLAYWRIGHT_MCP_EXECUTABLE_PATH` to Chrome's binary and pass `--profile-dir-name Default`. Six sessions at once
@@ -293,3 +294,8 @@ managers, machines that sleep.
 - **Testing user services as another Unix user.** `sudo -iu <user> systemctl --user …` fails with "Failed to connect
   to bus" unless `XDG_RUNTIME_DIR=/run/user/$(id -u)` is set, and the user's services stop at logout unless
   `loginctl enable-linger <user>`. Found testing `fleetlayer up` on a Linux build server, 27 Nov 2026.
+- **`fleetlayer-control` admin commands use `./fleetlayer-control.db` unless told otherwise.** Its `--db` defaults to a
+  file in the current directory, so `fleetlayer-control node add` or `acl apply` run from the wrong folder quietly
+  makes a new, empty database. After `fleetlayer up` the real one is `~/.local/state/fleetlayer/control/control.db`:
+  pass `--db` or set `FLEETLAYER_CONTROL_DB`. Where it lives: `docs/guides/untrusted-input.md`; the mini server session
+  was asked whether `up` should make that the default.
