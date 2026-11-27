@@ -95,6 +95,16 @@ with its client ID (the `name`) and secret.
 - The ID token (RS256, ten minutes) says who: `sub` (the person's ID, never reused), `name`,
   `preferred_username`, `fleetlayer.dev/tenant`, `fleetlayer.dev/principal`, `fleetlayer.dev/role`,
   `fleetlayer.dev/teams`, and `groups` for services that map a claim to their own groups.
+- A worked example, pages (`docs/plugins/pages.md`): the client in the sign-in settings is
+
+  ```yaml
+  - name: pages
+    redirect_uris: [https://pages.example.com/_/auth/callback]
+    post_logout_redirect_uris: [https://pages.example.com/_/signed-out]
+    secret_file: ~/.config/fleetlayer/signin-clients/pages   # pages reads the same secret (its signin.secret_file)
+  ```
+
+  and the pages plugin gets the `access.check` grant, so it can ask which spaces each person may read.
 - The token never says what someone may do. For anything finer, a Fleetlayer plugin asks its node
   (`_fleetlayer.dev/access/check`), and any other service asks `POST /api/check` with its client ID and secret, about
   its own `service:<name>` only.
