@@ -1636,7 +1636,7 @@ dependencies = [
 
 [[package]]
 name = "fleetlayer-accounts"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "async-trait",
  "fleetlayer-plugin",
@@ -1648,7 +1648,7 @@ dependencies = [
 
 [[package]]
 name = "fleetlayer-claude-auth-manager"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1677,7 +1677,7 @@ dependencies = [
 
 [[package]]
 name = "fleetlayer-claude-code"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "async-trait",
  "fleetlayer-plugin",
@@ -1697,7 +1697,7 @@ dependencies = [
 
 [[package]]
 name = "fleetlayer-cli"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1719,7 +1719,7 @@ dependencies = [
 
 [[package]]
 name = "fleetlayer-control"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1748,7 +1748,7 @@ dependencies = [
 
 [[package]]
 name = "fleetlayer-file-sync"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1767,7 +1767,7 @@ dependencies = [
 
 [[package]]
 name = "fleetlayer-gateway"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1791,7 +1791,7 @@ dependencies = [
 
 [[package]]
 name = "fleetlayer-herdr"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1809,7 +1809,7 @@ dependencies = [
 
 [[package]]
 name = "fleetlayer-node"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "age",
  "anyhow",
@@ -1836,7 +1836,7 @@ dependencies = [
 
 [[package]]
 name = "fleetlayer-oidc"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "anyhow",
  "axum",
@@ -1855,7 +1855,7 @@ dependencies = [
 
 [[package]]
 name = "fleetlayer-pages"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1881,7 +1881,7 @@ dependencies = [
 
 [[package]]
 name = "fleetlayer-plugin"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "async-trait",
  "fleetlayer-protocol",
@@ -1893,7 +1893,7 @@ dependencies = [
 
 [[package]]
 name = "fleetlayer-protocol"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "jiff 1.0.3",
  "serde",
@@ -1902,7 +1902,7 @@ dependencies = [
 
 [[package]]
 name = "fleetlayer-rex"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1919,7 +1919,7 @@ dependencies = [
 
 [[package]]
 name = "fleetlayer-shared-folders"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1934,7 +1934,7 @@ dependencies = [
 
 [[package]]
 name = "fleetlayer-signin"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1969,7 +1969,7 @@ dependencies = [
 
 [[package]]
 name = "fleetlayer-summaries"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "async-trait",
  "fleetlayer-plugin",
