@@ -637,22 +637,25 @@ mod tests {
         // `web` is Acme's own node, so it may ask; A's laptop isn't (only billing@laptop is admitted).
         let e = access_check(&app, "laptop", &ask("person:a", "sign_in", "service:pages")).await.unwrap_err();
         assert!(e.message.contains("isn't a member"), "{}", e.message);
-        // Without a policy, people have their own things only.
+        // Without a policy, people have their own things, and admins the tenant's services.
         let d = access_check(&app, "web", &ask("person:a", "sign_in", "service:pages")).await.unwrap();
-        assert!(!d.allowed);
+        assert!(d.allowed, "{d:?}");
+        assert!(d.rules[0].starts_with("default_admins"), "{d:?}");
         assert!(
             access_check(&app, "web", &ask("person:a", "read", "service:quietdeck/a/inbox")).await.unwrap().allowed
         );
+        // A policy can keep a service from its admins too.
         store(
             &app.db,
             &acme,
-            "version: 2\ndefault: allow\nallow:\n  - { who: role:admin, can: sign_in, to: \"service:*\" }\n",
+            "version: 2\ndefault: allow\ndeny:\n  - { who: role:admin, can: sign_in, to: service:pages }\n",
         )
         .await
         .unwrap();
         let d = access_check(&app, "web", &ask("person:a", "sign_in", "service:pages")).await.unwrap();
-        assert!(d.allowed, "{d:?}");
-        assert_eq!(d.rules, ["allow[0]"]);
+        assert!(!d.allowed, "{d:?}");
+        assert_eq!(d.rules, ["deny[0]"]);
+        store(&app.db, &acme, "version: 2\ndefault: allow\n").await.unwrap();
         // By ID (the sign-in's `sub`) too; someone who isn't a member is refused.
         let id = people::resolve_person(&app.db, &acme, "a").await.unwrap();
         assert!(access_check(&app, "web", &ask(&id, "sign_in", "service:pages")).await.unwrap().allowed);

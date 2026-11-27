@@ -157,6 +157,10 @@ Why this split:
   agents). So adding someone to a tenant gives them their own things and their teams', and nothing of anyone else's,
   even in a fleet that's `default: allow` for its agents. `default_people: deny` (not even their own, until a rule
   allows it) and `allow` are the other values. `deny` rules still win over ownership.
+- **A tenant's admins sign in to its services by default**, and administer them (`sign_in` and `admin` on
+  `service:<name>`, never on someone's data under it, `service:<name>/<owner>/…`). So the first admin can use the hub,
+  pages and the sign-in admin pages with no policy written, and members get a service once a rule gives it to them.
+  A `deny` rule, or `default_people: deny`, takes it away.
 
 ### Verbs
 

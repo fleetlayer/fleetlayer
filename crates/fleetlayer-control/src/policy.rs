@@ -441,7 +441,20 @@ impl Compiled {
                 "permit(principal, action, resource) when { principal.person && (context.same_owner || \
                  (action == Action::\"read\" && context.team_owns)) };"
                     .into(),
-            )?,
+            )
+            .and_then(|_| {
+                // A tenant's admins sign in to and administer its services (never someone's data under one).
+                add(
+                    &mut enforced,
+                    &mut notes,
+                    "default_admins".into(),
+                    Some("the tenant's admins may sign in to and administer its services"),
+                    "permit(principal, action in [Action::\"sign_in\", Action::\"admin\"], resource) when { \
+                     principal.person && principal in Role::\"admin\" && resource.name like \"service:*\" && \
+                     !(resource.name like \"service:*/*\") };"
+                        .into(),
+                )
+            })?,
             "allow" => add(
                 &mut enforced,
                 &mut notes,
@@ -1101,6 +1114,27 @@ owners:
         assert!(ok("person:c", "write", "page:notes-c/today"));
         assert!(!ok("person:d", "read", "page:notes-c/today"));
         assert!(!ok("person:d", "write", "page:handbook/start"), "a team's members read its things by default");
+    }
+
+    #[test]
+    fn admins_sign_in_to_services_by_default_but_not_into_peoples_data() {
+        let f = crate::directory::tests::example();
+        let p = Compiled::parse("version: 2\ndefault: allow\n").unwrap();
+        let s = Some(acme(&f));
+        let ok = |who: &str, can: &str, to: &str| p.decide_in(s, who, can, to, false).unwrap().allowed;
+        assert!(ok("person:a", "sign_in", "service:hub"), "A is an admin of Acme");
+        assert!(ok("person:a", "admin", "service:signin"));
+        assert!(!ok("person:d", "sign_in", "service:hub"), "D is a member: nothing until a rule says");
+        assert!(!ok("person:a", "admin", "service:quietdeck/d/inbox"), "an admin doesn't open someone's data");
+        assert!(!ok("person:a", "read", "service:quietdeck/d/inbox"));
+        // A deny still wins, and default_people: deny takes it away.
+        let deny = Compiled::parse(
+            "version: 2\ndefault: allow\ndeny:\n  - { who: \"person:*\", can: sign_in, to: service:hub }\n",
+        )
+        .unwrap();
+        assert!(!deny.decide_in(s, "person:a", "sign_in", "service:hub", false).unwrap().allowed);
+        let none = Compiled::parse("version: 2\ndefault: allow\ndefault_people: deny\n").unwrap();
+        assert!(!none.decide_in(s, "person:a", "sign_in", "service:hub", false).unwrap().allowed);
     }
 
     #[test]

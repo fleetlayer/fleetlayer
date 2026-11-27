@@ -48,14 +48,14 @@ at once, and Google Workspace as a way to sign in, come next.
 3. **Invite yourself:** `fleetlayer-control invite add --handle you --role admin` prints a code. Open
    `https://signin.example.com/invite?code=<code>`, choose your name and make a passkey on your device.
 
-4. **Let people in to each service** in your policy. With no rule, people have only their own things, so give the
-   services you want them to use:
+4. **Let people in to each service.** Admins can sign in to every service from the start. Anyone else needs a rule
+   in your policy for the services they use:
 
    ```yaml
    allow:
-     - who: role:admin
+     - who: "person:*"
        can: [sign_in]
-       to: ["service:*"]
+       to: [service:pages]
    ```
 
 ## Managing people

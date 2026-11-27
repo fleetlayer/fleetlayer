@@ -74,7 +74,8 @@ are checked when the session is on another node.
 
 A pattern matches people only if it says so (`person:…`, `team:…`, `role:…`, or a group that names them): a bare `*`
 in `who` is every agent. People have their own default, `default_people: own`: anything to what they own, read what
-their teams own, nothing else until a rule shares it. Each request is decided in the tenant that owns what it
+their teams own, nothing else until a rule shares it; the tenant's admins also sign in to and administer its
+services. Each request is decided in the tenant that owns what it
 touches, membership first; between agents, in every tenant either one is a member of. The verbs `sign_in`, `admin`
 and `write` are for services and pages, and `admin` and `write` ask first by default. All of it, with
 `owners:` and `agents_elsewhere`: [`docs/sso.md`](sso.md).
