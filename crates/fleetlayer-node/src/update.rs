@@ -42,6 +42,7 @@ pub const BINARIES: &[&str] = &[
     "fleetlayer-signin",
     "fleetlayer-shared-folders",
     "fleetlayer-scheduler",
+    "fleetlayer-cookies",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]

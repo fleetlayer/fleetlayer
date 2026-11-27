@@ -8,7 +8,7 @@ managers, machines that sleep.
 - **Agents don't know what Fleetlayer gives them.** Without being told, an agent doesn't know it can message other
   sessions, start or resume them, use a shared browser or a laptop's folders, or what an outside-data line or a held
   call means. Solved with skills (`skills/fleetlayer/`, `skills/fleetlayer-browser/`, `plugins/shared-folders/skill/`,
-  `plugins/claude-auth-manager/skill/`, the pages and apps skills) and a short block for the person's global
+  `plugins/claude-auth-manager/skill/`, `plugins/cookies/skill/`, the pages and apps skills) and a short block for the person's global
   instructions. Claude Code reads skills from `~/.claude/skills/<name>/`, Codex from `~/.agents/skills/<name>/`, and
   Codex's global instructions are `~/.codex/AGENTS.md` (`$CODEX_HOME`). `fleetlayer me` (v0.3.9) lists what a
   session may use, so neither the skills nor the instructions keep a list that goes stale. Written:
@@ -393,6 +393,32 @@ managers, machines that sleep.
   callers only (`['*@agents']`) refused the sharing machine's own sessions, which looked like a policy denial. Prefer
   `allow: ['*']` on the node and let the policy be the one place that says who (deny untrusted-input agents there).
   The error names the node's list ("may not use browser on <node>") when it's the node refusing.
+- **CLIs that read the browser's cookies only work on the laptop.** Tools such as an X client (`auth_token`, `ct0`),
+  `yt-dlp` or a script against a dashboard read Chrome's cookie store directly, so an agent on a server can't use them.
+  Solved by `plugins/cookies` (v0.3.12): the laptop reads the domains its own config lists and sends them sealed to
+  each target node, which writes a `cookies.txt`, a Playwright `storageState` JSON file or an env file of named values,
+  mode 0600. The trust is plain: whoever reads a target's files acts as the person on those sites, so send few cookies
+  (`names:`) to few nodes, and prefer the shared browser when no CLI is needed. Where it lives:
+  `docs/plugins/cookies.md`, `plugins/cookies/skill/`. Guide to write: the X client on a server, end to end.
+- **The macOS Keychain asks before a program reads Chrome's key, and remembers the answer by code signature.** The
+  "Chrome Safe Storage" item opens only after the person types their login password and picks Always Allow. For a
+  signed binary macOS remembers that by team and identifier (`dev.fleetlayer.cookies`), so it holds across releases; a
+  locally built or unsigned binary is asked again after every rebuild. Calling `/usr/bin/security` instead would mean
+  allowing `security` itself, which every program can run: so the plugin reads the item through the Security
+  framework. A Deny isn't asked again until the plugin restarts (it would otherwise nag every few minutes). The node
+  must run as a LaunchAgent in the person's session for the prompt to show at all. Where it lives:
+  `docs/plugins/cookies.md`, `plugins/cookies/src/chrome.rs`.
+- **Reading Chrome's cookies: the format's traps.** Values are AES-128-CBC under a PBKDF2-SHA1 key (salt `saltysalt`,
+  1003 iterations from the Keychain on macOS; one iteration and the fixed password `peanuts`, or the keyring's, on
+  Linux), and since the database's meta version 24 each plaintext starts with the SHA-256 of the cookie's host key,
+  which must be stripped (a reader that doesn't gets 32 bytes of garbage before every value). Current versions keep the
+  file at `<profile>/Network/Cookies`. A running browser may hold a lock, so copy the file (and its journal) first.
+  Windows' app-bound encryption (`v20`, Chrome 127 on) can only be opened by Chrome itself: not supported. Node-based
+  readers also need Node 24's `node:sqlite` for the 64-bit timestamps. Where it lives: `plugins/cookies/src/chrome.rs`.
+- **Cookie files and the readers that drop lines.** curl writes HttpOnly cookies as `#HttpOnly_<domain>` lines, which
+  some readers take for comments, losing exactly the session cookie that matters; session cookies (expiry 0) are
+  dropped by Python's `MozillaCookieJar` unless it's loaded with `ignore_discard`. The plugin writes plain lines.
+  Where it lives: `docs/plugins/cookies.md` (formats).
 
 ## Pushing pages to a service that only reads its folders
 

@@ -28,9 +28,9 @@ jobs:
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - run: cargo test --locked --workspace
 
-  # claude-auth-manager writes setup tokens into the macOS login keychain through /usr/bin/security. This runs its
-  # tests on macOS, and the real-keychain test against a throwaway keychain made the default (never a real login
-  # keychain).
+  # claude-auth-manager writes setup tokens into the macOS login keychain through /usr/bin/security, and
+  # fleetlayer-cookies reads a browser's key from it. This runs their tests on macOS, and the real-keychain tests against
+  # a throwaway keychain made the default (never a real login keychain).
   macos-keychain:
     runs-on: macos-15
     timeout-minutes: 30
@@ -49,3 +49,5 @@ jobs:
           security default-keychain -d user -s ci.keychain-db
       - run: cargo test --locked -p fleetlayer-claude-auth-manager
       - run: cargo test --locked -p fleetlayer-claude-auth-manager -- --ignored real_keychain
+      - run: cargo test --locked -p fleetlayer-cookies
+      - run: cargo test --locked -p fleetlayer-cookies -- --ignored real_keychain

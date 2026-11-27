@@ -52,6 +52,7 @@ export const pages = [
   { file: "plugins/signin", group: "Plugins", label: "Sign-in" },
   { file: "plugins/shared-folders", group: "Plugins", label: "Folders" },
   { file: "plugins/scheduler", group: "Plugins", label: "Scheduler" },
+  { file: "plugins/cookies", group: "Plugins", label: "Cookies" },
   { file: "access-control", group: "Reference", label: "Access control" },
   { file: "protocol", group: "Reference", label: "Plugin protocol" },
   { file: "link", group: "Reference", label: "Node link" },

@@ -94,7 +94,8 @@ claude mcp add browser -- fleetlayer mcp browser@laptop
 In another harness, the MCP server's command is `fleetlayer mcp` with the argument `browser@laptop`. `fleetlayer me`
 lists the tools you may use and prints the line for each. Depth: the `fleetlayer-browser` skill (a signed-in browser)
 and the `fleetlayer-shared-folders` skill (screenshots, downloads). Pages for people to look at: the `pages` skill;
-small interactive apps: the `apps` skill.
+small interactive apps: the `apps` skill. A command-line tool that needs the person's browser cookies on this machine
+(an X client, `yt-dlp`): the `fleetlayer-cookies` skill.
 
 ## Outside data
 
