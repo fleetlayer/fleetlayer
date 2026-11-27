@@ -155,27 +155,77 @@ fn is_program(p: &Path) -> bool {
     std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
-/// Where a plugin keeps state when its config doesn't say (each plugin's own default).
-fn default_state(command: &str, config: &Value) -> Vec<&'static str> {
+/// A plugin's own state, as each plugin declares it: the folders and files it owns (moved, then deleted here once the
+/// move is done) and content folders (copied when the other machine hasn't got them, never deleted). Anything else its
+/// settings name is reported, never moved: a path in a plugin's settings may well be the person's own folder
+/// (`~/Downloads` for shared folders, Claude Code's transcripts), and inferring state from it would delete it.
+#[derive(Debug, Default)]
+struct Declared {
+    dirs: Vec<String>,
+    files: Vec<String>,
+    content: Vec<String>,
+}
+
+fn strs(v: &Value) -> Vec<String> {
+    v.as_str().map(|s| vec![s.to_string()]).unwrap_or_default()
+}
+
+fn declared(command: &str, config: &Value) -> Declared {
     let bin = Path::new(command).file_name().and_then(|n| n.to_str()).unwrap_or(command);
+    let mut d = Declared::default();
+    let or = |v: &Value, default: &str| v.as_str().unwrap_or(default).to_string();
     match bin {
-        "fleetlayer-claude-auth-manager" if config["role"] == "hub" && config["hub"]["dir"].is_null() => {
-            vec!["~/.local/state/fleetlayer/claude-hub"]
+        "fleetlayer-claude-auth-manager" if config["role"] == "hub" => {
+            d.dirs.push(or(&config["hub"]["dir"], "~/.local/state/fleetlayer/claude-hub"));
+            d.files.extend(strs(&config["hub"]["login_file"]));
+            d.files.extend(strs(&config["hub"]["signin"]["secret_file"]));
+            d.files.extend(strs(&config["tokens_file"]));
+        }
+        "fleetlayer-pages" => {
+            d.files.extend(strs(&config["login_file"]));
+            d.files.extend(strs(&config["signin"]["secret_file"]));
+            for s in config["spaces"].as_object().into_iter().flat_map(|o| o.values()) {
+                d.content.extend(strs(&s["dir"]));
+                d.content.extend(strs(&s["apps"]));
+            }
+        }
+        "fleetlayer-signin" => {
+            d.dirs.extend(strs(&config["dir"]));
+            d.files.extend(strs(&config["token_file"]));
+            for c in config["clients"].as_array().into_iter().flatten() {
+                d.files.extend(strs(&c["secret_file"]));
+            }
+            for u in config["upstreams"].as_array().into_iter().flatten() {
+                d.files.extend(strs(&u["client_secret_file"]));
+                d.files.extend(strs(&u["service_account_file"]));
+            }
         }
         "fleetlayer-scheduler" => {
-            let mut v = vec![];
-            if config["settings"].is_null() {
-                v.push("~/.config/fleetlayer/scheduler.yaml");
-            }
-            if config["state_dir"].is_null() {
-                v.push("~/.local/state/fleetlayer/scheduler");
-            }
-            v
+            d.files.push(or(&config["settings"], "~/.config/fleetlayer/scheduler.yaml"));
+            d.dirs.push(or(&config["state_dir"], "~/.local/state/fleetlayer/scheduler"));
         }
-        "fleetlayer-summaries" if config["state_dir"].is_null() => vec!["~/.local/state/fleetlayer/summaries"],
-        "fleetlayer-cookies" => vec!["~/.local/state/fleetlayer/cookies"],
-        _ => vec![],
+        "fleetlayer-summaries" => {
+            d.dirs.push(or(&config["dir"], "~/.local/share/fleetlayer/summaries"));
+            d.dirs.push("~/.local/state/fleetlayer/summaries".into());
+        }
+        "fleetlayer-cookies" => d.dirs.push("~/.local/state/fleetlayer/cookies".into()),
+        _ => {}
     }
+    d
+}
+
+/// A folder may be a component's own state only if it isn't the home folder, nor holds Fleetlayer's settings or the
+/// state of every component: deleting it after the move must remove that component and nothing else.
+fn check_own_folder(here: &Here, p: &Path, what: &str) -> anyhow::Result<()> {
+    let holds_others = [here.layout.config.as_path(), here.layout.state.as_path(), here.home.as_path()]
+        .iter()
+        .any(|shared| shared.starts_with(p));
+    anyhow::ensure!(
+        !holds_others && p.starts_with(&here.home),
+        "{what} is {}, which holds more than its own state: give it a folder of its own (under ~/.local/state/fleetlayer/) before moving it, so nothing else is copied or deleted",
+        p.display()
+    );
+    Ok(())
 }
 
 /// The route a plugin's service had, when the node can't say (it isn't running).
@@ -236,26 +286,39 @@ pub fn inspect_plugin(here: &Here, name: &str, announced: &[Value]) -> anyhow::R
     })?;
     let config = plugin["config"].clone();
     let mut i = Inspected { plugin_block: Some(block.clone()), ..Default::default() };
-    let mut found = vec![];
-    paths_in(here, &config, "", &mut found);
-    for (key, p) in found {
-        if is_program(&p) {
-            continue;
-        }
-        if name == "pages" && matches!(key.as_str(), "dir" | "apps") {
-            i.content.push(p);
-        } else {
+    let d = declared(plugin["command"].as_str().unwrap_or(""), &config);
+    for dir in &d.dirs {
+        let p = here.expand(dir);
+        if p.exists() {
+            check_own_folder(here, &p, &format!("The {name} plugin's state folder"))?;
             i.state.push(p);
         }
     }
-    for d in default_state(plugin["command"].as_str().unwrap_or(""), &config) {
-        let p = here.expand(d);
-        if p.exists() && !i.state.contains(&p) {
+    for f in &d.files {
+        let p = here.expand(f);
+        if p.is_file() && !i.state.iter().any(|s| p.starts_with(s)) {
             i.state.push(p);
+        }
+    }
+    for c in &d.content {
+        let p = here.expand(c);
+        if p.exists() {
+            i.content.push(p);
         }
     }
     i.state.sort();
     i.state.dedup();
+    let mut named = vec![];
+    paths_in(here, &config, "", &mut named);
+    for (key, p) in named {
+        let ours = i.state.iter().chain(&i.content).any(|s| p.starts_with(s));
+        if !ours && !is_program(&p) {
+            i.notes.push(format!(
+                "Its setting {key} names {}: not moved (a move carries only a plugin's own state); make sure it's there on the new machine.",
+                p.display()
+            ));
+        }
+    }
     i.listens = block.lines().any(|l| l.trim_start().starts_with("listen:"));
     i.port = block
         .lines()
@@ -310,22 +373,29 @@ pub fn inspect(here: &Here, kind: &Kind, announced: &[Value]) -> anyhow::Result<
                 .ok_or_else(|| anyhow::anyhow!("{} names no db", file.display()))?;
             anyhow::ensure!(db.exists(), "the control plane's database {} isn't there", db.display());
             let dir = db.parent().expect("a database file has a folder").to_path_buf();
+            check_own_folder(here, &dir, "The control plane's database folder")?;
             let mut i = Inspected { settings_file: Some((file, text.clone())), listens: true, ..Default::default() };
             i.state.push(dir.clone());
-            for key in ["admin_token_file", "audit_key_file", "audit_anchor_dir"] {
+            for key in ["admin_token_file", "audit_key_file"] {
                 if let Some(p) = v[key].as_str().map(|s| here.expand(s))
                     && !p.starts_with(&dir)
-                    && p.exists()
+                    && p.is_file()
                 {
                     i.state.push(p);
                 }
             }
+            // Kept elsewhere on purpose (another disk, a git checkout): reported, never moved.
+            if let Some(p) = v["audit_anchor_dir"].as_str().map(|s| here.expand(s)) {
+                i.notes.push(format!(
+                    "Its audit anchors ({}) aren't moved: they're kept outside the control plane on purpose. Set audit_anchor_dir to a folder on the new machine.",
+                    p.display()
+                ));
+            }
             for p in v["policy_files"].as_array().into_iter().flatten().filter_map(|p| p.as_str()) {
                 let path = p.split_once('=').filter(|(t, _)| !t.contains('/')).map_or(p, |(_, path)| path);
-                let path = here.expand(path);
-                if path.exists() && path.starts_with(&here.home) {
-                    i.state.push(path);
-                }
+                i.notes.push(format!(
+                    "Its policy file {path} isn't moved (it may be a git checkout): make sure it's at that path on the new machine, or change policy_files there."
+                ));
             }
             i.port = v["listen"].as_str().and_then(port_of);
             i.route = Some(Route { name: "control".into(), health: Some("/healthz".into()), hosts: vec![] });
@@ -342,6 +412,7 @@ pub fn inspect(here: &Here, kind: &Kind, announced: &[Value]) -> anyhow::Result<
                 .unwrap_or_else(|| here.home.join(".local/state/fleetlayer/gateway"));
             let mut i = Inspected { settings_file: Some((file, text)), listens: true, ..Default::default() };
             if state.exists() {
+                check_own_folder(here, &state, "The gateway's state folder")?;
                 i.state.push(state);
             }
             i.port = v["listen"].as_str().and_then(port_of).or(Some(7680));
@@ -436,7 +507,8 @@ fn walk(p: &Path, out: &mut Vec<PathBuf>, notes: &mut Vec<String>) -> anyhow::Re
             walk(&e?.path(), out, notes)?;
         }
     } else if meta.is_file() {
-        if name != super::settings_moved_to() && !name.ends_with(".moving") {
+        // The control plane's moved-to stays behind; temporary files from an atomic write aren't state.
+        if name != super::settings_moved_to() && !(name.starts_with('.') && name.ends_with(".tmp")) {
             out.push(p.to_path_buf());
         }
     } else {
@@ -538,6 +610,70 @@ pub fn entries_now(home: &Path, files: &[PathBuf]) -> Vec<archive::FileEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn here_with(node_yaml: &str) -> (tempfile::TempDir, Here) {
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path().to_path_buf();
+        let cfg = home.join(".config/fleetlayer");
+        std::fs::create_dir_all(&cfg).unwrap();
+        std::fs::write(cfg.join("node.yaml"), node_yaml.replace("$H", &home.display().to_string())).unwrap();
+        let here = Here {
+            home: home.clone(),
+            layout: up::Layout { config: cfg, state: home.join(".local/state/fleetlayer") },
+        };
+        (d, here)
+    }
+
+    #[test]
+    fn folders_a_plugin_only_names_are_reported_never_moved() {
+        let (_d, here) = here_with(
+            "plugins:\n  - name: shared-folders\n    command: fleetlayer-shared-folders\n    config:\n      folders: [{ name: downloads, path: $H/Downloads }]\n      transcripts: $H/.claude/projects\n",
+        );
+        for f in ["Downloads/a.pdf", ".claude/projects/x.jsonl"] {
+            let p = here.home.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, "mine").unwrap();
+        }
+        let i = inspect_plugin(&here, "shared-folders", &[]).unwrap();
+        assert!(i.state.is_empty() && i.content.is_empty(), "{:?} {:?}", i.state, i.content);
+        assert!(i.notes.iter().any(|n| n.contains("Downloads") && n.contains("not moved")), "{:?}", i.notes);
+    }
+
+    #[test]
+    fn a_state_folder_that_holds_everything_is_refused() {
+        let (_d, here) = here_with(
+            "plugins:\n  - name: scheduler\n    command: fleetlayer-scheduler\n    config: { state_dir: $H/.local/state/fleetlayer }\n",
+        );
+        std::fs::create_dir_all(here.home.join(".local/state/fleetlayer")).unwrap();
+        let err = inspect_plugin(&here, "scheduler", &[]).unwrap_err().to_string();
+        assert!(err.contains("a folder of its own"), "{err}");
+        let (_d, here) = here_with("name: a\n");
+        std::fs::write(here.layout.config.join("control.yaml"), format!("db: {}/control.db\n", here.home.display()))
+            .unwrap();
+        std::fs::write(here.home.join("control.db"), "").unwrap();
+        let err = inspect(&here, &Kind::Control, &[]).unwrap_err().to_string();
+        assert!(err.contains("a folder of its own"), "{err}");
+    }
+
+    #[test]
+    fn the_control_planes_policy_files_and_anchors_are_reported_not_moved() {
+        let (_d, here) = here_with("name: a\n");
+        let h = here.home.display().to_string();
+        std::fs::create_dir_all(here.home.join(".local/state/fleetlayer/control")).unwrap();
+        std::fs::write(here.home.join(".local/state/fleetlayer/control/control.db"), "").unwrap();
+        std::fs::create_dir_all(here.home.join("fleet")).unwrap();
+        std::fs::write(here.home.join("fleet/policy.yaml"), "version: 2\n").unwrap();
+        std::fs::create_dir_all(here.home.join("anchors")).unwrap();
+        std::fs::write(
+            here.layout.config.join("control.yaml"),
+            format!("db: {h}/.local/state/fleetlayer/control/control.db\npolicy_files: [{h}/fleet/policy.yaml]\naudit_anchor_dir: {h}/anchors\n"),
+        )
+        .unwrap();
+        let i = inspect(&here, &Kind::Control, &[]).unwrap();
+        assert_eq!(i.state, vec![here.home.join(".local/state/fleetlayer/control")]);
+        assert!(i.notes.iter().any(|n| n.contains("policy.yaml")), "{:?}", i.notes);
+        assert!(i.notes.iter().any(|n| n.contains("anchors")), "{:?}", i.notes);
+    }
 
     #[test]
     fn names_people_use_find_the_component() {

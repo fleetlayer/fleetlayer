@@ -93,6 +93,14 @@ impl Machine {
         self.command("fleetlayer").args(args).output().unwrap()
     }
 
+    fn fleetlayer_with(&self, env: &[(&str, &str)], args: &[&str]) -> Output {
+        let mut c = self.command("fleetlayer");
+        for (k, v) in env {
+            c.env(k, v);
+        }
+        c.args(args).output().unwrap()
+    }
+
     fn ok(&self, args: &[&str]) -> String {
         let out = self.fleetlayer(args);
         assert!(
@@ -376,7 +384,8 @@ fn pages_moves_and_the_old_address_reaches_it() {
         http_get(gw, "pages.localhost", "/healthz").is_some_and(|(c, _)| c == 200)
     });
     assert!(!f.a.path(".local/state/fleetlayer/pages/login").exists());
-    assert!(!f.a.path("Fleetlayer/personal/pages").exists());
+    // The pages themselves are the person's: copied, never deleted here.
+    assert_eq!(f.a.read("Fleetlayer/personal/pages/2026-11-28-plan/index.md"), "# The plan\n");
 }
 
 #[test]
@@ -487,4 +496,125 @@ fn a_move_that_cant_finish_puts_everything_back() {
     assert!(std::fs::read(f.a.path(".local/state/fleetlayer/control/control.db")).unwrap().len() >= db);
     wait_until("the node to link here again", 60, || f.a.linked());
     assert!(f.a.read(".config/fleetlayer/node.yaml").contains(&format!("ws://127.0.0.1:{old}/v1/link")));
+}
+
+/// A control plane here, linked to by this machine's node: (old port, the node's token).
+fn linked_control(f: &Fleet) -> u16 {
+    let old = free_port();
+    f.a.control(old);
+    let token = f.a.enrol("laptop");
+    f.a.node("laptop", Some((old, &token)), "");
+    f.a.start("control");
+    f.a.start("node");
+    wait_until("the node to link", 30, || f.a.linked());
+    old
+}
+
+#[test]
+fn nodes_keep_the_old_address_until_the_move_is_confirmed() {
+    let f = Fleet::new();
+    let old = linked_control(&f);
+    // Healthy there, then the move fails anyway (as a check after health would): the copy there is undone after
+    // the node may already have linked to it. The node must come back to the old address, and node.yaml keep it.
+    let new = free_port().to_string();
+    let out = f
+        .a
+        .fleetlayer_with(&[("FLEETLAYER_MOVE_TEST_FAIL", "health")], &["move", "control", &f.dest(), "--port", &new]);
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("It's running here again"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!f.b.path(".local/state/fleetlayer/control/control.db").exists());
+    let log = f.a.read(".local/state/fleetlayer/run/node.log");
+    assert!(
+        log.contains(&format!("linked to the control plane url=ws://127.0.0.1:{new}/v1/link")),
+        "the node reached the new copy first:\n{log}"
+    );
+    wait_until("the node to link here again", 60, || f.a.linked());
+    let y = f.a.read(".config/fleetlayer/node.yaml");
+    assert!(y.contains(&format!("ws://127.0.0.1:{old}/v1/link")), "{y}");
+    assert!(!f.a.path(".local/state/fleetlayer/control/move-proof").exists());
+    assert!(!f.a.path(".local/state/fleetlayer/moves/control.json").exists(), "the journal is gone");
+}
+
+#[test]
+fn a_destination_that_cant_be_confirmed_stopped_isnt_restarted_here() {
+    let f = Fleet::new();
+    linked_control(&f);
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = taken.local_addr().unwrap().port().to_string();
+    let fail = [("FLEETLAYER_MOVE_TEST_FAIL", "undo")];
+    let out = f.a.fleetlayer_with(&fail, &["move", "control", &f.dest(), "--port", &port, "--health-timeout", "3"]);
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("isn't started here") && err.contains("--rollback --force"), "{err}");
+    // Not running here: two control planes never run.
+    let running = f.a.ok(&["move-receive", "service", "running", "control"]);
+    assert!(running.contains("\"running\":false"), "{running}");
+    // A new move waits for this one; --rollback still can't confirm; --force takes the person's word.
+    let out = f.a.fleetlayer(&["move", "control", &f.dest(), "--port", &port]);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("didn't finish"), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = f.a.fleetlayer_with(&fail, &["move", "control", &f.dest(), "--rollback"]);
+    assert!(!out.status.success());
+    f.a.ok(&["move", "control", &f.dest(), "--rollback", "--force"]);
+    wait_until("the node to link here again", 60, || f.a.linked());
+}
+
+#[test]
+fn an_interrupted_move_can_be_finished_or_undone() {
+    let f = Fleet::new();
+    let (h, new) = (f.a.home.display().to_string(), free_port());
+    f.a.write(".local/state/fleetlayer/claude-hub-login", &"l".repeat(48));
+    f.a.node("laptop", None, &hub_plugin(&h));
+    f.a.start("node");
+    f.b.node("server", None, "");
+    f.b.start("node");
+    wait_until("both nodes", 20, || f.a.status().is_some() && f.b.status().is_some());
+    let stop = [("FLEETLAYER_MOVE_TEST_EXIT_AFTER", "copied")];
+    let args = ["move", "hub", &f.dest(), "--port", &new.to_string()];
+
+    // Interrupted after the copy, then undone.
+    let out = f.a.fleetlayer_with(&stop, &args);
+    assert_eq!(out.status.code(), Some(3), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(f.a.path(".local/state/fleetlayer/moves/plugin-claude-auth-manager.json").exists());
+    let out = f.a.fleetlayer(&args);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--resume"), "{}", String::from_utf8_lossy(&out.stderr));
+    f.a.ok(&["move", "hub", &f.dest(), "--rollback"]);
+    assert!(f.a.read(".config/fleetlayer/node.yaml").contains("\n  - name: claude-auth-manager"));
+    assert!(!f.b.path(".local/state/fleetlayer/claude-hub-login").exists());
+    assert!(!f.b.read(".config/fleetlayer/node.yaml").contains("claude-auth-manager"));
+    wait_until("the hub here again", 30, || {
+        f.a.status()
+            .is_some_and(|s| s["plugins"].as_array().unwrap().iter().any(|p| p["name"] == "claude-auth-manager"))
+    });
+
+    // Interrupted again, then finished.
+    let out = f.a.fleetlayer_with(&stop, &args);
+    assert_eq!(out.status.code(), Some(3));
+    let out = f.a.ok(&["move", "hub", &f.dest(), "--resume"]);
+    assert!(out.contains("It's healthy there."), "{out}");
+    assert_eq!(http_get(new, "localhost", "/healthz").map(|r| r.0), Some(200));
+    assert!(!f.a.path(".local/state/fleetlayer/moves/plugin-claude-auth-manager.json").exists());
+    assert!(!f.a.path(".local/state/fleetlayer/claude-hub-login").exists());
+}
+
+#[test]
+fn plain_http_on_a_public_address_needs_saying_so() {
+    let f = Fleet::new();
+    let old = free_port();
+    f.a.write(
+        ".config/fleetlayer/gateway.yaml",
+        &format!("listen: 127.0.0.1:{old}\nservices:\n  {{}}\nalerts: {{}}\n"),
+    );
+    let out = f.a.fleetlayer(&["move", "gateway", &f.dest(), "--listen", "203.0.113.9:7680", "--dry-run"]);
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("a public address"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = f.a.ok(&["move", "gateway", &f.dest(), "--listen", "203.0.113.9:7680", "--public", "--dry-run"]);
+    assert!(out.contains("Dry run"), "{out}");
 }

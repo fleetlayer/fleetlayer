@@ -18,8 +18,14 @@ use serde::Deserialize;
 
 use crate::policy_files;
 
-/// The file `fleetlayer move control` leaves next to the database before it stops this copy: the new link URL.
+/// The file `fleetlayer move control` leaves next to the database before it stops this copy: the new link URL and
+/// the move's proof, one per line. Never copied with the folder.
 pub const MOVED_TO: &str = "moved-to";
+/// The move's proof, written by `fleetlayer move control` into this folder before the copy, so it travels with the
+/// database: `{"nonce": "…", "confirmed": false}`. The new copy answers for it at `/v1/move-proof`, so a node can check
+/// the address it was told about holds this control plane's state before it sends its token there; `confirmed` turns
+/// true once the move passed its health check, and only then do nodes save the new address.
+pub const PROOF: &str = "move-proof";
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -96,11 +102,20 @@ impl Settings {
     }
 }
 
-/// The new address in a `moved-to` file: a `ws://` or `wss://` URL, or nothing.
-pub fn read_moved_to(path: &Path) -> Option<String> {
+/// The new address and proof in a `moved-to` file: a `ws://` or `wss://` URL and a nonce, or nothing.
+pub fn read_moved_to(path: &Path) -> Option<(String, String)> {
     let text = std::fs::read_to_string(path).ok()?;
-    let url = text.trim();
-    (url.starts_with("ws://") || url.starts_with("wss://")).then(|| url.to_string())
+    let mut lines = text.lines().map(str::trim);
+    let url = lines.next()?.to_string();
+    let nonce = lines.next().unwrap_or("").to_string();
+    ((url.starts_with("ws://") || url.starts_with("wss://")) && nonce.len() >= 32).then_some((url, nonce))
+}
+
+/// Whether `nonce` is this folder's move proof, and if so whether the move is confirmed.
+pub fn proof(path: &Path, nonce: &str) -> Option<bool> {
+    let v: serde_json::Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    let mine = v["nonce"].as_str()?;
+    (mine.len() >= 32 && mine == nonce).then(|| v["confirmed"] == true)
 }
 
 #[cfg(test)]
@@ -123,13 +138,24 @@ mod tests {
     }
 
     #[test]
-    fn moved_to_holds_a_link_url_or_nothing() {
+    fn moved_to_holds_a_link_url_and_a_proof_or_nothing() {
         let d = tempfile::tempdir().unwrap();
         let f = d.path().join(MOVED_TO);
         assert_eq!(read_moved_to(&f), None);
+        let nonce = "n".repeat(32);
+        std::fs::write(&f, format!("wss://control.example/v1/link\n{nonce}\n")).unwrap();
+        assert_eq!(read_moved_to(&f), Some(("wss://control.example/v1/link".into(), nonce.clone())));
         std::fs::write(&f, "wss://control.example/v1/link\n").unwrap();
-        assert_eq!(read_moved_to(&f).as_deref(), Some("wss://control.example/v1/link"));
-        std::fs::write(&f, "http://nope\n").unwrap();
+        assert_eq!(read_moved_to(&f), None, "no proof, no move");
+        std::fs::write(&f, format!("http://nope\n{nonce}\n")).unwrap();
         assert_eq!(read_moved_to(&f), None);
+        let p = d.path().join(PROOF);
+        assert_eq!(proof(&p, &nonce), None);
+        std::fs::write(&p, format!("{{\"nonce\":\"{nonce}\",\"confirmed\":false}}")).unwrap();
+        assert_eq!(proof(&p, &nonce), Some(false));
+        assert_eq!(proof(&p, &"x".repeat(32)), None);
+        assert_eq!(proof(&p, ""), None);
+        std::fs::write(&p, format!("{{\"nonce\":\"{nonce}\",\"confirmed\":true}}")).unwrap();
+        assert_eq!(proof(&p, &nonce), Some(true));
     }
 }

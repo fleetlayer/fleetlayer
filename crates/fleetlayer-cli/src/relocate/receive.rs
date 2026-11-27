@@ -61,7 +61,7 @@ struct Undo {
     node_yaml_before: Option<String>,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HealthRequest {
     /// Where it listens (control plane, gateway).
     pub listen: Option<String>,
@@ -164,16 +164,10 @@ pub fn probe() -> anyhow::Result<()> {
 }
 
 fn write_private(path: &Path, text: &str) -> anyhow::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
     if let Some(d) = path.parent() {
         up::private_dir(d)?;
     }
-    let tmp = path.with_extension("moving");
-    std::fs::write(&tmp, text)?;
-    let mode = std::fs::metadata(path).map(|m| m.permissions().mode() & 0o777).unwrap_or(0o600);
-    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
+    Ok(fleetlayer_protocol::local::write_atomic(path, text, 0o600)?)
 }
 
 pub fn unpack(id: &str) -> anyhow::Result<()> {
@@ -277,7 +271,18 @@ pub fn start(id: &str) -> anyhow::Result<()> {
     print(&json!({"started": true}))
 }
 
-pub fn undo(id: &str) -> anyhow::Result<()> {
+/// For the tests: make a step fail, as a lost connection or a broken machine would.
+fn test_fail(step: &str) -> anyhow::Result<()> {
+    if std::env::var("FLEETLAYER_MOVE_TEST_FAIL").is_ok_and(|v| v == step) {
+        anyhow::bail!("(test) {step} failed");
+    }
+    Ok(())
+}
+
+/// Stop it here and remove what the move wrote, then prove it's stopped: the machine it came from starts its copy
+/// again only after this answers.
+pub async fn undo(id: &str) -> anyhow::Result<()> {
+    test_fail("undo")?;
     let dir = session_dir(id)?;
     let Ok(text) = std::fs::read(dir.join("undo.json")) else {
         let _ = std::fs::remove_dir_all(&dir);
@@ -299,8 +304,43 @@ pub fn undo(id: &str) -> anyhow::Result<()> {
             services::start(&kind)?;
         }
     }
+    match &kind {
+        Kind::Plugin(name) => {
+            // The node restarted without it; a node that doesn't answer runs nothing.
+            let until = Instant::now() + Duration::from_secs(20);
+            loop {
+                let loaded = match node_call("node/status").await {
+                    Ok(s) => s["plugins"].as_array().into_iter().flatten().any(|p| p["name"] == name.as_str()),
+                    Err(_) => false,
+                };
+                if !loaded {
+                    break;
+                }
+                anyhow::ensure!(Instant::now() < until, "the node here still runs {name}");
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+        }
+        k => anyhow::ensure!(!services::running(k), "{} is still running here", k.describe()),
+    }
     let _ = std::fs::remove_dir_all(&dir);
-    print(&json!({"undone": u.files.len()}))
+    print(&json!({"undone": u.files.len(), "stopped": true}))
+}
+
+/// The move passed its health check: mark the control plane's move proof confirmed, so its nodes save the new
+/// address.
+pub fn confirm(id: &str) -> anyhow::Result<()> {
+    let dir = session_dir(id)?;
+    let u: Undo = serde_json::from_slice(&std::fs::read(dir.join("undo.json"))?)?;
+    let home = component::home();
+    let mut n = 0;
+    for f in u.files.iter().filter(|f| f.ends_with("/move-proof")) {
+        let path = home.join(archive::safe_rel(f)?);
+        let mut v: Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+        v["confirmed"] = json!(true);
+        write_private(&path, &v.to_string())?;
+        n += 1;
+    }
+    print(&json!({"confirmed": n}))
 }
 
 pub fn done(id: &str) -> anyhow::Result<()> {
@@ -409,7 +449,14 @@ pub async fn health(id: &str) -> anyhow::Result<()> {
     let until = Instant::now() + Duration::from_secs(req.timeout_secs.max(1));
     loop {
         match unhealthy(&kind, &req).await {
-            None => return print(&json!({"healthy": true})),
+            None => {
+                if std::env::var("FLEETLAYER_MOVE_TEST_FAIL").is_ok_and(|v| v == "health") {
+                    // Give linked nodes time to reach the new copy first, the case undoing it must survive.
+                    tokio::time::sleep(Duration::from_secs(12)).await;
+                }
+                test_fail("health")?;
+                return print(&json!({"healthy": true}));
+            }
             Some(why) if Instant::now() >= until => anyhow::bail!("not healthy after {}s: {why}", req.timeout_secs),
             Some(_) => tokio::time::sleep(Duration::from_millis(500)).await,
         }

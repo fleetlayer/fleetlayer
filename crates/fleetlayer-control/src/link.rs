@@ -77,10 +77,12 @@ impl Links {
         until_closing(&mut self.closing()).await;
     }
 
-    /// Tell every linked node the control plane now answers at `url` (`link/moved`). How many were told.
-    pub async fn tell_moved(&self, url: &str) -> usize {
+    /// Tell every linked node the control plane now answers at `url`, holding `proof` (`link/moved`). How many were
+    /// told.
+    pub async fn tell_moved(&self, url: &str, proof: &str) -> usize {
+        let m = l::Moved { url: url.to_string(), proof: Some(proof.to_string()) };
         let nodes = self.nodes.lock().await;
-        nodes.values().filter(|c| c.peer.notify(l::method::MOVED, &l::Moved { url: url.to_string() })).count()
+        nodes.values().filter(|c| c.peer.notify(l::method::MOVED, &m)).count()
     }
 
     pub async fn peer(&self, tenant: &str, node: &str) -> Option<Peer> {

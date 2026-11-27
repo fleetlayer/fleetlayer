@@ -72,8 +72,42 @@ pub fn find_on(path: &str, name: &str) -> Option<PathBuf> {
     path.split(':').map(|d| Path::new(d).join(name)).find(|p| p.is_file())
 }
 
+/// Replace `path` with `text` atomically: a temporary file beside it, created with the mode it ends up with (the
+/// file's own, else `default_mode`), so the text is never readable more widely even for a moment; then renamed over
+/// it.
+pub fn write_atomic(path: &Path, text: &str, default_mode: u32) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let mode = std::fs::metadata(path).map(|m| m.permissions().mode() & 0o7777).unwrap_or(default_mode);
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let tmp = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(mode).open(&tmp)?;
+    // The umask may have narrowed it; never widen beyond `mode`.
+    f.set_permissions(std::fs::Permissions::from_mode(mode))?;
+    f.write_all(text.as_bytes())?;
+    f.sync_all()?;
+    std::fs::rename(&tmp, path)
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn an_atomic_write_keeps_the_files_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("fl-atomic-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("node.yaml");
+        write_atomic(&f, "a: 1\n", 0o600).unwrap();
+        assert_eq!(std::fs::metadata(&f).unwrap().permissions().mode() & 0o777, 0o600);
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o640)).unwrap();
+        write_atomic(&f, "a: 2\n", 0o600).unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "a: 2\n");
+        assert_eq!(std::fs::metadata(&f).unwrap().permissions().mode() & 0o777, 0o640);
+        assert_eq!(std::fs::read_dir(&d).unwrap().count(), 1, "no temporary file left");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
     use super::*;
 
     /// Nathan's nodes and every existing install rely on these: with no instance they must never change.

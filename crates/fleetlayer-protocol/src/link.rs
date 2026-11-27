@@ -112,8 +112,9 @@ pub mod method {
     /// Node → control plane: a role's node finished closing a window (or says why it couldn't). `WindowClosed` → `{}`.
     pub const WINDOW_CLOSED: &str = "link/window_closed";
     /// Control plane → node (notification), as it stops after `fleetlayer move control`: it now answers at
-    /// `Moved.url`. The node tries that address and keeps it (writing it to node.yaml) once it links there; until
-    /// then, and if it never answers within an hour, it keeps linking to the address it has.
+    /// `Moved.url`. The node checks that address holds `Moved.proof` before sending its token there (never from
+    /// `wss://` to `ws://`), links there, and saves it to node.yaml once the move is confirmed; until then, the old
+    /// address stays its fallback.
     pub const MOVED: &str = "link/moved";
 }
 
@@ -132,10 +133,13 @@ pub struct Hello {
     pub windows: Vec<String>,
 }
 
-/// `link/moved`: the control plane's new link URL (`wss://…/v1/link`).
+/// `link/moved`: the control plane's new link URL (`wss://…/v1/link`), and the proof the new address must hold
+/// (`GET <its web address>/v1/move-proof?nonce=<proof>`) before a node sends its token there.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Moved {
     pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proof: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -798,5 +798,9 @@ managers, machines that sleep.
   this move; check every file by SHA-256 before moving any into place, and never write over a file that's different;
   rewrite home-folder paths; bind to the address SSH came in on (`$SSH_CONNECTION`); health-check the new copy; only
   then repoint and delete the old one; undo both sides on failure. For a control plane, the old copy tells linked
-  nodes the new address as it stops, and nodes keep it only once they've linked there. Where it lives:
+  nodes the new address and a one-time proof as it stops; nodes send their token only to an address showing the
+  proof, and save it only once the move is confirmed. Never infer state from paths a component's settings name (a
+  shared `~/Downloads` would be deleted): move only its declared folder, report the rest. Keep a journal, so an
+  interrupted move can be resumed or rolled back, and never restart the old copy until the new one is confirmed
+  stopped. Where it lives:
   `docs/guides/moving.md`, `crates/fleetlayer-cli/src/relocate/`.

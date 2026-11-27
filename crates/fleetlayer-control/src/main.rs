@@ -583,6 +583,17 @@ async fn main() -> anyhow::Result<()> {
             let audit_anchor_dir = audit_anchor_dir.or(settings.audit_anchor_dir.clone());
             let policy_files = if policy_files.is_empty() { settings.policy_files.clone() } else { policy_files };
             let moved_to = db_path.as_deref().and_then(|p| p.parent()).map(|d| d.join(settings::MOVED_TO));
+            if let Some(dir) = db_path.as_deref().and_then(|p| p.parent()) {
+                let proof = dir.join(settings::PROOF);
+                // A proof is only needed while nodes switch over: one older than a day is from a move long done.
+                if std::fs::metadata(&proof)
+                    .and_then(|m| m.modified())
+                    .is_ok_and(|t| t.elapsed().unwrap_or_default() > Duration::from_secs(86_400))
+                {
+                    let _ = std::fs::remove_file(&proof);
+                }
+                let _ = PROOF_FILE.set(proof);
+            }
             // Written by a move while this copy runs; one left from before this start is stale (a move that died).
             if let Some(f) = moved_to.as_deref().filter(|f| f.exists()) {
                 tracing::warn!(file = %f.display(), "removing a moved-to file left by an unfinished move");
@@ -1316,6 +1327,22 @@ fn is_v2(path: &std::path::Path) -> bool {
         .is_some_and(|v| v["version"].as_i64() == Some(2))
 }
 
+/// The move proof's file, next to the database (`serve` sets it).
+static PROOF_FILE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// `GET /v1/move-proof?nonce=…`: whether this control plane holds the state a move's `link/moved` named (200
+/// `{"confirmed": bool}`), else 404. No token: a node asks before it sends one (`settings::PROOF`).
+async fn move_proof(
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let found = PROOF_FILE.get().zip(q.get("nonce")).and_then(|(f, n)| settings::proof(f, n));
+    match found {
+        Some(confirmed) => axum::Json(serde_json::json!({ "confirmed": confirmed })).into_response(),
+        None => axum::http::StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
 async fn serve(
     app: Arc<App>,
     listen: SocketAddr,
@@ -1324,6 +1351,7 @@ async fn serve(
 ) -> anyhow::Result<()> {
     let api = Router::new()
         .route("/healthz", get(api::healthz))
+        .route("/v1/move-proof", get(move_proof))
         .route("/v1/link", get(link::upgrade))
         .route("/v1/stream/{id}", get(streams::upgrade))
         .route("/v1/fleet", get(api::get_fleet))
@@ -1357,8 +1385,8 @@ async fn serve(
             shutdown_signal().await;
             // `fleetlayer move control` leaves the new address here before stopping this copy: every linked node is
             // told, tries it, and keeps it once it links there (else it comes back here).
-            if let Some(url) = moved_to.as_deref().and_then(settings::read_moved_to) {
-                let n = app.links.tell_moved(&url).await;
+            if let Some((url, proof)) = moved_to.as_deref().and_then(settings::read_moved_to) {
+                let n = app.links.tell_moved(&url, &proof).await;
                 tracing::info!(%url, nodes = n, "moved: told the linked nodes the new address");
                 tokio::time::sleep(Duration::from_millis(300)).await;
             }

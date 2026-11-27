@@ -36,7 +36,7 @@ fleetlayer move pages server
    anything you should know. `--dry-run` stops here. Anything that can't work (Fleetlayer missing there, a file
    already there with other content, no node there for a plugin) stops it here too, before anything changes.
 2. **Stops it here.** A plugin's block in `node.yaml` is commented out, with a line saying where it went, and the node
-   restarts without it. The control plane tells every linked node its new address as it stops.
+   restarts without it. The control plane tells every linked node its new address as it stops (below).
 3. **Copies its files**, sealed to a key the other machine makes for this move only, and sent over SSH. The other
    machine checks each file's SHA-256 against the list before it moves any of them into place, and never writes over a
    file that's different. Paths in its settings are rewritten for the other machine's home folder
@@ -46,11 +46,28 @@ fleetlayer move pages server
 5. **Points everything at the new address**: the gateway here routes the piece's name to it, so
    `http://pages.localhost:7680` keeps working on this machine; nodes follow a moved control plane; this node checks a
    moved gateway.
-6. **Removes the copy here**, only once it's healthy there. `--keep-old` keeps it instead, renamed
+6. **Removes its own state here**, only once it's healthy there. `--keep-old` keeps it instead, renamed
    `<name>.moved-<date>`.
 
+A move carries only a piece's own state: its folder and the files it owns (a login key, a token, a client secret).
+Any other path its settings name (a shared folder like `~/Downloads`, Claude Code's transcripts, a policy file in a
+git checkout) is listed in the plan and left alone, never copied or deleted: make sure it's there on the new machine.
+Content folders it serves (pages' spaces) are copied when the other machine hasn't got them, and never deleted here. A
+piece whose state folder is shared with others (the home folder, `~/.local/state/fleetlayer` itself) is refused until
+it has a folder of its own.
+
 If anything fails before step 4 says healthy, the move undoes itself on the other machine and starts the piece here
-again, as it was.
+again, as it was. It starts it here again only once the other machine has confirmed it's stopped there, so two
+copies never run: if that can't be confirmed (the connection dropped), it says so and leaves it stopped.
+
+### A move that stopped part-way
+
+Each move keeps a journal (`~/.local/state/fleetlayer/moves/`) of how far it got. If it was interrupted (the laptop
+slept, the connection dropped), a new move of the same piece waits, and:
+
+- `fleetlayer move <piece> <machine> --resume` finishes it, once its files had reached the other machine;
+- `fleetlayer move <piece> <machine> --rollback` undoes it there and starts it here again, until it was confirmed
+  healthy there; add `--force` only when the other machine can't be reached and you've checked it isn't running there.
 
 ## The pieces
 
@@ -71,6 +88,9 @@ A node is one per Unix user, so `fleetlayer move node` needs a user on the other
 - **Where it listens there:** on the address SSH reached that machine on (its LAN or tailnet address), never on
   every interface. Its port is the one it has here, or its usual one (sign-in 7650, the hub 7660, pages 7670);
   `--port` and `--listen` change them.
+- **Never plain HTTP on a public address by accident.** If that address is public (a VPS reached on its internet
+  address), the move refuses: listen on `127.0.0.1` behind a proxy with TLS (`--listen 127.0.0.1:7670 --url
+  https://pages.example`), reach the machine by its tailnet address, or pass `--public` if you really mean it.
 - **Behind a proxy with TLS**, give the address people and nodes use: `--url wss://control.example/v1/link`, or
   `--url https://pages.example`. Set up the proxy first ([On a server](laptop.md#on-a-server-traefik-and-gatus-from-the-same-list)).
 - **Settings that name this machine** (a plugin's `control_plane: http://127.0.0.1:7600`, a gateway route to
@@ -79,10 +99,17 @@ A node is one per Unix user, so `fleetlayer move node` needs a user on the other
 
 ## When the control plane moves
 
-As the old copy stops, it tells every linked node the new address (`link/moved`, in the [link protocol](../link.md)).
-Each node tries it, and once it links there it saves the address as `control.url` in its `node.yaml`. Until then, and
-for an hour, it still tries the old address, so a move that was undone costs nothing. A node that was offline during
-the move doesn't hear it: set `control.url` in its `node.yaml` by hand and restart it.
+As the old copy stops, it tells every linked node the new address and a one-time proof (`link/moved`, in the
+[link protocol](../link.md)). The proof is also written into the control plane's folder, so it travels with the
+database. Each node:
+
+- sends its token to the new address only after that address shows the proof (`/v1/move-proof`), so the token never
+  goes anywhere else, and never follows a move from `wss://` down to plain `ws://`;
+- keeps the old address as its fallback, and saves the new one as `control.url` in its `node.yaml` only once the move
+  is confirmed (the new copy passed its health check). A move that's undone costs nothing: nodes come back to the old
+  address.
+
+A node that was offline during the move doesn't hear it: set `control.url` in its `node.yaml` by hand and restart it.
 
 Nodes keep their tokens: the database moves with the control plane.
 
@@ -104,8 +131,8 @@ folders with the new machine (and the move leaves them alone, since they're alre
 
 Keys and tokens never travel in the clear and never pass through the control plane: the whole copy is sealed to a key
 made for this move on the other machine, and it's sent over SSH as well. That key is deleted when the move ends. The
-copy here is deleted once the piece is healthy there, unless you pass `--keep-old`; delete a kept copy once you're
-happy, since it still holds the secrets.
+piece's own state here is deleted once it's healthy there, unless you pass `--keep-old`; delete a kept copy once
+you're happy, since it still holds the secrets.
 
 ## Trying it on one machine
 

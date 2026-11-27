@@ -200,6 +200,11 @@ says so.
 - A plugin needs a node on the other machine first, linked to the same control plane.
 - Behind a proxy with TLS, pass the public address with `--url` (`wss://control.example/v1/link`,
   `https://pages.example`). `--port` and `--listen` set where it listens there.
+- A machine reached on a public address is refused (plain HTTP there would be open to the internet): use its tailnet
+  address, or `--listen 127.0.0.1:<port>` behind a proxy with `--url`. Pass `--public` only if the person says so.
+- A move that stopped part-way blocks the next one: `--resume` finishes it, `--rollback` undoes it. Use
+  `--rollback --force` only once the person has checked it isn't running on the other machine.
+- It moves only a piece's own state. The plan lists other paths its settings name; they aren't copied.
 - Read the plan's notes aloud to the person: settings that name this machine's loopback, space folders that aren't
   copied, and the note on sign-in's passkeys and issuer address.
 - The guide is docs/guides/moving.md.

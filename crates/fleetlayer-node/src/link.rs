@@ -35,12 +35,52 @@ pub struct Link {
     local_ip: Mutex<Option<std::net::IpAddr>>,
     /// The control plane's link URL in use now, when it differs from node.yaml's (it moved, and saving failed).
     url: Mutex<Option<String>>,
-    /// Where the control plane said it moved to (`link/moved`), and when: tried first for an hour.
-    moved_to: Mutex<Option<(String, std::time::Instant)>>,
+    /// Where the control plane said it moved to (`link/moved`): tried first, with the old address as the fallback,
+    /// until the move is confirmed (then saved) or an hour passes (then dropped).
+    moved_to: Mutex<Option<Moving>>,
+}
+
+#[derive(Debug, Clone)]
+struct Moving {
+    url: String,
+    proof: String,
+    since: std::time::Instant,
 }
 
 /// How long a `link/moved` address is tried before the node gives up on it and stays with the one it has.
 const MOVED_TRY_FOR: Duration = Duration::from_secs(3600);
+
+/// Whether the node follows a `link/moved` from `current` to `new`: a `ws://` or `wss://` link URL, never from
+/// `wss://` down to plain `ws://`, and with a proof to check.
+pub fn follows_move(current: &str, new: &str, proof: Option<&str>) -> Result<(), &'static str> {
+    if !(new.starts_with("ws://") || new.starts_with("wss://")) {
+        return Err("not a ws:// or wss:// address");
+    }
+    if current.starts_with("wss://") && new.starts_with("ws://") {
+        return Err("it would drop TLS (wss:// to ws://)");
+    }
+    if proof.is_none_or(|p| p.len() < 32 || !p.bytes().all(|b| b.is_ascii_hexdigit())) {
+        return Err("it carries no proof to check the new address against");
+    }
+    Ok(())
+}
+
+/// The control plane's web address for a link URL: `wss://c.example/v1/link` → `https://c.example`.
+fn web_base(link: &str) -> String {
+    let u = link.replacen("wss://", "https://", 1).replacen("ws://", "http://", 1);
+    u.strip_suffix("/v1/link").unwrap_or(&u).trim_end_matches('/').to_string()
+}
+
+/// Whether the address holds the moved control plane's state: `Some(confirmed)`, or None (wrong place, or not up).
+async fn check_proof(m: &Moving) -> Option<bool> {
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(5)).build().ok()?;
+    // The proof is hex (`follows_move` checks), so it goes in the URL as it is.
+    let r = client.get(format!("{}/v1/move-proof?nonce={}", web_base(&m.url), m.proof)).send().await.ok()?;
+    if !r.status().is_success() {
+        return None;
+    }
+    r.json::<Value>().await.ok()?["confirmed"].as_bool()
+}
 
 impl Link {
     pub async fn peer(&self) -> Option<Peer> {
@@ -82,13 +122,13 @@ impl Link {
         self.url.lock().await.clone()
     }
 
-    async fn moved_to(&self) -> Option<String> {
+    async fn moved_to(&self) -> Option<Moving> {
         let mut m = self.moved_to.lock().await;
-        if m.as_ref().is_some_and(|(_, at)| at.elapsed() > MOVED_TRY_FOR) {
-            tracing::warn!("the control plane's new address never answered; staying with the old one");
+        if m.as_ref().is_some_and(|x| x.since.elapsed() > MOVED_TRY_FOR) {
+            tracing::warn!("the control plane's move was never confirmed; staying with the address in node.yaml");
             *m = None;
         }
-        m.as_ref().map(|(u, _)| u.clone())
+        m.clone()
     }
 
     pub async fn state(&self) -> Value {
@@ -96,25 +136,31 @@ impl Link {
     }
 }
 
-/// Stay linked for as long as the node runs. After `link/moved`, the new address is tried first, and kept once it
-/// links; the old one is still tried after it, so a move that's rolled back costs nothing.
+/// Stay linked for as long as the node runs. After `link/moved`, the new address is tried first, but only once it
+/// shows the move's proof (so the token never goes anywhere else), and the address in node.yaml stays the fallback
+/// until the move is confirmed: a move that's undone costs nothing.
 pub async fn run(node: Arc<Node>, mut cfg: ControlConfig) {
     let mut backoff = Duration::from_secs(1);
     loop {
+        if let Some(u) = node.link.url().await {
+            cfg.url = u;
+        }
+        let moving = node.link.moved_to().await.filter(|m| m.url != cfg.url);
         let mut urls = vec![];
-        if let Some(m) = node.link.moved_to().await.filter(|m| *m != cfg.url) {
-            urls.push(m);
+        if let Some(m) = &moving {
+            match check_proof(m).await {
+                Some(_) => urls.push(m.url.clone()),
+                None => {
+                    tracing::info!(url = %m.url, "the control plane's new address doesn't show the move's proof yet")
+                }
+            }
         }
         urls.push(cfg.url.clone());
         for url in urls {
-            let moved = url != cfg.url;
             let attempt = ControlConfig { url: url.clone(), ..cfg.clone() };
             match connect_once(&node, &attempt).await {
                 Ok(()) => {
                     backoff = Duration::from_secs(1);
-                    if moved {
-                        cfg.url = url;
-                    }
                     tracing::warn!("the control plane link closed; reconnecting");
                     break;
                 }
@@ -130,8 +176,24 @@ pub async fn run(node: Arc<Node>, mut cfg: ControlConfig) {
     }
 }
 
-/// The control plane moved and this node has linked there: keep the address, in node.yaml when it can be written.
-async fn linked_at_moved(node: &Node, url: &str) {
+/// Linked at a moved control plane's address: wait for the move to be confirmed there (it passed its health check),
+/// then keep the address, in node.yaml when it can be written. Until then node.yaml keeps the old one.
+fn watch_confirmation(node: Arc<Node>, m: Moving) {
+    tokio::spawn(async move {
+        while m.since.elapsed() < MOVED_TRY_FOR {
+            if node.link.moved_to.lock().await.as_ref().is_none_or(|x| x.url != m.url) {
+                return;
+            }
+            if check_proof(&m).await == Some(true) {
+                confirmed(&node, &m.url).await;
+                return;
+            }
+            tokio::time::sleep(Duration::from_secs(3)).await;
+        }
+    });
+}
+
+async fn confirmed(node: &Node, url: &str) {
     *node.link.moved_to.lock().await = None;
     *node.link.url.lock().await = Some(url.to_string());
     match crate::config::set_control_url(&node.config_path, url) {
@@ -211,8 +273,9 @@ async fn connect_once(node: &Arc<Node>, cfg: &ControlConfig) -> anyhow::Result<(
         );
     }
     tracing::info!(url = %cfg.url, node = %welcome.node, "linked to the control plane");
-    if node.link.moved_to.lock().await.as_ref().is_some_and(|(u, _)| *u == cfg.url) {
-        linked_at_moved(node, &cfg.url).await;
+    let moving = node.link.moved_to.lock().await.clone();
+    if let Some(m) = moving.filter(|m| m.url == cfg.url) {
+        watch_confirmation(node.clone(), m);
     }
     *node.link.peer.lock().await = Some(peer.clone());
     *node.link.last_error.lock().await = None;
@@ -303,12 +366,19 @@ impl Handler for FromControl {
 
     async fn notification(&self, _peer: &Peer, method: &str, p: Value) {
         if method == l::method::MOVED {
-            match serde_json::from_value::<l::Moved>(p) {
-                Ok(m) if m.url.starts_with("ws://") || m.url.starts_with("wss://") => {
-                    tracing::info!(url = %m.url, "the control plane is moving; trying its new address next");
-                    *self.node.link.moved_to.lock().await = Some((m.url, std::time::Instant::now()));
+            let Ok(m) = serde_json::from_value::<l::Moved>(p) else {
+                tracing::warn!("ignored a link/moved it couldn't read");
+                return;
+            };
+            let current = self.node.link.url().await.or_else(|| self.node.control.as_ref().map(|c| c.url.clone()));
+            match follows_move(current.as_deref().unwrap_or(""), &m.url, m.proof.as_deref()) {
+                Ok(()) => {
+                    tracing::info!(url = %m.url, "the control plane is moving; trying its new address once it shows the move's proof");
+                    let proof = m.proof.unwrap_or_default();
+                    *self.node.link.moved_to.lock().await =
+                        Some(Moving { url: m.url, proof, since: std::time::Instant::now() });
                 }
-                _ => tracing::warn!("ignored a link/moved without a ws:// or wss:// url"),
+                Err(why) => tracing::warn!(url = %m.url, "ignored link/moved: {why}"),
             }
             return;
         }
@@ -329,5 +399,24 @@ impl Handler for FromControl {
         {
             crate::sync::wanted(&self.node, bundle, node).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_move_is_followed_only_with_a_proof_and_never_down_to_plain_ws() {
+        let proof = "ab".repeat(24);
+        assert!(follows_move("ws://127.0.0.1:7600/v1/link", "ws://10.0.0.5:7600/v1/link", Some(&proof)).is_ok());
+        assert!(follows_move("ws://127.0.0.1:7600/v1/link", "wss://c.example/v1/link", Some(&proof)).is_ok());
+        assert!(follows_move("wss://c.example/v1/link", "ws://10.0.0.5:7600/v1/link", Some(&proof)).is_err());
+        assert!(follows_move("ws://a/v1/link", "http://b/v1/link", Some(&proof)).is_err());
+        assert!(follows_move("ws://a/v1/link", "ws://b/v1/link", None).is_err());
+        assert!(follows_move("ws://a/v1/link", "ws://b/v1/link", Some("short")).is_err());
+        assert!(follows_move("ws://a/v1/link", "ws://b/v1/link", Some(&"z&x=".repeat(12))).is_err(), "hex only");
+        assert_eq!(web_base("wss://c.example/v1/link"), "https://c.example");
+        assert_eq!(web_base("ws://10.0.0.5:7600/v1/link"), "http://10.0.0.5:7600");
     }
 }
