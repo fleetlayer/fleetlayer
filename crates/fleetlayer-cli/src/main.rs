@@ -343,7 +343,10 @@ fn me_text(v: &Value) -> String {
         s
     };
     let tools = list("tools");
-    if tools.is_empty() {
+    let unknown: Vec<&str> = me["unknown"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    if tools.is_empty() && !unknown.is_empty() {
+        let _ = writeln!(o, "Shared tools: none reported; {}.", unknown.join("; "));
+    } else if tools.is_empty() {
         let _ = writeln!(o, "Shared tools: none you may use.");
     } else {
         let _ = writeln!(o, "Shared tools:");
@@ -398,8 +401,8 @@ fn me_text(v: &Value) -> String {
         let _ =
             writeln!(o, "Start or resume sessions on: {} (`fleetlayer session start --on <node>`).", start.join(", "));
     }
-    for u in list("unknown") {
-        let _ = writeln!(o, "Can't tell what {} shares.", u.as_str().unwrap_or("?"));
+    if !tools.is_empty() && !unknown.is_empty() {
+        let _ = writeln!(o, "Not reported, so not listed: {}.", unknown.join("; "));
     }
     let subs: Vec<&str> = me["subscriptions"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
     if !subs.is_empty() {
@@ -963,6 +966,31 @@ fn commit_report(channel: &str, c: &Value) -> String {
         out.push_str("No runs seen yet for this commit; each result arrives as a message when it completes.\n");
     }
     out
+}
+
+#[cfg(test)]
+mod me_tests {
+    use super::*;
+
+    fn me(tools: Value, unknown: Value) -> String {
+        me_text(&json!({"node": "server", "caller": "planning", "address": "planning@server", "harness": "claude",
+            "me": {"tools": tools, "unknown": unknown, "message": [], "messageRefused": 0}}))
+    }
+
+    #[test]
+    fn a_node_too_old_to_report_tools_is_named_on_the_tools_line() {
+        let t = me(json!([]), json!(["nathans-mac is too old to say (v0.3.8)"]));
+        assert!(t.contains("Shared tools: none reported; nathans-mac is too old to say (v0.3.8).\n"), "{t}");
+        assert!(!t.contains("none you may use"), "{t}");
+        let t = me(json!([]), json!([]));
+        assert!(t.contains("Shared tools: none you may use.\n"), "{t}");
+        let t = me(
+            json!([{"name": "browser@laptop", "node": "laptop", "state": "allowed"}]),
+            json!(["nathans-mac is too old to say (v0.3.8)"]),
+        );
+        assert!(t.contains("  browser@laptop: allowed\n"), "{t}");
+        assert!(t.contains("Not reported, so not listed: nathans-mac is too old to say (v0.3.8).\n"), "{t}");
+    }
 }
 
 #[cfg(test)]

@@ -128,10 +128,10 @@ pub async fn answer(app: &App, tenant: &str, node: &str, caller: &str) -> Result
         }
         match version.as_deref().and_then(parse_version) {
             Some(v) if v < REPORTS_TOOLS => {
-                out.unknown.push(format!("{name} (version {}, older than v0.3.9)", version.as_deref().unwrap_or("?")))
+                out.unknown.push(format!("{name} is too old to say (v{})", version.as_deref().unwrap_or("?")))
             }
             _ if !online.contains(name) => {
-                out.unknown.push(format!("{name} (offline since the control plane started)"))
+                out.unknown.push(format!("{name} hasn't been online since the control plane started"))
             }
             _ => {}
         }
@@ -288,6 +288,6 @@ mod tests {
         crate::db::node_seen(&app.db, "default", "server", "m", "u", "0.3.8").await.unwrap();
         app.links.tools.lock().await.clear();
         let me = answer(&app, "default", "laptop", "planning").await.unwrap();
-        assert!(me.unknown.iter().any(|u| u.starts_with("server (version 0.3.8")), "{:?}", me.unknown);
+        assert!(me.unknown.iter().any(|u| u == "server is too old to say (v0.3.8)"), "{:?}", me.unknown);
     }
 }

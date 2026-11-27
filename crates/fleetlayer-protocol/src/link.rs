@@ -429,7 +429,7 @@ pub struct Me {
     /// node is always there (`allowed`), others say `allowed` or `ask`. Refused ones are left out.
     #[serde(default)]
     pub start: Vec<MeTarget>,
-    /// Nodes it can see that are too old to say what they share.
+    /// Nodes it can see that can't say what they share, one sentence each: `laptop is too old to say (v0.3.8)`.
     #[serde(default)]
     pub unknown: Vec<String>,
     /// Its subscriptions: `channel` or `channel (subject)`.
