@@ -306,7 +306,8 @@ managers, machines that sleep.
   the same words as the sign-in page's warning. Where it lives: `docs/sso.md` ("Moving it").
 - **An agent no tenant admitted can't do anything.** Since decisions moved to the tenants that own what's touched,
   every request is decided in the tenants either agent is a member of, and an agent no tenant admitted is refused
-  ("neither … is a member of any tenant"). Upgrading keeps working: every existing node's agents were admitted to the
-  first tenant, and `node add` admits a new node's agents unless `--no-admit`. A node added with `--no-admit`, or a
+  ("neither … is a member of any tenant"). Upgrading keeps working: on upgrading, every node no tenant admits (and
+  no team or tenant owns) has its agents admitted to the first tenant, recorded in its audit log, and `node add`
+  admits a new node's agents to the tenant it's run for (the first, unless `--tenant`) unless `--no-admit`. A node added with `--no-admit`, or a
   person's node after they leave every tenant, needs `fleetlayer-control agent admit "*@<node>"` in some tenant first.
   `acl explain --tenant <slug>` says which. Where it lives: `docs/sso.md` ("On the control plane").

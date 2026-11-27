@@ -974,6 +974,39 @@ mod tests {
         assert!(agent_remove(&db, "default", "recipes@laptop", "admin").await.is_err());
     }
 
+    #[tokio::test]
+    async fn upgrading_admits_nodes_no_tenant_admitted() {
+        use sqlx::migrate::Migrator;
+        let db = sqlx::sqlite::SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+        let all = sqlx::migrate!("./migrations");
+        let mut early = Migrator::new(std::path::Path::new("./migrations")).await.unwrap();
+        early.migrations = all.migrations.iter().filter(|m| m.version < 14).cloned().collect::<Vec<_>>().into();
+        early.run(&db).await.unwrap();
+        for (name, owner) in [("web", None), ("shared", Some("team:default/everyone")), ("laptop", None)] {
+            sqlx::query("INSERT INTO nodes (tenant, name, token_hash, created_at, owner) VALUES ('default', ?, 'h-' || ?, 0, ?)")
+                .bind(name)
+                .bind(name)
+                .bind(owner)
+                .execute(&db)
+                .await
+                .unwrap();
+        }
+        agent_admit(&db, "default", "work@laptop", "admin").await.unwrap();
+        all.run(&db).await.unwrap();
+        let patterns: Vec<String> =
+            sqlx::query_scalar("SELECT pattern FROM member_agents ORDER BY pattern").fetch_all(&db).await.unwrap();
+        assert_eq!(
+            patterns,
+            ["*@web", "work@laptop"],
+            "a team's node needs no admitting, an admitted one keeps its rows"
+        );
+        let logged: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit_outbox WHERE subject = 'migration'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(logged, 1);
+    }
+
     async fn join(db: &Db, tenant: &str, handle: &str, role: &str) -> String {
         let code = invite(db, tenant, NewInvite { handle, role, teams: &[], person: None }, "admin").await.unwrap();
         invite_redeem(db, &code, Redeemer::New { display_name: handle }).await.unwrap().person
