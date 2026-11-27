@@ -45,11 +45,13 @@ fleetlayer sessions
 
 Next: https://fleetlayer.ai/guides/laptop.md
 
-## Why
+## No vendor lock-in
 
-Kind of like Nextcloud, for AI agents: your own stack instead of a vendor's cloud, made of separate pieces that work
-with the tools you already use. Keep using Anthropic's and OpenAI's own features for as long as they serve you; when
-you outgrow them, you give nothing up, and you can still change models and harnesses whenever you like.
+Your own stack instead of a vendor's cloud, made of separate pieces that work with the tools you already use. Keep
+using Anthropic's and OpenAI's own features for as long as they serve you; when you outgrow them, you give nothing up,
+and you can still change models and harnesses whenever you like.
+
+## Who it's for
 
 It's for people who run many agents side by side (errands, email triage, product work, infrastructure, workers), each
 with its own machine or Unix user and permissions, and for people whose work and life share the same agents.
