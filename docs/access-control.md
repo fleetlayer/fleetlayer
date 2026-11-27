@@ -124,7 +124,8 @@ Approvals are on by default: a policy that leaves `ask:` out asks before `start`
 minutes) and
 before each agent's first `use_tool` or `sync` to a target (it holds 30 days), the safe start for a fleet you don't know
 yet. A fleet of autonomous agents turns it off with `ask: []` (and
-`justify: []`). An `ask` match refuses the request with a request ID and publishes an `access.ask` event on the `access` channel (for
+`justify: []`). An `allow` rule doesn't skip an ask: to stop asking for something, list `ask:` without it (`ask: []`
+turns asking off). An `ask` match refuses the request with a request ID and publishes an `access.ask` event on the `access` channel (for
 an Inbox card, a phone push, or whoever subscribes); once the person approves it, the agent tries again and the same
 agent, verb and target pass without asking again for `for`. A refusal stands for an hour. A justification is one line of plain text, 16 to 1000 characters, with no
 hidden characters; a request that needs one and has none is refused with a message saying so. Agents give it with
