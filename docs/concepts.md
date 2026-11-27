@@ -11,9 +11,9 @@ laptop](guides/laptop.md) show how to run them.
   connection to the control plane, delivers messages into sessions, updates itself from releases, and reports a
   heartbeat. The `fleetlayer` command line talks to the node on its own machine.
 - **Plugins**, separate programs the node starts and talks to over JSON-RPC on stdin and stdout. They can be written
-  in any language. A plugin takes one or more roles: a session manager knows where sessions run (`fleetlayer-herdr`);
-  a harness knows one agent program from the inside (`fleetlayer-claude-code` delivers through Claude Code's own
-  messaging socket); others turn outside events into Fleetlayer events, apply files or secrets sent to the machine,
+  in any language. A plugin takes one or more roles: a session manager knows where sessions run (`fleetlayer-herdr`,
+  and soon `fleetlayer-rex` for [Rex](rex.md)); a harness knows one agent program from the inside
+  (`fleetlayer-claude-code` delivers through Claude Code's own messaging socket); others turn outside events into Fleetlayer events, apply files or secrets sent to the machine,
   write session summaries, or serve pages. The protocol is the [Agent Client
   Protocol](https://agentclientprotocol.com) plus Fleetlayer's extensions ([the plugin protocol](protocol.md)).
 - **The control plane**, one per fleet. It knows every node and session, relays messages between nodes, routes

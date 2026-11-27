@@ -16,6 +16,13 @@ export const site = {
 export const pages = [
   { file: "getting-started", group: "Start here" },
   { file: "concepts", group: "Start here", label: "How it fits together" },
+  {
+    file: "rex",
+    group: "Works with",
+    label: "Rex",
+    description:
+      "How Fleetlayer works with Rex, the terminal and session manager from Superlogical: Rex keeps your sessions, and Fleetlayer lets the Claude Code and Codex agents in them message each other, receive webhooks and work under access rules.",
+  },
   { file: "guides/laptop", group: "Guides", label: "Start on your laptop" },
   { file: "guides/node-services", group: "Guides", label: "Add a machine" },
   { file: "guides/agents-vm", group: "Guides", label: "A server VM for your agents" },

@@ -23,6 +23,7 @@ function licenceText(id) {
 }
 
 function installText(e) {
+  if (e.status === "in progress") return "Not released yet";
   if (e.install === "bundled") return "In every Fleetlayer release";
   const [k, v] = Object.entries(e.install)[0];
   if (k === "archive") return `Download ${v}`;
@@ -36,7 +37,7 @@ function entryPage(e, { docsLink }) {
     ["Kind", KIND_NAMES[e.kind] ?? e.kind],
     e.kind === "plugin" ? ["Roles", (e.roles ?? []).length ? e.roles.map((r) => ROLE_NAMES[r] ?? r).join(", ") : "None (a service the node runs)"] : null,
     ["Status", e.status],
-    ["Ships with Fleetlayer", e.ships_with_fleetlayer ? "Yes" : "No"],
+    ["Ships with Fleetlayer", e.ships_with_fleetlayer ? (e.status === "in progress" ? "It will, once released" : "Yes") : "No"],
     ["Licence", licenceText(e.licence)],
     ["Maintainer", e.maintainer],
     ["Source", e.source],

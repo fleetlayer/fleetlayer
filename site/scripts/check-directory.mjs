@@ -10,7 +10,8 @@ const network = process.argv.includes("--network");
 
 export const KINDS = ["plugin", "tool", "shared_tool", "service"];
 export const ROLES = ["session_manager", "harness", "event_source", "action", "sync_target", "sync_source", "observer"];
-export const STATUSES = ["stable", "beta", "experimental"];
+// "in progress": being built in the open, not released yet.
+export const STATUSES = ["stable", "beta", "experimental", "in progress"];
 export const PLATFORMS = ["linux", "macos", "windows"];
 // Open-source licences listed as-is; copyleft ones are marked on the page. Anything else is listed as proprietary.
 export const PERMISSIVE = ["Apache-2.0", "MIT", "BSD-2-Clause", "BSD-3-Clause", "ISC", "0BSD", "Unlicense", "Zlib"];

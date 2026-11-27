@@ -1,0 +1,26 @@
+name: fleetlayer-rex
+summary: Connects Rex, Superlogical's terminal and session manager, so the Claude Code and Codex sessions in it are in the fleet.
+kind: plugin
+roles: [session_manager]
+ships_with_fleetlayer: true
+status: in progress
+licence: Apache-2.0
+maintainer: Fleetlayer
+source: https://github.com/fleetlayer/fleetlayer/tree/main/plugins-directory/fleetlayer-rex.yaml
+install: bundled
+command: fleetlayer-rex
+platforms: [linux, macos]
+min_fleetlayer: 0.4.0
+protocol: 1
+needs: [Rex (https://www.superlogical.com/rex/docs)]
+grants: []
+docs: rex
+security: >-
+  Will see every Rex session of its Unix user's server (names, status, the program in each) and type into a
+  terminal only when a message can't reach the agent through its own channel.
+description: |
+  In progress. The session manager plugin for [Rex](https://www.superlogical.com/rex/docs): it lists Rex's sessions
+  with each agent's status from program status reports (OSC 7501), streams changes from `rex events`, opens and closes
+  sessions, delivers messages with `rex send` when nothing better is available, and lets `fleetlayer attach` watch Rex
+  terminals. It uses only Rex's public command line and API. More in [Fleetlayer and
+  Rex](https://fleetlayer.ai/rex/).

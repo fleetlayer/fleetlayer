@@ -15,7 +15,7 @@ Listing it is a pull request that adds one file here, `<name>.yaml`. Copy an exi
 | `kind` | yes | `plugin` (the node starts it), `tool` (a command line), `shared_tool` (an MCP server a node shares with agents elsewhere, under `tools:` in `node.yaml`) or `service` (a program of its own) |
 | `roles` | plugins | `session_manager`, `harness`, `event_source`, `action`, `sync_target`, `sync_source`, `observer` |
 | `ships_with_fleetlayer` | yes | `true` only for what's in every release's archive |
-| `status` | yes | `stable`, `beta` or `experimental` |
+| `status` | yes | `stable`, `beta`, `experimental`, or `in progress` (being built, not released yet) |
 | `licence` | yes | An SPDX identifier (`Apache-2.0`, `MIT`). Copyleft and proprietary licences are listed, and marked |
 | `maintainer` | yes | Who looks after it |
 | `source` | yes | The repository (or folder) URL; it must be reachable |
