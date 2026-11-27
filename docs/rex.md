@@ -68,7 +68,7 @@ start or on a server later.
 
 ## How they fit
 
-Fleetlayer never replaces or hides a session manager. It attaches to the one you use through a **session-manager
+Fleetlayer works with your session manager. It attaches to the one you use through a **session-manager
 plugin**, a separate program the node starts ([the plugin protocol](protocol.md#4-sessions-the-session-manager-role)).
 herdr has one, and Rex has [`fleetlayer-rex`](plugins/rex.md), which uses only Rex's public command line and API:
 

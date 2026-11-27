@@ -65,7 +65,7 @@ stops the piece, copies its folder sealed and checked, starts it there and point
 
 ## Rules that shape the design
 
-- **Fleetlayer never replaces your session manager.** It attaches to herdr (and later tmux, T3 Code and others)
+- **Fleetlayer works with your session manager.** It attaches to herdr (and later tmux, T3 Code and others)
   without taking it over. Your own apps and terminals keep working beside it.
 - **Plugins are separate processes.** Nothing is compiled into the node, so a plugin can't crash it, and you can write
   one in any language.
