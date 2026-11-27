@@ -8,8 +8,9 @@ away, happens in one place.
 Everything a company needs is built on the same service: single sign-on, teams, separate organisations, audit. How it
 fits together, and why, is in [Sign-in and SSO](../sso.md).
 
-Status: experimental. Passkeys, invites, signing in to services and the admin pages work. Signing out of every service
-at once, and Google Workspace as a way to sign in, come next.
+Status: experimental. Passkeys, invites, signing in to services, the admin pages, and signing in with Google
+Workspace or another OpenID Connect provider work. Signing out of every service at once, and Workspace groups as
+teams, come next.
 
 ## Set it up
 
@@ -72,6 +73,36 @@ under **Advanced**.
 - The last admin can't be removed or made a member: make someone else an admin first.
 - An admin can make 20 invites an hour.
 
+## Signing in with Google Workspace, or another provider
+
+A company's people can sign in with their work account instead of a passkey:
+
+```yaml
+upstreams:
+  - name: acme-google
+    kind: google                  # Google Workspace
+    domain: acme.example          # only accounts in this Workspace, with a verified email there
+    tenant: acme                  # the place it signs people in for
+    client_id: "…apps.googleusercontent.com"
+    client_secret_file: ~/.config/fleetlayer/signin-upstreams/acme-google
+    join: {role: member}          # optional: anyone from the domain joins as a member on first sign-in
+  - name: okta
+    kind: oidc                    # any OpenID Connect provider
+    issuer: https://example.okta.com
+    tenant: acme
+    client_id: "…"
+    client_secret_file: ~/.config/fleetlayer/signin-upstreams/okta
+```
+
+- **The provider's side:** an OAuth client for a web application, with the return address
+  `https://signin.example.com/upstream/<name>/callback`. For Google: Google Cloud console, APIs & Services,
+  Credentials, Create OAuth client ID, Web application; an Internal consent screen keeps it to the Workspace.
+- The sign-in page offers **Continue with Google**, and the invite page **Join with Google**.
+- **Linking:** the first time, by an invite opened with "Join with Google" (or by `join`, for someone from the
+  domain). After that, by the account's issuer and subject. Never by email, which can change hands.
+- **One place only:** signing in with Acme's Google gives tokens for Acme. Someone who's also in another place signs
+  in with their passkey for that one.
+
 ## Settings
 
 | Setting | What it is |
@@ -82,6 +113,7 @@ under **Advanced**.
 | `control_plane`, `token_file` | The control plane's address and the token from step 1. On one machine, use `http://127.0.0.1:<port>`: a server often can't resolve `*.localhost` names the way a browser does. |
 | `listen` | Where it listens, behind your proxy. |
 | `clients` | Each service that signs people in: `name` (as in the policy, `service:<name>`), its exact `redirect_uris`, a `secret_file` for a service that keeps a secret (leave it out for one that can't, such as an app in a browser), and `post_logout_redirect_uris`. |
+| `upstreams` | Providers people may sign in with (above): `name`, `kind` (`google` or `oidc`), `issuer` (oidc), `domain` (required for google), `label`, `tenant`, `client_id`, `client_secret_file`, `join`. |
 | `heartbeat` | Pushed every five minutes; it fails when the folder can't be written or the control plane doesn't answer. |
 
 ## For a service

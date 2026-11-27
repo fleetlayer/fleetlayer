@@ -229,6 +229,31 @@ pub async fn post_event(State(app): State<Arc<App>>, headers: HeaderMap, Json(e)
     Ok(Json(json!({})))
 }
 
+#[derive(Deserialize)]
+pub struct JoinRequest {
+    tenant: String,
+    display_name: String,
+    /// What to make the handle from (an email's local part).
+    hint: String,
+    /// The upstream provider that vouched for them, for the audit log.
+    via: String,
+}
+
+/// `POST /v1/signin/join`: someone an upstream provider vouches for joins its tenant as a member (`join: {role:
+/// member}` in the sign-in service's settings). Never another role; recorded as the sign-in token, via the upstream.
+pub async fn post_join(State(app): State<Arc<App>>, headers: HeaderMap, Json(j): Json<JoinRequest>) -> ApiResult {
+    let token = guard(&app, &headers).await?;
+    let fleet = app.authz.fleet(&app.db).await.map_err(internal)?;
+    let tenant = fleet.tenant(&j.tenant).ok_or_else(|| bad(format!("no tenant {}", j.tenant)))?;
+    let name = j.display_name.trim();
+    if name.is_empty() || name.chars().count() > 100 {
+        return Err(bad("a display name is 1 to 100 characters"));
+    }
+    let by = format!("signin:{token} via {}", j.via);
+    let done = crate::people::join(&app.db, &tenant.id, name, &j.hint, &by).await.map_err(bad)?;
+    Ok(Json(json!({"tenant": done.tenant, "person": done.person, "handle": done.handle, "recovery": false})))
+}
+
 // ---------------------------------------------------------------- admin pages
 
 /// A change an admin makes on the sign-in service's admin pages, for a tenant, as that person.

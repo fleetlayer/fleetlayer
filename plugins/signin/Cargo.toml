@@ -32,12 +32,15 @@ rsa = "0.10"
 crypto-common = { version = "0.2", features = ["getrandom"] }
 webauthn-rs-proto = "0.6"
 subtle = "2"
+# Signing in through an upstream provider (Google Workspace, any OIDC provider).
+fleetlayer-oidc = { path = "../../crates/fleetlayer-oidc" }
 # Passkeys: MPL-2.0, used unmodified (NOTICE). Its core uses OpenSSL, built from source into the binary (`vendored`)
 # so a release links no system OpenSSL.
 webauthn-rs = { version = "0.6", features = ["danger-allow-state-serialisation", "conditional-ui"] }
 openssl = { version = "0.10", features = ["vendored"] }
 
 [dev-dependencies]
+fleetlayer-oidc = { path = "../../crates/fleetlayer-oidc", features = ["testing"] }
 # A software passkey for the tests (MPL-2.0, unmodified, tests only).
 webauthn-authenticator-rs = { version = "0.6", default-features = false, features = ["softpasskey"] }
 tempfile = "3.27.0"

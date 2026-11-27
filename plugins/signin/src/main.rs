@@ -25,6 +25,7 @@ mod control;
 mod domain;
 mod keys;
 mod store;
+mod upstream;
 mod web;
 
 #[cfg(test)]
@@ -59,6 +60,37 @@ struct ClientConfig {
     post_logout_redirect_uris: Vec<String>,
 }
 
+/// A provider people may sign in with (`docs/sso.md`, "Upstream providers").
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpstreamConfig {
+    name: String,
+    /// `google` (Google Workspace: its `hd` and a verified email checked against `domain`) or `oidc`.
+    kind: String,
+    /// The provider (an `oidc` one; Google's is known).
+    #[serde(default)]
+    issuer: Option<String>,
+    /// For Google Workspace, the domain (required); for `oidc`, optional, checked the same way.
+    #[serde(default)]
+    domain: Option<String>,
+    /// What the button says, after "Continue with" (default: Google, or the name).
+    #[serde(default)]
+    label: Option<String>,
+    /// The tenant it signs people in for (slug or ID).
+    tenant: String,
+    client_id: String,
+    client_secret_file: PathBuf,
+    /// `{role: member}`: anyone it vouches for may join the tenant as a member.
+    #[serde(default)]
+    join: Option<JoinConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct JoinConfig {
+    role: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
@@ -75,6 +107,8 @@ struct Config {
     listen: SocketAddr,
     #[serde(default)]
     clients: Vec<ClientConfig>,
+    #[serde(default)]
+    upstreams: Vec<UpstreamConfig>,
     #[serde(default)]
     heartbeat: Option<Heartbeat>,
 }
@@ -155,7 +189,43 @@ fn build(cfg: Config, home: &Path) -> anyhow::Result<(Arc<web::App>, SocketAddr,
         passkeys_fixed,
         clients,
     };
-    let app = web::App::new(settings, store, keys, control)?;
+    let mut upstreams = vec![];
+    for u in cfg.upstreams {
+        anyhow::ensure!(valid_client_name(&u.name), "upstream {:?}: lower-case letters, digits and hyphens", u.name);
+        let (issuer, label) = match u.kind.as_str() {
+            "google" => {
+                anyhow::ensure!(
+                    u.domain.is_some(),
+                    "upstream {}: a google upstream needs its Workspace domain",
+                    u.name
+                );
+                ("https://accounts.google.com".to_string(), u.label.clone().unwrap_or_else(|| "Google".into()))
+            }
+            "oidc" => (
+                u.issuer
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("upstream {}: an oidc upstream needs its issuer", u.name))?,
+                u.label.clone().unwrap_or_else(|| u.name.clone()),
+            ),
+            k => anyhow::bail!("upstream {}: kind is google or oidc (got {k})", u.name),
+        };
+        if let Some(j) = &u.join {
+            anyhow::ensure!(j.role == "member", "upstream {}: join can only make members", u.name);
+        }
+        let secret =
+            read_secret(&expand(home, &u.client_secret_file), &format!("upstream {}'s client secret", u.name))?;
+        let back = format!("{}/upstream/{}/callback", settings.issuer, u.name);
+        let oidc = fleetlayer_oidc::Oidc::with_redirect(&issuer, &u.client_id, &secret, &back, &settings.issuer)?;
+        upstreams.push(upstream::Upstream {
+            name: u.name,
+            label,
+            domain: u.domain.map(|d| d.to_ascii_lowercase()),
+            tenant: u.tenant,
+            join: u.join.is_some(),
+            oidc,
+        });
+    }
+    let app = web::App::with_upstreams(settings, store, keys, control, upstreams)?;
     let heartbeat = cfg.heartbeat.map(|h| Heartbeat { token_file: expand(home, &h.token_file), ..h });
     Ok((Arc::new(app), cfg.listen, heartbeat))
 }

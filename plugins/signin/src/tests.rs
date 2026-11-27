@@ -76,6 +76,13 @@ async fn control_plane(seen: Arc<Mutex<Seen>>) -> String {
                 async move {
                     if b["person"] == "p_a" {
                         (StatusCode::OK, Json(p))
+                    } else if b["person"] == "p_two" {
+                        // In Acme and in Home.
+                        let mut two = p.clone();
+                        two["id"] = json!("p_two");
+                        two["tenants"].as_array_mut().unwrap().push(json!({"tenant": "t_home", "slug": "home",
+                            "name": "Home", "handle": "two", "role": "admin", "teams": [], "groups": ["home"]}));
+                        (StatusCode::OK, Json(two))
                     } else {
                         (StatusCode::NOT_FOUND, Json(json!({})))
                     }
@@ -96,10 +103,20 @@ async fn control_plane(seen: Arc<Mutex<Seen>>) -> String {
             }),
         )
         .route(
+            "/v1/signin/join",
+            post(|Json(b): Json<Value>| async move {
+                assert_eq!(b["tenant"], "acme");
+                let person = if b["hint"] == "two" { "p_two" } else { "p_a" };
+                Json(json!({"tenant": "t_acme", "person": person, "handle": b["hint"], "recovery": false}))
+            }),
+        )
+        .route(
             "/v1/signin/check",
             post(|Json(b): Json<Value>| async move {
-                let ok =
-                    b["tenant"] == "t_acme" && b["who"] == "p_a" && b["can"] == "sign_in" && b["to"] == "service:hub";
+                let ok = (b["tenant"] == "t_acme" || b["tenant"] == "t_home")
+                    && (b["who"] == "p_a" || b["who"] == "p_two")
+                    && b["can"] == "sign_in"
+                    && b["to"] == "service:hub";
                 Json(json!({"allowed": ok, "rules": if ok { vec!["allow[0]"] } else { vec![] },
                     "reason": if ok { "allow[0]" } else { "no rule allows it" }}))
             }),
@@ -423,4 +440,219 @@ async fn admins_invite_and_are_asked_again_before_removing_someone() {
     assert!(r.location.as_deref().unwrap().contains("limit"), "{:?}", r.location);
     let removes = seen.lock().unwrap().events.iter().filter(|e| e.as_str() == "admin member_remove b").count();
     assert_eq!(removes, 0, "nothing removed without the fresh passkey");
+}
+
+#[tokio::test]
+async fn on_plain_http_localhost_the_cookie_isnt_secure_and_everywhere_else_it_is() {
+    // WebKit treats http://*.localhost as a secure context but drops Secure cookies there (homeserver's Mac test).
+    let control = control_plane(Arc::new(Mutex::new(Seen::default()))).await;
+    let dir = tempfile::tempdir().unwrap();
+    let https = app(dir.path(), &control);
+    let set = |a: &Arc<web::App>| a.session_cookie_header("v", 60);
+    let h = set(&https);
+    assert!(h.starts_with("__Host-fleetlayer-signin=v;") && h.contains("; Secure"), "{h}");
+    let local_dir = tempfile::tempdir().unwrap();
+    let store = crate::store::Store::open(local_dir.path()).unwrap();
+    let keys = crate::keys::Keys::load_or_make(local_dir.path()).unwrap();
+    let settings = web::Settings {
+        issuer: "http://signin.localhost:7680".into(),
+        origin: Url::parse("http://signin.localhost:7680").unwrap(),
+        passkey_domain: "signin.localhost".into(),
+        passkeys_fixed: true,
+        clients: vec![],
+    };
+    let local = Arc::new(web::App::new(settings, store, keys, crate::control::Control::new(&control, "t")).unwrap());
+    let h = set(&local);
+    assert!(h.starts_with("fleetlayer-signin=v;") && !h.contains("Secure"), "{h}");
+    assert!(h.contains("HttpOnly") && h.contains("SameSite=Lax"));
+}
+
+/// The sign-in service with one upstream: an OIDC provider standing in for Acme's Google Workspace.
+async fn with_upstream(
+    dir: &std::path::Path,
+    control: &str,
+    join: bool,
+) -> (Arc<web::App>, Arc<fleetlayer_oidc::testing::FakeIssuer>) {
+    let f = fleetlayer_oidc::testing::FakeIssuer::start_for("fleetlayer").await;
+    let store = crate::store::Store::open(dir).unwrap();
+    let keys = crate::keys::Keys::load_or_make(dir).unwrap();
+    let settings = web::Settings {
+        issuer: ORIGIN.into(),
+        origin: Url::parse(ORIGIN).unwrap(),
+        passkey_domain: "example.com".into(),
+        passkeys_fixed: false,
+        clients: vec![web::Client {
+            name: "hub".into(),
+            redirect_uris: vec!["https://hub.example.com/cb".into()],
+            secret: Some("s3cret".into()),
+            post_logout_redirect_uris: vec![],
+        }],
+    };
+    let oidc = fleetlayer_oidc::Oidc::with_redirect(
+        &f.url,
+        "fleetlayer",
+        "up-secret",
+        &format!("{ORIGIN}/upstream/acme-google/callback"),
+        ORIGIN,
+    )
+    .unwrap();
+    let up = crate::upstream::Upstream {
+        name: "acme-google".into(),
+        label: "Google".into(),
+        domain: Some("acme.example".into()),
+        tenant: "acme".into(),
+        join,
+        oidc,
+    };
+    let control = crate::control::Control::new(control, "fls_test");
+    (Arc::new(web::App::with_upstreams(settings, store, keys, control, vec![up]).unwrap()), f)
+}
+
+/// Through the upstream: start, the provider answers with `claims` (given the nonce), back to the callback.
+async fn via_upstream(
+    a: &Arc<web::App>,
+    f: &fleetlayer_oidc::testing::FakeIssuer,
+    claims: impl Fn(&str) -> Value,
+) -> Resp {
+    use fleetlayer_oidc::testing::{good, param};
+    let r = call(a, "GET", "/upstream/acme-google/start?return=%2Fadmin", None, None, "").await;
+    let to = r.location.expect("off to the provider");
+    assert_eq!(param(&to, "code_challenge_method"), "S256");
+    assert_eq!(param(&to, "redirect_uri"), format!("{ORIGIN}/upstream/acme-google/callback"));
+    let state = param(&to, "state");
+    *f.token.lock().unwrap() = Some(good(f, claims(&param(&to, "nonce"))));
+    call(
+        a,
+        "GET",
+        &format!("/upstream/acme-google/callback?code=c&state={state}"),
+        Some(&format!("fleetlayer-upstream={state}")),
+        None,
+        "",
+    )
+    .await
+}
+
+fn workspace_claims(f: &fleetlayer_oidc::testing::FakeIssuer, nonce: &str) -> Value {
+    let now = jiff::Timestamp::now().as_second();
+    json!({"iss": f.url, "aud": "fleetlayer", "sub": "google-123", "exp": now + 600, "iat": now, "nonce": nonce,
+        "hd": "acme.example", "email": "sam@acme.example", "email_verified": true, "name": "Sam"})
+}
+
+#[tokio::test]
+async fn a_workspace_account_joins_once_and_signs_in_by_its_subject_after() {
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let control = control_plane(seen.clone()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (a, f) = with_upstream(dir.path(), &control, true).await;
+    let page = call(&a, "GET", "/login", None, None, "").await;
+    assert!(page.text.contains("Continue with Google"), "{}", page.text);
+
+    let r = via_upstream(&a, &f, |n| workspace_claims(&f, n)).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    assert!(r.text.contains("http-equiv=\"refresh\"") && r.text.contains("/admin"));
+    let cookie = r.cookie.clone().expect("signed in");
+    {
+        let people = a.store.people.lock().await;
+        let link = &people.people["p_a"].links[0];
+        assert_eq!(
+            (link.upstream.as_str(), link.sub.as_str(), link.iss.as_str()),
+            ("acme-google", "google-123", f.url.as_str())
+        );
+    }
+    // The hub signs them in, for Acme.
+    let (verifier, challenge) = pkce();
+    let r2 = call(&a, "GET", &authorize_uri("hub", &challenge), Some(&cookie), None, "").await;
+    assert!(r2.status.is_redirection(), "{}", r2.text);
+    let _ = verifier;
+    // Again: by the subject, without joining again.
+    let r = via_upstream(&a, &f, |n| workspace_claims(&f, n)).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    let events = seen.lock().unwrap().events.clone();
+    assert_eq!(events.iter().filter(|e| e.starts_with("upstream_linked")).count(), 1, "{events:?}");
+}
+
+#[tokio::test]
+async fn a_workspace_account_outside_the_domain_or_unverified_is_refused() {
+    let control = control_plane(Arc::new(Mutex::new(Seen::default()))).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (a, f) = with_upstream(dir.path(), &control, true).await;
+    let r = via_upstream(&a, &f, |n| {
+        let mut c = workspace_claims(&f, n);
+        c["hd"] = json!("other.example");
+        c
+    })
+    .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    assert!(r.text.contains("isn&#39;t in acme.example") || r.text.contains("isn't in acme.example"), "{}", r.text);
+    let r = via_upstream(&a, &f, |n| {
+        let mut c = workspace_claims(&f, n);
+        c["email_verified"] = json!(false);
+        c
+    })
+    .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    // A personal Gmail with no hd at all.
+    let r = via_upstream(&a, &f, |n| {
+        let mut c = workspace_claims(&f, n);
+        c.as_object_mut().unwrap().remove("hd");
+        c
+    })
+    .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    assert!(a.store.people.lock().await.people.is_empty(), "nothing linked");
+}
+
+#[tokio::test]
+async fn without_join_an_unlinked_account_needs_an_invite() {
+    let control = control_plane(Arc::new(Mutex::new(Seen::default()))).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (a, f) = with_upstream(dir.path(), &control, false).await;
+    let r = via_upstream(&a, &f, |n| workspace_claims(&f, n)).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    assert!(r.text.contains("Ask an admin for an invite"), "{}", r.text);
+    // With the invite: "Join with Google" redeems it and links the account.
+    let page = call(&a, "GET", "/invite?code=good-invite", None, None, "").await;
+    assert!(page.text.contains("Join with Google"), "{}", page.text);
+    use fleetlayer_oidc::testing::{good, param};
+    let r = call(&a, "GET", "/upstream/acme-google/start?return=%2F&invite=good-invite", None, None, "").await;
+    let to = r.location.unwrap();
+    let state = param(&to, "state");
+    *f.token.lock().unwrap() = Some(good(&f, workspace_claims(&f, &param(&to, "nonce"))));
+    let r = call(
+        &a,
+        "GET",
+        &format!("/upstream/acme-google/callback?code=c&state={state}"),
+        Some(&format!("fleetlayer-upstream={state}")),
+        None,
+        "",
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    assert_eq!(a.store.people.lock().await.people["p_a"].links.len(), 1);
+}
+
+#[tokio::test]
+async fn an_upstream_signs_in_for_its_own_tenant_only() {
+    let control = control_plane(Arc::new(Mutex::new(Seen::default()))).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (a, f) = with_upstream(dir.path(), &control, true).await;
+    // Someone in Acme and Home signs in with Acme's Google.
+    let r = via_upstream(&a, &f, |n| {
+        let mut c = workspace_claims(&f, n);
+        c["email"] = json!("two@acme.example");
+        c["sub"] = json!("google-two");
+        c
+    })
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    let cookie = r.cookie.unwrap();
+    let (_, challenge) = pkce();
+    // Acme: yes, and no chooser (Home isn't offered).
+    let r = call(&a, "GET", &authorize_uri("hub", &challenge), Some(&cookie), None, "").await;
+    assert!(r.status.is_redirection(), "{} {}", r.status, r.text);
+    // Home: asked to sign in with a passkey instead.
+    let r =
+        call(&a, "GET", &format!("{}&tenant=home", authorize_uri("hub", &challenge)), Some(&cookie), None, "").await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.text);
+    assert!(r.text.contains("Sign in with your passkey"), "{}", r.text);
 }

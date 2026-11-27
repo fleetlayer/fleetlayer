@@ -90,6 +90,13 @@ impl Control {
         Ok(serde_json::from_value(v)?)
     }
 
+    /// Someone an upstream provider vouches for joins its tenant as a member.
+    pub async fn join(&self, tenant: &str, display_name: &str, hint: &str, via: &str) -> anyhow::Result<Redeemed> {
+        let body = json!({"tenant": tenant, "display_name": display_name, "hint": hint, "via": via});
+        let v = self.post("/v1/signin/join", body).await?.ok_or_else(|| anyhow::anyhow!("not found"))?;
+        Ok(serde_json::from_value(v)?)
+    }
+
     pub async fn check(&self, tenant: &str, who: &str, can: &str, to: &str) -> anyhow::Result<Decision> {
         let v = self
             .post("/v1/signin/check", json!({"tenant": tenant, "who": who, "can": can, "to": to}))

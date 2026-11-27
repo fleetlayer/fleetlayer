@@ -28,6 +28,18 @@ pub struct Credentials {
     pub user_id: Uuid,
     #[serde(default)]
     pub passkeys: Vec<StoredPasskey>,
+    /// Accounts at upstream providers that sign them in (their issuer and subject, never an email).
+    #[serde(default)]
+    pub links: Vec<Link>,
+}
+
+/// An upstream identity linked to a person.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Link {
+    pub upstream: String,
+    pub iss: String,
+    pub sub: String,
+    pub added_at: i64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -46,6 +58,9 @@ pub struct Session {
     /// When they last proved it with a passkey: changes that can't be undone easily ask again after ten minutes.
     #[serde(default)]
     pub verified_at: i64,
+    /// Signed in through an upstream provider: the one tenant it signs in for (its ID).
+    #[serde(default)]
+    pub via_tenant: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

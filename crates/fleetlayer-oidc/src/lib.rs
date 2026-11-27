@@ -63,19 +63,6 @@ pub struct Oidc {
 }
 
 #[derive(Deserialize)]
-struct Claims {
-    sub: String,
-    #[serde(default)]
-    nonce: Option<String>,
-    #[serde(default)]
-    name: Option<String>,
-    #[serde(default)]
-    preferred_username: Option<String>,
-    #[serde(default, rename = "fleetlayer.dev/tenant")]
-    tenant: Option<String>,
-}
-
-#[derive(Deserialize)]
 struct TokenResponse {
     id_token: String,
 }
@@ -154,18 +141,32 @@ fn enc(s: &str) -> String {
 }
 
 impl Oidc {
+    /// A Fleetlayer service's client: it comes back to `<base>/_/auth/callback`, and to `<base>/_/signed-out` after
+    /// signing out.
     pub fn new(issuer: &str, client: &str, secret: &str, base_url: &str) -> anyhow::Result<Oidc> {
+        let base = base_url.trim_end_matches('/');
+        Oidc::with_redirect(issuer, client, secret, &format!("{base}/_/auth/callback"), &format!("{base}/_/signed-out"))
+    }
+
+    /// A client with its own return addresses: the sign-in service as the client of an upstream provider (Google, an
+    /// OIDC provider), coming back to `<issuer>/upstream/<name>/callback`.
+    pub fn with_redirect(
+        issuer: &str,
+        client: &str,
+        secret: &str,
+        redirect_uri: &str,
+        after_logout: &str,
+    ) -> anyhow::Result<Oidc> {
         let issuer = issuer.trim_end_matches('/').to_string();
         anyhow::ensure!(valid_issuer(&issuer), "signin issuer {issuer:?}: use https (plain http only on localhost)");
         anyhow::ensure!(!secret.trim().is_empty(), "the sign-in client secret is empty");
-        let base = base_url.trim_end_matches('/');
         let http = client_for(&issuer)?;
         Ok(Oidc {
             issuer,
             client: client.to_string(),
             secret: secret.trim().to_string(),
-            redirect_uri: format!("{base}/_/auth/callback"),
-            after_logout: format!("{base}/_/signed-out"),
+            redirect_uri: redirect_uri.to_string(),
+            after_logout: after_logout.to_string(),
             http,
             meta: Mutex::default(),
             keys: Mutex::default(),
@@ -217,6 +218,22 @@ impl Oidc {
     /// The person behind a code the issuer sent back, and where they were going. `bound` is the state from the
     /// browser's cookie: it must match, so a sign-in someone else started can't be finished in this browser.
     pub async fn finish(&self, code: &str, state: &str, bound: Option<&str>) -> anyhow::Result<(Person, String)> {
+        let (claims, next) = self.finish_claims(code, state, bound).await?;
+        let get = |k: &str| claims.get(k).and_then(|v| v.as_str()).map(str::to_string);
+        let tenant =
+            get("fleetlayer.dev/tenant").ok_or_else(|| anyhow::anyhow!("the ID token doesn't say which tenant"))?;
+        let sub = get("sub").unwrap_or_default();
+        Ok((Person { sub, tenant, handle: get("preferred_username"), name: get("name") }, next))
+    }
+
+    /// [`finish`](Self::finish) for any provider: the ID token's claims once checked (signature by a key from the
+    /// issuer's JWKS, RS256, issuer, audience, expiry, nonce, a subject), and where the browser was going.
+    pub async fn finish_claims(
+        &self,
+        code: &str,
+        state: &str,
+        bound: Option<&str>,
+    ) -> anyhow::Result<(serde_json::Map<String, serde_json::Value>, String)> {
         anyhow::ensure!(bound == Some(state), "this sign-in wasn't started in this browser");
         let pending = self.pending.lock().await.remove(state);
         let p = pending.ok_or_else(|| anyhow::anyhow!("this sign-in link was already used or has expired"))?;
@@ -246,8 +263,8 @@ impl Oidc {
             );
         }
         let t: TokenResponse = res.json().await?;
-        let person = self.verify(&meta, &t.id_token, &p.nonce).await?;
-        Ok((person, p.next))
+        let claims = self.verify(&meta, &t.id_token, &p.nonce).await?;
+        Ok((claims, p.next))
     }
 
     async fn key(&self, meta: &Meta, kid: &str) -> anyhow::Result<DecodingKey> {
@@ -276,7 +293,12 @@ impl Oidc {
             .ok_or_else(|| anyhow::anyhow!("the ID token's key {kid:?} isn't in the issuer's JWKS"))
     }
 
-    async fn verify(&self, meta: &Meta, token: &str, nonce: &str) -> anyhow::Result<Person> {
+    async fn verify(
+        &self,
+        meta: &Meta,
+        token: &str,
+        nonce: &str,
+    ) -> anyhow::Result<serde_json::Map<String, serde_json::Value>> {
         let header = jsonwebtoken::decode_header(token)?;
         anyhow::ensure!(header.alg == Algorithm::RS256, "the ID token isn't signed with RS256");
         let kid = header.kid.ok_or_else(|| anyhow::anyhow!("the ID token names no key"))?;
@@ -287,12 +309,17 @@ impl Oidc {
         v.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
         v.validate_nbf = true;
         v.leeway = LEEWAY;
-        let data = jsonwebtoken::decode::<Claims>(token, &key, &v)?;
+        let data = jsonwebtoken::decode::<serde_json::Map<String, serde_json::Value>>(token, &key, &v)?;
         let c = data.claims;
-        anyhow::ensure!(c.nonce.as_deref() == Some(nonce), "the ID token's nonce doesn't match this sign-in");
-        anyhow::ensure!(!c.sub.is_empty(), "the ID token has no subject");
-        let tenant = c.tenant.ok_or_else(|| anyhow::anyhow!("the ID token doesn't say which tenant"))?;
-        Ok(Person { sub: c.sub, tenant, handle: c.preferred_username, name: c.name })
+        anyhow::ensure!(
+            c.get("nonce").and_then(|n| n.as_str()) == Some(nonce),
+            "the ID token's nonce doesn't match this sign-in"
+        );
+        anyhow::ensure!(
+            c.get("sub").and_then(|s| s.as_str()).is_some_and(|s| !s.is_empty()),
+            "the ID token has no subject"
+        );
+        Ok(c)
     }
 
     /// Where to send the browser after signing out here, so the sign-in service ends its session too.

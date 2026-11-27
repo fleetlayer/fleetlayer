@@ -99,6 +99,8 @@ impl Pending {
 
 pub struct App {
     pub settings: Settings,
+    /// Upstream providers people may sign in with.
+    pub(crate) upstreams: Vec<crate::upstream::Upstream>,
     /// Invites each admin made in the last hour, for the rate limit.
     pub(crate) invites_made: Mutex<HashMap<String, Vec<i64>>>,
     pub store: Store,
@@ -118,11 +120,23 @@ fn bad(status: StatusCode, msg: impl Into<String>) -> Response {
 }
 
 impl App {
+    #[cfg(test)]
     pub fn new(settings: Settings, store: Store, keys: Keys, control: Control) -> anyhow::Result<App> {
+        App::with_upstreams(settings, store, keys, control, vec![])
+    }
+
+    pub fn with_upstreams(
+        settings: Settings,
+        store: Store,
+        keys: Keys,
+        control: Control,
+        upstreams: Vec<crate::upstream::Upstream>,
+    ) -> anyhow::Result<App> {
         let webauthn =
             WebauthnBuilder::new(&settings.passkey_domain, &settings.origin)?.rp_name("Fleetlayer").build()?;
         Ok(App {
             settings,
+            upstreams,
             invites_made: Mutex::new(HashMap::new()),
             store,
             keys,
@@ -138,6 +152,12 @@ impl App {
 
     fn cookie_name(&self) -> &'static str {
         if self.settings.issuer.starts_with("https://") { "__Host-fleetlayer-signin" } else { "fleetlayer-signin" }
+    }
+
+    /// The session cookie's header value, for the tests.
+    #[cfg(test)]
+    pub fn session_cookie_header(&self, value: &str, max_age_secs: i64) -> String {
+        self.session_cookie(value, max_age_secs).to_str().unwrap().to_string()
     }
 
     fn session_cookie(&self, value: &str, max_age_secs: i64) -> HeaderValue {
@@ -163,13 +183,28 @@ impl App {
     }
 
     async fn start_session(&self, person: &str) -> anyhow::Result<HeaderValue> {
+        self.start_session_via(person, None).await
+    }
+
+    /// A new session; `via_tenant` when it came through an upstream provider, which signs in for that tenant only.
+    pub(crate) async fn start_session_via(
+        &self,
+        person: &str,
+        via_tenant: Option<&str>,
+    ) -> anyhow::Result<HeaderValue> {
         let value = random(32);
         let mut sessions = self.store.sessions.lock().await;
         let now = now_ms();
         sessions.sessions.retain(|_, s| s.expires_at > now);
         sessions.sessions.insert(
             sha256_hex(&value),
-            Session { person: person.into(), created_at: now, expires_at: now + SESSION_MS, verified_at: now },
+            Session {
+                person: person.into(),
+                created_at: now,
+                expires_at: now + SESSION_MS,
+                verified_at: now,
+                via_tenant: via_tenant.map(String::from),
+            },
         );
         self.store.save_sessions(&sessions)?;
         Ok(self.session_cookie(&value, SESSION_MS / 1000))
@@ -219,7 +254,7 @@ pub fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
 }
 
 /// A path on this site to go back to after signing in: relative, and never to another site.
-fn safe_return(r: Option<&str>) -> String {
+pub(crate) fn safe_return(r: Option<&str>) -> String {
     match r {
         Some(r) if r.starts_with('/') && !r.starts_with("//") && !r.contains('\\') => r.to_string(),
         _ => "/".to_string(),
@@ -245,6 +280,8 @@ pub fn router(app: Arc<App>) -> axum::Router {
         .route("/admin", get(crate::admin::index))
         .route("/admin/{tenant}", get(crate::admin::show).post(crate::admin::change))
         .route("/healthz", get(healthz))
+        .route("/upstream/{name}/start", get(crate::upstream::start))
+        .route("/upstream/{name}/callback", get(crate::upstream::callback))
         .route("/", get(home))
         .with_state(app)
 }
@@ -336,10 +373,11 @@ async fn authorize(
         _ => return to_client_error(redirect_uri, "invalid_request", state),
     };
     let here = uri.path_and_query().map(|p| p.as_str().to_string()).unwrap_or_else(|| "/authorize".into());
-    let Some(person_id) = app.signed_in(&headers).await else {
+    let Some((session, _)) = app.session(&headers).await else {
         let ret: String = form_urlencoded::byte_serialize(here.as_bytes()).collect();
         return Redirect::to(&format!("/login?return={ret}")).into_response();
     };
+    let person_id = session.person.clone();
     let person = match app.control.person(&person_id).await {
         Ok(Some(p)) => p,
         Ok(None) => return page(StatusCode::FORBIDDEN, "No account", "<p>This account no longer exists.</p>"),
@@ -352,6 +390,25 @@ async fn authorize(
             );
         }
     };
+    // Signed in through an upstream provider: tokens for its tenant only.
+    let mut person = person;
+    if let Some(via) = &session.via_tenant {
+        let wanted = q.tenant.as_deref().or(q.fleetlayer_tenant.as_deref());
+        let elsewhere =
+            wanted.is_some_and(|w| person.tenants.iter().any(|m| (m.slug == w || m.tenant == w) && m.tenant != *via));
+        person.tenants.retain(|m| m.tenant == *via);
+        if elsewhere {
+            let ret: String = form_urlencoded::byte_serialize(here.as_bytes()).collect();
+            return page(
+                StatusCode::FORBIDDEN,
+                "Sign in with your passkey",
+                &format!(
+                    "<p>The way you signed in works for one place only. <a href=\"/login?return={ret}\">Sign in \
+                     with your passkey</a> for this one.</p>"
+                ),
+            );
+        }
+    }
     let wanted = q.tenant.as_deref().or(q.fleetlayer_tenant.as_deref());
     let membership = match wanted {
         Some(t) => person.tenants.iter().find(|m| m.slug == t || m.tenant == t),
@@ -611,15 +668,15 @@ pub struct ReturnQuery {
 
 async fn login_page(State(app): State<Arc<App>>, Query(q): Query<ReturnQuery>) -> Response {
     let ret = safe_return(q.ret.as_deref());
-    let _ = &app;
     page(
         StatusCode::OK,
         "Sign in",
         &format!(
             "<p>Sign in with your passkey.</p>\
          <button id=\"go\" data-return=\"{}\">Sign in with a passkey</button><p id=\"msg\" class=\"why\"></p>\
-         <p class=\"hint\">New here? Open the invite link you were sent.</p><script>{PASSKEY_JS}\nsignIn();</script>",
-            esc(&ret)
+         {}<p class=\"hint\">New here? Open the invite link you were sent.</p><script>{PASSKEY_JS}\nsignIn();</script>",
+            esc(&ret),
+            crate::upstream::buttons(&app, &ret, None)
         ),
     )
 }
@@ -657,8 +714,9 @@ async fn invite_page(State(app): State<Arc<App>>, headers: HeaderMap, Query(q): 
             "{join}<p>Choose the name people will see, then make a passkey on this device.</p>{warning}\
          <label>Your name <input id=\"name\" autocomplete=\"name\" maxlength=\"100\"></label>\
          <button id=\"go\" data-code=\"{}\">Make my passkey</button><p id=\"msg\" class=\"why\"></p>\
-         <script>{PASSKEY_JS}\nregister();</script>",
-            esc(&code)
+         {}<script>{PASSKEY_JS}\nregister();</script>",
+            esc(&code),
+            crate::upstream::buttons(&app, "/", Some(&code))
         ),
     )
 }
@@ -800,10 +858,11 @@ async fn register_finish(State(app): State<Arc<App>>, Json(f): Json<RegisterFini
     };
     {
         let mut people = app.store.people.lock().await;
-        let creds = people
-            .people
-            .entry(redeemed.person.clone())
-            .or_insert_with(|| Credentials { user_id: reg.user_id, passkeys: vec![] });
+        let creds = people.people.entry(redeemed.person.clone()).or_insert_with(|| Credentials {
+            user_id: reg.user_id,
+            passkeys: vec![],
+            links: vec![],
+        });
         creds.passkeys.push(StoredPasskey { passkey, added_at: now_ms(), last_used_at: None, user_id: reg.user_id });
         if let Err(e) = app.store.save_people(&people) {
             return bad(StatusCode::INTERNAL_SERVER_ERROR, format!("saving the passkey: {e}"));
@@ -910,7 +969,7 @@ body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,sans-
 main{max-width:40rem;margin:12vh auto;padding:0 16px}h1{font-size:1.5rem}\
 button{font:inherit;padding:.6rem 1rem;border:0;border-radius:.5rem;background:var(--accent);color:#fff;cursor:pointer}\
 input{font:inherit;display:block;width:100%;box-sizing:border-box;margin:.3rem 0 1rem;padding:.5rem;border-radius:.4rem;border:1px solid var(--muted);background:transparent;color:inherit}\
-.why,.hint{color:var(--muted)}table{border-collapse:collapse;width:100%}td,th{text-align:left;padding:.3rem .4rem;border-bottom:1px solid var(--muted)}td form{display:inline}select{font:inherit}details{margin-top:2rem}summary{cursor:pointer;color:var(--muted)}.ok{color:var(--accent)}.warn{color:var(--warn)}.choices{list-style:none;padding:0}.choice{display:block;padding:.6rem 0}";
+.why,.hint{color:var(--muted)}a.button{display:inline-block;padding:.6rem 1rem;border-radius:.5rem;border:1px solid var(--accent);color:var(--accent);text-decoration:none}table{border-collapse:collapse;width:100%}td,th{text-align:left;padding:.3rem .4rem;border-bottom:1px solid var(--muted)}td form{display:inline}select{font:inherit}details{margin-top:2rem}summary{cursor:pointer;color:var(--muted)}.ok{color:var(--accent)}.warn{color:var(--warn)}.choices{list-style:none;padding:0}.choice{display:block;padding:.6rem 0}";
 
 /// The browser half of the passkey ceremonies: options from the server, base64url to bytes and back.
 pub(crate) const PASSKEY_JS: &str = r#"

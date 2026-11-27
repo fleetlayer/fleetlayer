@@ -1855,6 +1855,7 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "crypto-common 0.2.2",
+ "fleetlayer-oidc",
  "fleetlayer-plugin",
  "fleetlayer-protocol",
  "form_urlencoded",

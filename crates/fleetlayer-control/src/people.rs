@@ -702,6 +702,56 @@ pub async fn invite_redeem(db: &Db, code: &str, who: Redeemer<'_>) -> anyhow::Re
     Ok(Redeemed { tenant, person, handle, recovery })
 }
 
+/// A handle from a hint (an email's local part, a name): lower-case letters, digits, `.`, `_`, `-`, at most 64.
+fn handle_from(hint: &str) -> String {
+    let mut h: String = hint
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-') { c } else { '-' })
+        .collect();
+    h = h.trim_matches(|c: char| !c.is_ascii_alphanumeric()).chars().take(56).collect();
+    if h.is_empty() { "member".into() } else { h }
+}
+
+/// Someone an upstream provider vouches for joins a tenant that lets anyone from its domain in (`join: {role:
+/// member}` in the sign-in service's settings): a new person, a member, with a handle made from `hint` and kept
+/// unique (`sam`, `sam-2`...), never reusing a handle someone had. Recorded in the tenant's audit log as `by`.
+pub async fn join(db: &Db, tenant: &str, display_name: &str, hint: &str, by: &str) -> anyhow::Result<Redeemed> {
+    let base = handle_from(hint);
+    let mut handle = base.clone();
+    for n in 2.. {
+        let taken = sqlx::query("SELECT 1 FROM members WHERE tenant = ? AND handle = ?")
+            .bind(tenant)
+            .bind(&handle)
+            .fetch_optional(db)
+            .await?
+            .is_some();
+        if !taken {
+            break;
+        }
+        anyhow::ensure!(n < 1000, "no free handle for {base}");
+        handle = format!("{base}-{n}");
+    }
+    let person = person_add(db, display_name).await?;
+    let mut tx = db.begin().await?;
+    sqlx::query("INSERT INTO members (tenant, person, handle, role, added_at) VALUES (?, ?, ?, 'member', ?)")
+        .bind(tenant)
+        .bind(&person)
+        .bind(&handle)
+        .bind(now_ms())
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("INSERT OR IGNORE INTO team_members (tenant, team, person, role) VALUES (?, ?, ?, 'member')")
+        .bind(tenant)
+        .bind(EVERYONE)
+        .bind(&person)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    log(db, tenant, by, "member.join", &format!("person:{handle}"), "member").await?;
+    Ok(Redeemed { tenant: tenant.into(), person, handle, recovery: false })
+}
+
 // ---------------------------------------------------------------- node owners
 
 /// Who owns a node.
@@ -993,6 +1043,24 @@ mod tests {
         assert!(!agent_is_member(&db, "default", "billing@laptop").await.unwrap());
         agent_remove(&db, "default", "recipes@laptop", "admin").await.unwrap();
         assert!(agent_remove(&db, "default", "recipes@laptop", "admin").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn joining_through_an_upstream_makes_a_member_with_a_unique_handle() {
+        let db = open_memory().await.unwrap();
+        let a = super::join(&db, "default", "Sam Brown", "sam", "signin:signin via google").await.unwrap();
+        assert_eq!(a.handle, "sam");
+        let b = super::join(&db, "default", "Sam Other", "Sam", "signin:signin via google").await.unwrap();
+        assert_eq!(b.handle, "sam-2");
+        assert_ne!(a.person, b.person);
+        // A removed member's handle stays theirs.
+        member_remove(&db, "default", "sam", "admin").await.unwrap();
+        assert_eq!(super::join(&db, "default", "S", "sam", "x").await.unwrap().handle, "sam-3");
+        assert_eq!(handle_from("Ünïcode Name+tag"), "n-code-name-tag");
+        assert_eq!(handle_from("sam.brown"), "sam.brown");
+        let role: String =
+            sqlx::query_scalar("SELECT role FROM members WHERE handle = 'sam-2'").fetch_one(&db).await.unwrap();
+        assert_eq!(role, "member");
     }
 
     #[tokio::test]
