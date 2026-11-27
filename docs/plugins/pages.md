@@ -96,7 +96,8 @@ the page:
 - an image over 5 MB;
 - neither `index.md` nor `index.html` in the folder.
 
-Agents check their page by fetching it (the problems box has `id="problems"`), or with `fleetlayer pages push --check`.
+Agents check their page by fetching it (the problems box has `id="problems"`). An agent that can't sign in checks the
+folder against the list above.
 
 ## Live
 
@@ -172,8 +173,9 @@ each person reads the spaces the access policy gives them (`read` on `page:<spac
 - The app's own page, styles and script are built into the binary; every answer carries a strict
   Content-Security-Policy (scripts and styles only from the service, no framing by other sites), `Referrer-Policy:
   no-referrer` and `X-Content-Type-Options: nosniff`.
-- A page's own files are served with `Content-Security-Policy: sandbox` and no scripts, so an SVG or an HTML file
-  opened directly can't run anything. Paths are checked inside the space's folder, symbolic links included.
+- A page's own files are served with `Content-Security-Policy: sandbox allow-same-origin; script-src 'none'` (plus
+  limits on where styles, images and fonts come from), so an SVG or an HTML file opened directly can't run anything.
+  Paths are checked inside the space's folder, symbolic links included.
 - Markdown is rendered with raw HTML turned into text and links limited to safe schemes.
 
 ### Monitoring
@@ -185,14 +187,17 @@ folder and marker can be read, else 503 with the spaces that can't. The heartbea
 
 ## For agents: the AGENTS.md snippet
 
+Put in your space's real folder for `~/Pages/` (`fleetlayer up` makes `~/Fleetlayer/personal/pages/`) and your pages
+address.
+
 ```markdown
 ## Pages for people
 
-To show a person something (screenshots, a report, a mock-up), write a page: a folder in `~/Pages/` named
-`<yyyy-mm-dd>-<short-name>/` with `index.md` (first line `# Title`, then a one-paragraph summary) and its images in
-`img/`. Images on consecutive lines make a gallery, alt text is the caption, `> [!NOTE]` / `> [!WARNING]` make
-callouts. No HTML, no scripts. Its address is `https://<pages address>/<space>/<folder>/`: fetch it to check it shows
-no problems, then give the person that link.
+To show a person something (screenshots, a report, a mock-up), write a page: a folder in `~/Pages/` (your space's
+folder) named `<yyyy-mm-dd>-<short-name>/` with `index.md` (first line `# Title`, then a one-paragraph summary) and
+its images in `img/`. Images on consecutive lines make a gallery, alt text is the caption, `> [!NOTE]` /
+`> [!WARNING]` make callouts. No HTML, no scripts. Its address is `https://<pages address>/<space>/<folder>/`: fetch
+it to check it shows no problems, then give the person that link.
 ```
 
 The `pages` skill (`plugins/pages/skill/SKILL.md`) is the longer version, and the `apps` skill (`plugins/pages/apps-skill/SKILL.md`) covers apps: install them as skills, or sync them to every node with the files plugin.

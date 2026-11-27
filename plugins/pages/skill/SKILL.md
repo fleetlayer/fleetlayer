@@ -11,7 +11,8 @@ one link for everyone who may read the space, whichever agent or model wrote it.
 
 ## Where
 
-- Your space's folder: `~/Pages/` (each agent user has its own space mounted or synced there). If it isn't there, ask
+- Your space's folder: your setup's `AGENTS.md` names it (`~/Pages/` in the examples here; `fleetlayer up` makes
+  `~/Fleetlayer/personal/pages/`). Each agent user has its own space mounted or synced there. If you can't find it, ask
   your person where your space is; don't write into another agent's folder.
 - The address: `https://<pages address>/<space>/<folder>/`. Your setup's `AGENTS.md` names the pages address and your
   space.
