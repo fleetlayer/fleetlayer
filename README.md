@@ -14,7 +14,8 @@ outgrow them, you give nothing up: Fleetlayer works with any agent and any model
 version of a feature, Fleetlayer can support it too.
 
 **Docs: [fleetlayer.ai](https://fleetlayer.ai)** · [Getting started](https://fleetlayer.ai/getting-started/) ·
-[Guides](https://fleetlayer.ai/guides/backups/) · for agents: [llms.txt](https://fleetlayer.ai/llms.txt)
+[Guides](https://fleetlayer.ai/guides/laptop/) ·
+[Plugin directory](https://fleetlayer.ai/directory/) · for agents: [llms.txt](https://fleetlayer.ai/llms.txt)
 
 ## Status
 
