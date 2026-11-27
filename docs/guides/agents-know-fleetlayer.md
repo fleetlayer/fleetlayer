@@ -50,7 +50,7 @@ Claude Code reads skills from `~/.claude/skills/<name>/SKILL.md`, Codex from `~/
 a checkout of the release you run:
 
 ```sh
-git clone --depth 1 --branch v0.3.10 https://github.com/fleetlayer/fleetlayer /tmp/fleetlayer-src
+git clone --depth 1 --branch v0.3.9 https://github.com/fleetlayer/fleetlayer /tmp/fleetlayer-src
 cd /tmp/fleetlayer-src
 for d in skills/* plugins/folders/skill plugins/claude-auth-manager/skill plugins/pages/skill plugins/pages/apps-skill; do
   name=$(sed -n 's/^name: //p' "$d/SKILL.md" | head -1)

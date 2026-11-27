@@ -108,7 +108,7 @@ tools:
       PLAYWRIGHT_MCP_EXECUTABLE_PATH: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
       PATH: /opt/homebrew/bin:/usr/bin:/bin
     env_files: { PLAYWRIGHT_MCP_EXTENSION_TOKEN: ~/.config/browser-mcp/extension-token }   # read at start; keep it 0600
-    description: Your Chrome, signed in to your sites   # optional: one line agents see in `fleetlayer me` (v0.3.10)
+    description: Your Chrome, signed in to your sites   # optional: one line agents see in `fleetlayer me` (v0.3.9)
     allow: ["*@server"]          # <tab>@<node> patterns; nobody when empty
     networks: ["10.5.0.0/16"]    # optional: offer it only while this machine is on these networks (at home)
     tools:
@@ -127,7 +127,7 @@ its own server, named after the calling session's tab (`{session}`), so each ses
 control plane checks access (`acl` rules on `tool:<name>@<node>`), joins the two nodes' streams and logs every
 connection (`fleetlayer-control tools`). It never reads what passes through.
 
-A session finds the tools it may use with `fleetlayer me` (from v0.3.10): each one with its description, whether its
+A session finds the tools it may use with `fleetlayer me` (from v0.3.9): each one with its description, whether its
 first use still asks, its folders for `fleetlayer-folders`, and the `claude mcp add` line that adds it. Tools a rule
 refuses it aren't listed. For agents to know they can, give them the skills and a few lines in their global
 instructions: [Tell your agents about Fleetlayer](guides/agents-know-fleetlayer.md).

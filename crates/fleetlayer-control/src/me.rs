@@ -11,8 +11,9 @@ use fleetlayer_protocol::rpc::RpcError;
 use crate::App;
 use crate::authz::Dry;
 
-/// The first version whose nodes report what they share.
-const REPORTS_TOOLS: (u64, u64, u64) = (0, 3, 10);
+/// The first version whose nodes report what they share. Its first release candidates (rc.1 to rc.3) came before it
+/// and report nothing: online, they simply list no tools.
+const REPORTS_TOOLS: (u64, u64, u64) = (0, 3, 9);
 
 pub async fn answer(app: &App, tenant: &str, node: &str, caller: &str) -> Result<Me, RpcError> {
     let who = format!("{caller}@{node}");
@@ -102,7 +103,7 @@ pub async fn answer(app: &App, tenant: &str, node: &str, caller: &str) -> Result
         }
         match version.as_deref().and_then(parse_version) {
             Some(v) if v < REPORTS_TOOLS => {
-                out.unknown.push(format!("{name} (version {}, older than v0.3.10)", version.as_deref().unwrap_or("?")))
+                out.unknown.push(format!("{name} (version {}, older than v0.3.9)", version.as_deref().unwrap_or("?")))
             }
             _ if !online.contains(name) => {
                 out.unknown.push(format!("{name} (offline since the control plane started)"))
@@ -155,7 +156,7 @@ mod tests {
     fn versions_compare_as_numbers() {
         assert_eq!(parse_version("0.3.9-rc.3"), Some((0, 3, 9)));
         assert_eq!(parse_version("v0.3.10"), Some((0, 3, 10)));
-        assert!(parse_version("0.3.9").unwrap() < REPORTS_TOOLS);
+        assert!(parse_version("0.3.8").unwrap() < REPORTS_TOOLS);
         assert!(parse_version("0.3.10-rc.1").unwrap() >= REPORTS_TOOLS);
         assert_eq!(parse_version("dev"), None);
     }
@@ -241,9 +242,9 @@ mod tests {
     #[tokio::test]
     async fn an_old_node_is_named_as_unknown() {
         let app = fleet().await;
-        crate::db::node_seen(&app.db, "default", "server", "m", "u", "0.3.9").await.unwrap();
+        crate::db::node_seen(&app.db, "default", "server", "m", "u", "0.3.8").await.unwrap();
         app.links.tools.lock().await.clear();
         let me = answer(&app, "default", "laptop", "planning").await.unwrap();
-        assert!(me.unknown.iter().any(|u| u.starts_with("server (version 0.3.9")), "{:?}", me.unknown);
+        assert!(me.unknown.iter().any(|u| u.starts_with("server (version 0.3.8")), "{:?}", me.unknown);
     }
 }

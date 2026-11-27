@@ -10,7 +10,7 @@ managers, machines that sleep.
   call means. Solved with skills (`skills/fleetlayer/`, `skills/fleetlayer-browser/`, `plugins/folders/skill/`,
   `plugins/claude-auth-manager/skill/`, the pages and apps skills) and a short block for the person's global
   instructions. Claude Code reads skills from `~/.claude/skills/<name>/`, Codex from `~/.agents/skills/<name>/`, and
-  Codex's global instructions are `~/.codex/AGENTS.md` (`$CODEX_HOME`). `fleetlayer me` (v0.3.10) lists what a
+  Codex's global instructions are `~/.codex/AGENTS.md` (`$CODEX_HOME`). `fleetlayer me` (v0.3.9) lists what a
   session may use, so neither the skills nor the instructions keep a list that goes stale. Written:
   `docs/guides/agents-know-fleetlayer.md`. Still to come: the node installing the skills itself.
 - **A GitHub organization can't be created from the CLI or the API on github.com.** `POST /admin/organizations`
