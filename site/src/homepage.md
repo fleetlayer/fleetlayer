@@ -1,10 +1,11 @@
 # Fleetlayer
 
-Every agent on every machine, in one fleet.
+An open framework for running AI agents securely and at scale.
 
-Fleetlayer connects and controls the agent sessions you already run, on your laptop, a home server or a VPS. See every
-session in one list, send messages between them, and route a CI failure to the agent that wrote the branch. It runs on
-machines you control. Open source under Apache 2.0, early, built in public: https://github.com/fleetlayer/fleetlayer
+Fleetlayer connects the Claude Code and Codex sessions you already run, on your laptop, a home server or a VPS. Agents
+message each other across machines, webhooks wake the session that owns the work, and your Claude accounts are shared
+with every session. Each agent gets its own access rules, every decision is audited, and every piece can be replaced.
+Open source under Apache 2.0, early, built in public: https://github.com/fleetlayer/fleetlayer
 
 ## How it fits
 
