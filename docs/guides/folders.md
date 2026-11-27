@@ -58,14 +58,14 @@ agent that macOS refused, and the agent tells you.
 To change it later: System Settings > Privacy & Security > **Files and Folders**, find `fleetlayer-node` and turn
 **Downloads Folder** on or off.
 
-Fleetlayer's macOS releases are signed with a Developer ID and notarised by Apple ([how](../releasing.md)), and macOS
-remembers your answer for the signed program, whichever folder it's installed in. So you answer once, and upgrades
-keep the permission. `codesign -dv ~/.local/bin/fleetlayer-node` shows whether yours is signed: a signed one says
-`Authority=Developer ID Application`.
+From v0.3.9, Fleetlayer's macOS releases are signed with a Developer ID and notarised by Apple
+([how](../releasing.md)), and macOS remembers your answer for the signed program, whichever folder it's installed in.
+So you answer once, and upgrades keep the permission. `codesign -dv ~/.local/bin/fleetlayer-node` shows whether yours
+is signed: a signed one says `Authority=Developer ID Application`.
 
 Two cases ask again:
 
-- **The first signed release**, once. macOS knew the unsigned node only by its path, and that answer doesn't carry
+- **The first signed release** (v0.3.9), once. macOS knew the unsigned node only by its path, and that answer doesn't carry
   over to the signed one.
 - **A node you built yourself**, or an unsigned build from a fork, after every upgrade: macOS knows an unsigned
   program by its exact path and bytes, and each build has new ones. Asking an agent to run the `folders` tool after an
