@@ -16,9 +16,9 @@ The shape:
   request.
 - **One rule per service** in the policy says who may sign in to it.
 
-Status: `fleetlayer-signin` is experimental. Passkeys, invites, OpenID Connect services and signing in with your
-company's provider arrived in v0.3.9, and signing out everywhere (step 6) in v0.3.11. Forward-auth (step 5) and a
-provider's groups as teams (step 7) arrive in v0.3.12.
+Status: `fleetlayer-signin` is in use. Passkeys, invites, OpenID Connect services and signing in with your company's
+provider arrived in v0.3.9, signing out everywhere (step 6) in v0.3.11, and forward-auth (step 5) and a provider's
+groups as teams (step 7) in v0.3.12.
 
 Your agent does the steps on the server. The parts only you can do are marked **You:**. The reference for every
 setting is [Sign-in](../plugins/signin.md), and the design behind it is [Sign-in and SSO](../sso.md).

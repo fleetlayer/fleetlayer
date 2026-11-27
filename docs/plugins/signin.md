@@ -8,9 +8,9 @@ away, happens in one place.
 Everything a company needs is built on the same service: single sign-on, teams, separate organisations, audit. How it
 fits together, and why, is in [Sign-in and SSO](../sso.md).
 
-Status: experimental. Passkeys, invites, signing in to services, the admin pages, signing in with Google Workspace or
+Status: in use. Passkeys, invites, signing in to services, the admin pages, signing in with Google Workspace or
 another OpenID Connect provider (with its groups as teams), signing out of every service at once, and forward-auth for
-services that can't sign people in themselves work.
+services that can't sign people in themselves all work. SAML providers come later.
 
 ## Set it up
 

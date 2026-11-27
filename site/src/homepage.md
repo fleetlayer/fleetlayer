@@ -132,8 +132,8 @@ with its own machine or Unix user and permissions, and for people whose work and
 ## Where it is today
 
 Runs now: the node, the control plane and the command line; plugins for herdr, Claude Code, session summaries, Claude
-accounts and pages; everything on one laptop with `fleetlayer up`; access rules with an audit log; releases that
-update every node themselves.
+accounts and pages; one sign-in, with a passkey, for every service; everything on one laptop with `fleetlayer up`;
+access rules with an audit log; releases that update every node themselves.
 
-Being built: one sign-in for every service, the phone, moving a piece with one command, and a server setup an agent
+Being built: the phone, moving a piece with one command, and a server setup an agent
 can build for you. Expect breaking changes.

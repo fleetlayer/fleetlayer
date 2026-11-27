@@ -1,12 +1,12 @@
 # Fleetlayer sign-in: one sign-in for every service
 
-Status: design (27 November 2026). Steps 1a (people, tenants, teams, memberships, invites, node owners on the control
+Status: built and in use (28 November 2026). Steps 1a (people, tenants, teams, memberships, invites, node owners on the control
 plane), 1b (decisions in the owning tenant, people in the policy, the check call), 1c (the sign-in token and its
 routes), 2a (the sign-in service: OpenID Connect provider, passkeys, invites, the move test), 2b (the admin pages),
 2c (back-channel logout, signing out everywhere, key rotation, `previous_issuers`), 4b (upstream groups as teams),
 5 (forward-auth), 3 (the hub and pages sign in with Fleetlayer, through the shared `crates/fleetlayer-oidc`) and 4a (Google Workspace
-and generic OIDC upstreams, linking by issuer and subject, `join`) are built; the rest follows the steps at the end,
-each one shippable.
+and generic OIDC upstreams, linking by issuer and subject, `join`) are built. What's left (SAML, per-page sharing, members' own sharing pages,
+decisions cached on the node) is step 6 at the end.
 
 People sign in once, with Fleetlayer, to every web service the fleet runs: the Claude sign-in hub, pages, and any
 other service someone chooses to run. Who may use what comes from the same access policy that decides what agents may
