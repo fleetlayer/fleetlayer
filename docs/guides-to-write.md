@@ -463,7 +463,8 @@ managers, machines that sleep.
 - **One sign-in for self-hosted services, with passkeys.** Point a service's OpenID Connect settings at the sign-in
   plugin, register it as a client with its exact return address, and give people `sign_in` on `service:<name>` in
   the policy; without that rule a person reaches nothing, by design. A service that keeps no secret (a browser app)
-  is a public client, and PKCE is required of every client either way. Where it lives: `docs/plugins/signin.md`.
+  is a public client, and PKCE is required of every client either way. Where it lives: `docs/plugins/signin.md`. Written:
+  `docs/guides/sign-in.md`.
 
 ## Signing a web app in with OpenID Connect: three browser and server footguns
 
@@ -478,14 +479,14 @@ managers, machines that sleep.
   of a redirect. (3): the server's HTTP client resolves `*.localhost` to 127.0.0.1 itself. Server-to-server addresses
   can be 127.0.0.1 directly where a setting allows it.
 - **Where it lives:** `plugins/pages/src/web.rs` (`auth_callback`, `logout`) and `oidc.rs` (`client_for`);
-  `docs/plugins/pages.md`, "Sign-in".
+  `docs/plugins/pages.md`, "Sign-in". Written: `docs/guides/sign-in.md`.
 
 - **A server can't reach `*.localhost`.** Browsers resolve every `*.localhost` name to this machine themselves, but
   a server's own resolver often doesn't (glibc on Linux without systemd-resolved), so a service that calls another
   by its `*.localhost` address (pages fetching the sign-in service's discovery document) fails with a DNS error. Give
   server-to-server calls `127.0.0.1:<port>` (the sign-in service's `control_plane`), or resolve `*.localhost` to
   loopback in the client, as pages does. Found by the pages tab testing against a real sign-in service. Where it
-  lives: `docs/plugins/signin.md` (Settings) and pages' HTTP client.
+  lives: `docs/plugins/signin.md` (Settings) and pages' HTTP client. Written: `docs/guides/sign-in.md`.
 
 - **Signing out of one app leaves you signed in to the others.** With single sign-on, each app keeps its own session
   after the sign-in, so signing out at the identity provider, or of one app, doesn't end the others' sessions, and
@@ -495,20 +496,20 @@ managers, machines that sleep.
   when one is late); and an app that checks the token loosely can be signed out by anyone, or fooled by an ID token,
   so it must check the signature, issuer, audience, a recent `iat`, the `events` claim, no `nonce`, and a `jti` used
   once. Where it lives: `docs/plugins/signin.md` ("Signing out", "For a service"), `plugins/signin/src/logout.rs`,
-  `crates/fleetlayer-oidc` (`verify_logout`).
+  `crates/fleetlayer-oidc` (`verify_logout`). Written: `docs/guides/sign-in.md`.
 - **Moving an identity provider to a new address.** Apps that sign in through it hold its issuer URL, and checking
   `iss` means a token from the new address fails at the old setting. A redirect at the old address helps browsers and
   discovery, but an app posting a code to the token endpoint won't follow it, so every app's issuer setting has to be
   changed before the old name goes away. Also, a reverse proxy that doesn't pass the original `Host` on (nginx without
   `proxy_set_header Host $host`) makes old-address requests look like new ones. Where it lives:
-  `docs/plugins/signin.md` ("Keep it running", "Change its address").
+  `docs/plugins/signin.md` ("Keep it running", "Change its address"). Written: `docs/guides/sign-in.md`.
 - **Forward-auth and headers a browser can forge.** A service behind a proxy's forward-auth trusts identity headers
   (`X-Forwarded-User`, `Remote-User`, `X-Fleetlayer-Person`). If the proxy passes a browser's own copy of them on, on
   any route (an unprotected path, another site on the same proxy that reaches the same backend), anyone can claim to
   be anyone. Strip them on every route. Two traps: in Caddy, `request_header` runs after `forward_auth` in the
   default directive order, so it deletes the headers forward-auth just set unless both sit in a `route` block in the
   right order; and nginx's `auth_request` can't pass a redirect to sign in, so the auth service answers 401 with a
-  `Location` the config turns into the redirect. Where it lives: `docs/plugins/signin.md` ("forward-auth").
+  `Location` the config turns into the redirect. Where it lives: `docs/plugins/signin.md` ("forward-auth"). Written: `docs/guides/sign-in.md`.
 - **Groups from an identity provider as permissions.** Mapping a provider's groups (Google Workspace, Okta) to an
   app's teams has three traps. Groups are only seen when someone signs in, so a person removed from a group, or
   suspended, keeps the access until they next sign in, which may be never: read the directory again on a schedule
@@ -517,11 +518,11 @@ managers, machines that sleep.
   expect nesting: say which you support. And decide what happens when the directory can't be read: keeping the last
   answer forever leaves stale access, dropping it at once locks people out during an outage; a grace period with an
   alert in between is the usual answer. Where it lives: `docs/plugins/signin.md` ("Groups as teams"),
-  `plugins/signin/src/teams.rs`.
+  `plugins/signin/src/teams.rs`. Written: `docs/guides/sign-in.md`.
 - **Rotating a token-signing key.** Publish the new key and keep the old one in the JWKS for as long as tokens it
   signed live (two weeks here, for safety), so nothing breaks; apps must look the JWKS up again when a token names an
   unknown key. A key that may have leaked is the exception: take it out at once and accept that everyone signs in to
-  apps again. Where it lives: `docs/plugins/signin.md` ("Keys"), `plugins/signin/src/keys.rs`.
+  apps again. Where it lives: `docs/plugins/signin.md` ("Keys"), `plugins/signin/src/keys.rs`. Written: `docs/guides/sign-in.md`.
 - **Many agents share one GitHub API limit.** 5,000 requests an hour per user, shared by every session using that
   user's token; `gh run watch` polls every 3 s by default (about 1,200 an hour per watcher), so a few agents watching
   CI exhaust it. Use `--interval 60`, no loops over `gh run list`, `gh api rate_limit` to check, webhooks instead of

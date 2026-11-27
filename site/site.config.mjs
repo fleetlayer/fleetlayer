@@ -37,6 +37,7 @@ export const pages = [
   { file: "guides/untrusted-input", group: "Guides", label: "An agent that reads strangers' text" },
   { file: "guides/unattended-agents", group: "Guides", label: "Agents that run while you're away" },
   { file: "guides/pages", group: "Guides", label: "Pages instead of artifacts" },
+  { file: "guides/sign-in", group: "Guides", label: "One sign-in for your services" },
   { file: "guides/monitoring", group: "Guides", label: "Monitoring" },
   { file: "guides/backups", group: "Guides", label: "Backups" },
   { file: "guides/agents-building-software", group: "Guides", label: "Agents that build software" },
