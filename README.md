@@ -20,7 +20,8 @@ Fleetlayer is a small set of components you run, and a large set of guides on pl
 **No vendor lock-in.** Keep using Anthropic's and OpenAI's own tools and features for as long as they serve you. When
 you outgrow them (several subscriptions, several machines, several accounts, agents from more than one vendor), you
 don't have to give anything up: Fleetlayer's parts work with any agent and any model, run on machines you control, and
-speak open protocols.
+speak open protocols. When a vendor ships its own version of a feature, Fleetlayer can support it too, and you can
+still swap models and harnesses whenever you like.
 
 ## Status
 
