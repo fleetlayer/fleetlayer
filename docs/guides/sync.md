@@ -184,8 +184,8 @@ fleetlayer-control approvals list
 fleetlayer-control approvals approve <id> --for 365d
 ```
 
-The source doesn't retry a version that was refused, so after approving, restart the source node
-(`fleetlayer-node install`) or change a file in the folder, and the next version goes out.
+Until a fix that's on its way, the source doesn't retry a version that was refused, so after approving, restart the
+source node (`fleetlayer-node install`) or change a file in the folder, and the next version goes out.
 
 ## 3. Per-machine instructions
 
@@ -273,12 +273,12 @@ check covers one path, so give each set and each pair of machines you depend on 
   links into another folder publishes nothing: publish the folder the links point to. Files that aren't valid UTF-8
   text (images, binaries) are skipped with `skipping … (not text)`, and anything whose name starts with `.` is left
   out.
-- **A script in a skill won't run on the target.** Files are written as plain files, so the executable bit doesn't
+- **A script in a skill won't run on the target** (for now). Files are written as plain files, so the executable bit doesn't
   travel. Have the skill call its scripts through their interpreter (`sh script.sh`, `python3 tool.py`).
-- **Sync stops after a month.** The default approval for `sync` holds 30 days, and the next version is then refused
-  until someone approves again. The heartbeat in step 4 catches it. Approve with a longer `--for`, or turn asking off
+- **Sync stops after a month** (until a fix that's on its way: approvals will renew while they're used). The default
+  approval for `sync` holds 30 days, and the next version is then refused until someone approves again. The heartbeat in step 4 catches it. Approve with a longer `--for`, or turn asking off
   for a fleet of agents you trust (`ask: []`).
-- **A target that was offline doesn't catch up.** The control plane keeps no copy. When the target comes back, the
+- **A target that was offline doesn't catch up** (a fix is on its way). The control plane keeps no copy. When the target comes back, the
   control plane asks the source to send the latest version again, which works only if the source is online then. A
   laptop as the source can be asleep at that moment, and the target then waits until the folder next changes. Put the
   source on an always-on machine, or restart the source node after both are back.
