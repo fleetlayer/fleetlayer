@@ -550,7 +550,7 @@ pub async fn serve(node: Arc<Node>, req: ToolServe) -> Result<Value, RpcError> {
         tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                tracing::debug!(tool = %tool_name, "{line}");
+                tracing::info!(tool = %tool_name, "stderr: {line}");
             }
         });
     }
