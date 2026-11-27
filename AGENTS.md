@@ -87,7 +87,13 @@ asking Nathan first (unlike projects where he reviews each change). Before pushi
 this repo what you're pushing and which files, and wait for them if they're mid-change in the same files. Each
 session works in its own git worktree (`git worktree add ../fleetlayer-<tab> main`), never in another session's
 checkout. To reach another session, use its herdr tab name, which survives restarts: `fleetlayer msg send --to "<tab>@<node>"`.
-Claude Code's own session names (`fleetlayer-3d`) are random and change whenever the machine restarts. Watch CI with
-`gh run watch --interval 60` (never shorter) and never loop over `gh run list`: every session shares one GitHub API
-limit (5,000 calls an hour), and short intervals across many sessions used it up on 27 Nov 2026. Releases still
-follow the rhythm below. Quote commit hashes only from git output, after committing.
+Claude Code's own session names (`fleetlayer-3d`) are random and change whenever the machine restarts.
+
+After pushing, run `fleetlayer subscribe ci --commit` in your checkout (with a CLI older than v0.3.9:
+`fleetlayer subscribe ci --subject fleetlayer/fleetlayer@$(git rev-parse HEAD)`). Each workflow's result for your
+commit, success or failure, arrives as a message within seconds of the run ending, and the subscription ends by
+itself. Don't poll. If no result arrives within the usual CI time plus five minutes, check once with `gh run watch <id>
+--interval 60` (never shorter), and never loop over `gh run list`: every session shares one GitHub API limit (5,000
+calls an hour), and short intervals across many sessions used it up on 27 Nov 2026. A "cancelled" result means
+another session pushed on top of yours: subscribe to the newer commit (`git fetch`, then `fleetlayer subscribe ci
+--commit <newer sha>`) to hear the run that includes your change. Releases still follow the rhythm below. Quote commit hashes only from git output, after committing.
