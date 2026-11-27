@@ -119,11 +119,12 @@ been on a screen and sent to a model.
 
 ### Network access per role
 
-A role's agents reach only the hosts on its list, through a proxy that reads the host name and never decrypts the
-traffic. A host that isn't on the list is refused with a message that tells the agent how to ask. The request goes to
-a person through the same approvals as everything else, and once approved it stays allowed. It starts in a mode that
-only logs, so a week of real traffic builds the list before anything is blocked. It will also keep agents off your
-local network by default.
+Built, and new: [Network access per role](egress.md), with [a guide](guides/egress.md). A role's agents reach only
+the hosts on its list, through a proxy that reads the host name and never decrypts the traffic. A host that isn't on
+the list is refused with a message that tells the agent how to ask. The request goes to a person through the same
+approvals as everything else, and once approved it stays allowed. It starts in a mode that only logs, so a week of
+real traffic builds the list before anything is blocked, and it keeps restricted roles off your local network and
+tailnet by default. Linux only for now.
 
 ## What none of this covers
 

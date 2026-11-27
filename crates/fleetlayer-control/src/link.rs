@@ -598,7 +598,10 @@ impl Handler for FromNode {
                 answer(&crate::me::answer(app, tenant, &self.node, &req.caller).await?)
             }
             l::method::ACCESS_CHECK => {
-                let req: l::AccessCheck = params(p)?;
+                let mut req: l::AccessCheck = params(p)?;
+                if req.tenant.is_empty() {
+                    req.tenant = tenant.to_string();
+                }
                 answer(&crate::authz::access_check(app, &self.node, &req).await?)
             }
             l::method::PAGES_OPEN => answer(&crate::pages::open(app, tenant, &self.node, params(p)?).await?),

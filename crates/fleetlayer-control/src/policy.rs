@@ -4,7 +4,8 @@
 //!
 //! Subjects (`who`) are `<tab>@<node>`, `-@<node>`, `plugin:<name>@<node>` or `person:<handle>`; targets (`to`) are
 //! those, or `tool:<name>@<node>`, `sync:<bundle>@<node>`, `channel:<name>`, `service:<name>[/<owner>/…]`,
-//! `page:<space>/<path>`, `app:<space>/<name>`. `*` matches any run of characters; `group:<name>` names a group of
+//! `page:<space>/<path>`, `app:<space>/<name>`, `host:<name>[:<port>]` (an internet host a role's agents may
+//! `connect` to, asked by the egress plugin). `*` matches any run of characters; `group:<name>` names a group of
 //! patterns, `team:<name>` a team of the tenant (with its sub-teams), `role:admin` its admins, `owned-by:person:<h>` and
 //! `owned-by:team:<t>` what someone owns, `owner` (in `to`) whatever the subject's owner owns, and `outside` an agent
 //! that isn't a member of the tenant deciding. A pattern matches people only if it says so (`person:…`, `team:…`,
@@ -36,6 +37,7 @@ pub const VERBS: &[&str] = &[
     "sign_in",
     "admin",
     "write",
+    "connect",
 ];
 
 /// One string or a list of them.
@@ -188,12 +190,52 @@ pub fn default_ask() -> Vec<AskRule> {
         except: None,
         hold: hold.into(),
     };
-    vec![rule(&["start", "attach", "answer", "close"], "10m"), rule(&["use_tool", "sync", "admin", "write"], "30d")]
+    vec![
+        rule(&["start", "attach", "answer", "close"], "10m"),
+        rule(&["use_tool", "sync", "admin", "write", "connect"], "30d"),
+    ]
 }
 
 /// The policy of a tenant with neither a version 2 policy nor version 1 rules: agents allowed, people their own
 /// things, and Fleetlayer's default `ask:` rules, so a new fleet asks before sensitive actions.
 pub const BUILTIN: &str = "# Built-in default: no policy is applied.\nversion: 2\ndefault: allow\n";
+
+/// A host an agent may connect to, after `host:`: a lower-case DNS name or an IP address, with an optional `:<port>`
+/// (`[v6]:<port>` for IPv6 with a port). The egress plugin normalises names before asking.
+pub fn valid_host_target(h: &str) -> bool {
+    let (name, port) = match h.strip_prefix('[') {
+        Some(rest) => match rest.split_once(']') {
+            Some((v6, "")) => (v6, None),
+            Some((v6, p)) => match p.strip_prefix(':') {
+                Some(p) => (v6, Some(p)),
+                None => return false,
+            },
+            None => return false,
+        },
+        None if h.parse::<std::net::Ipv6Addr>().is_ok() => (h, None),
+        None => match h.rsplit_once(':') {
+            Some((n, p)) => (n, Some(p)),
+            None => (h, None),
+        },
+    };
+    if let Some(p) = port
+        && !p.parse::<u16>().is_ok_and(|p| p > 0)
+    {
+        return false;
+    }
+    if name.parse::<std::net::IpAddr>().is_ok() {
+        return true;
+    }
+    !name.is_empty()
+        && name.len() <= 253
+        && name.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+        })
+}
 
 /// What an approval is held for: one target, except pages, approved per space (`page:<space>/*`).
 pub fn approval_target(target: &str) -> String {
@@ -352,7 +394,7 @@ fn term(var: &str, t: &str, groups: &BTreeMap<String, Vec<String>>) -> anyhow::R
     }
     anyhow::ensure!(
         valid_pattern(t),
-        "{t:?} isn't <tab>@<node>, person:/team:/role:…, tool:/sync:/channel:/service:/page:/app:…, group:…, \
+        "{t:?} isn't <tab>@<node>, person:/team:/role:…, tool:/sync:/channel:/service:/page:/app:/host:…, group:…, \
          owned-by:…, owner, outside or *"
     );
     if let Some(h) = t.strip_prefix("person:") {
@@ -367,7 +409,7 @@ fn term(var: &str, t: &str, groups: &BTreeMap<String, Vec<String>>) -> anyhow::R
 pub fn valid_pattern(p: &str) -> bool {
     p == "*"
         || (p.contains('@') && !p.starts_with("person:"))
-        || ["channel:", "group:", "person:", "service:", "page:", "app:"]
+        || ["channel:", "group:", "person:", "service:", "page:", "app:", "host:"]
             .iter()
             .any(|k| p.starts_with(k) && p.len() > k.len())
 }
@@ -1462,5 +1504,29 @@ owners:
         let failures = run_cases(&policy(), &cases).unwrap();
         assert_eq!(failures.len(), 1);
         assert!(failures[0].starts_with("x@scraper message research@laptop: expected deny, got allow"));
+    }
+
+    #[test]
+    fn hosts_take_connect_and_ask_by_default() {
+        assert!(valid_host_target("api.github.com"));
+        assert!(valid_host_target("api.github.com:8443"));
+        assert!(valid_host_target("1.2.3.4:22"));
+        assert!(valid_host_target("[2001:db8::1]:443"));
+        assert!(valid_host_target("2001:db8::1"));
+        assert!(!valid_host_target("API.github.com"), "names are lower case");
+        assert!(!valid_host_target("a..b"));
+        assert!(!valid_host_target("example.com:0"));
+        assert!(!valid_host_target("example.com:http"));
+        assert!(!valid_host_target("-bad.com"));
+        assert!(!valid_host_target(""));
+        let p = Compiled::parse("version: 2\ndefault: allow\n").unwrap();
+        assert_eq!(p.ask_for("-@triage", "connect", "host:example.com"), Some(30 * 86_400_000));
+        let p = Compiled::parse(
+            "version: 2\ndefault: allow\nask: []\ndeny:\n  - { who: \"-@triage\", can: connect, to: \"host:*.pastebin.com\" }\n",
+        )
+        .unwrap();
+        assert!(!p.decide("-@triage", "connect", "host:www.pastebin.com", false).unwrap().allowed);
+        assert!(p.decide("-@triage", "connect", "host:api.github.com", false).unwrap().allowed);
+        assert!(p.decide("-@laptop", "connect", "host:www.pastebin.com", false).unwrap().allowed);
     }
 }

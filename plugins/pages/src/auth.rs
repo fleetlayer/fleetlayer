@@ -82,6 +82,7 @@ impl Checker {
                     who: person.sub.clone(),
                     can: "read".into(),
                     to: target.to_string(),
+                    ..Default::default()
                 };
                 peer.request_within::<_, AccessDecision>(ext::method::ACCESS_CHECK, &ask, Duration::from_secs(10))
                     .await

@@ -232,6 +232,22 @@ pub async fn check_as(
     if !crate::policy::VERBS.contains(&req.can.as_str()) {
         return Err(RpcError::invalid_params(format!("unknown verb {}", req.can)));
     }
+    // `connect` is only for internet hosts, and hosts take only `connect`.
+    let host = req.to.strip_prefix("host:");
+    if (req.can == "connect") != host.is_some() {
+        return Err(RpcError::invalid_params(format!(
+            "{} {}: connect goes with host:<name>[:<port>]",
+            req.can, req.to
+        )));
+    }
+    if let Some(h) = host
+        && !crate::policy::valid_host_target(h)
+    {
+        return Err(RpcError::invalid_params(format!("{} isn't host:<name>[:<port>]", req.to)));
+    }
+    if let Some(w) = &req.why {
+        crate::policy::check_justification(w).map_err(RpcError::invalid_params)?;
+    }
     // A person may be named by their ID (the sign-in's `sub`) or as `person:<handle>`.
     let who = match tenant.handles.get(&req.who) {
         Some(h) => format!("person:{h}"),
@@ -239,7 +255,7 @@ pub async fn check_as(
         None => req.who.clone(),
     };
     let tenants = [tenant.id.clone()];
-    let out = decide_in(app, fleet, &tenants, None, (&who, &req.can, &req.to), None, false).await?;
+    let out = decide_in(app, fleet, &tenants, None, (&who, &req.can, &req.to), req.why.as_deref(), false).await?;
     let reason = match &out.refusal {
         Some(e) => e.message.clone(),
         None => out.because.join(", "),
@@ -745,6 +761,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_egress_plugin_asks_for_a_host_and_the_person_approves_it() {
+        let (app, acme) = example().await;
+        let ask = |can: &str, to: &str, why: Option<&str>| fleetlayer_protocol::link::AccessCheck {
+            tenant: "acme".into(),
+            who: "-@web".into(),
+            can: can.into(),
+            to: to.into(),
+            why: why.map(Into::into),
+        };
+        let why = Some("the API docs for the billing integration");
+        for (can, to, w) in [
+            ("read", "host:example.com", why),
+            ("connect", "service:pages", why),
+            ("connect", "host:Example.com", why),
+            ("connect", "host:example.com", Some("short")),
+        ] {
+            let e = access_check(&app, "web", &ask(can, to, w)).await.unwrap_err();
+            assert!(
+                e.message.contains("connect goes with")
+                    || e.message.contains("isn't host:")
+                    || e.message.contains("too short"),
+                "{}",
+                e.message
+            );
+        }
+        // Fleetlayer's default asks the person first, and records why.
+        let d = access_check(&app, "web", &ask("connect", "host:example.com", why)).await.unwrap();
+        assert!(!d.allowed && d.reason.contains("waiting for the person to approve"), "{d:?}");
+        let pending = crate::approvals::list(&app.db, &acme, false).await.unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0]["to"], "host:example.com");
+        let id = pending[0]["id"].as_str().unwrap().to_string();
+        // Asking again doesn't file a second request.
+        access_check(&app, "web", &ask("connect", "host:example.com", why)).await.unwrap();
+        assert_eq!(crate::approvals::list(&app.db, &acme, false).await.unwrap().len(), 1);
+        crate::approvals::decide(&app.db, &acme, &id, true, None).await.unwrap().unwrap();
+        let d = access_check(&app, "web", &ask("connect", "host:example.com", why)).await.unwrap();
+        assert!(d.allowed, "{d:?}");
+        assert!(log(&app.db, &acme).await.contains(&"allowed -@web connect host:example.com".to_string()));
+        // A policy can forbid hosts outright: deny wins over any approval.
+        store(
+            &app.db,
+            &acme,
+            "version: 2\ndefault: allow\ndeny:\n  - { who: \"*\", can: connect, to: \"host:example.*\" }\n",
+        )
+        .await
+        .unwrap();
+        assert!(!access_check(&app, "web", &ask("connect", "host:example.com", why)).await.unwrap().allowed);
+    }
+
+    #[tokio::test]
     async fn a_service_asks_about_people_in_a_tenant_that_admitted_it() {
         let (app, acme) = example().await;
         let ask = |who: &str, can: &str, to: &str| fleetlayer_protocol::link::AccessCheck {
@@ -752,6 +819,7 @@ mod tests {
             who: who.into(),
             can: can.into(),
             to: to.into(),
+            ..Default::default()
         };
         // `web` is Acme's own node, so it may ask; A's laptop isn't (only billing@laptop is admitted).
         let e = access_check(&app, "laptop", &ask("person:a", "sign_in", "service:pages")).await.unwrap_err();

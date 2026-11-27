@@ -715,3 +715,17 @@ managers, machines that sleep.
   read in the window could be copied, so prefer AWS STS sessions and GitHub App tokens and rotate the rest. Written:
   `docs/guides/admin-window.md`, `docs/access-control.md` ("The admin window"). Still to add: a hub view of open
   windows (the API, `GET /v1/windows`, has them).
+- **Keeping agents to the hosts they need (egress per role).** An agent that can read a token can send it anywhere
+  it can reach, so restrict a role's network: nftables matches the role's Unix users (`meta skuid`), redirects their
+  ports 443 and 80 to a local proxy that decides by the TLS server name or `Host` header (never decrypting) and their
+  DNS to a resolver that refuses names off the list, and refuses everything else once enforced. Log mode first, then
+  `fleetlayer-egress suggest` from a week of the log. Footguns found while building it: an nftables chain can't be
+  named `redirect` or `filter` without quotes (they're keywords); after a NAT redirect in the output hook the filter
+  chain doesn't see `oif "lo"`, so match `fib daddr type local` instead; the rules vanish at a reboot unless a unit
+  applies them; the proxy must run as a user outside every role or the agents can replace it; a restricted user in
+  the `docker` group isn't restricted (the daemon is root); connect to the host by name, never the address the client
+  dialled, or an allowed name can reach any IP; keep restricted roles off private addresses (LAN, tailnet,
+  169.254.169.254) unless a host is named exactly; QUIC and ECH just fall back when refused. Claude Code honours
+  `HTTPS_PROXY`; Node tools often don't, which the transparent redirect covers. Written: `docs/egress.md`,
+  `docs/guides/egress.md`, `plugins/egress/`. Still to write: other TCP ports transparently (by matching the
+  addresses the resolver handed out), and macOS (a Lima VM for now).

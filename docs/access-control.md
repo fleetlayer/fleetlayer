@@ -49,6 +49,7 @@ agents they limit can't change.
 | A group | `group:<name>` | `group:untrusted-input` |
 | A person, a team, the admins | `person:<handle>`, `team:<name>`, `role:admin` | `person:sam` |
 | A web service, or someone's data in it | `service:<name>[/<owner>/<path>]` | `service:quietdeck/sam/inbox` |
+| An internet host a role may connect to | `host:<name>[:<port>]` | `host:api.github.com`, `host:*.pastebin.com` |
 | A page, or an app, in a space | `page:<space>/<path>`, `app:<space>/<name>` | `page:handbook/*` |
 | What someone owns | `owned-by:person:<handle>`, `owned-by:team:<name>`; `owner` in `to` | `owned-by:team:support` |
 | An agent from outside this tenant | `outside` | |
@@ -132,7 +133,8 @@ Verbs: `message`, `use_tool`, `sync`, `read` (the fleet view, summaries, catch-u
 another, not even `-@<node>`, doesn't see that node in the fleet view at all), `subscribe`, `publish`, and
 `start` (start, resume or interrupt a session on another node), `close` (close one), `answer` (answer the prompt a
 session is blocked on: a question, a plan, or a permission prompt, which approves what it asks), and `attach` (type
-into a session's terminal; watching it is `read`). Give an overseer that answers for the person `answer` by name, never
+into a session's terminal; watching it is `read`), and `connect` (reach an internet host, `host:<name>[:<port>]`, asked by
+the [egress plugin](egress.md) for a role's node: `-@<node>`). Give an overseer that answers for the person `answer` by name, never
 through a broad rule: `allow: [{ who: "plugin:runner@<node>", can: answer }]` with `answer` denied to everyone else.
 
 ## Asking the person: approval and justification
@@ -154,8 +156,8 @@ justify:                       # the agent must say why, in one line, and it goe
 
 Approvals are on by default: a policy that leaves `ask:` out asks before `start`, `attach`, `answer` and `close` (an
 approval holds 10 minutes) and
-before each agent's first `use_tool`, `sync`, `admin` or `write` to a target (it holds 30 days; one for `use_tool` or
-`sync` renews while it's used, so it lapses only after 30 days unused), the safe start for a
+before each agent's first `use_tool`, `sync`, `admin`, `write` or `connect` to a target (it holds 30 days; one for
+`use_tool`, `sync` or `connect` renews while it's used, so it lapses only after 30 days unused), the safe start for a
 fleet you don't know yet. That holds with no policy applied too: a tenant with neither a policy nor version 1 rules is
 decided by the built-in default (`default: allow` and these asks), which `acl show` prints. A fleet of autonomous agents turns it off with `ask: []` (and
 `justify: []`). An `allow` rule doesn't skip an ask: to stop asking for something, list `ask:` without it (`ask: []`

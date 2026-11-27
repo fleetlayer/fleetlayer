@@ -118,7 +118,7 @@ pub async fn peek(db: &Db, tenant: &str, who: &str, verb: &str, target: &str) ->
 /// use pushes the expiry to a full hold from now, so one lapses only after a hold's length unused, rather than stopping
 /// a sync silently mid-use. The new expiry, when it moves by more than an hour (no write on every use).
 fn renewal(verb: &str, expires: Option<i64>, hold: i64, now: i64) -> Option<i64> {
-    const RENEWS: &[&str] = &["sync", "use_tool"];
+    const RENEWS: &[&str] = &["sync", "use_tool", "connect"];
     let to = now + hold;
     (RENEWS.contains(&verb) && expires.is_some_and(|e| to > e + 3_600_000)).then_some(to)
 }

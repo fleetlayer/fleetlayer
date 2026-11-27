@@ -50,9 +50,10 @@ fn node_of(name: &str) -> Option<&str> {
     name.rsplit_once('@').map(|(_, n)| n).filter(|n| !n.is_empty())
 }
 
-/// Things that belong to a tenant rather than to a node: services, pages, apps and people.
+/// Things that belong to a tenant rather than to a node: services, pages, apps, people, and the internet hosts its
+/// agents may connect to (`host:`, decided in the tenant of the egress plugin that asks).
 pub fn is_tenant_thing(name: &str) -> bool {
-    ["service:", "page:", "app:", "person:"].iter().any(|k| name.starts_with(k))
+    ["service:", "page:", "app:", "person:", "host:"].iter().any(|k| name.starts_with(k))
 }
 
 /// Agents, and what's on a node (tools, bundles, terminals): decided in the tenants of whoever's on either side.

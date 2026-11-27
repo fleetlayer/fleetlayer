@@ -29,7 +29,7 @@ jobs:
       BINARIES: >-
         fleetlayer fleetlayer-node fleetlayer-control fleetlayer-herdr fleetlayer-rex fleetlayer-claude-code fleetlayer-summaries
         fleetlayer-file-sync fleetlayer-claude-auth-manager fleetlayer-claude-accounts fleetlayer-pages fleetlayer-gateway
-        fleetlayer-signin fleetlayer-shared-folders fleetlayer-scheduler fleetlayer-cookies fleetlayer-herdr-fleet
+        fleetlayer-signin fleetlayer-shared-folders fleetlayer-scheduler fleetlayer-cookies fleetlayer-egress fleetlayer-herdr-fleet
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -40,7 +40,7 @@ jobs:
         run: >
           cargo build --release --locked --target ${{ matrix.target }}
           -p fleetlayer-cli -p fleetlayer-node -p fleetlayer-control
-          -p fleetlayer-herdr -p fleetlayer-rex -p fleetlayer-claude-code -p fleetlayer-summaries -p fleetlayer-file-sync -p fleetlayer-claude-auth-manager -p fleetlayer-accounts -p fleetlayer-pages -p fleetlayer-gateway -p fleetlayer-signin -p fleetlayer-shared-folders -p fleetlayer-scheduler -p fleetlayer-cookies -p fleetlayer-herdr-fleet
+          -p fleetlayer-herdr -p fleetlayer-rex -p fleetlayer-claude-code -p fleetlayer-summaries -p fleetlayer-file-sync -p fleetlayer-claude-auth-manager -p fleetlayer-accounts -p fleetlayer-pages -p fleetlayer-gateway -p fleetlayer-signin -p fleetlayer-shared-folders -p fleetlayer-scheduler -p fleetlayer-cookies -p fleetlayer-egress -p fleetlayer-herdr-fleet
       # Skipped with a warning where the secrets aren't set (a fork), so the build still passes there
       - name: Sign and notarise the macOS binaries
         if: runner.os == 'macOS'

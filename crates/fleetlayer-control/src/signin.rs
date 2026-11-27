@@ -321,6 +321,7 @@ async fn admin_of(app: &App, r: &AdminRequest) -> Result<(String, String), (Stat
             who: r.actor.clone(),
             can: "admin".into(),
             to: "service:signin".into(),
+            ..Default::default()
         };
         let d = crate::authz::check_as(app, &fleet, tenant, &ask).await.map_err(|e| bad(e.message))?;
         if !d.allowed {
@@ -512,6 +513,7 @@ mod tests {
             who: person.clone(),
             can: "read".into(),
             to: "service:quietdeck/a/inbox".into(),
+            ..Default::default()
         };
         let d = post_check(State(app.clone()), bearer(&t), Json(ask)).await.unwrap();
         assert_eq!(d.0["allowed"], true, "{}", d.0);

@@ -58,6 +58,7 @@ pub const BINARIES: &[&str] = &[
     "fleetlayer-scheduler",
     "fleetlayer-herdr-fleet",
     "fleetlayer-cookies",
+    "fleetlayer-egress",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]

@@ -1,0 +1,34 @@
+name: egress
+summary: Network access per role. Each role's agents reach only the hosts on its list, through a proxy that reads host names and never decrypts.
+kind: plugin
+roles: []
+ships_with_fleetlayer: true
+status: experimental
+licence: Apache-2.0
+maintainer: Fleetlayer
+source: https://github.com/fleetlayer/fleetlayer/tree/main/plugins/egress
+install: bundled
+command: fleetlayer-egress
+platforms: [linux]
+min_fleetlayer: 0.3.13
+protocol: 1
+grants: [access.check]
+config: |
+  plugins:
+    - name: egress
+      command: fleetlayer-egress
+      grants: [access.check]
+      # roles and hosts go in ~/.config/fleetlayer/egress.yaml; firewall: fleetlayer-egress firewall --apply (root)
+security: >-
+  Runs as a Unix user outside every restricted role, so the agents it limits can't stop or replace it. Reads the host
+  name of each connection (CONNECT, the TLS server name, the HTTP Host header) and never decrypts traffic. Writes an
+  audit line per connection (user, host, bytes, time) under its own state directory. Asks the control plane only
+  whether a role's node may connect to a host, with the agent's reason; it holds no credentials. Root applies the
+  firewall rules it generates.
+docs: egress
+description: |
+  Little Snitch for an agent fleet. A restricted role's port-443 and port-80 traffic is redirected to a local proxy,
+  its DNS to a local resolver, and once enforced everything else it sends off the machine is refused, LAN and tailnet
+  included. A role starts in log mode, and `fleetlayer-egress suggest` turns a week of the log into its list. A refused
+  agent asks for a host with a one-line reason, a person approves it through Fleetlayer's approvals, and it stays
+  allowed. A probe on each role's node checks that the rules really hold and reports through the node's health.

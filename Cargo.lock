@@ -1805,6 +1805,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "fleetlayer-egress"
+version = "0.3.12"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "clap",
+ "fleetlayer-plugin",
+ "fleetlayer-protocol",
+ "httparse",
+ "jiff 1.0.3",
+ "psl",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "yaml_serde",
+]
+
+[[package]]
 name = "fleetlayer-file-sync"
 version = "0.3.12"
 dependencies = [

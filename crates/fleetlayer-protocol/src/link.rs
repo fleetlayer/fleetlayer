@@ -273,16 +273,22 @@ pub struct PublishResult {
 
 /// `link/access_check` and `_fleetlayer.dev/access/check`: a service asking whether someone may do something
 /// (`docs/sso.md`, "How a service asks").
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct AccessCheck {
-    /// The tenant that owns what's asked about: its ID or its slug (the sign-in's `fleetlayer.dev/tenant`).
+    /// The tenant that owns what's asked about: its ID or its slug (the sign-in's `fleetlayer.dev/tenant`). Empty: the
+    /// asking node's own tenant (the egress plugin asking about `host:…`).
+    #[serde(default)]
     pub tenant: String,
     /// `person:<handle>`, a person's ID (the sign-in's `sub`), or an agent (`<tab>@<node>`).
     pub who: String,
     /// A verb (`read`, `write`, `sign_in`, `admin`...).
     pub can: String,
-    /// `service:<name>[/<owner>/…]`, `page:<space>/<path>` or `app:<space>/<name>`.
+    /// `service:<name>[/<owner>/…]`, `page:<space>/<path>`, `app:<space>/<name>` or `host:<name>[:<port>]`.
     pub to: String,
+    /// The asker's one-line reason, recorded with the decision (and needed where a `justify:` rule applies): an agent
+    /// asking the egress plugin for a host says why.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
