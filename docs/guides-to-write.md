@@ -220,3 +220,22 @@ managers, machines that sleep.
   passes. Compare organizations: the profile's at sign-in, and the `anthropic-organization-id` header on one tiny
   `/v1/messages` request made with the token (`anthropic-beta: oauth-2025-04-20`). Where it lives:
   `plugins/claude-auth-manager/src/hub.rs` (`token_org`, `wrong_account`).
+- **Filesystem events miss writes made on the other side of a share.** inotify sees only changes made through the
+  local kernel: a vault shared into a VM over virtiofs (often re-exported through FUSE), an SMB or NFS mount, or a
+  folder another machine writes over a network share never fires an event for writes made elsewhere. A service that
+  reacts to new files (pages' live updates) has to poll: stat the few files of an open page every second and a
+  folder's list every few seconds, which costs nothing at this scale. Where it lives: `plugins/pages/src/web.rs`
+  (`watch`), `docs/plugins/pages.md` ("Live").
+- **A dropped share looks like an empty folder.** When a synced or mounted folder goes away, a service reading it sees
+  no files rather than an error, and happily serves an empty list. Put a marker file in the folder when you set it up
+  (`.fleetlayer-space` for pages) and fail the health check and heartbeat when it's missing. Where it lives:
+  `docs/plugins/pages.md` ("Monitoring").
+- **Pages for people instead of vendor artifacts.** Claude's artifacts (and other vendors' hosted previews) open only
+  for the account that published them, which breaks with several accounts or several models. Agents write a folder
+  (`index.md` and `img/`) into their space of a synced vault, the pages service hosts it, and an agent you trust less
+  gets only its own space's folder mounted. Where it lives: `docs/plugins/pages.md`; the setup guide (a vault share
+  of its own, mounts per agent user) comes with the first deploy.
+- **A sandboxed frame without `allow-same-origin` loses the sign-in cookie.** A mock-up shown in `<iframe sandbox>`
+  gets an opaque origin, so its own CSS and images are requested cross-site and a SameSite=Strict session cookie
+  isn't sent: they fail to load behind a login. Use `sandbox="allow-same-origin"` with no `allow-scripts` (and a
+  `script-src 'none'` policy on the file) so nothing can use that origin. Where it lives: `plugins/pages/src/web.rs`.
