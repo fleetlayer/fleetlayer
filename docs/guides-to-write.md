@@ -247,3 +247,6 @@ managers, machines that sleep.
   changes memberships queues its audit entries for the running control plane instead of writing them itself (it
   doesn't hold the audit key, and two writers would race for the chain's next position). Where it lives:
   `docs/sso.md`, `crates/fleetlayer-control/src/people.rs`.
+- **Backups.** Written: docs/guides/backups.md (restic to Backblaze B2 from one backup host, one repository per
+  source, separate accounts per owner, retention, heartbeats, a scheduled restore check, disaster recovery, what to
+  leave out, agents and backups). Example taken from the author's home server.
