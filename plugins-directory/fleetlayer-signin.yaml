@@ -32,7 +32,9 @@ security: >-
   Signs people in to your other services, so whoever controls it can sign in as anyone: run it on an always-on machine
   you administer, behind HTTPS (plain HTTP only on *.localhost). Its control plane token may look up who belongs where,
   use invites, ask access checks and record sign-ins, and nothing else; fleetlayer-control signin revoke stops it at
-  once. Every client must use PKCE, and sign_in is checked against your access policy before any code is issued.
+  once. Every client must use PKCE, and sign_in is checked against your access policy before any code is issued. Its
+  folder (dir) holds the token-signing key and everyone's passkeys: keep it readable only by its user, and treat any
+  backup of it like a secret.
 docs: plugins/signin
 description: |
   People sign in once, with a passkey, and use every service that speaks OpenID Connect: the Claude sign-in hub,

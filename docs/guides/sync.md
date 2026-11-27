@@ -184,7 +184,7 @@ fleetlayer-control approvals list
 fleetlayer-control approvals approve <id>
 ```
 
-From the release after v0.3.8 (on the source, the targets and the control plane), the source sends within about 15
+From v0.3.9 (on the source, the targets and the control plane), the source sends within about 15
 seconds of your approval, and the approval renews each time it's used, so it lapses only after 30 days without a
 sync. A target that hasn't got the latest version is retried with backoff (a minute, doubling to an hour). A refusal
 by your access rules, or a request you denied, waits for the next version instead. Upgrade targets before sources.
@@ -240,7 +240,7 @@ heartbeats:
 Do the same for the vault: each machine writes its own file (`sync-check/laptop.txt`) and checks the others'. One
 check covers one path, so give each set and each pair of machines you depend on its own.
 
-For the files plugin, Fleetlayer also reports on itself (from the release after v0.3.8). Each bundle and target has a
+For the files plugin, Fleetlayer also reports on itself (from v0.3.9). Each bundle and target has a
 `sync.status` reading (its state, the error, and what to do about it, such as the approve command to run), and each
 set a `files.set` reading (its files, what was skipped and why, its version):
 
@@ -287,14 +287,14 @@ over an hour, so an alert reaches you without a check of your own.
   points outside it, to nothing, or to a hidden file is skipped. So a skills folder made of links into a repository
   publishes nothing: publish the folder the links point to. The `files.set` reading lists what was skipped and why
   (older releases skip every symlink without saying so).
-- **A script in a skill won't run on the target:** the target runs a release older than the one after v0.3.8, which
+- **A script in a skill won't run on the target:** the target runs a release older than v0.3.9, which
   writes plain files and drops the executable bit. Upgrade it, or have the skill call its scripts through their
   interpreter (`sh script.sh`, `python3 tool.py`).
 - **Sync stopped and nobody noticed:** on releases up to v0.3.8, an approval held 30 days whether used or not, and a
   refused version waited for the folder to change. Upgrade the source, the targets and the control plane; the
   `sync.status` reading then says what each target is waiting for.
 - **A target waits while its source is offline.** Bundles are sealed to each target and never stored, so a target
-  that comes back gets the latest version only once the source is linked too (from the release after v0.3.8, the
+  that comes back gets the latest version only once the source is linked too (from v0.3.9, the
   control plane asks the source to resend whenever either side links). Keep the source on an always-on machine.
 - **Something that watches a synced folder misses changes.** Filesystem events (inotify) see only writes made through
   the local kernel, so a folder written over a network share, or shared into a VM, never fires an event for writes made

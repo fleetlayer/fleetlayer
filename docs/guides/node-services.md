@@ -199,7 +199,7 @@ middle of what someone is typing in that tab. In the test node's node.yaml:
 typing_fallback: false     # such messages fail at once instead
 ```
 
-**Give it its own instance.** From the release after v0.3.8, `FLEETLAYER_INSTANCE` runs a second node under the same
+**Give it its own instance.** From v0.3.9, `FLEETLAYER_INSTANCE` runs a second node under the same
 account without touching the real one: its own launchd label or systemd unit (`dev.fleetlayer.test.node`,
 `fleetlayer-test-node.service`), its own config and state under the `HOME` you give it, and its own socket. Pointing
 `XDG_CONFIG_HOME` somewhere else isn't enough: `fleetlayer-node install` would replace the real node's service.
