@@ -11,7 +11,8 @@ person controls. The control plane never holds them; it only relays them sealed 
   on the laptop they close and carry: the agents on servers depend on it. It holds each
   account's normal sign-in, used only to poll usage and identity, and its setup token (`claude setup-token`: lasts a
   year, inference only). It signs in and refreshes by running Claude Code's own binary, never by calling Anthropic's
-  OAuth endpoints itself, and serves a small web UI for the sign-ins and for each machine's key fingerprint.
+  OAuth endpoints itself, and serves a small web UI for the sign-ins (showing each machine's key fingerprint there is
+  planned; today the hub's node pins each key in `known-keys.json`).
 - **On every node** (`sync_target`), it writes the setup tokens into account slots, serves the rotator plugin's
   coordinator API, and checks that each token works.
 

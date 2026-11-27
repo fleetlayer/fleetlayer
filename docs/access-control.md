@@ -54,7 +54,11 @@ agents they limit can't change.
 
 `*` matches any run of characters. A node is one machine, or one Unix user on a shared machine: the node is the trust
 boundary, because every process of that user can claim to be any of its sessions. Give an agent you trust less its
-own Unix user and its own node.
+own Unix user and its own node ([Run an agent that reads strangers' text](guides/untrusted-input.md)).
+
+For the same reason, a node always sees and drives its own sessions with no policy check: `fleetlayer attach` to a
+session on the same node connects straight to it. `read` and `attach` are checked when the session is on another
+node.
 
 A pattern matches people only if it says so (`person:…`, `team:…`, `role:…`, or a group that names them): a bare `*`
 in `who` is every agent. People have their own default, `default_people: own`: anything to what they own, read what

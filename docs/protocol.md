@@ -376,9 +376,9 @@ never does.**
 
 ### Trusting keys
 
-A control plane that lied about a node's key could read secrets meant for it. So a source pins each target's key the
-first time it sees it and shows its fingerprint to the person (the `claude-auth-manager` web UI lists every machine
-with its key fingerprint), and a changed key needs the person's approval before anything is sealed to it.
+A control plane that lied about a node's key could read secrets meant for it. So the sending node pins each target's
+key the first time it seals to it (in `~/.local/state/fleetlayer/known-keys.json`), and refuses a changed key until
+the person removes the old pin by hand. Showing each key's fingerprint to the person, in the hub's page, is planned.
 
 ## 9. Readings
 
