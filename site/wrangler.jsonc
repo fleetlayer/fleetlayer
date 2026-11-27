@@ -3,7 +3,8 @@
   "$schema": "https://unpkg.com/wrangler@4.168.0/config-schema.json",
   "name": "fleetlayer-site",
   "compatibility_date": "2026-11-01",
-  "workers_dev": true,
+  "workers_dev": false,
+  "routes": [{ "pattern": "fleetlayer.ai", "custom_domain": true }],
   "assets": {
     "directory": "./dist",
     "not_found_handling": "404-page",
