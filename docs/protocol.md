@@ -453,7 +453,7 @@ Numbers, never secrets, flow with readings: account usage and reset times, healt
 
 | Request | What it does |
 |---|---|
-| `_fleetlayer.dev/message/send` `{to, text, kind?}` | Send to a session anywhere: `to` is `<name>@<node>` or a session ID. Fails at once if it isn't running. |
+| `_fleetlayer.dev/message/send` `{to, text, untrusted?, subkind?}` | Send to a session anywhere: `to` is `<name>@<node>`, `<name>` (this node first) or a session ID; `untrusted` marks the text as outside data for the recipient; `subkind` is a finer kind for its harness (`forward`). Fails at once if it isn't running. |
 | `_fleetlayer.dev/event/publish` | [Section 6](#6-events-the-event-source-role) |
 | `_fleetlayer.dev/sync/publish` | [Section 8](#8-sync-and-sealed-secrets) |
 | `_fleetlayer.dev/reading/publish`, `/reading/subscribe` | [Section 9](#9-readings) |

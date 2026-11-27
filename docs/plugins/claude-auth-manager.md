@@ -87,9 +87,8 @@ node leaves that alone.
   failed `token_health` check, shows the account as not working until a response or a passing check says otherwise; an
   account that leaves the bundle goes once its sessions have moved off. The version starts at the clock in
   milliseconds. It needs rotator 0.7.6 or later (which leaves `/hello` name `fleetlayer-claude-auth-manager` alone and
-  handles a restarted coordinator). A rotator's own coordinator holding `coordinator.lock` is asked to shut down;
-  Quietdeck's node holding it is waited for (turn its Claude part off where this plugin runs), and a
-  `claude.coordinator` reading says which.
+  handles a restarted coordinator). A rotator's own coordinator holding `coordinator.lock` is asked to shut down, and a
+  `claude.coordinator` reading says who holds it. (Quietdeck no longer takes the lock.)
 - The hub polls each signed-in account's usage every five minutes and publishes it as `claude.usage` with
   `source: poll`. When an access token has expired it has Claude Code refresh it first (`claude -p /usage` from that
   sign-in), which revokes the old one: nothing but the hub may read its sign-ins.

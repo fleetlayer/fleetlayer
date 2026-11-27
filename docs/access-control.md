@@ -63,9 +63,9 @@ start sessions elsewhere) holds only if the plugin runs under a different Unix u
 the agents can't read. Put a runner of approved actions beside an agent that reads untrusted input on a node of its
 own, and name that node in the rule.
 
-For the same reason, a node always sees and drives its own sessions with no policy check: `fleetlayer attach` to a
-session on the same node connects straight to it. `read` and `attach` are checked when the session is on another
-node.
+For the same reason, a node always sees, messages and drives its own sessions with no policy check: a message to a
+session on the same node is delivered straight to it, and so is `fleetlayer attach`. `message`, `read` and `attach`
+are checked when the session is on another node.
 
 A pattern matches people only if it says so (`person:…`, `team:…`, `role:…`, or a group that names them): a bare `*`
 in `who` is every agent. People have their own default, `default_people: own`: anything to what they own, read what

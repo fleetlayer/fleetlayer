@@ -89,10 +89,9 @@ managers, machines that sleep.
   other overriding variables. Tested with Claude Code 2.1.332, 26 Nov 2026; it lives in claude-auth-manager's
   `health.rs`. Written: `docs/guides/claude-accounts.md`.
 - **One coordinator per user for the Claude account rotator.** `coordinator.sock` in `~/.claude/account-rotator` is
-  served by whichever process holds `coordinator.lock`: the rotator's own coordinator, Quietdeck's node, or
-  claude-auth-manager. Where claude-auth-manager runs, Quietdeck's node must have its Claude part off
-  (`usage: { claude: false }` in its node.yaml, since quietdeck 37c7e31; it keeps Codex), or the plugin waits (its
-  `claude.coordinator` reading says so); a rotator's own coordinator is asked to step down. Sessions need rotator
+  served by whichever process holds `coordinator.lock`: the rotator's own coordinator or claude-auth-manager. A
+  rotator's own coordinator is asked to step down (the `claude.coordinator` reading says who holds the lock). Quietdeck
+  used to take it too; it now ignores `usage.claude` and never takes the lock. Sessions need rotator
   0.7.6 or later to leave the plugin's coordinator alone. 26 Nov 2026. Written: `docs/guides/claude-accounts.md`.
 - **Syncing a checkout to a build server with `rsync -a` can make cargo skip a changed file.** It copies the local
   modification time, which can be older than the server's last build, so the build uses stale code and reports

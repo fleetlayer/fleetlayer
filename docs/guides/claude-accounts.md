@@ -280,9 +280,8 @@ sync:claude-auth-manager/tokens@laptop` shows the decision.
 ## When it doesn't work
 
 - **The plugin waits and never serves the coordinator:** one coordinator runs per user, held by `coordinator.lock` in
-  `~/.claude/account-rotator`. A rotator's own coordinator is asked to step down. Any other program that serves the
-  same API must have its Claude part off where this plugin runs. The `claude.coordinator` reading says who holds the
-  lock. Sessions need rotator 0.7.6 or later to leave the plugin's coordinator alone.
+  `~/.claude/account-rotator`. A rotator's own coordinator is asked to step down, and the `claude.coordinator` reading
+  says who holds the lock. Sessions need rotator 0.7.6 or later to leave the plugin's coordinator alone.
 - **"User interaction is not allowed"** on a Mac: the node runs as a LaunchDaemon or over SSH with the keychain locked.
   Run it as a LaunchAgent (`fleetlayer-node install` as that user, logged in).
 - **"No such file or directory"** from the token checks on a Mac: the LaunchAgent can't find `claude`. Set `claude:`
