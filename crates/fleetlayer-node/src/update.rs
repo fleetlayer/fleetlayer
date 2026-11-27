@@ -35,6 +35,9 @@ pub const BINARIES: &[&str] = &[
     "fleetlayer-files",
     "fleetlayer-claude-auth-manager",
     "fleetlayer-claude-accounts",
+    "fleetlayer-control",
+    "fleetlayer-gateway",
+    "fleetlayer-pages",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]

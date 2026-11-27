@@ -48,7 +48,21 @@ async fn gateway_ok(base: &str) -> Result<(), String> {
 }
 
 pub async fn run(node: Arc<Node>, cfg: HeartbeatConfig, has_control: bool) {
-    let token = cfg.token_file.as_ref().and_then(|f| std::fs::read_to_string(f).ok()).map(|t| t.trim().to_string());
+    // `~` means this user's home, as for the control plane's token; a token that can't be read is said once, loudly,
+    // rather than heartbeats going out without it (and being refused).
+    let token = cfg.token_file.as_ref().and_then(|f| {
+        let f = match f.strip_prefix("~") {
+            Ok(rest) => crate::config::home().join(rest),
+            Err(_) => f.clone(),
+        };
+        match std::fs::read_to_string(&f) {
+            Ok(t) => Some(t.trim().to_string()),
+            Err(e) => {
+                tracing::error!("heartbeat: reading the token {}: {e}; sending heartbeats without it", f.display());
+                None
+            }
+        }
+    });
     let client = match reqwest::Client::builder().timeout(Duration::from_secs(10)).build() {
         Ok(c) => c,
         Err(e) => return tracing::error!("heartbeat: {e}"),
