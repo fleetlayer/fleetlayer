@@ -99,11 +99,14 @@ impl Engine {
                 system_prompt: prompt::catchup_system(&self.config.user_name),
                 schema: prompt::CATCHUP_SCHEMA.to_owned(),
                 prompt: user_prompt,
-                account,
+                account: account.clone(),
             };
             match self.model.call(req).await.and_then(|(v, _)| parse_catchup(&v)) {
                 Ok(text) => text,
-                Err(CallError::Limit(m)) => return Err(Stop::Limit(m)),
+                Err(CallError::Limit(m)) => {
+                    self.mark_limited(&account);
+                    return Err(Stop::Limit(m));
+                }
                 Err(e) => {
                     tracing::warn!("summaries: catch-up for {session_id} failed: {e}");
                     return Ok(None);

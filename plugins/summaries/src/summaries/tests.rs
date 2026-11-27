@@ -203,7 +203,14 @@ fn config(h: &Home) -> Config {
 }
 
 fn account() -> Account {
-    Account { id: "3".into(), slot: "/slots/3".into(), email: "a@x".into(), week_pct: 10.0, resets_at: None }
+    Account {
+        id: "3".into(),
+        slot: "/slots/3".into(),
+        email: "a@x".into(),
+        week_pct: 10.0,
+        resets_at: None,
+        five_hour_resets_at: None,
+    }
 }
 
 fn engine(h: &Home, model: Arc<Fake>, accounts: Accounts) -> (Engine, mpsc::Receiver<SummaryEvent>) {
@@ -305,6 +312,9 @@ async fn a_usage_limit_or_no_account_stops_without_moving_or_counting() {
     let (e, _rx) = engine(&h, fake.clone(), Accounts::Fixed(Some(account())));
     assert!(matches!(e.process(&source(&path), info()).await, Err(Stop::Limit(_))));
     assert_eq!(e.state.lock().unwrap().files.get(&path).map(|f| (f.offset, f.failures)).unwrap_or((0, 0)), (0, 0));
+    // The account that hit its limit is left alone: the next pass doesn't call it again (there's no other here).
+    assert_eq!(e.process(&source(&path), info()).await, Err(Stop::NoAccount));
+    assert!(e.limited.lock().unwrap().contains_key(&account().id));
     let (e, _rx) = engine(&h, fake.clone(), Accounts::Fixed(None));
     assert_eq!(e.process(&source(&path), info()).await, Err(Stop::NoAccount));
     assert_eq!(offset(&e, &path), 0);

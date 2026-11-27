@@ -519,3 +519,8 @@ managers, machines that sleep.
   plugin does it this way, so `fleetlayer session start --prompt` takes any text (a prompt from another node always has
   several lines: the sender's header, then the text). Where it lives: `plugins/herdr/src/main.rs` (`SESSION_OPEN`),
   test `the_first_prompt_never_goes_on_the_command_line`.
+- **Choosing a Claude account by its week alone keeps choosing one that's at its 5-hour limit.** The "soonest weekly
+  reset" rule picked the same account for every summary while its 5-hour window was full, and each call failed with
+  "You've hit your 5-hour limit". Skip an account whose 5-hour window is full until it resets, and remember a usage
+  limit answer so the next call goes elsewhere. Any program that picks accounts for headless calls needs both. Where it
+  lives: `plugins/summaries/src/summaries/accounts.rs`, `docs/plugins/summaries.md`.

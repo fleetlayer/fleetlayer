@@ -2,7 +2,9 @@
 //!
 //! The rule is the coordinator's own "soonest reset": of the signed-in accounts that aren't spent (the coordinator
 //! marks an account spent at 98% of its week), use the one whose week resets first, so room that's about to refill is
-//! used before it does. Summaries run on Sonnet, so only the account's week counts, not Fable's own week.
+//! used before it does. Summaries run on Sonnet, so only the account's week counts, not Fable's own week. An account
+//! whose 5-hour window is full is left until that window resets: its week may reset soonest, and the soonest-reset
+//! rule alone kept choosing it while every call failed (27 Nov 2026).
 //! Ported from claude-summarizer's `accounts.py`. The node serves the same API on the same socket once it takes the
 //! usage monitor over from the coordinator.
 
@@ -24,6 +26,8 @@ pub struct Account {
     pub email: String,
     pub week_pct: f64,
     pub resets_at: Option<Timestamp>,
+    /// When its 5-hour window resets, when the reading has one.
+    pub five_hour_resets_at: Option<Timestamp>,
 }
 
 impl Account {
@@ -35,7 +39,14 @@ impl Account {
             email: "Claude Code's own login".into(),
             week_pct: 0.0,
             resets_at: None,
+            five_hour_resets_at: None,
         }
+    }
+
+    /// Until when to leave it alone after it answered with a usage limit: its 5-hour window's reset when the reading
+    /// has one still ahead, else an hour.
+    pub fn limited_until(&self, now: Timestamp) -> Timestamp {
+        self.five_hour_resets_at.filter(|r| *r > now).unwrap_or(now + SignedDuration::from_hours(1))
     }
 
     /// The same variables the coordinator uses to point a `claude` child at a login (its `slotEnv`): an added account
@@ -118,6 +129,11 @@ fn dechunk(mut body: &[u8]) -> Option<Vec<u8>> {
 
 /// None when every account is spent.
 pub fn choose(state: &Value, now: Timestamp) -> Option<Account> {
+    choose_skipping(state, now, &BTreeMap::new())
+}
+
+/// [`choose`], leaving out the accounts in `limited` until the time given for each (they answered with a usage limit).
+pub fn choose_skipping(state: &Value, now: Timestamp, limited: &BTreeMap<String, Timestamp>) -> Option<Account> {
     let mut usable = Vec::new();
     for a in state.get("accounts").and_then(Value::as_array).into_iter().flatten() {
         let healthy = a.get("health").and_then(|h| h.get("kind")).and_then(Value::as_str) == Some("ok");
@@ -139,16 +155,32 @@ pub fn choose(state: &Value, now: Timestamp) -> Option<Account> {
         if pct >= LEAVE_SEVEN_DAY {
             continue;
         }
+        // A full 5-hour window refuses every call until it resets, whatever the week says.
+        let five = a.get("reading").and_then(|r| r.get("fiveHour")).filter(|w| !w.is_null());
+        let five_resets = five
+            .and_then(|w| w.get("resetsAt"))
+            .and_then(Value::as_str)
+            .and_then(|s| s.parse::<Timestamp>().ok())
+            .filter(|r| *r > now);
+        let five_pct = five.and_then(|w| w.get("pct")).and_then(Value::as_f64).unwrap_or(0.0);
+        if five_resets.is_some() && five_pct >= LEAVE_SEVEN_DAY {
+            continue;
+        }
+        let id = match a.get("id") {
+            Some(Value::String(s)) => s.clone(),
+            Some(other) => other.to_string(),
+            None => continue,
+        };
+        if limited.get(&id).is_some_and(|until| *until > now) {
+            continue;
+        }
         usable.push(Account {
-            id: match a.get("id") {
-                Some(Value::String(s)) => s.clone(),
-                Some(other) => other.to_string(),
-                None => continue,
-            },
+            id,
             slot: a.get("slot").and_then(Value::as_str).unwrap_or("").to_owned(),
             email: a.get("email").and_then(Value::as_str).unwrap_or("?").to_owned(),
             week_pct: pct,
             resets_at: resets,
+            five_hour_resets_at: five_resets,
         });
     }
     let week_out = now + SignedDuration::from_hours(7 * 24);
@@ -162,11 +194,15 @@ pub fn choose(state: &Value, now: Timestamp) -> Option<Account> {
 
 /// What a call should use: the coordinator's choice, Claude Code's own login when no coordinator is installed, or
 /// None when every account is spent (summaries wait for the next idle event or the sweep).
-pub async fn pick(socket: &Path, now: Timestamp) -> Result<Option<Account>, StateError> {
+pub async fn pick(
+    socket: &Path,
+    now: Timestamp,
+    limited: &BTreeMap<String, Timestamp>,
+) -> Result<Option<Account>, StateError> {
     if !socket.exists() {
         return Ok(Some(Account::default_login()));
     }
-    Ok(choose(&coordinator_state(socket).await?, now))
+    Ok(choose_skipping(&coordinator_state(socket).await?, now, limited))
 }
 
 #[cfg(test)]
@@ -196,6 +232,41 @@ mod tests {
         let state =
             json!({"accounts": [acct("4", 10.0, "2026-11-26T00:00:00Z"), acct("5", 5.0, "2026-11-26T00:00:00Z")]});
         assert_eq!(choose(&state, now).unwrap().id, "5");
+    }
+
+    /// The VM's case on 27 Nov 2026: account 4's week reset soonest, but its 5-hour window was full, and every summary
+    /// went to it and failed.
+    #[test]
+    fn a_full_five_hour_window_is_left_until_it_resets() {
+        let now: Timestamp = "2026-11-27T08:30:00Z".parse().unwrap();
+        let mut full = acct("4", 28.0, "2026-11-27T13:59:59Z");
+        full["reading"]["fiveHour"] = json!({"pct": 100.0, "resetsAt": "2026-11-27T09:29:59Z"});
+        let state = json!({"accounts": [full.clone(), acct("3", 43.0, "2026-11-29T12:00:00Z")]});
+        assert_eq!(choose(&state, now).unwrap().id, "3");
+        // Once the window has reset, the account is back (and still first, its week resetting soonest).
+        let later: Timestamp = "2026-11-27T09:30:00Z".parse().unwrap();
+        assert_eq!(choose(&state, later).unwrap().id, "4");
+        // A window with room left doesn't count against it, and its reset is kept for limited_until.
+        full["reading"]["fiveHour"]["pct"] = json!(60.0);
+        let state = json!({"accounts": [full, acct("3", 43.0, "2026-11-29T12:00:00Z")]});
+        let a = choose(&state, now).unwrap();
+        assert_eq!(a.id, "4");
+        assert_eq!(a.limited_until(now), "2026-11-27T09:29:59Z".parse().unwrap());
+    }
+
+    /// An account that answered with a usage limit is skipped until its time, even when its reading looks fine.
+    #[test]
+    fn a_limited_account_is_skipped_until_its_time() {
+        let now: Timestamp = "2026-11-27T08:30:00Z".parse().unwrap();
+        let state =
+            json!({"accounts": [acct("4", 28.0, "2026-11-27T13:59:59Z"), acct("3", 43.0, "2026-11-29T12:00:00Z")]});
+        let a = choose(&state, now).unwrap();
+        assert_eq!(a.id, "4");
+        let until = a.limited_until(now);
+        assert_eq!(until, now + SignedDuration::from_hours(1), "no 5-hour reading: an hour");
+        let limited = BTreeMap::from([("4".to_string(), until)]);
+        assert_eq!(choose_skipping(&state, now, &limited).unwrap().id, "3");
+        assert_eq!(choose_skipping(&state, until, &limited).unwrap().id, "4");
     }
 
     #[test]
@@ -253,7 +324,7 @@ mod tests {
         let state = coordinator_state(&path).await.unwrap();
         assert_eq!(state, json!({"accounts": []}));
         assert_eq!(
-            pick(&dir.path().join("missing.sock"), Timestamp::now()).await.unwrap(),
+            pick(&dir.path().join("missing.sock"), Timestamp::now(), &BTreeMap::new()).await.unwrap(),
             Some(Account::default_login())
         );
     }

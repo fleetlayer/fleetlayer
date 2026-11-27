@@ -75,10 +75,12 @@ pub enum Accounts {
 }
 
 impl Accounts {
-    async fn pick(&self) -> Result<Option<Account>, String> {
+    async fn pick(&self, limited: &std::collections::BTreeMap<String, Timestamp>) -> Result<Option<Account>, String> {
         match self {
-            Accounts::Coordinator(socket) => accounts::pick(socket, Timestamp::now()).await.map_err(|e| e.to_string()),
-            Accounts::Fixed(a) => Ok(a.clone()),
+            Accounts::Coordinator(socket) => {
+                accounts::pick(socket, Timestamp::now(), limited).await.map_err(|e| e.to_string())
+            }
+            Accounts::Fixed(a) => Ok(a.clone().filter(|a| !limited.get(&a.id).is_some_and(|t| *t > Timestamp::now()))),
         }
     }
 }
@@ -119,6 +121,9 @@ pub struct Engine {
     pub accounts: Accounts,
     pub state: Mutex<State>,
     pub sink: mpsc::Sender<SummaryEvent>,
+    /// Accounts that answered with a usage limit, left alone until the time given (kept in memory: a restart asks the
+    /// readings again, which say the same when they're current).
+    pub limited: Mutex<std::collections::BTreeMap<String, Timestamp>>,
 }
 
 /// The local hour, floored: `2026-11-23T14`.
@@ -161,11 +166,22 @@ impl Engine {
         sink: mpsc::Sender<SummaryEvent>,
     ) -> std::io::Result<Engine> {
         let state = State::load(&config.state_file)?;
-        Ok(Engine { config, model, accounts, state: Mutex::new(state), sink })
+        Ok(Engine { config, model, accounts, state: Mutex::new(state), sink, limited: Mutex::default() })
     }
 
     pub(crate) async fn accounts_pick(&self) -> Result<Option<Account>, Stop> {
-        self.accounts.pick().await.map_err(Stop::Accounts)
+        let limited = self.limited.lock().expect("limited lock").clone();
+        self.accounts.pick(&limited).await.map_err(Stop::Accounts)
+    }
+
+    /// `account` answered with a usage limit: the next calls use another until it has room again.
+    pub(crate) fn mark_limited(&self, account: &Account) {
+        let now = Timestamp::now();
+        let until = account.limited_until(now);
+        let mut limited = self.limited.lock().expect("limited lock");
+        limited.retain(|_, t| *t > now);
+        limited.insert(account.id.clone(), until);
+        tracing::info!("summaries: leaving {} until {until} (usage limit)", account.label());
     }
 
     pub fn save(&self) {
@@ -319,7 +335,7 @@ impl Engine {
                 self.set_file(&source.path, FileState { offset: chunk_end, ..Default::default() });
                 continue;
             }
-            let account = match self.accounts.pick().await {
+            let account = match self.accounts_pick().await {
                 Ok(Some(a)) => a,
                 Ok(None) => {
                     self.save();
@@ -327,7 +343,7 @@ impl Engine {
                 }
                 Err(e) => {
                     self.save();
-                    return Err(Stop::Accounts(e));
+                    return Err(e);
                 }
             };
             let (page, page_hour) = {
@@ -363,6 +379,7 @@ impl Engine {
                         account.label()
                     );
                     if let CallError::Limit(msg) = error {
+                        self.mark_limited(&account);
                         self.save();
                         return Err(Stop::Limit(msg));
                     }

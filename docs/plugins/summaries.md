@@ -59,7 +59,8 @@ plugins:
 It runs headless Claude Code (`claude -p`) for each summary, so it spends tokens: by default at most one summary per
 session per 30 minutes, only after a session has been idle for a minute, and only when there's enough new activity to
 be worth a call. With the Claude account rotator installed it uses the account with the soonest weekly reset, and
-skips accounts that are 98% through their week.
+skips accounts that are 98% through their week or have a full 5-hour window. An account that answers with a usage
+limit is left alone until its 5-hour window resets (an hour when the reading doesn't say).
 
 ## How it decides (the engine)
 
