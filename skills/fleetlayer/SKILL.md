@@ -217,6 +217,13 @@ says so.
   copied, and the note on sign-in's passkeys and issuer address.
 - The guide is docs/guides/moving.md.
 
+## Setting up a whole server
+
+When the person asks you to set up a server for the fleet (a Proxmox host with its guests, k3s, a private network,
+monitoring, backups, secrets and a Unix user per agent role), start from github.com/fleetlayer/server-iac-example: read
+its llms.txt and AGENTS.md, then follow its guides in order, passing each guide's check before the next. Ask the person
+once for everything only they can do. The overview is docs/guides/server-setup.md.
+
 ## Files synced from another machine
 
 Skills and instructions may be kept the same on every machine by the file-sync plugin, from one source machine. A copy

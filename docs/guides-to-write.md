@@ -829,3 +829,20 @@ managers, machines that sleep.
   deck token can't open one. Footgun: the passkey page's return address must be on the sign-in service's allow list
   (`stepup_return_origins`). Written: `docs/access-control.md` ("Approving from a deck or an inbox"),
   `docs/plugins/signin.md`.
+- **A whole self-hosted server an agent can build, and what goes wrong cutting one from a private setup.** Fleetlayer
+  needs a good server underneath (Proxmox, guests, k3s, a private network, monitoring, backups, secrets, agent users),
+  and setting that up by hand takes weeks. Solved with a public example repository written for agents (AGENTS.md,
+  llms.txt, a skill, guides that each end with a check), cut from a working private setup with no history. Footguns
+  found while cutting it: MinIO no longer publishes container images, and Bitnami's versioned images moved to
+  `bitnamilegacy` (their charts refuse an image from another repository unless `global.security.allowInsecureImages`
+  is set); Terraform state kept in an object store inside the cluster Terraform creates needs a local-state first
+  apply and a migration, so keep it in an external bucket (B2's S3 API, `skip_s3_checksum`, no locking) instead; a
+  GitHub fork of a public repository can't be private, so the guides say "use this template"; a control plane image
+  without a registry works as an init container that fetches the release and checks its SHA256SUMS onto distroless;
+  a Terraform resource that needs an ID that only exists later (a device that hasn't joined yet) gets a `count` on an
+  empty default instead of a `REPLACE_ME`; making every secret's 1Password item up front from one list (random values
+  where possible, `REPLACE_ME` where the person pastes, a validator that fails when code reads an item the list
+  lacks) turns twenty interruptions into one sitting. Leak safety for a public cut: create the repository private,
+  gitleaks plus a grep for every private name the source's owner can list (domains, tailnets, hostnames, people,
+  vaults, org names, MACs), review, then publish. Written: `docs/guides/server-setup.md`, the example repository's
+  `docs/guides/`. Not yet: the end-to-end test on a throwaway rented host.
