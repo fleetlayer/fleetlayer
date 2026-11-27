@@ -14,6 +14,7 @@ mod authz;
 mod db;
 mod hooks;
 mod link;
+mod people;
 mod policy;
 mod readings;
 mod route;
@@ -36,6 +37,13 @@ struct Cli {
     /// The SQLite database.
     #[arg(long, global = true, env = "FLEETLAYER_CONTROL_DB", default_value = "fleetlayer-control.db")]
     db: PathBuf,
+    /// The tenant (its slug) that people, teams, invites and agents commands act on; the deployment's first tenant
+    /// when left out.
+    #[arg(long, global = true, env = "FLEETLAYER_TENANT")]
+    tenant: Option<String>,
+    /// Who is making the change, for the audit log (`admin`, or a person's handle).
+    #[arg(long = "as", global = true, default_value = "admin")]
+    actor: String,
     #[command(subcommand)]
     command: Command,
 }
@@ -59,6 +67,37 @@ enum Command {
         /// A directory outside the database for hourly audit anchors (another disk, a git checkout). Optional.
         #[arg(long, env = "FLEETLAYER_CONTROL_AUDIT_ANCHOR_DIR")]
         audit_anchor_dir: Option<PathBuf>,
+    },
+    /// Tenants: add, list, rename (an ID never changes; a slug and name can).
+    Tenant {
+        #[command(subcommand)]
+        command: TenantCommand,
+    },
+    /// Every person in the deployment (the operator's view), and removing one from all of it.
+    Person {
+        #[command(subcommand)]
+        command: PersonCommand,
+    },
+    /// The people here: list, change a role, remove.
+    #[command(visible_alias = "people")]
+    Member {
+        #[command(subcommand)]
+        command: MemberCommand,
+    },
+    /// The tenant's teams, which can nest.
+    Team {
+        #[command(subcommand)]
+        command: TeamCommand,
+    },
+    /// Agents the tenant admits as members.
+    Agent {
+        #[command(subcommand)]
+        command: AgentCommand,
+    },
+    /// Invites by link to the tenant (also how a person who lost their passkeys gets back in).
+    Invite {
+        #[command(subcommand)]
+        command: InviteCommand,
     },
     /// The audit log of access decisions.
     Audit {
@@ -253,13 +292,128 @@ enum AclCommand {
 
 #[derive(Subcommand)]
 enum NodeCommand {
-    /// Enrol a node and print its token (shown once; enrolling again replaces it).
+    /// Enrol a node and print its token (shown once; enrolling again replaces it). Its agents are admitted to the
+    /// tenant (`--tenant`) unless `--no-admit`.
     Add {
         name: String,
+        /// Its owner: a person (ID or handle), `team:<name>` or `tenant`.
+        #[arg(long)]
+        owner: Option<String>,
+        #[arg(long)]
+        no_admit: bool,
     },
     List,
     Remove {
         name: String,
+    },
+    /// Set or transfer a node's owner: a person (ID or handle), `team:<name>`, `tenant`, or `none`.
+    Owner {
+        name: String,
+        owner: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum TenantCommand {
+    Add {
+        slug: String,
+        #[arg(long)]
+        name: Option<String>,
+    },
+    List,
+    Rename {
+        slug: String,
+        new_slug: String,
+        #[arg(long)]
+        name: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum PersonCommand {
+    List,
+    /// Remove a person from every tenant and take their own nodes offline (team and tenant nodes stay).
+    Remove {
+        id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum MemberCommand {
+    List,
+    Role {
+        handle: String,
+        role: String,
+    },
+    /// Remove a member (their handle stays reserved; their own nodes' agents lose this tenant).
+    Remove {
+        handle: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum TeamCommand {
+    Add {
+        name: String,
+        #[arg(long)]
+        parent: Option<String>,
+    },
+    Remove {
+        name: String,
+    },
+    List,
+    /// Add someone to a team, or with --remove take them out.
+    Member {
+        team: String,
+        handle: String,
+        #[arg(long)]
+        maintainer: bool,
+        #[arg(long)]
+        remove: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum AgentCommand {
+    /// Admit an agent, or a pattern of them (`finances@laptop`, `*@laptop`).
+    Admit {
+        pattern: String,
+    },
+    Remove {
+        pattern: String,
+    },
+    /// The admitted patterns, and whether each may also be a member elsewhere (never where).
+    List,
+}
+
+#[derive(Subcommand)]
+enum InviteCommand {
+    /// Make an invite and print its code (shown once).
+    Add {
+        #[arg(long)]
+        handle: String,
+        #[arg(long, default_value = "member")]
+        role: String,
+        #[arg(long = "team")]
+        teams: Vec<String>,
+        /// An existing person (recovery, or someone who already has an account).
+        #[arg(long)]
+        person: Option<String>,
+    },
+    List,
+    /// Revoke the open invites for a handle.
+    Revoke {
+        handle: String,
+    },
+    /// Use an invite from the command line (until a sign-in service does it).
+    Redeem {
+        code: String,
+        /// Someone new, with this display name.
+        #[arg(long = "new", conflicts_with = "person")]
+        new: Option<String>,
+        /// A person who already has an account.
+        #[arg(long)]
+        person: Option<String>,
     },
 }
 
@@ -288,6 +442,7 @@ pub struct App {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr) // stdout carries tokens and invite codes that scripts capture
         .with_ansi(false)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_env("FLEETLAYER_LOG")
@@ -319,8 +474,20 @@ async fn main() -> anyhow::Result<()> {
             tokio::spawn(audit::run(app.clone(), audit_anchor_dir));
             serve(app, listen, hooks_listen).await
         }
-        Command::Node { command: NodeCommand::Add { name } } => {
+        Command::Node { command: NodeCommand::Add { name, owner, no_admit } } => {
+            let tenant = people::tenant_or_first(&db, cli.tenant.as_deref()).await?;
+            let owner = match &owner {
+                Some(o) => Some(people::resolve_owner(&db, &tenant.id, o).await?),
+                None => None,
+            };
             let token = db::enrol(&db, t, &name).await?;
+            people::node_enrolled(&db, &name, &cli.actor).await?;
+            if let Some(o) = &owner {
+                people::node_owner(&db, &name, Some(o), &cli.actor, &tenant.id).await?;
+            }
+            if !no_admit && owner.as_ref().and_then(|o| o.tenant()).is_none() {
+                people::agent_admit(&db, &tenant.id, &format!("*@{name}"), &cli.actor).await?;
+            }
             println!("{token}");
             eprintln!("Node {name} enrolled. Put the token above in the node's token file; it isn't shown again.");
             Ok(())
@@ -328,13 +495,162 @@ async fn main() -> anyhow::Result<()> {
         Command::Node { command: NodeCommand::List } => {
             for n in db::nodes(&db, t).await? {
                 let seen = n.last_seen_at.and_then(|ms| jiff::Timestamp::from_millisecond(ms).ok());
+                let owner = people::owner_of_node(&db, &n.name).await?.map(|o| o.stored());
                 println!(
-                    "{:<20} {:<16} {:<10} {}",
+                    "{:<20} {:<16} {:<10} {:<28} {}",
                     n.name,
                     n.machine.unwrap_or_default(),
                     n.version.unwrap_or_default(),
+                    owner.unwrap_or_else(|| "no owner".into()),
                     seen.map(|s| format!("last seen {s}")).unwrap_or_else(|| "never linked".into())
                 );
+            }
+            Ok(())
+        }
+        Command::Node { command: NodeCommand::Owner { name, owner } } => {
+            let tenant = people::tenant_or_first(&db, cli.tenant.as_deref()).await?;
+            let owner = match owner.as_str() {
+                "none" => None,
+                o => Some(people::resolve_owner(&db, &tenant.id, o).await?),
+            };
+            people::node_owner(&db, &name, owner.as_ref(), &cli.actor, &tenant.id).await?;
+            println!("{name} now belongs to {}.", owner.map(|o| o.stored()).unwrap_or_else(|| "nobody".into()));
+            Ok(())
+        }
+        Command::Tenant { command } => match command {
+            TenantCommand::Add { slug, name } => {
+                let tn = people::tenant_add(&db, &slug, name.as_deref().unwrap_or(&slug), &cli.actor).await?;
+                println!("Tenant {} added (ID {}).", tn.slug, tn.id);
+                Ok(())
+            }
+            TenantCommand::List => {
+                for tn in people::tenants(&db).await? {
+                    println!("{:<20} {:<22} {}", tn.slug, tn.id, tn.name);
+                }
+                Ok(())
+            }
+            TenantCommand::Rename { slug, new_slug, name } => {
+                people::tenant_rename(&db, &slug, &new_slug, name.as_deref(), &cli.actor).await?;
+                println!("Renamed {slug} to {new_slug}; its ID and everything in it are unchanged.");
+                Ok(())
+            }
+        },
+        Command::Person { command } => match command {
+            PersonCommand::List => {
+                for p in people::people(&db).await? {
+                    println!("{:<24} {:<30} {} tenants", p.id, p.display_name, p.tenants);
+                }
+                Ok(())
+            }
+            PersonCommand::Remove { id } => {
+                let nodes = people::person_remove(&db, &id, &cli.actor).await?;
+                println!(
+                    "Removed {id} from every tenant. Nodes taken offline: {}.",
+                    if nodes.is_empty() { "none".into() } else { nodes.join(", ") }
+                );
+                Ok(())
+            }
+        },
+        Command::Member { command } => {
+            let tn = people::tenant_or_first(&db, cli.tenant.as_deref()).await?.id;
+            match command {
+                MemberCommand::List => {
+                    for mut m in people::members(&db, &tn).await? {
+                        m.teams.retain(|t| t != people::EVERYONE);
+                        println!(
+                            "{:<20} {:<7} {:<24} {:<24} {}",
+                            m.handle,
+                            m.role,
+                            m.person,
+                            m.display_name,
+                            m.teams.join(",")
+                        );
+                    }
+                }
+                MemberCommand::Role { handle, role } => {
+                    people::member_role(&db, &tn, &handle, &role, &cli.actor).await?
+                }
+                MemberCommand::Remove { handle } => people::member_remove(&db, &tn, &handle, &cli.actor).await?,
+            }
+            Ok(())
+        }
+        Command::Team { command } => {
+            let tn = people::tenant_or_first(&db, cli.tenant.as_deref()).await?.id;
+            match command {
+                TeamCommand::Add { name, parent } => {
+                    people::team_add(&db, &tn, &name, parent.as_deref(), &cli.actor).await?
+                }
+                TeamCommand::Remove { name } => people::team_remove(&db, &tn, &name, &cli.actor).await?,
+                TeamCommand::List => {
+                    for team in people::teams(&db, &tn).await? {
+                        let members: Vec<String> = team
+                            .members
+                            .iter()
+                            .map(|(h, r)| if r == "maintainer" { format!("{h} (maintainer)") } else { h.clone() })
+                            .collect();
+                        println!("{:<20} {:<20} {}", team.name, team.parent.unwrap_or_default(), members.join(", "));
+                    }
+                }
+                TeamCommand::Member { team, handle, maintainer, remove } => {
+                    people::team_member(&db, &tn, &team, &handle, !remove, maintainer, &cli.actor).await?
+                }
+            }
+            Ok(())
+        }
+        Command::Agent { command } => {
+            let tn = people::tenant_or_first(&db, cli.tenant.as_deref()).await?.id;
+            match command {
+                AgentCommand::Admit { pattern } => people::agent_admit(&db, &tn, &pattern, &cli.actor).await?,
+                AgentCommand::Remove { pattern } => people::agent_remove(&db, &tn, &pattern, &cli.actor).await?,
+                AgentCommand::List => {
+                    for a in people::agents(&db, &tn).await? {
+                        let note = if a.elsewhere { "also admitted by another tenant" } else { "" };
+                        println!("{:<30} {:<16} {note}", a.pattern, a.added_by);
+                    }
+                }
+            }
+            Ok(())
+        }
+        Command::Invite { command } => {
+            let tn = people::tenant_or_first(&db, cli.tenant.as_deref()).await?.id;
+            match command {
+                InviteCommand::Add { handle, role, teams, person } => {
+                    let person = match person {
+                        Some(p) => Some(people::resolve_person(&db, &tn, &p).await?),
+                        None => None,
+                    };
+                    let i =
+                        people::NewInvite { handle: &handle, role: &role, teams: &teams, person: person.as_deref() };
+                    let code = people::invite(&db, &tn, i, &cli.actor).await?;
+                    println!("{code}");
+                    eprintln!(
+                        "An invite for {handle}, valid {} days. The code above isn't shown again.",
+                        people::INVITE_DAYS
+                    );
+                }
+                InviteCommand::List => {
+                    for i in people::invites(&db, &tn).await? {
+                        let until =
+                            jiff::Timestamp::from_millisecond(i.expires_at).map(|t| t.to_string()).unwrap_or_default();
+                        let what = if i.person.is_some() { "for an existing person" } else { "" };
+                        println!("{:<20} {:<7} until {until} {what}", i.handle, i.role);
+                    }
+                }
+                InviteCommand::Revoke { handle } => people::invite_revoke(&db, &tn, &handle, &cli.actor).await?,
+                InviteCommand::Redeem { code, new, person } => {
+                    let who = match (&new, &person) {
+                        (Some(n), None) => people::Redeemer::New { display_name: n },
+                        (None, Some(p)) => people::Redeemer::Existing { person: p },
+                        _ => anyhow::bail!("say who uses it: --new \"<display name>\" or --person <id>"),
+                    };
+                    let r = people::invite_redeem(&db, &code, who).await?;
+                    println!(
+                        "{} is now {} (person {}).",
+                        r.handle,
+                        if r.recovery { "recovered" } else { "a member" },
+                        r.person
+                    );
+                }
             }
             Ok(())
         }

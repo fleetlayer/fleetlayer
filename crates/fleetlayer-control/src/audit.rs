@@ -276,11 +276,38 @@ pub async fn verify(audit: &Audit, db: &Db, anchors: Option<&Path>) -> anyhow::R
 }
 
 /// Flush counted denials every 30 seconds, and write an anchor every hour when a directory is given.
+/// Chain the entries commands queued in `audit_outbox` (membership changes made with `fleetlayer-control`), oldest
+/// first. Returns how many.
+pub async fn drain_outbox(audit: &Audit, db: &Db) -> anyhow::Result<usize> {
+    let rows = sqlx::query(
+        "SELECT id, tenant, at, decision, subject, verb, target, reason FROM audit_outbox ORDER BY id LIMIT 500",
+    )
+    .fetch_all(db)
+    .await?;
+    for r in &rows {
+        let at = jiff::Timestamp::from_millisecond(r.get::<i64, _>(2)).map(|t| t.to_string()).unwrap_or_default();
+        let reason: String = r.get(7);
+        let e = Entry {
+            decision: r.get(3),
+            subject: r.get(4),
+            verb: r.get(5),
+            target: r.get(6),
+            reason: if reason.is_empty() { format!("made {at}") } else { format!("{reason} (made {at})") },
+        };
+        audit.write(db, &r.get::<String, _>(1), &e, 1).await?;
+        sqlx::query("DELETE FROM audit_outbox WHERE id = ?").bind(r.get::<i64, _>(0)).execute(db).await?;
+    }
+    Ok(rows.len())
+}
+
 pub async fn run(app: std::sync::Arc<crate::App>, anchors: Option<PathBuf>) {
     let mut tick = tokio::time::interval(Duration::from_secs(30));
     let mut last_anchor = std::time::Instant::now() - Duration::from_secs(3600);
     loop {
         tick.tick().await;
+        if let Err(e) = drain_outbox(&app.audit, &app.db).await {
+            tracing::error!("audit: chaining queued membership changes: {e}");
+        }
         if let Err(e) = app.audit.flush(&app.db).await {
             tracing::error!("audit: writing counted denials: {e}");
         }
@@ -300,6 +327,41 @@ pub async fn run(app: std::sync::Arc<crate::App>, anchors: Option<PathBuf>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Entries written before the people migration still verify after it, after a tenant rename, and with the
+    /// membership changes chained after them.
+    #[tokio::test]
+    async fn the_chain_verifies_across_the_people_migration() {
+        use sqlx::migrate::Migrator;
+        let db = sqlx::sqlite::SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+        let all = sqlx::migrate!("./migrations");
+        let before: Vec<_> = all.migrations.iter().filter(|m| m.version < 13).cloned().collect();
+        let mut early = Migrator::new(std::path::Path::new("./migrations")).await.unwrap();
+        early.migrations = before.into();
+        early.run(&db).await.unwrap();
+        sqlx::query("INSERT INTO nodes (tenant, name, token_hash, created_at) VALUES ('default', 'laptop', 'h', 0)")
+            .execute(&db)
+            .await
+            .unwrap();
+        let a = Audit::new(Some(b"a key of at least thirty-two characters".to_vec()));
+        for i in 0..3 {
+            a.record(&db, "default", e("allowed", &format!("b{i}@y"))).await.unwrap();
+        }
+        all.run(&db).await.unwrap();
+        let admitted: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM member_agents WHERE pattern = '*@laptop'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(admitted, 1, "existing nodes' agents stay members of default");
+        crate::people::tenant_rename(&db, "default", "home", Some("Home"), "admin").await.unwrap();
+        crate::people::team_add(&db, "default", "family", None, "admin").await.unwrap();
+        assert_eq!(drain_outbox(&a, &db).await.unwrap(), 2);
+        a.record(&db, "default", e("allowed", "c@y")).await.unwrap();
+        let (report, ok) = verify(&a, &db, None).await.unwrap();
+        assert!(ok, "{report:?}");
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit_log").fetch_one(&db).await.unwrap();
+        assert_eq!(n, 6);
+    }
 
     fn e(decision: &str, target: &str) -> Entry {
         Entry {

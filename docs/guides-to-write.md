@@ -239,3 +239,11 @@ managers, machines that sleep.
   gets an opaque origin, so its own CSS and images are requested cross-site and a SameSite=Strict session cookie
   isn't sent: they fail to load behind a login. Use `sandbox="allow-same-origin"` with no `allow-scripts` (and a
   `script-src 'none'` policy on the file) so nothing can use that origin. Where it lives: `plugins/pages/src/web.rs`.
+- **One sign-in for a household's and a company's services, with agents that work for both.** A person is one
+  account across every tenant they belong to; each tenant admits people and agents and decides with its own policy;
+  a shared machine belongs to a team or tenant so it stays when the person who set it up leaves. The guide walks a
+  company tenant and a family tenant through it, including an agent admitted to both (finances). Footguns: tenant IDs
+  are part of every audit entry's hash, so a tenant is renamed by its slug and never by its ID; a command that
+  changes memberships queues its audit entries for the running control plane instead of writing them itself (it
+  doesn't hold the audit key, and two writers would race for the chain's next position). Where it lives:
+  `docs/sso.md`, `crates/fleetlayer-control/src/people.rs`.

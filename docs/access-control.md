@@ -199,6 +199,8 @@ have refused as `access.audit`.
   untrusted group. The machine sharing it keeps its own allow list too: both must agree.
 - **Secrets and skills sync:** only the hub that holds a secret may `sync` it. Nothing else may send bundles a
   machine applies, or it could overwrite them.
+- **People, tenants and teams** (people signing in to services, a company and a household on one deployment, agents
+  admitted to several tenants): `docs/sso.md`.
 - **A team sharing one control plane:** each person's machines in a group; people message across groups, agents stay
   inside their person's group unless allowed.
 - **Rolling out least privilege on a fleet that already runs:** write the rules under `audit:`, run `acl suggest`,

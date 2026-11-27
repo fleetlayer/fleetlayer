@@ -30,6 +30,8 @@ tokens, private repo names, customer data or anything from Nathan's private note
 - Apache 2.0 and MIT code can be borrowed: keep its copyright notice, add it to `NOTICE`, and mark files you change.
 - GPL and AGPL code never goes in, not even a snippet. `herdr-mobile-relay` and Agent Hub are AGPL: don't read their
   code while working on Fleetlayer.
+- MPL-2.0 libraries may be dependencies, used unmodified and listed in `NOTICE` (Nathan, 27 Nov 2026, for
+  webauthn-rs). Never copy MPL code into Fleetlayer's own files.
 - Check a project's licence before taking anything from it, and ask Nathan about any other copyleft licence.
 
 ## Builds and tests run on a build server
