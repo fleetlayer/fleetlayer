@@ -90,8 +90,10 @@ managers, machines that sleep.
   upgrades (replace the files in a fixed folder; a symlink to a versioned folder doesn't count). From v0.3.13
   `install.sh` and the node's update do that: live binaries in `~/.local/lib/fleetlayer/`, each replaced by a rename,
   releases kept under `versions/<tag>/` for going back, and an older install moves itself once (its old folder
-  becomes a link to the live one, so a service file that names it still starts). Each path a program ran from leaves
-  its own row under Files and Folders, all with the same name. Untested: an app bundle, which macOS knows by bundle
+  becomes a link to the live one, so a service file that names it still starts). Proved with two signed builds of v0.3.13 on a Mac: allowed once, replaced in place by the installer, no second
+  prompt; an old-layout install moved itself under launchd and restarted at the new path. Each path a program ran
+  from leaves its own row under Files and Folders, all with the same name, and the prompt can come when the tool
+  starts, before any read of the protected folder. Untested: an app bundle, which macOS knows by bundle
   ID. For the signing: an explicit `--identifier` per binary (the linker's default,
   `fleetlayer_node-<hash>`, changes every build), the hardened runtime (Apple won't notarise without it; Rust binaries
   that start other programs need no entitlements), and `--timestamp`. Bare binaries can't be stapled, so notarise a

@@ -61,7 +61,8 @@ To change it later: System Settings > Privacy & Security > **Files and Folders**
 macOS remembers the answer for the node's binary at its exact path, and for a signed binary it keeps the answer
 when a new build replaces the old one there. From v0.3.13 that's how Fleetlayer upgrades: the macOS releases are
 signed with a Developer ID and notarised by Apple ([how](../releasing.md)), and the installer and the node's own
-update keep the node at one path, `~/.local/lib/fleetlayer/fleetlayer-node`. So you answer once.
+update keep the node at one path, `~/.local/lib/fleetlayer/fleetlayer-node`. So you answer once (tested between two
+signed builds of v0.3.13: the second read Downloads with no prompt).
 
 Three cases ask again:
 
