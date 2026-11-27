@@ -31,6 +31,8 @@ pub struct Tenant {
     pub teams: BTreeMap<String, Option<String>>,
     /// Agent patterns the tenant admitted (`finances@laptop`, `*@laptop`).
     pub agents: Vec<String>,
+    /// Services with a `send` token of this tenant (`service:<name>`): members, like its people.
+    pub services: Vec<String>,
 }
 
 /// The whole deployment's membership.
@@ -84,6 +86,9 @@ impl Tenant {
     pub fn is_member(&self, fleet: &Fleet, name: &str) -> bool {
         if let Some(h) = name.strip_prefix("person:") {
             return self.people.contains_key(h);
+        }
+        if name.starts_with("service:") {
+            return self.services.iter().any(|s| s == name);
         }
         let Some(node) = node_of(name) else { return false };
         let owner = fleet.node_owners.get(node);
@@ -151,6 +156,11 @@ impl Fleet {
                 t.agents.push(r.get(1));
             }
         }
+        for r in sqlx::query("SELECT tenant, name FROM api_tokens WHERE scope = 'send'").fetch_all(db).await? {
+            if let Some(t) = tenants.get_mut(&r.get::<String, _>(0)) {
+                t.services.push(format!("service:{}", r.get::<String, _>(1)));
+            }
+        }
         let mut node_owners = HashMap::new();
         for r in sqlx::query("SELECT name, owner FROM nodes WHERE owner IS NOT NULL").fetch_all(db).await? {
             if let Some(o) = Owner::parse(&r.get::<String, _>(1)) {
@@ -175,7 +185,14 @@ impl Fleet {
             .map(|r| r.get::<i64, _>(0))
             .unwrap_or(0);
         let nodes: i64 = sqlx::query("SELECT COUNT(*) FROM nodes").fetch_one(db).await?.get(0);
-        Ok(seq * 1_000_000 + nodes)
+        // Send tokens make services members; adding or replacing one doesn't go through the audit outbox.
+        let sends: i64 = sqlx::query(
+            "SELECT COALESCE(SUM(created_at % 1000003), 0) + COUNT(*) FROM api_tokens WHERE scope = 'send'",
+        )
+        .fetch_one(db)
+        .await?
+        .get(0);
+        Ok(seq * 1_000_000 + nodes + sends * 7)
     }
 
     pub fn tenant(&self, id_or_slug: &str) -> Option<&Tenant> {

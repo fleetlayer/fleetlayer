@@ -19,6 +19,8 @@ use crate::db::{self, DEFAULT_TENANT};
 enum Scope {
     Read,
     Admin,
+    /// A service that only sends messages, as `service:<token name>`.
+    Send,
 }
 
 /// The scope the request's bearer token has: the admin token file's, or an API token's.
@@ -30,9 +32,11 @@ async fn scope_of(app: &App, headers: &HeaderMap) -> Option<Scope> {
         return Some(Scope::Admin);
     }
     match db::token_scope(&app.db, token).await.ok().flatten() {
-        Some((tenant, scope)) if tenant == DEFAULT_TENANT => {
-            Some(if scope == "admin" { Scope::Admin } else { Scope::Read })
-        }
+        Some((tenant, scope)) if tenant == DEFAULT_TENANT => Some(match scope.as_str() {
+            "admin" => Scope::Admin,
+            "send" => Scope::Send,
+            _ => Scope::Read,
+        }),
         _ => None,
     }
 }
@@ -43,6 +47,9 @@ type ApiResult = Result<Json<Value>, (StatusCode, String)>;
 async fn guard(app: &App, headers: &HeaderMap) -> Result<(), (StatusCode, String)> {
     match scope_of(app, headers).await {
         Some(Scope::Read | Scope::Admin) => Ok(()),
+        Some(Scope::Send) => {
+            Err((StatusCode::FORBIDDEN, "a send token only sends messages (POST /v1/messages)".into()))
+        }
         None => Err((StatusCode::UNAUTHORIZED, "a read or admin token is needed".into())),
     }
 }
@@ -206,4 +213,46 @@ pub async fn healthz(State(app): State<Arc<App>>) -> Result<Json<Value>, StatusC
     sqlx::query("SELECT 1").execute(&app.db).await.map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
     let linked = app.links.nodes.lock().await.len();
     Ok(Json(json!({"ok": true, "linkedNodes": linked})))
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct PostMessage {
+    /// `<tab>@<node>`.
+    to: String,
+    text: String,
+    /// Shown to the recipient as who it's from; default: the service's name.
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    subkind: Option<String>,
+}
+
+/// `POST /v1/messages`: a service sends a message to a session, as `service:<token name>`. Needs a `send` token; the
+/// access policy decides (the `message` verb), it's audited and rate-limited like any message.
+pub async fn post_message(State(app): State<Arc<App>>, headers: HeaderMap, Json(m): Json<PostMessage>) -> ApiResult {
+    let token = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or((StatusCode::UNAUTHORIZED, "a send token is needed".to_string()))?;
+    let (tenant, scope, name) = db::token_info(&app.db, token)
+        .await
+        .map_err(internal)?
+        .ok_or((StatusCode::UNAUTHORIZED, "a send token is needed".to_string()))?;
+    if scope != "send" {
+        return Err((StatusCode::FORBIDDEN, "only a send token sends messages".into()));
+    }
+    let delivered =
+        crate::route::send_as_service(&app, &tenant, &name, &m.to, m.text, m.label, m.subkind).await.map_err(|e| {
+            let status = match e.code {
+                fleetlayer_protocol::rpc::code::REFUSED => StatusCode::FORBIDDEN,
+                fleetlayer_protocol::rpc::code::NO_SUCH => StatusCode::NOT_FOUND,
+                fleetlayer_protocol::rpc::code::NOT_HERE | fleetlayer_protocol::rpc::code::BUSY => {
+                    StatusCode::SERVICE_UNAVAILABLE
+                }
+                _ => StatusCode::BAD_REQUEST,
+            };
+            (status, serde_json::to_string(&e).unwrap_or(e.message))
+        })?;
+    Ok(Json(serde_json::to_value(delivered).unwrap_or_default()))
 }

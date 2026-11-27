@@ -63,6 +63,11 @@ start sessions elsewhere) holds only if the plugin runs under a different Unix u
 the agents can't read. Put a runner of approved actions beside an agent that reads untrusted input on a node of its
 own, and name that node in the rule.
 
+A service that isn't on any agent's Unix user (a deck in a container, a bot) sends messages as `service:<name>` with a
+`send` token (`fleetlayer-control token add <name> --scope send`, then `POST /v1/messages`). It's a member of the
+token's tenant, rules name it like anyone else (`who: service:deck`), and its messages are delivered as from that
+service, marked untrusted only if `untrusted:` lists it.
+
 For the same reason, a node always sees, messages and drives its own sessions with no policy check: a message to a
 session on the same node is delivered straight to it, and so is `fleetlayer attach`. `message`, `read` and `attach`
 are checked when the session is on another node.

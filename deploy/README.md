@@ -48,8 +48,11 @@ Run inside the container (`kubectl exec … -- fleetlayer-control <command>`), a
 
 - `node add <name>`: enrol a node; prints its token once. `node list`, `node remove <name>`.
 - `endpoint add --label <l> --channel <c>`: a webhook endpoint; prints `/hooks/<id>/<secret>` once. `endpoint list`.
-- `token add <name> [--scope read|admin]`: an API token for a program that reads the fleet (`read`: every GET and
-  catch-ups); prints it once. `token list`, `token remove <name>`.
+- `token add <name> [--scope read|admin|send]`: an API token for a program that reads the fleet (`read`: every GET and
+  catch-ups), administers it (`admin`), or only sends messages (`send`: a service such as a deck or a bot, which
+  sends as `service:<name>` with `POST /v1/messages {to, text, label?, subkind?}` and can read nothing); prints it
+  once. A `send` token makes its service a member of the token's tenant, so the access policy decides its messages
+  (the `message` verb) like any other sender's, audited and rate-limited. `token list`, `token remove <name>`.
 - `audit verify` (exits non-zero on any break) and `audit tail [--denied]`: the tamper-evident log of every access
   decision. Run `audit verify` on a schedule (an hourly CronJob with the same key) and alert when it fails.
 - `acl apply <file> [--check]`: make the access rules match a YAML file exactly (example: `deploy/examples/acl.yaml`),

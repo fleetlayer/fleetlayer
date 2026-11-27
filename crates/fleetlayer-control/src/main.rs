@@ -1091,6 +1091,7 @@ async fn serve(app: Arc<App>, listen: SocketAddr, hooks_listen: SocketAddr) -> a
         .route("/v1/summaries", get(api::get_summaries))
         .route("/v1/sessions/{id}/catchup", axum::routing::post(api::post_catchup))
         .route("/v1/approvals", get(api::get_approvals))
+        .route("/v1/messages", axum::routing::post(api::post_message))
         .route("/v1/approvals/{id}", axum::routing::post(api::post_approval))
         .route("/v1/signin/person", axum::routing::post(signin::post_person))
         .route("/v1/signin/invite_redeem", axum::routing::post(signin::post_invite_redeem))

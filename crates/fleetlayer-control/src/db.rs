@@ -180,10 +180,11 @@ pub async fn remove_node(db: &Db, tenant: &str, name: &str) -> anyhow::Result<bo
 
 // ---------------------------------------------------------------- API tokens
 
-/// Add an API token (`read` or `admin`): returns it, shown once. Adding a name again replaces its token.
+/// Add an API token (`read`, `admin`, or `send`: a service that only sends messages, as `service:<name>`): returns it,
+/// shown once. Adding a name again replaces its token.
 pub async fn add_token(db: &Db, tenant: &str, name: &str, scope: &str) -> anyhow::Result<String> {
     anyhow::ensure!(valid_name(name), "a token name is letters, digits, - and _");
-    anyhow::ensure!(scope == "read" || scope == "admin", "a scope is read or admin");
+    anyhow::ensure!(matches!(scope, "read" | "admin" | "send"), "a scope is read, admin or send");
     let token = format!("flt_{}", new_secret());
     sqlx::query(
         "INSERT INTO api_tokens (tenant, name, token_hash, scope, created_at) VALUES (?, ?, ?, ?, ?)
@@ -201,11 +202,16 @@ pub async fn add_token(db: &Db, tenant: &str, name: &str, scope: &str) -> anyhow
 
 /// The tenant and scope of an API token.
 pub async fn token_scope(db: &Db, token: &str) -> anyhow::Result<Option<(String, String)>> {
-    let row = sqlx::query("SELECT tenant, scope FROM api_tokens WHERE token_hash = ?")
+    Ok(token_info(db, token).await?.map(|(tenant, scope, _)| (tenant, scope)))
+}
+
+/// A token's tenant, scope and name.
+pub async fn token_info(db: &Db, token: &str) -> anyhow::Result<Option<(String, String, String)>> {
+    let row = sqlx::query("SELECT tenant, scope, name FROM api_tokens WHERE token_hash = ?")
         .bind(hash(token))
         .fetch_optional(db)
         .await?;
-    Ok(row.map(|r| (r.get(0), r.get(1))))
+    Ok(row.map(|r| (r.get(0), r.get(1), r.get(2))))
 }
 
 pub async fn tokens(db: &Db, tenant: &str) -> anyhow::Result<Vec<(String, String, i64)>> {
@@ -545,6 +551,24 @@ mod tests {
         assert_eq!(node_for_token(&db, &t1).await.unwrap(), None);
         assert!(node_for_token(&db, &t2).await.unwrap().is_some());
         assert!(enrol(&db, DEFAULT_TENANT, "bad name").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_send_token_makes_its_service_a_member_of_its_tenant() {
+        let db = open_memory().await.unwrap();
+        let read = add_token(&db, DEFAULT_TENANT, "deck-read", "read").await.unwrap();
+        let send = add_token(&db, DEFAULT_TENANT, "quietdeck", "send").await.unwrap();
+        assert!(add_token(&db, DEFAULT_TENANT, "x", "write").await.is_err(), "only read, admin and send");
+        assert_eq!(token_info(&db, &send).await.unwrap(), Some(("default".into(), "send".into(), "quietdeck".into())));
+        assert_eq!(token_scope(&db, &read).await.unwrap(), Some(("default".into(), "read".into())));
+        let before = crate::directory::Fleet::version(&db).await.unwrap();
+        let fleet = crate::directory::Fleet::load(&db).await.unwrap();
+        let t = fleet.tenants.first().unwrap();
+        assert!(t.is_member(&fleet, "service:quietdeck"));
+        assert!(!t.is_member(&fleet, "service:deck-read"), "a read token isn't a sender");
+        assert!(!t.is_member(&fleet, "service:other"));
+        add_token(&db, DEFAULT_TENANT, "another", "send").await.unwrap();
+        assert_ne!(crate::directory::Fleet::version(&db).await.unwrap(), before, "a new send token is seen");
     }
 
     #[tokio::test]
