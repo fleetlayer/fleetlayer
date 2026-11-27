@@ -246,5 +246,10 @@ pkill -f 'bin/[f]leetlayer-node'
 - **The node keeps running an old version after an upgrade**: its service file names a versioned path. Run
   `fleetlayer-node install` again.
 - **A command from a new release isn't found**: see "New binaries in a release" above.
+- **"another node is already running on <socket> (pid N)"** (from v0.3.9, after the node has waited 10 seconds): a
+  node already serves that socket, usually the real one while you start a second by hand. Stop it first, or give the
+  second one its own instance with `FLEETLAYER_INSTANCE` (see "Test nodes" above).
+- **"<path> exists and isn't a socket"**: something else is at the socket's path. Move it away, or set `socket:` in
+  node.yaml.
 
 Related: [getting started](../getting-started.md), [the node's link to the control plane](../link.md).
