@@ -3,6 +3,8 @@
 mod mcp_bridge;
 mod pages;
 #[cfg(test)]
+mod skill_check;
+#[cfg(test)]
 mod skill_commands;
 mod up;
 

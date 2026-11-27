@@ -43,6 +43,9 @@ pub struct Link {
     /// When its groups were last read successfully (step 4b): the grace period and expiry count from here.
     #[serde(default)]
     pub teams_read_at: Option<i64>,
+    /// The email the provider last said it verified, given to services that ask for the `email` scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

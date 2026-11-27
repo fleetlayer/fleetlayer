@@ -22,6 +22,9 @@ pub struct Membership {
 pub struct Person {
     pub id: String,
     pub display_name: String,
+    /// Set by an operator on the control plane: verified, as far as services are concerned.
+    #[serde(default)]
+    pub email: Option<String>,
     #[serde(default)]
     pub tenants: Vec<Membership>,
 }

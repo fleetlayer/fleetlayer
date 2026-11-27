@@ -68,12 +68,15 @@ struct Code {
     sid: String,
     auth_time: i64,
     expires: i64,
+    /// The `email` scope was asked for.
+    email: bool,
 }
 
 struct Access {
     person: String,
     tenant: String,
     expires: i64,
+    email: bool,
 }
 
 enum Purpose {
@@ -280,8 +283,29 @@ impl App {
         out
     }
 
-    /// The claims of an ID token (and userinfo) for a person in one of their tenants.
-    fn claims(&self, person: &crate::control::Person, m: &Membership) -> Value {
+    /// A person's email for the `email` scope: the one an operator set on the control plane, else the latest one a
+    /// linked provider verified. Either way it's verified; an address nobody vouched for is never given.
+    pub(crate) async fn email(&self, person: &crate::control::Person) -> Option<String> {
+        if let Some(e) = &person.email {
+            return Some(e.clone());
+        }
+        let people = self.store.people.lock().await;
+        let c = people.people.get(&person.id)?;
+        c.links.iter().filter(|l| l.email.is_some()).max_by_key(|l| l.added_at).and_then(|l| l.email.clone())
+    }
+
+    /// The claims of an ID token (and userinfo) for a person in one of their tenants; with `email`, their verified
+    /// email too, when they have one.
+    async fn claims(&self, person: &crate::control::Person, m: &Membership, email: bool) -> Value {
+        let mut c = self.base_claims(person, m);
+        if email && let Some(e) = self.email(person).await {
+            c["email"] = json!(e);
+            c["email_verified"] = json!(true);
+        }
+        c
+    }
+
+    fn base_claims(&self, person: &crate::control::Person, m: &Membership) -> Value {
         json!({
             "sub": person.id,
             "name": person.display_name,
@@ -376,8 +400,8 @@ async fn discovery(State(app): State<Arc<App>>) -> Json<Value> {
         "id_token_signing_alg_values_supported": ["RS256"],
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "none"],
-        "scopes_supported": ["openid", "profile"],
-        "claims_supported": ["sub", "name", "preferred_username", "groups", "fleetlayer.dev/tenant",
+        "scopes_supported": ["openid", "profile", "email"],
+        "claims_supported": ["sub", "name", "preferred_username", "email", "email_verified", "groups", "fleetlayer.dev/tenant",
             "fleetlayer.dev/principal", "fleetlayer.dev/role", "fleetlayer.dev/teams"],
     }))
 }
@@ -575,6 +599,7 @@ async fn authorize(
                 sid: crate::logout::sid(&session_key),
                 auth_time: now_ms() / 1000,
                 expires: now_ms() + CODE_MS,
+                email: q.scope.as_deref().unwrap_or("").split(' ').any(|s| s == "email"),
             },
         );
     }
@@ -657,7 +682,7 @@ async fn token(State(app): State<Arc<App>>, headers: HeaderMap, Form(f): Form<To
         return token_error(StatusCode::BAD_REQUEST, "invalid_grant");
     };
     let now = now_ms() / 1000;
-    let mut claims = app.claims(&person, m);
+    let mut claims = app.claims(&person, m, code.email).await;
     claims["iss"] = json!(app.settings.issuer);
     claims["aud"] = json!(client);
     claims["iat"] = json!(now);
@@ -677,7 +702,12 @@ async fn token(State(app): State<Arc<App>>, headers: HeaderMap, Form(f): Form<To
     let access = random(32);
     app.pending.lock().await.access.insert(
         access.clone(),
-        Access { person: person.id.clone(), tenant: m.tenant.clone(), expires: now_ms() + TOKEN_SECS * 1000 },
+        Access {
+            person: person.id.clone(),
+            tenant: m.tenant.clone(),
+            expires: now_ms() + TOKEN_SECS * 1000,
+            email: code.email,
+        },
     );
     (
         [(header::CACHE_CONTROL, "no-store")],
@@ -697,13 +727,15 @@ async fn userinfo(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
             .access
             .get(t)
             .filter(|a| a.expires > now_ms())
-            .map(|a| (a.person.clone(), a.tenant.clone())),
+            .map(|a| (a.person.clone(), a.tenant.clone(), a.email)),
         None => None,
     };
-    let Some((person, tenant)) = access else { return token_error(StatusCode::UNAUTHORIZED, "invalid_token") };
+    let Some((person, tenant, email)) = access else {
+        return token_error(StatusCode::UNAUTHORIZED, "invalid_token");
+    };
     match app.control.person(&person).await {
         Ok(Some(p)) => match p.tenants.iter().find(|m| m.tenant == tenant) {
-            Some(m) => Json(app.claims(&p, m)).into_response(),
+            Some(m) => Json(app.claims(&p, m, email).await).into_response(),
             None => token_error(StatusCode::UNAUTHORIZED, "invalid_token"),
         },
         _ => token_error(StatusCode::UNAUTHORIZED, "invalid_token"),

@@ -186,6 +186,17 @@ with its client ID (the `name`) and secret.
 - The ID token (RS256, ten minutes) says who: `sub` (the person's ID, never reused), `name`,
   `preferred_username`, `fleetlayer.dev/tenant`, `fleetlayer.dev/principal`, `fleetlayer.dev/role`,
   `fleetlayer.dev/teams`, and `groups` for services that map a claim to their own groups.
+- **Email:** a service that asks for the `email` scope gets `email` and `email_verified: true` when the person has an
+  address someone vouched for. Many apps need one: some to sign anyone in at all, others to allow only addresses at
+  your domain. The address comes from one of two places:
+  - **An operator set it** on the control plane: `fleetlayer-control person email <person id> <address>`
+    (`fleetlayer-control person list` shows the IDs; `--clear` removes it). The address is trusted as verified, so
+    set only one you know is theirs. It's what a passkey-only account needs, and it comes first.
+  - **A provider verified it**: the address from the person's last sign-in through a linked upstream, if it said
+    `email_verified`.
+
+  If neither applies, no email is given. An address nobody vouched for never is, and nothing signs anyone in by
+  email.
 - A worked example, pages (`docs/plugins/pages.md`): the client in the sign-in settings is
 
   ```yaml

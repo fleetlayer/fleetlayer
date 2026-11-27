@@ -538,6 +538,13 @@ managers, machines that sleep.
   default directive order, so it deletes the headers forward-auth just set unless both sit in a `route` block in the
   right order; and nginx's `auth_request` can't pass a redirect to sign in, so the auth service answers 401 with a
   `Location` the config turns into the redirect. Where it lives: `docs/plugins/signin.md` ("forward-auth"). Written: `docs/guides/sign-in.md`.
+- **Apps that require a verified email from the sign-in provider.** Many self-hosted apps (Executor among them)
+  accept an OpenID Connect sign-in only with `email_verified: true`, often at an allowed domain. With passkey-only
+  accounts nobody has verified an address. Mailing a code to confirm one adds a mail service and a step for every
+  person. Instead, Fleetlayer's sign-in gives the `email` scope from what someone vouched for: an operator
+  (`fleetlayer-control person email`, trusted as verified) or an upstream provider that verified it. It never uses an
+  email to link accounts. Where it lives: `docs/plugins/signin.md` ("For a service"). To write: a section of
+  `docs/guides/sign-in.md`, with the Executor guide from the session that sets it up.
 - **Groups from an identity provider as permissions.** Mapping a provider's groups (Google Workspace, Okta) to an
   app's teams has three traps. Groups are only seen when someone signs in, so a person removed from a group, or
   suspended, keeps the access until they next sign in, which may be never: read the directory again on a schedule

@@ -94,12 +94,16 @@ pub struct Membership {
 pub struct PersonView {
     pub id: String,
     pub display_name: String,
+    /// Set by an operator, so services may treat it as verified.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
     pub tenants: Vec<Membership>,
 }
 
 /// A person and every tenant they're a member of.
 pub async fn person(db: &Db, id: &str) -> anyhow::Result<Option<PersonView>> {
-    let Some(row) = sqlx::query("SELECT display_name FROM people WHERE id = ?").bind(id).fetch_optional(db).await?
+    let Some(row) =
+        sqlx::query("SELECT display_name, email FROM people WHERE id = ?").bind(id).fetch_optional(db).await?
     else {
         return Ok(None);
     };
@@ -130,7 +134,7 @@ pub async fn person(db: &Db, id: &str) -> anyhow::Result<Option<PersonView>> {
             groups,
         });
     }
-    Ok(Some(PersonView { id: id.into(), display_name: row.get(0), tenants }))
+    Ok(Some(PersonView { id: id.into(), display_name: row.get(0), email: row.get(1), tenants }))
 }
 
 #[derive(Deserialize)]
@@ -447,6 +451,18 @@ mod tests {
         people::invite_redeem(&db, &home, Redeemer::Existing { person: &a }).await.unwrap();
         let p = person(&db, &a).await.unwrap().unwrap();
         assert_eq!(p.display_name, "A");
+        assert_eq!(p.email, None);
+        assert!(people::person_email(&db, &a, Some("not an address"), "admin").await.is_err());
+        assert!(people::person_email(&db, "p_nobody", Some("a@acme.example"), "admin").await.is_err());
+        people::person_email(&db, &a, Some(" a@acme.example "), "admin").await.unwrap();
+        assert_eq!(person(&db, &a).await.unwrap().unwrap().email.as_deref(), Some("a@acme.example"));
+        let logged: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit_outbox WHERE verb = 'person.email'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(logged, 2, "logged in both of their tenants");
+        people::person_email(&db, &a, None, "admin").await.unwrap();
+        assert_eq!(person(&db, &a).await.unwrap().unwrap().email, None);
         let acme = p.tenants.iter().find(|t| t.slug == "acme").unwrap();
         assert_eq!(acme.handle, "a");
         assert_eq!(acme.teams, ["engineering", "platform"]);

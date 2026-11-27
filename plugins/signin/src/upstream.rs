@@ -170,6 +170,7 @@ pub async fn callback(
         (claim(&claims, "iss").unwrap_or_default().to_string(), claim(&claims, "sub").unwrap_or_default().to_string());
     let display_name = claim(&claims, "name").or(claim(&claims, "email")).unwrap_or("New member").to_string();
     let email = claim(&claims, "email").map(str::to_string);
+    let verified_email = email.clone().filter(|_| claims.get("email_verified").and_then(Value::as_bool) == Some(true));
 
     // Linked already: by issuer and subject, never by email.
     let linked = {
@@ -212,6 +213,7 @@ pub async fn callback(
                 sub: sub.clone(),
                 added_at: now_ms(),
                 teams_read_at: None,
+                email: None,
             });
             if let Err(e) = app.store.save_people(&people) {
                 return fail(StatusCode::INTERNAL_SERVER_ERROR, &format!("saving the link: {e}"));
@@ -221,6 +223,22 @@ pub async fn callback(
             r.person
         }
     };
+    // The provider's verified email, as of this sign-in (or none, if it no longer vouches for one).
+    {
+        let mut people = app.store.people.lock().await;
+        if let Some(c) = people.people.get_mut(&person) {
+            let mut changed = false;
+            for l in c.links.iter_mut().filter(|l| l.iss == iss && l.sub == sub) {
+                if l.email != verified_email {
+                    l.email = verified_email.clone();
+                    changed = true;
+                }
+            }
+            if changed && let Err(e) = app.store.save_people(&people) {
+                tracing::warn!("saving {person}'s email from {name}: {e:#}");
+            }
+        }
+    }
     let tenant_id = match app.control.person(&person).await {
         Ok(Some(v)) => v.tenants.iter().find(|m| m.slug == u.tenant || m.tenant == u.tenant).map(|m| m.tenant.clone()),
         _ => None,

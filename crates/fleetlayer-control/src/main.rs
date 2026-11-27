@@ -370,6 +370,15 @@ enum PersonCommand {
     Remove {
         id: String,
     },
+    /// Set a person's email address, which the sign-in service gives to services that ask for it, as verified (so
+    /// set only an address you know is theirs), or with --clear remove it.
+    Email {
+        id: String,
+        #[arg(required_unless_present = "clear")]
+        address: Option<String>,
+        #[arg(long, conflicts_with = "address")]
+        clear: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -621,7 +630,22 @@ async fn main() -> anyhow::Result<()> {
         Command::Person { command } => match command {
             PersonCommand::List => {
                 for p in people::people(&db).await? {
-                    println!("{:<24} {:<30} {} tenants", p.id, p.display_name, p.tenants);
+                    println!(
+                        "{:<24} {:<30} {} tenants{}",
+                        p.id,
+                        p.display_name,
+                        p.tenants,
+                        p.email.map(|e| format!(", {e}")).unwrap_or_default()
+                    );
+                }
+                Ok(())
+            }
+            PersonCommand::Email { id, address, clear } => {
+                let address = if clear { None } else { address };
+                people::person_email(&db, &id, address.as_deref(), &cli.actor).await?;
+                match address {
+                    Some(a) => println!("{id}'s email is now {a}."),
+                    None => println!("{id} has no email now."),
                 }
                 Ok(())
             }
@@ -1307,5 +1331,37 @@ mod default_db_tests {
         assert_eq!(super::default_db(&local, d.path()), d.path().join(".local/state/fleetlayer/control/control.db"));
         std::fs::write(&local, "").unwrap();
         assert_eq!(super::default_db(&local, d.path()), local);
+    }
+}
+
+/// The `fleetlayer-control …` commands skills tell agents to run (`plugins/signin/skill`), checked against this command
+/// line, as `fleetlayer-cli`'s `skill_commands` does for `fleetlayer …`.
+#[cfg(test)]
+#[path = "../../fleetlayer-cli/src/skill_check.rs"]
+mod skill_check;
+
+#[cfg(test)]
+mod skill_command_tests {
+    use clap::CommandFactory;
+
+    use super::Cli;
+    use super::skill_check::{check, invocations, problems};
+
+    #[test]
+    fn every_control_command_agents_are_told_to_run_exists() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let (seen, problems) = problems(&root, "fleetlayer-control", &Cli::command());
+        assert!(seen > 5, "found only {seen} fleetlayer-control commands in the skills: is the search broken?");
+        assert!(problems.is_empty(), "skills name commands that don't exist:\n{}", problems.join("\n"));
+    }
+
+    #[test]
+    fn the_check_knows_the_global_flags() {
+        let w = |s: &str| invocations(s, "fleetlayer-control").remove(0);
+        let cmd = Cli::command();
+        assert_eq!(check(&cmd, &w("fleetlayer-control --tenant acme invite add --handle a --team t")), None);
+        assert_eq!(check(&cmd, &w("fleetlayer-control member role a admin --tenant acme")), None);
+        assert!(check(&cmd, &w("fleetlayer-control invite add --hande a")).unwrap().contains("no flag --hande"));
+        assert!(check(&cmd, &w("fleetlayer-control signin rotate")).unwrap().contains("no subcommand rotate"));
     }
 }

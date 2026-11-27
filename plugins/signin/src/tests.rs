@@ -280,6 +280,11 @@ fn authorize_uri(client: &str, challenge: &str) -> String {
     )
 }
 
+/// An authorize URI that also asks for the `email` scope.
+fn with_email(uri: &str) -> String {
+    uri.replace("scope=openid", "scope=openid%20email")
+}
+
 fn code_of(location: &str) -> String {
     let u = Url::parse(location).unwrap();
     assert_eq!(u.query_pairs().find(|(k, _)| k == "state").unwrap().1, "xyz");
@@ -594,11 +599,13 @@ async fn a_workspace_account_joins_once_and_signs_in_by_its_subject_after() {
             ("acme-google", "google-123", f.url.as_str())
         );
     }
-    // The hub signs them in, for Acme.
+    // The hub signs them in, for Acme, with the email Google verified.
     let (verifier, challenge) = pkce();
-    let r2 = call(&a, "GET", &authorize_uri("hub", &challenge), Some(&cookie), None, "").await;
+    let r2 = call(&a, "GET", &with_email(&authorize_uri("hub", &challenge)), Some(&cookie), None, "").await;
     assert!(r2.status.is_redirection(), "{}", r2.text);
-    let _ = verifier;
+    let t = exchange(&a, &code_of(r2.location.as_deref().unwrap()), &verifier).await;
+    let id = crate::keys::verify(&a.keys.jwks(), t.body["id_token"].as_str().unwrap()).unwrap();
+    assert_eq!((&id["email"], &id["email_verified"]), (&json!("sam@acme.example"), &json!(true)));
     // Again: by the subject, without joining again.
     let r = via_upstream(&a, &f, |n| workspace_claims(&f, n)).await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.text);
@@ -1320,4 +1327,63 @@ fn group_settings_are_checked_at_start() {
     let missing =
         build(with(&google, json!({"teams": {"service_account_file": dir.path().join("nope.json"), "map": {}}})));
     assert!(missing.unwrap().contains("nope.json"));
+}
+
+#[tokio::test]
+async fn the_email_scope_gives_a_verified_email_only_when_asked_and_only_one_someone_vouched_for() {
+    let control = control_plane(Arc::new(Mutex::new(Seen::default()))).await;
+    let dir = tempfile::tempdir().unwrap();
+    let a = app(dir.path(), &control);
+    let cookie = register(&a, &mut SoftPasskey::new(true)).await;
+    let sign_in = |scope_email: bool| {
+        let (a, cookie) = (a.clone(), cookie.clone());
+        async move {
+            let (verifier, challenge) = pkce();
+            let mut uri = authorize_uri("hub", &challenge);
+            if scope_email {
+                uri = with_email(&uri);
+            }
+            let r = call(&a, "GET", &uri, Some(&cookie), None, "").await;
+            let t = exchange(&a, &code_of(r.location.as_deref().unwrap()), &verifier).await;
+            assert_eq!(t.status, StatusCode::OK, "{}", t.text);
+            let id = crate::keys::verify(&a.keys.jwks(), t.body["id_token"].as_str().unwrap()).unwrap();
+            let req = Request::builder()
+                .uri("/userinfo")
+                .header(header::AUTHORIZATION, format!("Bearer {}", t.body["access_token"].as_str().unwrap()))
+                .body(Body::empty())
+                .unwrap();
+            let info = web::router(a.clone()).oneshot(req).await.unwrap();
+            let info: Value =
+                serde_json::from_slice(&axum::body::to_bytes(info.into_body(), 1 << 20).await.unwrap()).unwrap();
+            (id, info)
+        }
+    };
+    let discovery = call(&a, "GET", "/.well-known/openid-configuration", None, None, "").await;
+    assert!(discovery.body["scopes_supported"].as_array().unwrap().contains(&json!("email")));
+
+    // A passkey account with no email: none, even when asked.
+    let (id, info) = sign_in(true).await;
+    assert!(id.get("email").is_none() && info.get("email").is_none(), "{id} {info}");
+
+    // A provider verified one: given when asked, in the ID token and userinfo, and not otherwise.
+    a.store.people.lock().await.people.get_mut("p_a").unwrap().links.push(crate::store::Link {
+        upstream: "acme-google".into(),
+        iss: "https://accounts.google.com".into(),
+        sub: "g-1".into(),
+        added_at: 1,
+        teams_read_at: None,
+        email: Some("a@acme.example".into()),
+    });
+    let (id, info) = sign_in(true).await;
+    assert_eq!((&id["email"], &id["email_verified"]), (&json!("a@acme.example"), &json!(true)));
+    assert_eq!((&info["email"], &info["email_verified"]), (&json!("a@acme.example"), &json!(true)));
+    let (id, info) = sign_in(false).await;
+    assert!(id.get("email").is_none() && info.get("email").is_none(), "not asked for: {id} {info}");
+
+    // One an operator set on the control plane comes first.
+    let mut p: crate::control::Person = serde_json::from_value(json!({"id": "p_a", "display_name": "A"})).unwrap();
+    p.email = Some("a@home.example".into());
+    assert_eq!(a.email(&p).await.as_deref(), Some("a@home.example"));
+    p.email = None;
+    assert_eq!(a.email(&p).await.as_deref(), Some("a@acme.example"));
 }

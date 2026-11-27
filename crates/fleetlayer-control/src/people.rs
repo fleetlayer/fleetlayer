@@ -129,6 +129,7 @@ pub struct Person {
     pub display_name: String,
     /// How many tenants they're a member of.
     pub tenants: i64,
+    pub email: Option<String>,
 }
 
 pub async fn person_add(db: &Db, display_name: &str) -> anyhow::Result<String> {
@@ -146,12 +147,42 @@ pub async fn person_add(db: &Db, display_name: &str) -> anyhow::Result<String> {
 
 pub async fn people(db: &Db) -> anyhow::Result<Vec<Person>> {
     let rows = sqlx::query(
-        "SELECT p.id, p.display_name, (SELECT COUNT(*) FROM members m WHERE m.person = p.id AND m.removed_at IS NULL)
-         FROM people p ORDER BY p.created_at",
+        "SELECT p.id, p.display_name, (SELECT COUNT(*) FROM members m WHERE m.person = p.id AND m.removed_at IS NULL),
+         p.email FROM people p ORDER BY p.created_at",
     )
     .fetch_all(db)
     .await?;
-    Ok(rows.into_iter().map(|r| Person { id: r.get(0), display_name: r.get(1), tenants: r.get(2) }).collect())
+    Ok(rows
+        .into_iter()
+        .map(|r| Person { id: r.get(0), display_name: r.get(1), tenants: r.get(2), email: r.get(3) })
+        .collect())
+}
+
+/// Set (or with `None`, clear) a person's email address. Services that ask for it treat it as verified, so it's an
+/// operator's to set: logged in every tenant the person is in.
+pub async fn person_email(db: &Db, person: &str, email: Option<&str>, by: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(person_exists(db, person).await?, "no person {person}");
+    let email = email.map(str::trim).filter(|e| !e.is_empty());
+    if let Some(e) = email {
+        let (local, domain) = e.split_once('@').unwrap_or_default();
+        anyhow::ensure!(
+            !local.is_empty() && domain.contains('.') && !e.contains(char::is_whitespace) && e.len() <= 254,
+            "{e} isn't an email address"
+        );
+    }
+    sqlx::query("UPDATE people SET email = ? WHERE id = ?").bind(email).bind(person).execute(db).await?;
+    let tenants: Vec<String> = sqlx::query_scalar("SELECT tenant FROM members WHERE person = ? AND removed_at IS NULL")
+        .bind(person)
+        .fetch_all(db)
+        .await?;
+    let reason = match email {
+        Some(e) => format!("email set to {e}"),
+        None => "email cleared".to_string(),
+    };
+    for t in tenants {
+        log(db, &t, by, "person.email", &format!("person:{person}"), &reason).await?;
+    }
+    Ok(())
 }
 
 async fn person_exists(db: &Db, id: &str) -> anyhow::Result<bool> {
