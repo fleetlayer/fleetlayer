@@ -28,15 +28,9 @@ use tokio::net::UnixListener;
 
 use crate::Node;
 
-pub async fn serve(node: Arc<Node>, path: &Path) -> anyhow::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
-    }
-    let _ = std::fs::remove_file(path);
-    let listener = UnixListener::bind(path)?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+/// Serve the node's socket, already claimed (`socket::claim`).
+pub async fn serve(node: Arc<Node>, listener: std::os::unix::net::UnixListener, path: &Path) -> anyhow::Result<()> {
+    let listener = UnixListener::from_std(listener)?;
     tracing::info!(socket = %path.display(), "local socket listening");
     loop {
         let (stream, _) = listener.accept().await?;

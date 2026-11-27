@@ -69,9 +69,12 @@ managers, machines that sleep.
 - **Testing a release's binaries beside a running node.** Before v0.3.9 a node ignores `FLEETLAYER_INSTANCE`, and any
   node started by hand binds the default socket: it removes the running node's socket file and takes its place, and
   when it stops, the real node is still running with no socket (`fleetlayer status` says it can't reach the node)
-  until its service is restarted. Check `fleetlayer-node config` prints a socket of its own before `run`, or set
-  `socket:` in the test config. A node could refuse to start when another already answers on its socket. Seen while
-  smoke-testing signed binaries, 27 Nov 2026. Not written yet.
+  until its service is restarted. Seen while smoke-testing signed binaries, 27 Nov 2026. Fixed in v0.3.9: a node
+  claims its sockets before any plugin starts and refuses to start when another node answers there ("another node is
+  already running on <socket> (pid N): stop it first, or use FLEETLAYER_INSTANCE for a second one"), replaces only a
+  stale socket nothing answers on, and on exit removes a socket file only if it's still the one it created. A test
+  copy uses `FLEETLAYER_INSTANCE` (`docs/guides/laptop.md`, Advanced; `docs/guides/node-services.md`). Where it lives:
+  `crates/fleetlayer-node/src/socket.rs`.
 - **The browser over an SSH bridge (the interim before Fleetlayer's shared tools).** From the homeserver session's
   build, 26 Nov 2026: OpenSSH's `AllowTcpForwarding no` also refuses Unix-socket remote forwards, so use
   `AllowTcpForwarding remote` with `PermitListen none`; a socket created in a setgid directory inherits its group;

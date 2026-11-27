@@ -17,7 +17,6 @@
 //! closes.
 
 use std::collections::HashMap;
-use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
@@ -581,11 +580,9 @@ struct OpenRequest {
 
 /// `<socket>.tools.sock` beside the node's socket (`node.tools.sock`): a caller (`fleetlayer mcp`) writes one JSON line naming the tool, gets one
 /// line back (`{"ok":true}` or `{"error":"…"}`), and the connection then carries the tool's bytes.
-pub async fn listen(node: Arc<Node>, path: &Path) -> anyhow::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::remove_file(path);
-    let listener = UnixListener::bind(path)?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+/// The socket is already claimed (`socket::claim`).
+pub async fn listen(node: Arc<Node>, listener: std::os::unix::net::UnixListener) -> anyhow::Result<()> {
+    let listener = UnixListener::from_std(listener)?;
     loop {
         let (stream, _) = listener.accept().await?;
         let node = node.clone();

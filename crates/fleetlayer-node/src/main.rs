@@ -15,6 +15,7 @@ mod readings;
 mod service;
 mod sessions;
 mod skills;
+mod socket;
 mod start;
 mod sync;
 mod terminals;
@@ -148,6 +149,11 @@ async fn run(cfg: NodeConfig) -> anyhow::Result<()> {
     for p in &cfg.plugins {
         anyhow::ensure!(names.insert(p.name.clone()), "two plugins are called {} in node.yaml", p.name);
     }
+    // The sockets first: a second node on the same account stops here, before its plugins start.
+    let socket = cfg.socket();
+    let tools_socket = socket.with_extension("tools.sock");
+    let (local_listener, _socket_file) = socket::claim(&socket)?;
+    let (tools_listener, _tools_socket_file) = socket::claim(&tools_socket)?;
     let key = keys::load_or_create(&config::config_dir().join("node-key"))?;
     let node = Arc::new(Node {
         name: cfg.name(),
@@ -192,21 +198,19 @@ async fn run(cfg: NodeConfig) -> anyhow::Result<()> {
     tokio::spawn(sync::retry(node.clone()));
     let update = cfg.update.clone().unwrap_or(update::UpdateConfig { mode: None, every_hours: 6 });
     tokio::spawn(update::run(node.clone(), update));
-    let socket = cfg.socket();
-    let tools_socket = socket.with_extension("tools.sock");
     {
         let node = node.clone();
         tokio::spawn(async move {
-            if let Err(e) = tools::listen(node, &tools_socket).await {
+            if let Err(e) = tools::listen(node, tools_listener).await {
                 tracing::error!("the tools socket stopped: {e}");
             }
         });
     }
     tokio::select! {
-        r = local::serve(node.clone(), &socket) => r,
+        // Leaving drops the socket files, which removes them if they are still this node's.
+        r = local::serve(node.clone(), local_listener, &socket) => r,
         _ = shutdown() => {
             tracing::info!("stopping");
-            let _ = std::fs::remove_file(&socket);
             Ok(())
         }
     }
