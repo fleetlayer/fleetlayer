@@ -330,6 +330,21 @@ mod relay_tests {
         task.await.unwrap();
     }
 
+    /// An attached terminal of an idle agent: no data for minutes, only the nodes' 30-second pings on each leg.
+    #[tokio::test(start_paused = true)]
+    async fn pings_alone_keep_a_quiet_stream_open() {
+        let (use_feed, use_rx, use_tx, _use_out) = leg();
+        let (serve_feed, serve_rx, serve_tx, mut serve_out) = leg();
+        let (_closing_tx, closing) = tokio::sync::watch::channel(false);
+        let _task = tokio::spawn(relay(use_tx, use_rx, serve_tx, serve_rx, closing));
+        for _ in 0..5 {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            use_feed.unbounded_send(Message::Ping(Vec::new().into())).unwrap();
+            serve_feed.unbounded_send(Message::Ping(Vec::new().into())).unwrap();
+            assert!(matches!(serve_out.next().await, Some(Message::Ping(_))), "still relaying");
+        }
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_leg_that_goes_quiet_is_closed_with_the_other() {
         let (_use_feed, use_rx, use_tx, mut use_out) = leg();

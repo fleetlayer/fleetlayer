@@ -767,6 +767,19 @@ mod liveness_tests {
         tokio::time::timeout(DRAIN + Duration::from_secs(1), task).await.expect("the pipe finishes").unwrap();
     }
 
+    /// A watched terminal (`fleetlayer attach --observe`) of an idle agent: no data either way for minutes. The far end
+    /// only reads (answering pings, as every websocket peer does) and never pings or sends: this end's own pings and
+    /// their pongs keep the stream open.
+    #[tokio::test(start_paused = true)]
+    async fn a_quiet_terminal_stream_survives_two_minutes() {
+        let (mut local, mut far, _task) = piped().await;
+        let reader = tokio::spawn(async move { while far.next().await.is_some() {} });
+        let mut buf = [0u8; 16];
+        let r = tokio::time::timeout(Duration::from_secs(150), local.read(&mut buf)).await;
+        assert!(r.is_err(), "still open after two and a half quiet minutes: {r:?}");
+        reader.abort();
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_quiet_but_live_peer_keeps_the_stream() {
         let (mut local, mut far, _task) = piped().await;
