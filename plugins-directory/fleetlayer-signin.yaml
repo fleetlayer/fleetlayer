@@ -1,0 +1,41 @@
+name: fleetlayer-signin
+summary: One sign-in, with passkeys, for every web service your fleet runs, as an OpenID Connect provider.
+kind: plugin
+roles: []
+ships_with_fleetlayer: true
+status: experimental
+licence: Apache-2.0
+maintainer: Fleetlayer
+source: https://github.com/fleetlayer/fleetlayer/tree/main/plugins/signin
+install: bundled
+command: fleetlayer-signin
+platforms: [linux, macos]
+min_fleetlayer: 0.3.9
+protocol: 1
+needs: [a control plane from the same release (its sign-in token), an always-on node, an HTTPS proxy in front]
+grants: []
+config: |
+  plugins:
+    - name: signin
+      command: fleetlayer-signin
+      config:
+        dir: ~/.local/state/fleetlayer/signin
+        issuer: https://signin.example.com
+        control_plane: https://control.example.com
+        token_file: ~/.config/fleetlayer/signin-token
+        listen: 127.0.0.1:7680
+        clients:
+          - name: hub
+            redirect_uris: [https://hub.example.com/auth/callback]
+            secret_file: ~/.config/fleetlayer/signin-clients/hub
+security: >-
+  Signs people in to your other services, so whoever controls it can sign in as anyone: run it on an always-on machine
+  you administer, behind HTTPS (plain HTTP only on *.localhost). Its control plane token may look up who belongs where,
+  use invites, ask access checks and record sign-ins, and nothing else; fleetlayer-control signin revoke stops it at
+  once. Every client must use PKCE, and sign_in is checked against your access policy before any code is issued.
+docs: plugins/signin
+description: |
+  People sign in once, with a passkey, and use every service that speaks OpenID Connect: the Claude sign-in hub,
+  pages, and most self-hosted apps. Who may use which service comes from the same access policy as your agents.
+  Experimental: passkeys, invites and signing in to services work; admin pages, signing out everywhere at once and
+  Google Workspace sign-in come next.
