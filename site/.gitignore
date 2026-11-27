@@ -1,9 +1,9 @@
 node_modules/
 dist/
 .astro/
-# Generated from ../docs by scripts/sync-docs.mjs
+# Generated from ../docs by scripts/sync-docs.mjs: everything in public/ except the two files kept in git, so a
+# folder left over from an older layout (public/guides/) is never committed by mistake.
 src/content/docs/
-public/*.md
-public/docs/
-public/llms.txt
-public/llms-full.txt
+public/*
+!public/_headers
+!public/favicon.svg
