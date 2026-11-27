@@ -552,6 +552,26 @@ pub async fn endpoint_for(db: &Db, id: &str, secret: &str) -> anyhow::Result<Opt
     )))
 }
 
+/// Remove an endpoint and its secrets: its URL stops working (404). The events it brought in stay, with their
+/// deliveries. False when there's no such endpoint.
+pub async fn remove_endpoint(db: &Db, tenant: &str, id: &str) -> anyhow::Result<bool> {
+    let r = sqlx::query("DELETE FROM endpoints WHERE tenant = ? AND id = ?").bind(tenant).bind(id).execute(db).await?;
+    Ok(r.rows_affected() > 0)
+}
+
+/// Give an endpoint a new path secret, returned once; the old URL stops working at once. Its ID, label, channel and
+/// GitHub signing secret stay. None when there's no such endpoint.
+pub async fn rotate_endpoint(db: &Db, tenant: &str, id: &str) -> anyhow::Result<Option<String>> {
+    let secret = new_secret();
+    let r = sqlx::query("UPDATE endpoints SET secret_hash = ? WHERE tenant = ? AND id = ?")
+        .bind(hash(&secret))
+        .bind(tenant)
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok((r.rows_affected() > 0).then_some(secret))
+}
+
 /// Set or clear an endpoint's GitHub signing secret. False when there's no such endpoint.
 pub async fn set_github_secret(db: &Db, tenant: &str, id: &str, secret: Option<&str>) -> anyhow::Result<bool> {
     let r = sqlx::query("UPDATE endpoints SET github_secret = ? WHERE tenant = ? AND id = ?")
@@ -823,5 +843,24 @@ mod tests {
         };
         assert!(add_event(&db, DEFAULT_TENANT, &ev, "test").await.unwrap().is_some());
         assert!(add_event(&db, DEFAULT_TENANT, &ev, "test").await.unwrap().is_none());
+
+        // Rotated: the old path secret stops working, the new one works, the signing secret stays.
+        set_github_secret(&db, DEFAULT_TENANT, &e.id, Some("signing")).await.unwrap();
+        let (e, secret) = {
+            let new = rotate_endpoint(&db, DEFAULT_TENANT, &e.id).await.unwrap().unwrap();
+            assert!(endpoint_for(&db, &e.id, &secret).await.unwrap().is_none(), "the old URL is dead");
+            (e, new)
+        };
+        let (_, rotated) = endpoint_for(&db, &e.id, &secret).await.unwrap().unwrap();
+        assert_eq!(rotated.github_secret.as_deref(), Some("signing"));
+        assert!(rotate_endpoint(&db, DEFAULT_TENANT, "nope").await.unwrap().is_none());
+
+        // Removed: its URL stops working, and the events it brought in stay.
+        assert!(!remove_endpoint(&db, "another-tenant", &e.id).await.unwrap(), "only in its own tenant");
+        assert!(remove_endpoint(&db, DEFAULT_TENANT, &e.id).await.unwrap());
+        assert!(endpoint_for(&db, &e.id, &secret).await.unwrap().is_none());
+        assert!(endpoints(&db, DEFAULT_TENANT).await.unwrap().is_empty());
+        assert_eq!(recent_events(&db, DEFAULT_TENANT, 10).await.unwrap().len(), 1);
+        assert!(!remove_endpoint(&db, DEFAULT_TENANT, &e.id).await.unwrap());
     }
 }

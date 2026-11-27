@@ -467,6 +467,15 @@ enum EndpointCommand {
         #[arg(long)]
         all_actions: bool,
     },
+    /// Remove an endpoint: its URL stops working at once. The events it brought in stay.
+    Remove {
+        id: String,
+    },
+    /// Give an endpoint a new URL (a new path secret, printed once); the old URL stops working at once. Its signing
+    /// secret, label and channel stay.
+    Rotate {
+        id: String,
+    },
     /// Set an existing endpoint's GitHub signing secret from a file, or remove it with --clear.
     Secret {
         id: String,
@@ -756,6 +765,22 @@ async fn main() -> anyhow::Result<()> {
                 "{}",
                 if clear { "GitHub signatures are no longer checked." } else { "GitHub signatures are checked." }
             );
+            Ok(())
+        }
+        Command::Endpoint { command: EndpointCommand::Rotate { id } } => {
+            let secret = db::rotate_endpoint(&db, t, &id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("no endpoint {id} (endpoint list)"))?;
+            println!("/hooks/{id}/{secret}");
+            eprintln!(
+                "Endpoint {id} has a new path, above, shown once; the old URL now answers 404. Point the sender at the new \
+                 one (deliveries in between fail: GitHub can redeliver them)."
+            );
+            Ok(())
+        }
+        Command::Endpoint { command: EndpointCommand::Remove { id } } => {
+            anyhow::ensure!(db::remove_endpoint(&db, t, &id).await?, "no endpoint {id} (endpoint list)");
+            println!("Removed endpoint {id}: its URL now answers 404. Remove the webhook at the sender too.");
             Ok(())
         }
         Command::Endpoint { command: EndpointCommand::List } => {

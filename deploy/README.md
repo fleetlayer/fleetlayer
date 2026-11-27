@@ -59,7 +59,12 @@ Run admin commands from the same image as the server. A read-only volume mount i
 SQLite in WAL mode needs its `-shm` file writable even to read.
 
 - `node add <name>`: enrol a node; prints its token once. `node list`, `node remove <name>`.
-- `endpoint add --label <l> --channel <c>`: a webhook endpoint; prints `/hooks/<id>/<secret>` once. `endpoint list`.
+- `endpoint add --label <l> --channel <c> [--github-secret-file <f>]`: a webhook endpoint; prints `/hooks/<id>/<secret>`
+  once. `endpoint list`; `endpoint secret <id> --github-secret-file <f>|--clear` sets GitHub's signing secret;
+  `endpoint remove <id>` deletes an endpoint and its secrets (its URL answers 404; the events it brought in stay);
+  `endpoint rotate <id>` gives it a new path secret, printed once, keeping its signing secret, and the old URL stops
+  working at once (deliveries until the sender is repointed fail; GitHub can redeliver them). For no gap at all, add a
+  new endpoint with the same label, channel and signing secret, repoint the sender, then remove the old one.
 - `token add <name> [--scope read|admin|send]`: an API token for a program that reads the fleet (`read`: every GET and
   catch-ups), administers it (`admin`), or only sends messages (`send`: a service such as a deck or a bot, which
   sends as `service:<name>` with `POST /v1/messages {to, text, label?, subkind?}` and can read nothing); prints it
