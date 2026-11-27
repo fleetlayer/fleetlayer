@@ -19,6 +19,15 @@ export default defineConfig({
       description: site.summary,
       logo: { src: "./src/assets/mark.svg", replacesTitle: false },
       favicon: "/favicon.svg",
+      // Privacy-friendly analytics by Plausible (no cookies). The homepage adds the same in src/pages/index.astro.
+      head: [
+        { tag: "script", attrs: { async: true, src: "https://pa.docspring.com/js/pa-uqEecMZ-VpxrX9c2zdVKv.js" } },
+        {
+          tag: "script",
+          content:
+            "window.plausible=window.plausible||function(){(plausible.q=plausible.q||[]).push(arguments)},plausible.init=plausible.init||function(i){plausible.o=i||{}};plausible.init()",
+        },
+      ],
       social: [{ icon: "github", label: "GitHub", href: repo }],
       sidebar: groups,
       customCss: ["./src/styles/docs.css"],

@@ -23,6 +23,12 @@ const description = site.summary;
     <meta property="og:description" content={description} />
     <meta property="og:url" content={site.url + "/"} />
     <meta property="og:type" content="website" />
+    <!-- Privacy-friendly analytics by Plausible (no cookies); the docs pages get the same from astro.config.mjs. -->
+    <script async src="https://pa.docspring.com/js/pa-uqEecMZ-VpxrX9c2zdVKv.js"></script>
+    <script is:inline>
+      window.plausible=window.plausible||function(){(plausible.q=plausible.q||[]).push(arguments)},plausible.init=plausible.init||function(i){plausible.o=i||{}};
+      plausible.init()
+    </script>
   </head>
   <body>
     <a class="skip" href="#main">Skip to content</a>

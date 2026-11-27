@@ -19,4 +19,5 @@ npm run check    # fails on broken internal links
 - **The homepage** is `src/pages/index.astro`, and its Markdown twin for agents is `src/homepage.md`: change both.
 - **Deploys**: `.github/workflows/site.yml` builds and checks on every pull request and push, and deploys pushes to
   main to Cloudflare Workers (static assets, `wrangler.jsonc`).
-- No analytics, trackers or third-party scripts; fonts are self-hosted.
+- One script from outside: Plausible's privacy-friendly analytics (no cookies), on every page. No other trackers or
+  third-party scripts; fonts are self-hosted.
