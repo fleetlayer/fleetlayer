@@ -39,12 +39,11 @@ the tool you'd rather use. Each piece keeps its state in one folder and speaks o
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/fleetlayer/fleetlayer/main/install.sh | sh
-fleetlayer-node install
-fleetlayer status
+fleetlayer up        # everything on this machine; status page at http://fleetlayer.localhost:7680
 fleetlayer sessions
 ```
 
-Next: https://fleetlayer.ai/getting-started.md
+Next: https://fleetlayer.ai/guides/laptop.md
 
 ## Why
 
@@ -58,7 +57,8 @@ with its own machine or Unix user and permissions, and for people whose work and
 ## Where it is today
 
 Runs now: the node, the control plane and the command line; plugins for herdr, Claude Code, session summaries, Claude
-accounts and pages; access rules with an audit log; releases that update every node themselves.
+accounts and pages; everything on one laptop with `fleetlayer up`; access rules with an audit log; releases that
+update every node themselves.
 
-Being built: one sign-in for every service, a whole setup on a laptop with one command, the phone, moving a piece with
-one command, and a server setup an agent can build for you. Expect breaking changes.
+Being built: one sign-in for every service, the phone, moving a piece with one command, and a server setup an agent
+can build for you. Expect breaking changes.
