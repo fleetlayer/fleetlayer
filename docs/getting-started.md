@@ -15,6 +15,12 @@ out.
 
 Or build from source: `cargo build --release`, and put `target/release/fleetlayer*` on your `PATH`.
 
+## Everything on one machine
+
+`fleetlayer up` starts the control plane, a node, the Claude sign-in hub, pages and the gateway on this machine, each at
+`http://<name>.localhost:7680`, with a status page at `http://fleetlayer.localhost:7680`. See
+[Start on your laptop](guides/laptop.md). The rest of this page sets each piece up by hand.
+
 ## A node on one machine
 
 `~/.config/fleetlayer/node.yaml`:

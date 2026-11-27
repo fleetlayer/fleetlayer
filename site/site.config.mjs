@@ -15,6 +15,7 @@ export const site = {
 // own title). description: overrides the first sentence of the page.
 export const pages = [
   { file: "getting-started", group: "Start here" },
+  { file: "guides/laptop", group: "Guides", label: "Start on your laptop" },
   { file: "guides/backups", group: "Guides", label: "Backups" },
   { file: "plugins/summaries", group: "Plugins", label: "Summaries" },
   { file: "plugins/pages", group: "Plugins", label: "Pages" },

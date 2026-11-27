@@ -273,3 +273,23 @@ managers, machines that sleep.
 - **Messaging between agent sessions after a restart.** Claude Code's cross-session names are random (`<project>-3d`)
   and all change when a machine restarts, so sessions lose each other. Address sessions by their session manager's
   tab name instead (`fleetlayer msg send --to "<tab>@<node>"`), which is stable. Where it lives: AGENTS.md (Git).
+- **`*.localhost` gives every laptop service its own address without TLS or root.** Browsers send any
+  `<name>.localhost` to the loopback address and treat it as a secure context, so passkeys and sign-in work over plain
+  HTTP. Programs outside the browser ask the system resolver, which differs: Debian 13 answers, Ubuntu 22.04 (and its
+  curl 7.81) doesn't. So services talk to each other by backend address, and tests use
+  `curl --connect-to ::127.0.0.1:7680`. Where it lives: `docs/guides/laptop.md` (Advanced).
+- **A plugin announces its address after binding, so nobody picks ports.** Laptop configs say `listen: 127.0.0.1:0`;
+  the plugin sends `_fleetlayer.dev/service/listening` with the port it got, the node forgets it when the plugin exits,
+  and the gateway follows. On a server whose proxy runs elsewhere, use fixed ports instead. Where it lives:
+  `docs/protocol.md` section 10.
+- **The monitor shouldn't be a child of what it monitors.** The laptop gateway runs as its own user service beside
+  the node rather than as a node plugin, so a dead node still shows on the status page and still alerts (a desktop
+  notification at once, the session message when the node is back). launchd/systemd restart the gateway, and the
+  node's health includes the gateway's `/healthz`. Where it lives: `crates/fleetlayer-gateway/src/main.rs`.
+- **Alerts an agent can act on: one per change, one message per round.** Stopping the control plane also drops the
+  node's link, so the gateway sends both changes as one message; a crash the service manager fixes within seconds is
+  no alert; a message the node refuses (no such session) is shown on the status page instead of retried forever.
+  Where it lives: `crates/fleetlayer-gateway/src/monitor.rs`.
+- **Testing user services as another Unix user.** `sudo -iu <user> systemctl --user …` fails with "Failed to connect
+  to bus" unless `XDG_RUNTIME_DIR=/run/user/$(id -u)` is set, and the user's services stop at logout unless
+  `loginctl enable-linger <user>`. Found testing `fleetlayer up` on a Linux build server, 27 Nov 2026.
