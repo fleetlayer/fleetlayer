@@ -9,8 +9,8 @@ Everything a company needs is built on the same service: single sign-on, teams, 
 fits together, and why, is in [Sign-in and SSO](../sso.md).
 
 Status: experimental. Passkeys, invites, signing in to services, the admin pages, signing in with Google Workspace or
-another OpenID Connect provider, signing out of every service at once, and forward-auth for services that can't sign
-people in themselves work. Workspace groups as teams come next.
+another OpenID Connect provider (with its groups as teams), signing out of every service at once, and forward-auth for
+services that can't sign people in themselves work.
 
 ## Set it up
 
@@ -109,6 +109,57 @@ true}`: on a public provider that would let in anyone on the internet.
 - **One place only:** signing in with Acme's Google gives tokens for Acme. Someone who's also in another place signs
   in with their passkey for that one.
 
+### Groups as teams
+
+A provider's groups can put people in your teams, so access follows the groups you already manage:
+
+```yaml
+upstreams:
+  - name: acme-google
+    kind: google
+    # … as above, then:
+    teams:
+      service_account_file: ~/.config/fleetlayer/signin-upstreams/acme-google-sa.json
+      map:
+        eng@acme.example: engineering
+        leads@acme.example: [engineering, leads]
+  - name: okta
+    kind: oidc
+    # … as above, then:
+    teams_claim: groups           # the ID token claim listing someone's groups (the default)
+    map:
+      Engineering: engineering
+```
+
+- **Only mapped groups count**, and only into teams that already exist (make them under **Advanced** on the admin
+  page): a group that maps to a missing team is skipped and logged. Group names are matched ignoring case.
+- **Teams an admin set are kept.** The provider's own memberships are replaced each time its groups are read. The
+  admin page marks them "(from acme-google)"; taking someone off one lasts until their groups are read again.
+- **When groups are read:** at every sign-in through the provider. For Google Workspace, also every day for everyone
+  linked to it: leaving a group reaches their teams within a day without a sign-in, and an account that's suspended
+  or deleted loses its teams and is signed out everywhere. An OpenID Connect provider can only be read at a sign-in,
+  so its teams lapse after `teams_expire_days` (30) without one: leaving a group there reaches teams at the next
+  sign-in or at that expiry, whichever comes first.
+- **Only direct members.** Someone in a group that's inside `eng@acme.example` isn't in it for this: map each group
+  people are directly in.
+- **If Google can't be read** (an outage, or the service account lost its access), people keep the teams from the last
+  read for `teams_grace_hours` (24), then lose that provider's teams until a read works. Failing for over an hour, or
+  no successful daily read for a day, fails `/healthz`.
+
+For Google, the service account, once:
+
+1. In the Google Cloud console, in any project of the Workspace: enable the **Admin SDK API**, then IAM & Admin,
+   Service Accounts, create one, and under Keys, Add key, JSON. Put the file at `service_account_file`, readable by
+   the sign-in service's user only.
+2. In the Google Admin console: Account, Admin roles, create a role with the Admin API privileges **Groups: Read** and
+   **Users: Read**, and assign it to the service account's email address.
+
+   Or, with domain-wide delegation instead: Security, Access and data control, API controls, Domain-wide delegation,
+   add the service account's client ID with the scopes
+   `https://www.googleapis.com/auth/admin.directory.group.readonly` and
+   `https://www.googleapis.com/auth/admin.directory.user.readonly`, and set `subject:` under `teams` to an admin's
+   address for it to act as.
+
 ## Settings
 
 | Setting | What it is |
@@ -119,7 +170,7 @@ true}`: on a public provider that would let in anyone on the internet.
 | `control_plane`, `token_file` | The control plane's address and the token from step 1. On one machine, use `http://127.0.0.1:<port>`: a server often can't resolve `*.localhost` names the way a browser does. |
 | `listen` | Where it listens, behind your proxy. |
 | `clients` | Each service that signs people in: `name` (as in the policy, `service:<name>`), its exact `redirect_uris`, a `secret_file` for a service that keeps a secret (leave it out for one that can't, such as an app in a browser), `post_logout_redirect_uris`, and `backchannel_logout_uri`, where it's told someone signed out (below). |
-| `upstreams` | Providers people may sign in with (above): `name`, `kind` (`google` or `oidc`), `issuer` (oidc), `domain` (required for google), `label`, `tenant`, `client_id`, `client_secret_file`, `join`. |
+| `upstreams` | Providers people may sign in with (above): `name`, `kind` (`google` or `oidc`), `issuer` (oidc), `domain` (required for google), `label`, `tenant`, `client_id`, `client_secret_file`, `join`; groups as teams: `teams` (google: `service_account_file`, `map`, `subject`), `teams_claim` and `map` (oidc), `teams_grace_hours`, `teams_expire_days`. |
 | `previous_issuers` | Addresses it had before, still pointed at it while services are repointed (below). |
 | `forward_auth` | `cookie_domain` and `hosts` (`host`, `service`, `tenant`), for services behind a proxy's forward-auth (above). |
 | `heartbeat` | Pushed every five minutes; it fails when `/healthz` would. |

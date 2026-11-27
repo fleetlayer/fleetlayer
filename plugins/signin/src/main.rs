@@ -24,15 +24,18 @@ mod admin;
 mod control;
 mod domain;
 mod forward;
+mod google;
 mod keys;
 mod logout;
 mod store;
+mod teams;
 mod upstream;
 mod web;
 
 #[cfg(test)]
 mod tests;
 
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -88,6 +91,63 @@ struct UpstreamConfig {
     /// `{role: member}`: anyone it vouches for may join the tenant as a member.
     #[serde(default)]
     join: Option<JoinConfig>,
+    /// Google Workspace: read people's groups with a service account, and map some to teams.
+    #[serde(default)]
+    teams: Option<GoogleTeamsConfig>,
+    /// An OIDC provider: the ID token claim that lists someone's groups (default `groups`), with `map`.
+    #[serde(default)]
+    teams_claim: Option<String>,
+    /// An OIDC provider: group to team (or teams).
+    #[serde(default)]
+    map: BTreeMap<String, OneOrMany>,
+    /// Google: how long people keep the teams from the last good read while Google can't be read (default 24).
+    #[serde(default)]
+    teams_grace_hours: Option<i64>,
+    /// OIDC: how long teams last without a sign-in through it (default 30).
+    #[serde(default)]
+    teams_expire_days: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GoogleTeamsConfig {
+    /// The service account's JSON key, readable by this user only.
+    service_account_file: PathBuf,
+    /// An admin to act as, with domain-wide delegation; leave out when the service account has an admin role.
+    #[serde(default)]
+    subject: Option<String>,
+    /// Group email to team (or teams).
+    map: BTreeMap<String, OneOrMany>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum OneOrMany {
+    One(String),
+    Many(Vec<String>),
+}
+
+fn team_map(map: BTreeMap<String, OneOrMany>, upstream: &str) -> anyhow::Result<BTreeMap<String, Vec<String>>> {
+    let mut out = BTreeMap::new();
+    for (group, teams) in map {
+        let teams = match teams {
+            OneOrMany::One(t) => vec![t],
+            OneOrMany::Many(ts) => ts,
+        };
+        for t in &teams {
+            anyhow::ensure!(
+                !t.is_empty()
+                    && t.chars().all(|c| c.is_ascii_lowercase()
+                        || c.is_ascii_digit()
+                        || c == '-'
+                        || c == '_'
+                        || c == '.'),
+                "upstream {upstream}: {t:?} isn't a team name"
+            );
+        }
+        out.insert(group.to_ascii_lowercase(), teams);
+    }
+    Ok(out)
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -302,6 +362,30 @@ fn build(cfg: Config, home: &Path) -> anyhow::Result<(Arc<web::App>, SocketAddr,
                 u.tenant
             );
         }
+        let day = 86_400_000;
+        let teams = match (u.kind.as_str(), u.teams, u.teams_claim, u.map.is_empty()) {
+            ("google", Some(g), None, true) => Some(teams::Teams {
+                source: teams::Source::Google(Box::new(google::Directory::from_file(
+                    &expand(home, &g.service_account_file),
+                    g.subject,
+                )?)),
+                map: team_map(g.map, &u.name)?,
+                grace_ms: u.teams_grace_hours.unwrap_or(24) * 3_600_000,
+                expire_ms: 0,
+            }),
+            ("oidc", None, claim, false) => Some(teams::Teams {
+                source: teams::Source::Claim(claim.unwrap_or_else(|| "groups".into())),
+                map: team_map(u.map, &u.name)?,
+                grace_ms: 0,
+                expire_ms: u.teams_expire_days.unwrap_or(30) * day,
+            }),
+            (_, None, None, true) => None,
+            ("google", ..) => anyhow::bail!(
+                "upstream {}: for Google Workspace, groups map to teams under teams: {{service_account_file, map}}",
+                u.name
+            ),
+            _ => anyhow::bail!("upstream {}: for an oidc provider, set map (and teams_claim, if not groups)", u.name),
+        };
         let secret =
             read_secret(&expand(home, &u.client_secret_file), &format!("upstream {}'s client secret", u.name))?;
         let back = format!("{}/upstream/{}/callback", settings.issuer, u.name);
@@ -314,6 +398,7 @@ fn build(cfg: Config, home: &Path) -> anyhow::Result<(Arc<web::App>, SocketAddr,
             tenant: u.tenant,
             join: u.join.is_some(),
             oidc,
+            teams,
         });
     }
     let app = web::App::with_upstreams(settings, store, keys, control, upstreams)?;
@@ -380,6 +465,15 @@ async fn run(
             }
             a.deliver_logouts().await;
             tokio::time::sleep(Duration::from_secs(10)).await;
+        }
+    });
+    let a = app.clone();
+    tokio::spawn(async move {
+        // Upstream groups read again daily (hourly while failing); the first pass a minute after start.
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        loop {
+            a.resync_teams(false).await;
+            tokio::time::sleep(Duration::from_secs(600)).await;
         }
     });
     let a = app.clone();

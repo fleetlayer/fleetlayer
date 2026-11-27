@@ -36,6 +36,8 @@ pub struct Upstream {
     /// Anyone it vouches for may join the tenant as a member.
     pub join: bool,
     pub oidc: fleetlayer_oidc::Oidc,
+    /// Its groups, mapped to the tenant's teams (step 4b).
+    pub teams: Option<crate::teams::Teams>,
 }
 
 const COOKIE: &str = "fleetlayer-upstream";
@@ -204,7 +206,13 @@ pub async fn callback(
                 passkeys: vec![],
                 links: vec![],
             });
-            creds.links.push(Link { upstream: u.name.clone(), iss: iss.clone(), sub: sub.clone(), added_at: now_ms() });
+            creds.links.push(Link {
+                upstream: u.name.clone(),
+                iss: iss.clone(),
+                sub: sub.clone(),
+                added_at: now_ms(),
+                teams_read_at: None,
+            });
             if let Err(e) = app.store.save_people(&people) {
                 return fail(StatusCode::INTERNAL_SERVER_ERROR, &format!("saving the link: {e}"));
             }
@@ -223,6 +231,7 @@ pub async fn callback(
             &format!("This {} account's person isn't a member there any more.", u.label),
         );
     };
+    app.teams_at_sign_in(u, &person, &tenant_id, &sub, &claims).await;
     app.control.event(&tenant_id, &person, "signed_in", None, &u.name).await;
     match app.start_session_via(&person, Some(&tenant_id)).await {
         Ok(c) => {

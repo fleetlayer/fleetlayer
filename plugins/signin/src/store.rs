@@ -40,6 +40,9 @@ pub struct Link {
     pub iss: String,
     pub sub: String,
     pub added_at: i64,
+    /// When its groups were last read successfully (step 4b): the grace period and expiry count from here.
+    #[serde(default)]
+    pub teams_read_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

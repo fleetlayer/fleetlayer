@@ -509,6 +509,15 @@ managers, machines that sleep.
   default directive order, so it deletes the headers forward-auth just set unless both sit in a `route` block in the
   right order; and nginx's `auth_request` can't pass a redirect to sign in, so the auth service answers 401 with a
   `Location` the config turns into the redirect. Where it lives: `docs/plugins/signin.md` ("forward-auth").
+- **Groups from an identity provider as permissions.** Mapping a provider's groups (Google Workspace, Okta) to an
+  app's teams has three traps. Groups are only seen when someone signs in, so a person removed from a group, or
+  suspended, keeps the access until they next sign in, which may be never: read the directory again on a schedule
+  (Google's Admin SDK can, with a service account holding a read-only admin role), and let teams from providers you
+  can't ask between sign-ins expire. Google's `groups.list?userKey=` returns direct memberships only, while admins
+  expect nesting: say which you support. And decide what happens when the directory can't be read: keeping the last
+  answer forever leaves stale access, dropping it at once locks people out during an outage; a grace period with an
+  alert in between is the usual answer. Where it lives: `docs/plugins/signin.md` ("Groups as teams"),
+  `plugins/signin/src/teams.rs`.
 - **Rotating a token-signing key.** Publish the new key and keep the old one in the JWKS for as long as tokens it
   signed live (two weeks here, for safety), so nothing breaks; apps must look the JWKS up again when a token names an
   unknown key. A key that may have leaked is the exception: take it out at once and accept that everyone signs in to

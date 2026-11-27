@@ -167,10 +167,25 @@ pub async fn show(
         body.push_str(&format!("<h3>{}{parent}</h3><ul>", esc(name)));
         for m in t["members"].as_array().into_iter().flatten() {
             let handle = m[0].as_str().unwrap_or("");
+            // Put there by a provider's group: taking them off lasts until their groups are read again.
+            let (from, confirm) = match m[2].as_str() {
+                Some(u) => (
+                    format!(" <span class=\"hint\">(from {})</span>", esc(u)),
+                    Some(format!(
+                        "{handle} is in {name} through {u}'s groups: they'll be back in it when those are read again, unless the mapping changes. Take them off anyway?"
+                    )),
+                ),
+                None => (String::new(), None),
+            };
             body.push_str(&format!(
-                "<li>{} {}</li>",
+                "<li>{}{from} {}</li>",
                 esc(handle),
-                form("team_member", &[("team", name), ("handle", handle), ("add", "false")], "Take off", None)
+                form(
+                    "team_member",
+                    &[("team", name), ("handle", handle), ("add", "false")],
+                    "Take off",
+                    confirm.as_deref()
+                )
             ));
         }
         body.push_str("</ul>");

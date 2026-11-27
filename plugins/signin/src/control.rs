@@ -97,6 +97,18 @@ impl Control {
         Ok(serde_json::from_value(v)?)
     }
 
+    /// `person`'s teams from `upstream`'s groups (it replaces that upstream's, and keeps an admin's).
+    pub async fn teams_sync(
+        &self,
+        tenant: &str,
+        person: &str,
+        upstream: &str,
+        teams: &[String],
+    ) -> anyhow::Result<Value> {
+        let body = json!({"tenant": tenant, "person": person, "upstream": upstream, "teams": teams});
+        self.post("/v1/signin/teams_sync", body).await?.ok_or_else(|| anyhow::anyhow!("not found"))
+    }
+
     pub async fn check(&self, tenant: &str, who: &str, can: &str, to: &str) -> anyhow::Result<Decision> {
         let v = self
             .post("/v1/signin/check", json!({"tenant": tenant, "who": who, "can": can, "to": to}))

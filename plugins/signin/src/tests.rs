@@ -103,6 +103,26 @@ async fn control_plane(seen: Arc<Mutex<Seen>>) -> String {
             }),
         )
         .route(
+            "/v1/signin/teams_sync",
+            post({
+                let s = seen.clone();
+                move |Json(b): Json<Value>| {
+                    let s = s.clone();
+                    async move {
+                        let teams: Vec<&str> =
+                            b["teams"].as_array().unwrap().iter().map(|t| t.as_str().unwrap()).collect();
+                        s.lock().unwrap().events.push(format!(
+                            "teams_sync {} {} {}",
+                            b["person"].as_str().unwrap(),
+                            b["upstream"].as_str().unwrap(),
+                            teams.join(",")
+                        ));
+                        Json(json!({"added": [], "removed": [], "missing": []}))
+                    }
+                }
+            }),
+        )
+        .route(
             "/v1/signin/join",
             post(|Json(b): Json<Value>| async move {
                 assert_eq!(b["tenant"], "acme");
@@ -517,6 +537,7 @@ async fn with_upstream(
         tenant: "acme".into(),
         join,
         oidc,
+        teams: None,
     };
     let control = crate::control::Control::new(control, "fls_test");
     (Arc::new(web::App::with_upstreams(settings, store, keys, control, vec![up]).unwrap()), f)
@@ -1068,4 +1089,235 @@ async fn signing_out_everywhere_ends_forward_auth_too() {
     a.apply_revocations().await.unwrap();
     assert_eq!(a.forward_cache.len().await, 0);
     assert_eq!(forward_check(&a, &with).await.status(), StatusCode::SEE_OTHER);
+}
+
+// ---------------------------------------------------------------- upstream groups to teams (step 4b)
+
+/// The upstream app, with `teams` on its upstream.
+fn with_teams(a: Arc<web::App>, teams: crate::teams::Teams) -> Arc<web::App> {
+    let mut a = Arc::try_unwrap(a).ok().unwrap();
+    a.upstreams[0].teams = Some(teams);
+    Arc::new(a)
+}
+
+fn synced(seen: &Arc<Mutex<Seen>>) -> Vec<String> {
+    seen.lock().unwrap().events.iter().filter(|e| e.starts_with("teams_sync")).cloned().collect()
+}
+
+async fn age_reads(a: &web::App, by_ms: i64) {
+    let mut people = a.store.people.lock().await;
+    for c in people.people.values_mut() {
+        for l in &mut c.links {
+            l.teams_read_at = l.teams_read_at.map(|t| t - by_ms);
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_oidc_providers_groups_claim_maps_to_teams_and_lapses_without_a_sign_in() {
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let control = control_plane(seen.clone()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (a, f) = with_upstream(dir.path(), &control, true).await;
+    let a = with_teams(
+        a,
+        crate::teams::Teams {
+            source: crate::teams::Source::Claim("groups".into()),
+            map: [("engineering-group".to_string(), vec!["engineering".to_string()])].into(),
+            grace_ms: 0,
+            expire_ms: 30 * 86_400_000,
+        },
+    );
+    let r = via_upstream(&a, &f, |n| {
+        let mut c = workspace_claims(&f, n);
+        c["groups"] = json!(["Engineering-Group", "unmapped"]);
+        c
+    })
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    assert_eq!(synced(&seen), ["teams_sync p_a acme-google engineering"], "only mapped groups, before the session");
+
+    // The daily pass leaves them alone while the last sign-in is recent, and drops them after 30 days without one.
+    a.resync_teams(true).await;
+    assert_eq!(synced(&seen).len(), 1);
+    age_reads(&a, 31 * 86_400_000).await;
+    a.resync_teams(true).await;
+    assert_eq!(synced(&seen).last().unwrap(), "teams_sync p_a acme-google ");
+}
+
+/// A stand-in for Google: the token endpoint and the Directory API, for accounts set in `accounts`
+/// (`active:<group>,<group>`, `suspended`, `gone`, or `error`).
+struct FakeGoogle {
+    url: String,
+    accounts: Arc<Mutex<std::collections::HashMap<String, String>>>,
+    queries: Arc<Mutex<Vec<String>>>,
+}
+
+async fn fake_google() -> FakeGoogle {
+    use axum::extract::{Path, Query, RawQuery};
+    use axum::routing::{get, post};
+    let accounts: Arc<Mutex<std::collections::HashMap<String, String>>> = Arc::default();
+    let queries: Arc<Mutex<Vec<String>>> = Arc::default();
+    let (a1, a2, q) = (accounts.clone(), accounts.clone(), queries.clone());
+    let router = axum::Router::new()
+        .route(
+            "/token",
+            post(|axum::Form(f): axum::Form<std::collections::HashMap<String, String>>| async move {
+                assert_eq!(f["grant_type"], "urn:ietf:params:oauth:grant-type:jwt-bearer");
+                assert_eq!(f["assertion"].split('.').count(), 3);
+                axum::Json(json!({"access_token": "at", "expires_in": 3600}))
+            }),
+        )
+        .route(
+            "/users/{id}",
+            get(move |Path(id): Path<String>| {
+                let a = a1.clone();
+                async move {
+                    match a.lock().unwrap().get(&id).map(String::as_str).unwrap_or("gone") {
+                        "error" => (StatusCode::FORBIDDEN, axum::Json(json!({"error": {"message": "not authorized"}}))),
+                        "gone" => (StatusCode::NOT_FOUND, axum::Json(json!({}))),
+                        "suspended" => (StatusCode::OK, axum::Json(json!({"suspended": true}))),
+                        _ => (StatusCode::OK, axum::Json(json!({"suspended": false}))),
+                    }
+                }
+            }),
+        )
+        .route(
+            "/groups",
+            get(move |Query(p): Query<std::collections::HashMap<String, String>>, RawQuery(raw): RawQuery| {
+                let (a, q) = (a2.clone(), q.clone());
+                async move {
+                    q.lock().unwrap().push(raw.unwrap_or_default());
+                    let state = a.lock().unwrap().get(&p["userKey"]).cloned().unwrap_or_default();
+                    let groups: Vec<Value> = state
+                        .strip_prefix("active:")
+                        .unwrap_or("")
+                        .split(',')
+                        .filter(|g| !g.is_empty())
+                        .map(|g| json!({"email": g}))
+                        .collect();
+                    axum::Json(json!({"groups": groups}))
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    FakeGoogle { url: format!("http://{addr}"), accounts, queries }
+}
+
+fn google_teams(g: &FakeGoogle) -> crate::teams::Teams {
+    use rsa::pkcs8::{EncodePrivateKey, LineEnding};
+    let key = rsa::PrivateKey::new(&mut crypto_common::getrandom::SysRng, 2048).unwrap();
+    let pem = key.to_pkcs8_pem(LineEnding::LF).unwrap();
+    let dir = crate::google::Directory::new("sa@example.iam", &pem, &format!("{}/token", g.url), None, &g.url).unwrap();
+    crate::teams::Teams {
+        source: crate::teams::Source::Google(Box::new(dir)),
+        map: [("eng@acme.example".to_string(), vec!["engineering".to_string()])].into(),
+        grace_ms: 24 * 3_600_000,
+        expire_ms: 0,
+    }
+}
+
+#[tokio::test]
+async fn workspace_groups_map_to_teams_at_sign_in_and_every_day_and_a_suspended_account_is_signed_out() {
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let control = control_plane(seen.clone()).await;
+    let g = fake_google().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (a, f) = with_upstream(dir.path(), &control, true).await;
+    let a = with_teams(a, google_teams(&g));
+    // eng@ maps (case aside); other@ maps to nothing.
+    g.accounts.lock().unwrap().insert("google-123".into(), "active:Eng@acme.example,other@acme.example".into());
+    let r = via_upstream(&a, &f, |n| workspace_claims(&f, n)).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    assert_eq!(synced(&seen), ["teams_sync p_a acme-google engineering"]);
+    assert_eq!(
+        g.queries.lock().unwrap()[0],
+        "userKey=google-123&maxResults=200",
+        "direct groups only: no nesting asked for"
+    );
+    assert!(a.problems().await.iter().all(|p| !p.contains("groups")));
+
+    // Out of the group: the daily read drops the team without a sign-in.
+    g.accounts.lock().unwrap().insert("google-123".into(), "active:other@acme.example".into());
+    a.resync_teams(true).await;
+    assert_eq!(synced(&seen).last().unwrap(), "teams_sync p_a acme-google ");
+
+    // Suspended: teams gone and signed out everywhere.
+    assert_eq!(a.store.sessions.lock().await.sessions.len(), 1);
+    g.accounts.lock().unwrap().insert("google-123".into(), "suspended".into());
+    a.resync_teams(true).await;
+    assert_eq!(synced(&seen).last().unwrap(), "teams_sync p_a acme-google ");
+    assert!(a.store.sessions.lock().await.sessions.is_empty(), "signed out");
+    assert!(seen.lock().unwrap().events.iter().any(|e| e.starts_with("signed_out")));
+}
+
+#[tokio::test]
+async fn when_google_cant_be_read_teams_last_a_grace_period_and_it_becomes_a_problem_after_an_hour() {
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let control = control_plane(seen.clone()).await;
+    let g = fake_google().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (a, f) = with_upstream(dir.path(), &control, true).await;
+    let a = with_teams(a, google_teams(&g));
+    g.accounts.lock().unwrap().insert("google-123".into(), "active:eng@acme.example".into());
+    via_upstream(&a, &f, |n| workspace_claims(&f, n)).await;
+    assert_eq!(synced(&seen).len(), 1);
+
+    // Google refuses: within the grace period, nothing changes.
+    g.accounts.lock().unwrap().insert("google-123".into(), "error".into());
+    a.resync_teams(true).await;
+    assert_eq!(synced(&seen).len(), 1, "kept for now");
+    assert!(a.problems().await.iter().all(|p| !p.contains("groups")), "not yet an hour");
+    // Failing for over an hour: a problem.
+    a.teams_tracker.states.lock().await.get_mut("acme-google").unwrap().failing_since =
+        Some(crate::store::now_ms() - 2 * 3_600_000);
+    let problems = a.problems().await;
+    assert!(problems.iter().any(|p| p.contains("reading acme-google's groups has failed")), "{problems:?}");
+    // Past the grace period: the upstream's teams go until a read works.
+    age_reads(&a, 25 * 3_600_000).await;
+    a.resync_teams(true).await;
+    assert_eq!(synced(&seen).last().unwrap(), "teams_sync p_a acme-google ");
+    // It works again: back, and the problem clears.
+    g.accounts.lock().unwrap().insert("google-123".into(), "active:eng@acme.example".into());
+    a.resync_teams(true).await;
+    assert_eq!(synced(&seen).last().unwrap(), "teams_sync p_a acme-google engineering");
+    assert!(a.problems().await.iter().all(|p| !p.contains("groups")));
+}
+
+#[test]
+fn group_settings_are_checked_at_start() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("token"), "fls_x").unwrap();
+    std::fs::write(dir.path().join("up"), "secret").unwrap();
+    let build = |up: Value| {
+        let mut u =
+            json!({"name": "up", "tenant": "acme", "client_id": "x", "client_secret_file": dir.path().join("up")});
+        u.as_object_mut().unwrap().extend(up.as_object().unwrap().clone());
+        let cfg = serde_json::from_value::<crate::Config>(json!({
+            "dir": dir.path().join("state"), "issuer": "https://signin.example.com",
+            "control_plane": "http://127.0.0.1:1", "token_file": dir.path().join("token"), "listen": "127.0.0.1:0",
+            "upstreams": [u],
+        }))
+        .unwrap();
+        crate::build(cfg, dir.path()).err().map(|e| e.to_string())
+    };
+    let oidc = json!({"kind": "oidc", "issuer": "https://idp.example.com"});
+    let with = |base: &Value, extra: Value| {
+        let mut b = base.clone();
+        b.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        b
+    };
+    assert_eq!(
+        build(with(&oidc, json!({"map": {"Engineering": "engineering", "Leads": ["engineering", "leads"]}}))),
+        None
+    );
+    assert!(build(with(&oidc, json!({"map": {"Eng": "Not A Team"}}))).unwrap().contains("isn't a team name"));
+    assert!(build(with(&oidc, json!({"teams_claim": "roles"}))).unwrap().contains("set map"));
+    let google = json!({"kind": "google", "domain": "acme.example"});
+    assert!(build(with(&google, json!({"map": {"eng@acme.example": "engineering"}}))).unwrap().contains("teams:"));
+    let missing =
+        build(with(&google, json!({"teams": {"service_account_file": dir.path().join("nope.json"), "map": {}}})));
+    assert!(missing.unwrap().contains("nope.json"));
 }

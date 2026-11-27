@@ -3,9 +3,10 @@
 Status: design (27 November 2026). Steps 1a (people, tenants, teams, memberships, invites, node owners on the control
 plane), 1b (decisions in the owning tenant, people in the policy, the check call), 1c (the sign-in token and its
 routes), 2a (the sign-in service: OpenID Connect provider, passkeys, invites, the move test), 2b (the admin pages),
-2c (back-channel logout, signing out everywhere, key rotation, `previous_issuers`), 5 (forward-auth), 3 (the hub and pages sign in with Fleetlayer, through the shared `crates/fleetlayer-oidc`) and 4a (Google Workspace
+2c (back-channel logout, signing out everywhere, key rotation, `previous_issuers`), 4b (upstream groups as teams),
+5 (forward-auth), 3 (the hub and pages sign in with Fleetlayer, through the shared `crates/fleetlayer-oidc`) and 4a (Google Workspace
 and generic OIDC upstreams, linking by issuer and subject, `join`) are built; the rest follows the steps at the end,
-each one shippable. Workspace groups to teams (4b) come later.
+each one shippable.
 
 People sign in once, with Fleetlayer, to every web service the fleet runs: the Claude sign-in hub, pages, and any
 other service someone chooses to run. Who may use what comes from the same access policy that decides what agents may
@@ -379,7 +380,9 @@ upstreams:
   in upstream (or by `join` for the domain), after that by `sub`. A person can link several (their work Google and
   their personal passkey), and one account then reaches all their tenants.
 - Upstream groups are mapped to the tenant's teams on each sign-in; mapped teams are replaced, teams an admin set by
-  hand are kept.
+  hand are kept. Google Workspace is also read daily (a suspended or deleted account loses its teams and is signed
+  out everywhere); an OIDC provider's teams lapse after 30 days without a sign-in; only direct group membership
+  counts; when Google can't be read, the last teams last 24 hours. Details: `docs/plugins/signin.md`.
 - An upstream signs people in for its own tenant only: signing in with Acme's Google doesn't, by itself, give access
   to Home.
 - **`join` needs a `domain`**, so only people with a verified email there (and, for Google, the Workspace's `hd`) can

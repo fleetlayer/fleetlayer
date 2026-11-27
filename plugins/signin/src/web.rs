@@ -118,6 +118,8 @@ pub struct App {
     pub(crate) key_error: std::sync::Mutex<Option<String>>,
     /// Forward-auth decisions, reused for a minute.
     pub(crate) forward_cache: crate::forward::Cache,
+    /// How reading upstream groups is going (step 4b).
+    pub(crate) teams_tracker: crate::teams::Tracker,
     pub control: Control,
     webauthn: Webauthn,
     pending: Mutex<Pending>,
@@ -155,6 +157,7 @@ impl App {
             keys,
             key_error: std::sync::Mutex::new(None),
             forward_cache: Default::default(),
+            teams_tracker: crate::teams::Tracker::new(),
             control,
             webauthn,
             pending: Mutex::new(Pending::default()),
@@ -273,6 +276,7 @@ impl App {
         if let Some(late) = self.late_logouts().await {
             out.push(late);
         }
+        out.extend(self.teams_problems().await);
         out
     }
 
