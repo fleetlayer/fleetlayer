@@ -36,6 +36,8 @@ pub struct Links {
     pub nodes: Mutex<HashMap<(String, String), NodeConn>>,
     /// The reading kinds each linked node subscribed to.
     pub reading_kinds: Mutex<HashMap<(String, String), Vec<String>>>,
+    /// The roles each linked node watches the windows of (its config's `windows:`), from `link/hello`.
+    pub watchers: Mutex<HashMap<(String, String), Vec<String>>>,
     /// Which node hosts each pages space, by (tenant, space), from `link/pages_spaces`. Kept when the node unlinks, so
     /// a push can say the space's node is offline.
     pub pages: Mutex<HashMap<(String, String), String>>,
@@ -198,6 +200,7 @@ async fn run(app: Arc<App>, (tenant, name): (String, String), socket: WebSocket)
     if nodes.get(&(tenant.clone(), name.clone())).is_some_and(|c| c.conn == conn) {
         nodes.remove(&(tenant.clone(), name.clone()));
         app.links.reading_kinds.lock().await.remove(&(tenant.clone(), name.clone()));
+        app.links.watchers.lock().await.remove(&(tenant.clone(), name.clone()));
     }
     tracing::info!(node = %name, "node unlinked");
 }
@@ -212,6 +215,16 @@ impl FromNode {
     /// This node as a subject, for requests not made by one of its sessions.
     fn me(&self) -> String {
         format!("-@{}", self.node)
+    }
+
+    /// The node's tenant's version 2 policy, which names the roles.
+    async fn policy(&self) -> Result<Arc<crate::policy::Compiled>, RpcError> {
+        self.app
+            .authz
+            .policy(&self.app.db, &self.tenant)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::refused("this tenant has no version 2 access policy, so no roles have windows"))
     }
 
     /// A node subscribes only its own sessions.
@@ -238,6 +251,18 @@ pub async fn owed(app: &App, tenant: &str, node: &str) -> Vec<(String, String, S
         .iter()
         .map(|r| (r.get(0), r.get(1), r.get(2)))
         .collect()
+}
+
+/// Ask each online source that owes `node` a bundle (or that `node` owes one to an online target) to seal it again.
+pub async fn send_owed(app: &App, tenant: &str, node: &str) {
+    for (bundle, source, target) in owed(app, tenant, node).await {
+        if app.links.peer(tenant, &target).await.is_none() {
+            continue;
+        }
+        if let Some(peer) = app.links.peer(tenant, &source).await {
+            peer.notify(l::method::SYNC_WANTED, &json!({"bundle": bundle, "node": target}));
+        }
+    }
 }
 
 /// When the person approves a `sync` request (from the hub, the API or `fleetlayer-control approvals approve`, which
@@ -315,15 +340,13 @@ impl Handler for FromNode {
                 // Bundles owed to or by this node while one side was offline: ask each source that's online to seal
                 // a fresh copy for each target that's online.
                 let (app2, tenant2, me) = (app.clone(), tenant.to_string(), self.node.clone());
+                let watched = h.windows.clone();
                 tokio::spawn(async move {
                     tokio::time::sleep(Duration::from_secs(2)).await;
-                    for (bundle, source, target) in owed(&app2, &tenant2, &me).await {
-                        if app2.links.peer(&tenant2, &target).await.is_none() {
-                            continue;
-                        }
-                        if let Some(peer) = app2.links.peer(&tenant2, &source).await {
-                            peer.notify(l::method::SYNC_WANTED, &json!({"bundle": bundle, "node": target}));
-                        }
+                    send_owed(&app2, &tenant2, &me).await;
+                    // Windows it's in or watches: open ones, and closed ones it hasn't confirmed.
+                    if let Err(e) = crate::windows::on_link(&app2, &tenant2, &me, &watched).await {
+                        tracing::warn!(node = me, "telling a node about role windows: {e}");
                     }
                 });
                 answer(&Welcome { node: self.node.clone() })
@@ -577,6 +600,62 @@ impl Handler for FromNode {
                 answer(&crate::authz::access_check(app, &self.node, &req).await?)
             }
             l::method::PAGES_OPEN => answer(&crate::pages::open(app, tenant, &self.node, params(p)?).await?),
+            l::method::ROLE_ACTIVATE => {
+                let req: l::RoleActivate = params(p)?;
+                let who = format!("{}@{}", req.caller, self.node);
+                let policy = self.policy().await?;
+                answer(
+                    &crate::windows::request(
+                        app,
+                        tenant,
+                        &policy,
+                        &who,
+                        &req.role,
+                        &req.hold,
+                        req.justification.as_deref(),
+                    )
+                    .await?,
+                )
+            }
+            l::method::ROLE_DEACTIVATE => {
+                let req: l::RoleDeactivate = params(p)?;
+                let who = format!("{}@{}", req.caller, self.node);
+                let policy = self.policy().await?;
+                if !policy.may_ask_window(&req.role, &who) {
+                    return Err(RpcError::refused(format!(
+                        "{who} may not close {}'s window: only its own agents and its `asked_by:` may",
+                        req.role
+                    )));
+                }
+                let closed =
+                    crate::windows::deactivate(app, tenant, &req.role, &who).await.map_err(RpcError::internal)?;
+                answer(&l::RoleActivated {
+                    role: req.role.clone(),
+                    state: if closed { "closing" } else { "off" }.into(),
+                    message: if closed {
+                        format!(
+                            "closed {}'s window: its nodes are closing its sessions and removing what was delivered",
+                            req.role
+                        )
+                    } else {
+                        format!("{}'s window wasn't open", req.role)
+                    },
+                    ..Default::default()
+                })
+            }
+            l::method::ROLE_WINDOWS => {
+                let req: l::RoleWindowsRequest = params(p)?;
+                let who = format!("{}@{}", req.caller, self.node);
+                let policy = self.policy().await?;
+                let windows =
+                    crate::windows::list_for(&app.db, tenant, &policy, Some(&who)).await.map_err(RpcError::internal)?;
+                answer(&l::RoleWindows { windows })
+            }
+            l::method::WINDOW_CLOSED => {
+                let c: l::WindowClosed = params(p)?;
+                crate::windows::confirmed(app, &self.node, &c).await?;
+                Ok(json!({}))
+            }
             _ => Err(RpcError::method_not_found(method)),
         }
     }

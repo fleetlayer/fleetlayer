@@ -69,6 +69,66 @@ pub struct Rule {
     /// A note saying why, shown by `acl explain`.
     #[serde(default)]
     pub why: Option<String>,
+    /// When the rule stops applying: `2026-12-31` (the start of that day, UTC) or `2026-12-31T18:00:00Z`. A grant
+    /// with an expiry; after it, the rule is as if it weren't there.
+    #[serde(default)]
+    pub until: Option<String>,
+}
+
+/// A role: the agents of one Unix user with its own node (or a few), named so the policy can say how it's activated.
+/// `activation: window` gives it no rights at all until the person approves a window (`fleetlayer role activate`), and
+/// its rules apply only until the window ends: the admin window, or "sudo mode".
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoleDef {
+    /// Its agents: patterns on its node, `*@admin` (its sessions, shell and plugins).
+    pub who: OneOrMany,
+    /// `always` (the default: rules decide, as for any agent) or `window`.
+    #[serde(default)]
+    pub activation: Option<String>,
+    /// The longest window the person may approve (`1d` by default); a request for longer is refused.
+    #[serde(default)]
+    pub longest: Option<String>,
+    /// Who may ask for a window and close one early, besides the role's own agents.
+    #[serde(default)]
+    pub asked_by: Option<OneOrMany>,
+    /// A note saying what the role is for.
+    #[serde(default)]
+    pub why: Option<String>,
+}
+
+impl RoleDef {
+    pub fn windowed(&self) -> bool {
+        self.activation.as_deref() == Some("window")
+    }
+
+    /// The longest window, in milliseconds.
+    pub fn longest_ms(&self) -> i64 {
+        self.longest.as_deref().and_then(|l| parse_duration_ms(l).ok()).unwrap_or(86_400_000)
+    }
+}
+
+/// A rule's `until:` in milliseconds since the epoch: a date (the start of that day, UTC) or a timestamp with its
+/// offset.
+pub fn parse_until(s: &str) -> anyhow::Result<i64> {
+    let s = s.trim();
+    if let Ok(t) = s.parse::<jiff::Timestamp>() {
+        return Ok(t.as_millisecond());
+    }
+    if s.parse::<jiff::civil::Date>().is_ok()
+        && let Ok(t) = format!("{s}T00:00:00Z").parse::<jiff::Timestamp>()
+    {
+        return Ok(t.as_millisecond());
+    }
+    anyhow::bail!("until: {s:?} isn't a date (2026-12-31) or a timestamp with its offset (2026-12-31T18:00:00Z)")
+}
+
+/// The condition a rule's `until:` adds (`&& context.now < …`), or nothing.
+fn until_cond(r: &Rule) -> anyhow::Result<String> {
+    Ok(match &r.until {
+        Some(u) => format!(" && context.now < {}", parse_until(u)?),
+        None => String::new(),
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -182,6 +242,9 @@ pub struct PolicyFile {
     /// Requests that must say why (one line, recorded in the audit log). None by default.
     #[serde(default)]
     pub justify: Vec<Rule>,
+    /// Named roles, and how each is activated (`activation: window` for the admin window).
+    #[serde(default)]
+    pub roles: BTreeMap<String, RoleDef>,
 }
 
 /// Check a justification: one line of plain text, 16 to 1000 characters, nothing hidden (after Rack Gateway's).
@@ -365,7 +428,11 @@ fn forbids(
             Some(t) => any("resource", &t.items(), groups)?,
             None => "true".into(),
         };
-        let src = format!("forbid(principal, action in {}, resource) when {{ {who} && {to} }};", actions(&r.can)?);
+        let src = format!(
+            "forbid(principal, action in {}, resource) when {{ {who} && {to}{} }};",
+            actions(&r.can)?,
+            until_cond(r)?
+        );
         add(set, notes, format!("{prefix}deny[{i}]"), r.why.as_deref(), src)?;
     }
     for (i, r) in only.iter().enumerate() {
@@ -376,8 +443,9 @@ fn forbids(
         };
         // Outside the list, and not a reply to a session that wrote first.
         let src = format!(
-            "forbid(principal, action in {}, resource) when {{ {who} && !{to} && !context.reply }};",
-            actions(&r.can)?
+            "forbid(principal, action in {}, resource) when {{ {who} && !{to} && !context.reply{} }};",
+            actions(&r.can)?,
+            until_cond(r)?
         );
         add(set, notes, format!("{prefix}only[{i}]"), r.why.as_deref(), src)?;
     }
@@ -433,7 +501,11 @@ impl Compiled {
                 Some(t) => any("resource", &t.items(), g)?,
                 None => "true".into(),
             };
-            let src = format!("permit(principal, action in {}, resource) when {{ {who} && {to} }};", actions(&r.can)?);
+            let src = format!(
+                "permit(principal, action in {}, resource) when {{ {who} && {to}{} }};",
+                actions(&r.can)?,
+                until_cond(r)?
+            );
             add(&mut enforced, &mut notes, format!("allow[{i}]"), r.why.as_deref(), src)?;
         }
         if default_allow {
@@ -483,6 +555,29 @@ impl Compiled {
         for r in &file.justify {
             any("principal", &r.who.items(), g)?;
             actions(&r.can)?;
+            until_cond(r)?;
+        }
+        for (name, role) in &file.roles {
+            anyhow::ensure!(valid_slug(name), "roles: {name:?} isn't a role's name (a lowercase slug)");
+            let who = role.who.items();
+            anyhow::ensure!(!who.is_empty(), "roles: {name} names no agents (who)");
+            for w in &who {
+                anyhow::ensure!(
+                    w.contains('@') && !w.starts_with("person:") && valid_pattern(w),
+                    "roles: {name}: {w:?} isn't an agent pattern (`*@<node>`): a role is the agents of a node"
+                );
+            }
+            match role.activation.as_deref() {
+                None | Some("always") | Some("window") => {}
+                Some(a) => anyhow::bail!("roles: {name}: activation is always or window (got {a})"),
+            }
+            if let Some(l) = &role.longest {
+                let ms = parse_duration_ms(l)?;
+                anyhow::ensure!(ms > 0, "roles: {name}: longest must be more than nothing");
+            }
+            if let Some(a) = &role.asked_by {
+                any("principal", &a.items(), g)?;
+            }
         }
         for r in file.ask.iter().flatten() {
             parse_duration_ms(&r.hold)?;
@@ -654,7 +749,31 @@ impl Compiled {
     }
 
     pub fn needs_justification_in(&self, scope: Option<Scope>, who: &str, verb: &str, target: &str) -> bool {
-        self.file.justify.iter().any(|r| self.covers(scope, (&r.who, &r.except, &r.can, &r.to), (who, verb, target)))
+        let now = crate::db::now_ms();
+        self.file.justify.iter().any(|r| {
+            r.until.as_deref().is_none_or(|u| parse_until(u).is_ok_and(|t| now < t))
+                && self.covers(scope, (&r.who, &r.except, &r.can, &r.to), (who, verb, target))
+        })
+    }
+
+    /// The roles with `activation: window` that `name` is one of the agents of.
+    pub fn window_roles(&self, name: &str) -> Vec<&str> {
+        if name.starts_with("person:") {
+            return vec![];
+        }
+        self.file
+            .roles
+            .iter()
+            .filter(|(_, r)| r.windowed() && r.who.items().iter().any(|w| crate::acl::glob(w, name)))
+            .map(|(n, _)| n.as_str())
+            .collect()
+    }
+
+    /// Whether `who` may ask for `role`'s window (or close it early): the role's own agents, and its `asked_by:`.
+    pub fn may_ask_window(&self, role: &str, who: &str) -> bool {
+        let Some(r) = self.file.roles.get(role) else { return false };
+        r.who.items().iter().any(|w| crate::acl::glob(w, who))
+            || r.asked_by.as_ref().is_some_and(|a| self.matches(&a.items(), who))
     }
 
     /// Whether messages from `who` are delivered as outside data.
@@ -713,6 +832,17 @@ impl Compiled {
         target: &str,
         reply: bool,
     ) -> anyhow::Result<Decided> {
+        self.decide_at(scope, (who, verb, target), reply, crate::db::now_ms())
+    }
+
+    /// [`Compiled::decide_in`] at a given time (milliseconds), for rules with an `until:`.
+    pub fn decide_at(
+        &self,
+        scope: Option<Scope>,
+        (who, verb, target): (&str, &str, &str),
+        reply: bool,
+        now: i64,
+    ) -> anyhow::Result<Decided> {
         anyhow::ensure!(VERBS.contains(&verb), "unknown verb {verb}");
         if let Some(s) = scope
             && let Some(r) = self.refused_up_front(s, who, target)
@@ -757,6 +887,7 @@ impl Compiled {
             ("reply".to_string(), RestrictedExpression::new_bool(reply)),
             ("same_owner".to_string(), RestrictedExpression::new_bool(same_owner)),
             ("team_owns".to_string(), RestrictedExpression::new_bool(team_owns)),
+            ("now".to_string(), RestrictedExpression::new_long(now)),
         ])?;
         let request = Request::new(principal, uid("Action", verb), resource, context, None)?;
         let authorizer = Authorizer::new();
@@ -1270,6 +1401,56 @@ owners:
         assert!(bad("allow:\n  - { who: \"person:A@x\", can: read }\n").contains("isn't"));
         assert!(bad("default_people: some\n").contains("default_people"));
         assert!(bad("owners:\n  \"page:x/*\": david\n").contains("isn't person:<handle>"));
+    }
+
+    #[test]
+    fn a_grant_with_an_expiry_lapses() {
+        let p = Compiled::parse(
+            "version: 2\ndefault: deny\nallow:\n  - { who: \"*@ops\", can: use_tool, to: \"tool:db@*\", until: 2026-12-01 }\n  - { who: \"*@ops\", can: message, until: \"2026-11-30T12:00:00+13:00\" }\n",
+        )
+        .unwrap();
+        let dec1 = parse_until("2026-12-01").unwrap();
+        let at = |t: i64, verb: &str, to: &str| p.decide_at(None, ("a@ops", verb, to), false, t).unwrap().allowed;
+        assert!(at(dec1 - 1, "use_tool", "tool:db@server"));
+        assert!(!at(dec1, "use_tool", "tool:db@server"), "it ends at the start of that day, UTC");
+        let noon = parse_until("2026-11-29T23:00:00Z").unwrap();
+        assert!(at(noon - 1, "message", "b@x"));
+        assert!(!at(noon, "message", "b@x"), "the offset is honoured");
+        // A deny with an expiry stops refusing.
+        let d = Compiled::parse(
+            "version: 2\ndefault: allow\ndeny:\n  - { who: \"*@new\", can: message, until: 2026-12-01 }\n",
+        )
+        .unwrap();
+        assert!(!d.decide_at(None, ("a@new", "message", "b@x"), false, dec1 - 1).unwrap().allowed);
+        assert!(d.decide_at(None, ("a@new", "message", "b@x"), false, dec1).unwrap().allowed);
+        assert!(
+            Compiled::parse("version: 2\ndefault: allow\nallow:\n  - { who: \"*\", can: read, until: soon }\n")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn roles_say_how_they_are_activated() {
+        let p = Compiled::parse(
+            "version: 2\ndefault: allow\nroles:\n  admin: { who: \"*@admin\", activation: window, longest: 12h, asked_by: \"*@laptop\" }\n  everyday: { who: \"*@laptop\" }\n",
+        )
+        .unwrap();
+        assert_eq!(p.window_roles("ops@admin"), ["admin"]);
+        assert_eq!(p.window_roles("-@admin"), ["admin"]);
+        assert!(p.window_roles("x@laptop").is_empty(), "everyday is always on");
+        assert!(p.window_roles("person:admin").is_empty());
+        assert_eq!(p.file.roles["admin"].longest_ms(), 12 * 3_600_000);
+        assert_eq!(p.file.roles["everyday"].longest_ms(), 86_400_000);
+        assert!(p.may_ask_window("admin", "ops@admin"));
+        assert!(p.may_ask_window("admin", "planning@laptop"));
+        assert!(!p.may_ask_window("admin", "inbox@triage"));
+        assert!(!p.may_ask_window("nope", "ops@admin"));
+        let bad =
+            |extra: &str| Compiled::parse(&format!("version: 2\ndefault: allow\n{extra}")).err().unwrap().to_string();
+        assert!(bad("roles:\n  admin: { who: \"person:a\", activation: window }\n").contains("agent pattern"));
+        assert!(bad("roles:\n  admin: { who: \"*@admin\", activation: sometimes }\n").contains("always or window"));
+        assert!(bad("roles:\n  Admin: { who: \"*@admin\" }\n").contains("role's name"));
+        assert!(bad("roles:\n  admin: { who: \"*@admin\", longest: forever }\n").contains("isn't like"));
     }
 
     #[test]

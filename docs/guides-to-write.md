@@ -684,3 +684,11 @@ managers, machines that sleep.
   OrbStack gets a short section: the best macOS integration, paid for business use, and it mounts all of `/Users` by
   default, so turn that off. Being tried on a real Mac now. To write: `docs/guides/mac-vm.md`, from the trial's notes
   once the setup works.
+- **Sudo for an agent, only for a window.** An agent that can change a machine (sudo, production keys) shouldn't hold
+  that power all day. Fleetlayer's `activation: window` roles refuse everything by or to the role until the person
+  approves a window, then close its sessions, remove what was delivered and run hooks at the end. Footguns: the sudo
+  rule must be added by a more trusted Unix user (a watcher node), never by the role's own user, or it can add it any
+  time; closing is safe to allow the role itself; a root process started in the window outlives the rule; a static key
+  read in the window could be copied, so prefer AWS STS sessions and GitHub App tokens and rotate the rest. Written:
+  `docs/guides/admin-window.md`, `docs/access-control.md` ("The admin window"). Still to add: a hub view of open
+  windows (the API, `GET /v1/windows`, has them).

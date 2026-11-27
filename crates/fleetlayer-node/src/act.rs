@@ -59,7 +59,12 @@ pub async fn serve(node: &Node, req: SessionActServe) -> Result<Value, RpcError>
     serde_json::to_value(done).map_err(|e| RpcError::internal(e.to_string()))
 }
 
-async fn here(node: &Node, name: &str, action: SessionAction, caller: &str) -> Result<SessionActed, RpcError> {
+pub(crate) async fn here(
+    node: &Node,
+    name: &str,
+    action: SessionAction,
+    caller: &str,
+) -> Result<SessionActed, RpcError> {
     let session = crate::deliver::resolve(node, name).await?;
     let manager = session
         .manager

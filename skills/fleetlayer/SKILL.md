@@ -127,6 +127,22 @@ The control plane checks every message, tool use, start and sync against the per
 - **"… only with a reason"**: add `--why "<one line: what you're doing and why>"` (16 to 1000 characters), or set
   `FLEETLAYER_WHY` for an MCP server. It goes in the audit log, so make it true and specific.
 
+## A role that's off until a window is open (the admin window)
+
+Some roles (an admin role that can change the machine) have no rights until the person opens a window for them. A
+refusal that says **"role <role> is off until its window is open"** means that. If your task needs it, ask once, with
+what it's for:
+
+```sh
+fleetlayer role activate admin --for 1h --why "upgrade postgres to 17 and restart it"
+fleetlayer role list        # off, waiting for the person (with the request ID), or open until when
+```
+
+Tell your person the request ID and wait; don't ask again in a loop, and ask for no longer than the job needs. Once
+it's open, work quickly and close it when you're done: `fleetlayer role deactivate admin`. At the end, every session in
+the role is closed and what was delivered to it is removed, so save your work and notes before the window ends
+(`fleetlayer me` shows when).
+
 ## Readings
 
 Nodes publish small figures as readings: Claude usage per account, token health and others.

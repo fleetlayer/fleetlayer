@@ -139,6 +139,31 @@ enum Command {
         #[command(subcommand)]
         command: SessionCommand,
     },
+    /// Windows of roles that are off until the person approves one (the admin window, or "sudo mode").
+    Role {
+        #[command(subcommand)]
+        command: RoleCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum RoleCommand {
+    /// Ask the person to open a role's window: `fleetlayer role activate admin --for 1h --why "…"`. It opens when they
+    /// approve; until it closes, the role's rules apply, and at the end its sessions are closed, what was delivered to
+    /// it is removed and its hook runs.
+    Activate {
+        role: String,
+        /// How long: 1h, 12h, 1d (at most the role's `longest:`).
+        #[arg(long = "for", default_value = "1h")]
+        hold: String,
+        /// What it's for, in one line, shown to the person and kept in the audit log. Default: $FLEETLAYER_WHY.
+        #[arg(long, env = "FLEETLAYER_WHY")]
+        why: Option<String>,
+    },
+    /// Close a role's window now, before its end.
+    Deactivate { role: String },
+    /// The windowed roles this session is in or may ask for, and whether each is open.
+    List,
 }
 
 #[derive(Subcommand)]
@@ -438,11 +463,30 @@ fn me_text(v: &Value) -> String {
     if !tools.is_empty() && !unknown.is_empty() {
         let _ = writeln!(o, "Not reported, so not listed: {}.", unknown.join("; "));
     }
+    for w in me["windows"].as_array().into_iter().flatten() {
+        let _ = writeln!(o, "Role window: {}", window_line(w));
+    }
     let subs: Vec<&str> = me["subscriptions"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
     if !subs.is_empty() {
         let _ = writeln!(o, "Subscribed to: {}.", subs.join(", "));
     }
     o
+}
+
+/// One windowed role: `admin: open until 2026-11-28 15:00 UTC (you're one of its agents)`.
+fn window_line(w: &Value) -> String {
+    let role = w["role"].as_str().unwrap_or("?");
+    let when = |ms: i64| {
+        jiff::Timestamp::from_millisecond(ms).map(|t| t.strftime("%Y-%m-%d %H:%M UTC").to_string()).unwrap_or_default()
+    };
+    let longest = w["longestMs"].as_i64().unwrap_or(0) / 3_600_000;
+    let state = match w["state"].as_str() {
+        Some("open") => format!("open until {}", w["endsAt"].as_i64().map(when).unwrap_or_default()),
+        Some("pending") => format!("waiting for the person to approve {}", w["id"].as_str().unwrap_or("")),
+        _ => format!("off (`fleetlayer role activate {role} --for 1h`, at most {longest}h)"),
+    };
+    let member = if w["member"].as_bool() == Some(true) { " (you're one of its agents)" } else { "" };
+    format!("{role}: {state}{member}")
 }
 
 /// Ctrl-]: leave an attached terminal.
@@ -957,6 +1001,28 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let req = json!({"to": to, "prompt": prompt, "answers": answers, "why": why, "caller": caller()});
             let v: Value = peer.request_within("node/session_answer", &req, std::time::Duration::from_secs(60)).await?;
             print_acted(&v, cli.json);
+        }
+        Command::Role { command } => {
+            let (method, req) = match command {
+                RoleCommand::Activate { role, hold, why } => {
+                    ("node/role_activate", json!({"role": role, "for": hold, "why": why, "caller": caller()}))
+                }
+                RoleCommand::Deactivate { role } => ("node/role_deactivate", json!({"role": role, "caller": caller()})),
+                RoleCommand::List => ("node/role_list", json!({"caller": caller()})),
+            };
+            let v: Value = peer.request_within(method, &req, std::time::Duration::from_secs(30)).await?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&v)?);
+            } else if let Some(windows) = v["windows"].as_array() {
+                if windows.is_empty() {
+                    println!("No role with a window is yours to ask for.");
+                }
+                for w in windows {
+                    println!("{}", window_line(w));
+                }
+            } else {
+                println!("{}", v["message"].as_str().unwrap_or(""));
+            }
         }
         Command::Session { command: SessionCommand::Close { to, why } } => {
             let req = json!({"to": to, "why": why, "caller": caller()});

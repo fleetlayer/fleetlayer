@@ -209,6 +209,30 @@ pub async fn post_approval(
     Ok(Json(json!({"id": id, "approved": body.approve, "from": d.subject, "verb": d.verb, "to": d.target})))
 }
 
+/// `GET /v1/windows`: the windowed roles and their state, and the recent windows (`docs/access-control.md`).
+pub async fn get_windows(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
+    guard(&app, &headers).await?;
+    let roles = match app.authz.policy(&app.db, DEFAULT_TENANT).await.map_err(internal)? {
+        Some(p) => crate::windows::list_for(&app.db, DEFAULT_TENANT, &p, None).await.map_err(internal)?,
+        None => vec![],
+    };
+    let recent = crate::windows::history(&app.db, DEFAULT_TENANT, 50).await.map_err(internal)?;
+    Ok(Json(json!({"roles": roles, "windows": recent})))
+}
+
+/// `DELETE /v1/windows/<role>` (admin token): close a role's window now. `{closed}`.
+pub async fn delete_window(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    axum::extract::Path(role): axum::extract::Path<String>,
+) -> ApiResult {
+    if scope_of(&app, &headers).await != Some(Scope::Admin) {
+        return Err((StatusCode::FORBIDDEN, "closing a window needs an admin token".into()));
+    }
+    let closed = crate::windows::deactivate(&app, DEFAULT_TENANT, &role, "person (API)").await.map_err(internal)?;
+    Ok(Json(json!({"role": role, "closed": closed})))
+}
+
 /// `/healthz`: ok when the database answers, with the number of linked nodes.
 /// `{ok, linkedNodes, degraded: [reason]}`. 200 while the server can answer, so Kubernetes' probes don't restart it
 /// over a problem a restart won't fix; `ok` is false while something is degraded (an audit write failed within the
@@ -221,6 +245,7 @@ pub async fn healthz(
     let linked = app.links.nodes.lock().await.len();
     let mut degraded: Vec<String> = app.audit.degraded().into_iter().collect();
     degraded.extend(app.authz.file_errors.lock().unwrap_or_else(|e| e.into_inner()).values().cloned());
+    degraded.extend(crate::windows::problems(&app.db).await);
     let ok = degraded.is_empty();
     let status = if !ok && q.contains_key("strict") { StatusCode::SERVICE_UNAVAILABLE } else { StatusCode::OK };
     Ok((status, Json(json!({"ok": ok, "linkedNodes": linked, "degraded": degraded}))))

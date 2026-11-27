@@ -10,6 +10,8 @@
 //!   resume a session here or on node `on` (`crate::start`).
 //! - `node/session_close` `{to, why?, caller?}` and `node/session_answer` `{to, prompt, answers, why?, caller?}` →
 //!   `SessionActed`: close a session, or answer the prompt it's blocked on, here or on another node (`crate::act`).
+//! - `node/role_activate` `{role, for, why?, caller?}`, `node/role_deactivate` `{role, caller?}` → `RoleActivated`;
+//!   `node/role_list` `{caller?}` → `RoleWindows`: role windows, through the control plane (`crate::window`).
 //! - `_fleetlayer.dev/message/send` `{to, text, caller?: {sessionId?, address?}}` → `{via}`.
 //!
 //! Only the node's own Unix user can open the socket, so the caller's claim about which session it runs in
@@ -243,6 +245,46 @@ impl Handler for Local {
                     l::SessionAction::Answer { prompt, answers: a.answers }
                 };
                 answer(&crate::act::act(node, &a.to, action, a.why, name).await?)
+            }
+            "node/role_activate" | "node/role_deactivate" | "node/role_list" => {
+                let c =
+                    self.caller(p.get("caller").and_then(|c| serde_json::from_value(c.clone()).ok()).as_ref()).await;
+                let caller = c.as_ref().map(|s| s.tab().unwrap_or(&s.session_id).to_string()).unwrap_or("-".into());
+                let peer = node.link.peer().await.ok_or_else(|| {
+                    RpcError::not_here(format!(
+                        "{} isn't linked to a control plane now, which holds role windows",
+                        node.name
+                    ))
+                })?;
+                let role = || p["role"].as_str().map(str::to_string).ok_or_else(|| RpcError::invalid_params("role"));
+                let older = |e: RpcError| {
+                    if e.code == fleetlayer_protocol::rpc::code::METHOD_NOT_FOUND {
+                        RpcError::refused(
+                            "the control plane is older than this node and has no role windows: update it",
+                        )
+                    } else {
+                        e
+                    }
+                };
+                match method {
+                    "node/role_activate" => {
+                        let req = l::RoleActivate {
+                            role: role()?,
+                            hold: p["for"].as_str().unwrap_or("1h").to_string(),
+                            caller,
+                            justification: p["why"].as_str().map(str::to_string),
+                        };
+                        peer.request::<_, Value>(l::method::ROLE_ACTIVATE, &req).await.map_err(older)
+                    }
+                    "node/role_deactivate" => {
+                        let req = l::RoleDeactivate { role: role()?, caller };
+                        peer.request::<_, Value>(l::method::ROLE_DEACTIVATE, &req).await.map_err(older)
+                    }
+                    _ => peer
+                        .request::<_, Value>(l::method::ROLE_WINDOWS, &l::RoleWindowsRequest { caller })
+                        .await
+                        .map_err(older),
+                }
             }
             "node/sessions" => answer(&json!({"node": node.name, "sessions": node.registry.all().await})),
             ext::method::MESSAGE_SEND => {

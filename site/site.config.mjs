@@ -35,6 +35,7 @@ export const pages = [
   { file: "guides/browser", group: "Guides", label: "Share your browser" },
   { file: "guides/shared-folders", group: "Guides", label: "Your screenshots and downloads" },
   { file: "guides/untrusted-input", group: "Guides", label: "An agent that reads strangers' text" },
+  { file: "guides/admin-window", group: "Guides", label: "An admin role that's off until you open it" },
   { file: "guides/unattended-agents", group: "Guides", label: "Agents that run while you're away" },
   { file: "guides/pages", group: "Guides", label: "Pages instead of artifacts" },
   { file: "guides/sign-in", group: "Guides", label: "One sign-in for your services" },

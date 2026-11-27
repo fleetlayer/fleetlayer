@@ -56,6 +56,10 @@ pub struct NodeConfig {
     /// Default true.
     #[serde(default = "yes")]
     pub skills: bool,
+    /// Hooks for role windows (`crate::window`): on one of the role's nodes, `on_end` runs when its window closes;
+    /// on a node that only watches the role (a trusted runner), `on_start` and `on_end` both run.
+    #[serde(default)]
+    pub windows: Vec<crate::window::WindowHooks>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]

@@ -34,6 +34,8 @@ pub async fn health(node: &Node, has_control: bool) -> Option<String> {
     problems.extend(node.sync.problems(Duration::from_secs(3600)).await);
     // A delivered secret redacted from what was leaving the node in the last day: rotate it.
     problems.extend(node.secrets.problems());
+    // A role window that didn't close cleanly here (a hook failed, a session wouldn't close).
+    problems.extend(node.windows.problems().await);
     if has_control && node.link.peer().await.is_none() {
         problems.push("not linked to the control plane".into());
     }

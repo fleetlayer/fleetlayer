@@ -75,6 +75,15 @@ its hash, and removes the secret from everything it delivers, even when the send
 ping does). With a GitHub signing secret set, a delivery without a valid signature is refused. A leaked address can
 be replaced without changing anything else ([CI results to the agent that pushed](guides/ci-results.md)).
 
+### An admin role that's off until you open it
+
+An agent that can change everything sits in a role that's switched off: every request by it or to it is refused, and
+nothing is delivered to it. It asks for a window (`fleetlayer role activate admin --for 1h`), you approve, and its
+rules apply until the time is up. Then its sessions are closed, what was delivered to it is removed, a hook takes away
+its sudo rule, and its node confirms; a window that didn't close cleanly shows as a health problem. Every action in
+the window is audited with the window's ID. [The admin window](access-control.md#the-admin-window-a-role-thats-off-until-you-open-it),
+and [the guide](guides/admin-window.md).
+
 ## What's coming
 
 These are being designed or built now. Until each one ships, treat it as a plan, not a promise.
@@ -115,12 +124,6 @@ traffic. A host that isn't on the list is refused with a message that tells the 
 a person through the same approvals as everything else, and once approved it stays allowed. It starts in a mode that
 only logs, so a week of real traffic builds the list before anything is blocked. It will also keep agents off your
 local network by default.
-
-### An admin role that's off until you open it
-
-Some work needs a role that can read and change everything. That role will stay switched off. You turn it on for a
-set time (an hour, a day) through an approval. When the time is up, Fleetlayer ends its sessions, removes the
-secrets delivered to it, and its grants lapse. Every action in between is audited.
 
 ## What none of this covers
 

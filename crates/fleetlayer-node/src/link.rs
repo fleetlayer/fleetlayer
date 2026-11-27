@@ -148,6 +148,7 @@ async fn connect_once(node: &Arc<Node>, cfg: &ControlConfig) -> anyhow::Result<(
         machine: node.machine.clone(),
         user: node.user.clone(),
         public_key: Some(node.public_key.clone()),
+        windows: node.windows.watched(),
     };
     let welcome: Welcome = peer.request(l::method::HELLO, &hello).await.map_err(|e| anyhow::anyhow!("{e}"))?;
     if welcome.node != node.name {
@@ -244,6 +245,14 @@ impl Handler for FromControl {
     async fn notification(&self, _peer: &Peer, method: &str, p: Value) {
         if method == l::method::READING_UPDATE {
             crate::readings::update(&self.node, &p).await;
+            return;
+        }
+        if method == l::method::WINDOW {
+            match serde_json::from_value::<l::WindowNotice>(p) {
+                // Closing sessions and running hooks takes a while: not on the link's reader.
+                Ok(n) => drop(tokio::spawn(crate::window::notice(self.node.clone(), n))),
+                Err(e) => tracing::warn!("a window notice the node can't read: {e}"),
+            }
             return;
         }
         if method == l::method::SYNC_WANTED

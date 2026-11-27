@@ -86,6 +86,21 @@ pub mod method {
     /// Node → control plane: what one of its sessions may use (`fleetlayer me`). `MeRequest` → `Me`. Read-only: it
     /// files no approval request and counts as nobody's first use.
     pub const ME: &str = "link/me";
+    /// Node → control plane: ask for a role's window (`fleetlayer role activate`). `RoleActivate` → `RoleActivated`.
+    /// Files an approval for the person; the window opens when they approve it.
+    pub const ROLE_ACTIVATE: &str = "link/role_activate";
+    /// Node → control plane: close a role's window early (`fleetlayer role deactivate`). `RoleDeactivate` →
+    /// `RoleActivated`.
+    pub const ROLE_DEACTIVATE: &str = "link/role_deactivate";
+    /// Node → control plane: the roles with windows and their state (`fleetlayer role list`). `RoleWindowsRequest` →
+    /// `RoleWindows`.
+    pub const ROLE_WINDOWS: &str = "link/role_windows";
+    /// Control plane → node (notification): a window opened or closed. `WindowNotice`. The role's own nodes close its
+    /// sessions, remove what was delivered to them and run their hook, then confirm with `link/window_closed`; nodes
+    /// that watch the role (`windows:` in their config) run their hooks.
+    pub const WINDOW: &str = "link/window";
+    /// Node → control plane: a role's node finished closing a window (or says why it couldn't). `WindowClosed` → `{}`.
+    pub const WINDOW_CLOSED: &str = "link/window_closed";
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -98,6 +113,9 @@ pub struct Hello {
     /// sees and refuses a different one until the node is enrolled again.
     #[serde(default, rename = "publicKey", skip_serializing_if = "Option::is_none")]
     pub public_key: Option<String>,
+    /// Roles whose windows this node watches (its config's `windows:`), to run hooks when one opens or closes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub windows: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -443,6 +461,104 @@ pub struct Me {
     /// Its subscriptions: `channel` or `channel (subject)`.
     #[serde(default)]
     pub subscriptions: Vec<String>,
+    /// The windowed roles it is one of the agents of, or may ask a window for, and their state.
+    #[serde(default)]
+    pub windows: Vec<WindowInfo>,
+}
+
+/// Ask for a role's window.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoleActivate {
+    pub role: String,
+    /// How long: `1h`, `12h`, `1d`.
+    #[serde(rename = "for")]
+    pub hold: String,
+    /// The session or shell asking (`<tab>` or `-`), on the asking node.
+    pub caller: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub justification: Option<String>,
+}
+
+/// Close a role's window early.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoleDeactivate {
+    pub role: String,
+    pub caller: String,
+}
+
+/// What became of a request for a window, or a request to close one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RoleActivated {
+    pub role: String,
+    /// `pending` (waiting for the person), `open` (open already), `closing` (closed early: its nodes are cleaning up)
+    /// or `off`.
+    pub state: String,
+    /// The approval request, while pending.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<String>,
+    /// When the open window ends (milliseconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ends_at: Option<i64>,
+    /// One sentence for the person or agent.
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RoleWindowsRequest {
+    pub caller: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct RoleWindows {
+    pub windows: Vec<WindowInfo>,
+}
+
+/// A windowed role and its state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowInfo {
+    pub role: String,
+    /// `open`, `pending` (asked, waiting for the person) or `off`.
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ends_at: Option<i64>,
+    /// The open window's ID (its approval), or the pending request's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// The longest window the person may approve (milliseconds).
+    pub longest_ms: i64,
+    /// The asker is one of the role's agents.
+    #[serde(default)]
+    pub member: bool,
+}
+
+/// A window opened or closed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowNotice {
+    /// The window's ID (the approval that opened it).
+    pub id: String,
+    pub role: String,
+    pub open: bool,
+    /// When it ends, or ended (milliseconds). A node closes the window at this time by itself, linked or not.
+    pub ends_at: i64,
+    /// The receiving node is one of the role's: it closes the role's sessions, removes what was delivered to it, and
+    /// confirms. False for a node that only watches the role.
+    pub member: bool,
+}
+
+/// A role's node finished closing a window.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowClosed {
+    pub id: String,
+    /// What didn't work (a hook that failed, a session that wouldn't close); None when everything did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
 }
 
 /// A target and the decision on it, without asking.

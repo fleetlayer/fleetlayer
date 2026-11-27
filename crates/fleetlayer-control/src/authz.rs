@@ -50,6 +50,12 @@ pub const LINK_METHODS: &[(&str, Option<&str>)] = &[
     (m::TOOLS, None),
     // About the caller's own session only, decided item by item without asking (`me.rs`).
     (m::ME, None),
+    // Role windows (`windows.rs`): who may ask or close is decided there, by the role's `who` and `asked_by:`, and
+    // opening one always goes through the person's approval.
+    (m::ROLE_ACTIVATE, None),
+    (m::ROLE_DEACTIVATE, None),
+    (m::ROLE_WINDOWS, None),
+    (m::WINDOW_CLOSED, None),
 ];
 
 #[derive(Default)]
@@ -335,6 +341,9 @@ async fn decide_in(
             let Some(p) = &s.policy else { continue };
             let Some(t) = fleet.tenant(&s.tenant) else { continue };
             let Some(hold) = p.ask_for_in(Some(Scope { fleet, tenant: t }), who, verb, target) else { continue };
+            if in_window(app, &s.tenant, p, who).await? {
+                continue;
+            }
             let held = crate::policy::approval_target(target);
             match crate::approvals::check(app, &s.tenant, who, verb, &held, hold).await.map_err(RpcError::internal)? {
                 crate::approvals::Status::Approved => {}
@@ -396,14 +405,27 @@ async fn say_in(
         None => None,
     };
     if let Some(p) = compiled {
+        // A role with `activation: window` has no rights until its window is open: nothing by its agents, nothing to
+        // them (`windows.rs`).
+        for (name, side) in [(who, "by"), (target, "to")] {
+            let off = crate::windows::closed_roles(&app.db, id, &p, name).await.map_err(RpcError::internal)?;
+            if let Some(role) = off.first() {
+                let because = format!(
+                    "role {role} is off until its window is open (nothing {side} its agents until then): one of its agents asks with `fleetlayer role activate {role} --for 1h`, and the person approves"
+                );
+                let say =
+                    Say { tenant: id.to_string(), slug: tenant.slug.clone(), allowed: false, because, policy: Some(p) };
+                return Ok(Some((say, vec![])));
+            }
+        }
         let d = p.decide_in(Some(scope), who, verb, target, reply).map_err(RpcError::internal)?;
-        let say = Say {
-            tenant: id.to_string(),
-            slug: tenant.slug.clone(),
-            allowed: d.allowed,
-            because: d.because.join(", "),
-            policy: Some(p),
-        };
+        let mut because = d.because.join(", ");
+        // Inside a window, every decision names it, so the audit log shows what the window was used for.
+        for (role, wid, ends) in crate::windows::open_for(&app.db, id, &p, who).await.map_err(RpcError::internal)? {
+            because.push_str(&format!("; in {role}'s window {wid} (until {})", crate::windows::when(ends)));
+        }
+        let say =
+            Say { tenant: id.to_string(), slug: tenant.slug.clone(), allowed: d.allowed, because, policy: Some(p) };
         return Ok(Some((say, d.audit_would_deny)));
     }
     // Version 1: membership, then rules on messages, tools (tool:…) and sync (sync:…); else allowed.
@@ -466,6 +488,9 @@ pub async fn dry(app: &App, home: &str, who: &str, verb: &str, target: &str) -> 
         if p.ask_for_in(Some(Scope { fleet: &fleet, tenant: t }), who, verb, target).is_none() {
             continue;
         }
+        if in_window(app, &s.tenant, p, who).await.unwrap_or(false) {
+            continue;
+        }
         let held = crate::policy::approval_target(target);
         match crate::approvals::peek(&app.db, &s.tenant, who, verb, &held).await {
             Ok(crate::approvals::Peek::Approved(e)) => until = Some(until.map_or(e, |u| u.min(e))),
@@ -475,6 +500,11 @@ pub async fn dry(app: &App, home: &str, who: &str, verb: &str, target: &str) -> 
         }
     }
     Dry::Allowed { why, until }
+}
+
+/// Whether `who` is one of the agents of a role whose window is open: the window's approval covers its `ask:` rules.
+async fn in_window(app: &App, tenant: &str, p: &Compiled, who: &str) -> Result<bool, RpcError> {
+    Ok(!crate::windows::open_for(&app.db, tenant, p, who).await.map_err(RpcError::internal)?.is_empty())
 }
 
 async fn audit(app: &App, tenant: &str, who: &str, verb: &str, target: &str, rules: &[String]) {
@@ -690,6 +720,28 @@ mod tests {
         // And one with a stored policy decides by it.
         store(&app.db, "default", "version: 2\ndefault: allow\nask: []\n").await.unwrap();
         check(&app, "default", "recipes@laptop", "use_tool", "tool:db@laptop").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_windowed_role_is_off_until_its_window_opens_and_then_doesnt_ask() {
+        let (app, _) = example().await;
+        people::agent_admit(&app.db, "default", "ops@web", "admin").await.unwrap();
+        let text = "version: 2\ndefault: allow\nroles:\n  admin: { who: \"*@laptop\", activation: window }\n";
+        store(&app.db, "default", text).await.unwrap();
+        let e = check(&app, "default", "recipes@laptop", "message", "ops@web").await.unwrap_err();
+        assert!(e.message.contains("role admin is off until its window is open"), "{}", e.message);
+        assert!(e.message.contains("fleetlayer role activate admin"), "it says how to ask: {}", e.message);
+        let e = check(&app, "default", "ops@web", "message", "recipes@laptop").await.unwrap_err();
+        assert!(e.message.contains("role admin is off"), "nothing to it either: {}", e.message);
+        let p = app.authz.policy(&app.db, "default").await.unwrap().unwrap();
+        crate::windows::open_now(&app.db, "default", &p, "admin", "1h", "person").await.unwrap();
+        check(&app, "default", "recipes@laptop", "message", "ops@web").await.unwrap();
+        // The default asks before a first tool use; inside the window it doesn't.
+        check(&app, "default", "recipes@laptop", "use_tool", "tool:shell@laptop").await.unwrap();
+        let last = log(&app.db, "default").await;
+        assert!(last.last().unwrap().starts_with("allowed recipes@laptop use_tool"), "{last:?}");
+        crate::windows::deactivate_db(&app.db, "default", "admin", "person").await.unwrap();
+        assert!(check(&app, "default", "recipes@laptop", "message", "ops@web").await.is_err(), "off again at once");
     }
 
     #[tokio::test]

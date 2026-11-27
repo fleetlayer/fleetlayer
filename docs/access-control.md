@@ -6,7 +6,8 @@ view, summaries and subscriptions, untrusted marking, rate limits, audit rules, 
 control plane serves is classified; `acl suggest`; per-tool rules for shared MCP servers. The tamper-evident audit log
 (HMAC chain, optional anchors, counted repeats, `audit verify` and `audit tail`). Approvals, on by default (`approvals list|approve|deny`, `GET /v1/approvals`, `POST /v1/approvals/<id>`
 with an admin token). Justifications (`justify:` rules; `--why` on `fleetlayer msg send` and `fleetlayer mcp`, or
-`FLEETLAYER_WHY`). All of version 2's design is built. Without a version 2 policy, version 1's ordered rules still decide.
+`FLEETLAYER_WHY`). Grants with an expiry (`until:`) and roles that are off until a window is approved (the admin
+window, 28 November 2026). All of version 2's design is built. Without a version 2 policy, version 1's ordered rules still decide.
 
 Agents act on what they read. An agent that reads email, issue trackers, web pages or public submissions can be
 steered by whoever wrote them (prompt injection), and every other agent it can reach inherits that risk. Fleetlayer's
@@ -168,6 +169,100 @@ configuration), and it's recorded with the decision in the audit log. There are 
 The list of verbs that can change things is exhaustive in the code, and a test checks every request the control plane
 handles maps to a verb: something unlisted fails closed.
 
+## Grants with an expiry
+
+Any `allow`, `deny` or `only` rule can say when it stops applying, so a grant made for a job ends with the job instead
+of living on because nobody remembered to remove it:
+
+```yaml
+allow:
+  - who: "*@ops"
+    can: use_tool
+    to: "tool:db@server"
+    until: 2026-12-31            # the start of that day, UTC; or a timestamp: 2026-12-31T18:00:00+13:00
+    why: the migration to the new database
+```
+
+After it, the rule is as if it weren't there. A `justify:` rule can have one too.
+
+## The admin window: a role that's off until you open it
+
+Some work needs an agent that can change everything: install packages, edit system files, rotate production keys. Keep
+that agent in a role of its own (a Unix user with its own node) and mark the role `activation: window`. It then has no
+rights at all until the person opens a window for it, for a set time:
+
+```yaml
+roles:
+  admin:
+    who: "*@server-admin"        # the role's agents: everything on its node
+    activation: window           # off until a window is approved (the default is `always`)
+    longest: 1d                  # the longest window the person may approve (default 1d)
+    asked_by: "*@laptop"         # who else may ask for a window, or close it early (its own agents always may)
+    why: changes the server itself
+
+allow:                           # what the role may do while its window is open
+  - who: "*@server-admin"
+    can: [use_tool, sync, message]
+```
+
+- **Off:** every request by the role's agents, or to them, is refused, whatever the rules say: no messages, no shared
+  tools (its own included), no secrets or bundles delivered to it, no sessions started on it from elsewhere. The refusal
+  says how to ask.
+- **Asking:** one of its agents runs `fleetlayer role activate admin --for 1h --why "upgrade postgres to 17"`. That
+  files an ordinary approval (verb `activate`, target `window:admin`), so it reaches the person like every other
+  approval, with the reason. A request for longer than `longest:` is refused, and so is a request from anyone the role
+  doesn't name.
+- **Open:** once approved, the role's rules decide as for any agent, and its `ask:` rules don't ask again: the window
+  is the approval. Every decision in the window is written to the audit log with the window's ID. Bundles held back
+  while it was off are sent at once. `fleetlayer me` and `fleetlayer role list` show when it ends.
+- **The end** (its time, `fleetlayer role deactivate admin`, `fleetlayer-control role deactivate admin` or `DELETE
+  /v1/windows/admin`): the role is off again at once, and its node closes every session it has, removes everything
+  delivered to it (`fleetlayer secrets forget`, [Secrets](secrets.md)), runs its `on_end` hook, and confirms. The node
+  keeps the window's end on disk and closes it by itself at that time, linked to the control plane or not, and after a
+  restart.
+- **Hooks**, in the node's config, run with `FLEETLAYER_WINDOW_ROLE`, `FLEETLAYER_WINDOW_ID`,
+  `FLEETLAYER_WINDOW_ENDS_AT` and `FLEETLAYER_WINDOW_STATE` (`open` or `closed`). On the role's own node `on_end` runs
+  at the end. A node of a more trusted Unix user can watch the role and run `on_start` and `on_end` both: that's how a
+  sudo rule is added for the window and removed after it, since the role's own user must never be able to add it
+  itself. Hooks must be safe to run twice.
+
+  ```yaml
+  windows:
+    - role: admin
+      on_start: [sudo, -n, /usr/local/sbin/admin-window, open]
+      on_end: [sudo, -n, /usr/local/sbin/admin-window, close]
+  ```
+
+- **Watched:** opening and closing are published as `access.window.opened` and `access.window.closed` on the `access`
+  channel. A window whose nodes haven't confirmed closing it within five minutes of its end, or that didn't close
+  cleanly (a hook failed, a session wouldn't close), shows in the control plane's `/healthz` and in the node's health
+  and heartbeat until it's fixed.
+
+Prefer credentials whose lifetime is the window, so the end is real even for a copy the agent kept: AWS STS sessions
+(`aws sts assume-role --duration-seconds 3600`, up to the role's maximum session duration), GitHub App installation
+tokens (an hour), short-lived database users. A static key the role saw could have been copied: rotate the important
+ones on a schedule. The whole setup, sudo rule included: [An admin role that's off until you open it](guides/admin-window.md).
+
+## Roles that never ask
+
+Approvals are on by default, but a role whose work never needs the person (a homelab agent, a CI runner) shouldn't
+ask: list `ask:` with that role left out, through `except:`.
+
+```yaml
+ask:
+  - who: "*"
+    except: ["*@homeserver", "*@ci"]    # these roles get on with it
+    can: [start, attach, answer, close]
+    for: 10m
+  - who: "*"
+    except: ["*@homeserver", "*@ci"]
+    can: [use_tool, sync, admin, write]
+    for: 30d
+```
+
+Their `deny` and `only` rules still hold; only the asking stops. Keep asking for roles that touch production or
+money, and give the rest standing approval.
+
 ## The audit log
 
 Every decision (allowed, denied, asked, approved) is written before the action happens, and if it can't be written,
@@ -210,6 +305,9 @@ default. Rate limits apply to whatever is allowed.
 | `acl test <tests.yaml>` | Check expected decisions (`{from, can, to, expect: allow\|deny}`, with `role` and `teams` for a person) against a policy file, offline; exits non-zero on a mismatch |
 | `acl suggest [--days 7]` | The smallest `only` rules that allow what each agent actually did, from the message log |
 | `acl log [--limit 30]` | Recent refusals, and what audit rules would have refused |
+| `role list` | Roles with windows, whether each is open, and recent windows (who asked, when it closed, nodes that haven't confirmed) |
+| `role activate <role> --for 1h` | Open a role's window now, as the person (no approval request) |
+| `role deactivate <role>` | Close it now |
 
 On a server, let the control plane apply the policy itself instead of running `acl apply`: `fleetlayer-control serve
 --policy-file <path>` (or `FLEETLAYER_CONTROL_POLICY_FILE`) applies the file at start and again within 10 seconds of

@@ -25,6 +25,7 @@ mod route;
 mod signin;
 mod streams;
 mod summaries;
+mod windows;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -147,6 +148,11 @@ enum Command {
         #[arg(long)]
         session: String,
     },
+    /// Windows of roles with `activation: window` (the admin window): list, open as the person, close early.
+    Role {
+        #[command(subcommand)]
+        command: RoleCommand,
+    },
     /// Requests waiting for the person's approval (policy ask: rules).
     Approvals {
         #[command(subcommand)]
@@ -197,6 +203,20 @@ enum ApprovalsCommand {
     },
     /// Refuse a request (it stands for an hour).
     Deny { id: String },
+}
+
+#[derive(Subcommand)]
+enum RoleCommand {
+    /// The windowed roles, their state, and recent windows.
+    List,
+    /// Open a role's window now, as the person (no approval request): `--for 1h`, at most the role's `longest:`.
+    Activate {
+        role: String,
+        #[arg(long = "for")]
+        hold: String,
+    },
+    /// Close a role's window now: its nodes close its sessions, remove what was delivered and run their hook.
+    Deactivate { role: String },
 }
 
 #[derive(Subcommand)]
@@ -559,6 +579,7 @@ async fn main() -> anyhow::Result<()> {
             }
             tokio::spawn(audit::run(app.clone(), audit_anchor_dir));
             tokio::spawn(link::sync_approved(app.clone()));
+            tokio::spawn(windows::run(app.clone()));
             if !policy_files.is_empty() {
                 // Applied before the server answers, so it never decides with an older policy than the file's.
                 policy_files::apply_all(&app, &policy_files).await;
@@ -829,6 +850,73 @@ async fn main() -> anyhow::Result<()> {
             let n = summaries::delete(&db, t, &node, &session).await?;
             println!("Deleted {n} records of {session} published by {node}.");
             Ok(())
+        }
+        Command::Role { command } => {
+            let pt = people::tenant_or_first(&db, cli.tenant.as_deref()).await?.id;
+            let text = authz::effective(&db, &pt).await?.map(|(t, _)| t).ok_or_else(|| {
+                anyhow::anyhow!("this tenant has no version 2 access policy, so no roles have windows")
+            })?;
+            let p = policy::Compiled::parse(&text)?;
+            match command {
+                RoleCommand::List => {
+                    let roles = windows::list_for(&db, &pt, &p, None).await?;
+                    if roles.is_empty() {
+                        println!("No role has `activation: window` in the access policy.");
+                    }
+                    for w in roles {
+                        let until = w.ends_at.map(|e| format!(" until {}", windows::when(e))).unwrap_or_default();
+                        let id = w.id.map(|i| format!(" ({i})")).unwrap_or_default();
+                        println!("{:<16} {}{until}{id}, longest {}", w.role, w.state, windows::human(w.longest_ms));
+                    }
+                    let recent = windows::history(&db, &pt, 10).await?;
+                    if !recent.is_empty() {
+                        println!("\nRecent windows:");
+                    }
+                    for h in recent {
+                        let closed = match (h["closedAt"].as_i64(), h["closedBy"].as_str()) {
+                            (Some(c), Some(by)) => format!("closed {} by {by}", windows::when(c)),
+                            (Some(c), None) => format!("ended {}", windows::when(c)),
+                            _ => "open".into(),
+                        };
+                        let mut line = format!(
+                            "{}  {:<12} asked by {}, opened {}, {closed}",
+                            h["id"].as_str().unwrap_or("?"),
+                            h["role"].as_str().unwrap_or("?"),
+                            h["requestedBy"].as_str().unwrap_or("?"),
+                            windows::when(h["openedAt"].as_i64().unwrap_or(0))
+                        );
+                        if let Some(n) = h["unconfirmed"].as_array().filter(|a| !a.is_empty()) {
+                            let nodes: Vec<&str> = n.iter().filter_map(|v| v.as_str()).collect();
+                            line.push_str(&format!("; not confirmed by {}", nodes.join(", ")));
+                        }
+                        if let Some(pr) = h["problem"].as_str() {
+                            line.push_str(&format!("; problem: {pr}"));
+                        }
+                        println!("{line}");
+                    }
+                    Ok(())
+                }
+                RoleCommand::Activate { role, hold } => {
+                    let ends = windows::open_now(&db, &pt, &p, &role, &hold, &cli.actor).await?;
+                    println!(
+                        "Opened {role}'s window until {}. The control plane tells its nodes within seconds.",
+                        windows::when(ends)
+                    );
+                    Ok(())
+                }
+                RoleCommand::Deactivate { role } => {
+                    if windows::deactivate_db(&db, &pt, &role, &cli.actor).await? {
+                        println!(
+                            "Closed {role}'s window. Within seconds its nodes close its sessions, remove what was \
+                             delivered to them and run their hook; `fleetlayer-control role list` shows when they've \
+                             confirmed."
+                        );
+                    } else {
+                        println!("{role}'s window wasn't open.");
+                    }
+                    Ok(())
+                }
+            }
         }
         Command::Approvals { command } => {
             let pt = people::tenant_or_first(&db, cli.tenant.as_deref()).await?.id;
@@ -1188,6 +1276,8 @@ async fn serve(app: Arc<App>, listen: SocketAddr, hooks_listen: SocketAddr) -> a
         .route("/v1/audit/verify", get(api::get_audit_verify))
         .route("/v1/messages", axum::routing::post(api::post_message))
         .route("/v1/approvals/{id}", axum::routing::post(api::post_approval))
+        .route("/v1/windows", get(api::get_windows))
+        .route("/v1/windows/{role}", axum::routing::delete(api::delete_window))
         .route("/v1/signin/person", axum::routing::post(signin::post_person))
         .route("/v1/signin/invite_redeem", axum::routing::post(signin::post_invite_redeem))
         .route("/v1/signin/check", axum::routing::post(signin::post_check))
@@ -1300,6 +1390,7 @@ fn reads_only(c: &Command) -> bool {
                     | AclCommand::Check { .. }
             }
             | Command::Node { command: NodeCommand::List }
+            | Command::Role { command: RoleCommand::List }
             | Command::Endpoint { command: EndpointCommand::List }
             | Command::Token { command: TokenCommand::List }
             | Command::Signin { command: SigninCommand::Tokens }

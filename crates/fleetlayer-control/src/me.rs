@@ -146,6 +146,10 @@ pub async fn answer(app: &App, tenant: &str, node: &str, caller: &str) -> Result
         }
     }
     out.justify = justify.into_iter().map(String::from).collect();
+    // Windowed roles it's one of the agents of, or may ask a window for.
+    if let Some(p) = app.authz.policy(&app.db, tenant).await.map_err(RpcError::internal)? {
+        out.windows = crate::windows::list_for(&app.db, tenant, &p, Some(&who)).await.map_err(RpcError::internal)?;
+    }
     Ok(out)
 }
 

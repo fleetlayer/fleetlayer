@@ -23,6 +23,7 @@ mod sync;
 mod terminals;
 mod tools;
 mod update;
+mod window;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -88,6 +89,8 @@ pub struct Node {
     pub secrets: secrets::Secrets,
     /// What installing the release's skills did at start (`fleetlayer status`).
     pub skills: skills::Report,
+    /// Role windows: hooks from `windows:` in node.yaml, and the open windows (`crate::window`).
+    pub windows: window::Windows,
 }
 
 impl Node {
@@ -186,6 +189,7 @@ async fn run(cfg: NodeConfig) -> anyhow::Result<()> {
         readings: readings::Readings::default(),
         secrets: secrets::Secrets::new(config::home()),
         skills: skills::at_start(cfg.skills, &config::home(), env!("CARGO_PKG_VERSION")),
+        windows: window::Windows::new(cfg.windows.clone()),
     });
     tracing::info!(node = %node.name, machine = %node.machine, plugins = node.plugins.len(), "fleetlayer-node starting");
     for p in &node.plugins {
@@ -202,6 +206,8 @@ async fn run(cfg: NodeConfig) -> anyhow::Result<()> {
     }
     tokio::spawn(sync::retry(node.clone()));
     tokio::spawn(secrets::run(node.clone()));
+    // Windows saved as open: closed now if they ended while the node was stopped, otherwise timed to close.
+    tokio::spawn(window::at_start(node.clone()));
     tokio::spawn(act::fill_menus(node.clone()));
     let update = cfg.update.clone().unwrap_or(update::UpdateConfig { mode: None, every_hours: 6 });
     tokio::spawn(update::run(node.clone(), update));
