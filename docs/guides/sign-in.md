@@ -84,8 +84,9 @@ allow:
 
 Invite people from `https://signin.example.com/admin` (**Invite someone** gives a link that works once, for a week),
 or have your agent run `fleetlayer-control invite add`. Removing someone there takes their access away: no service
-signs them in again, and forward-auth stops them within a minute. A service's own session lasts until it ends, which
-step 6 deals with. `fleetlayer-control acl explain` says why someone can or can't reach a service, the same as for
+signs them in again, services that check access on each request (pages) and forward-auth stop them within a minute,
+and a service that only checked at sign-in keeps its own session until its limit (12 hours for pages and the hub).
+When access must end now, also sign them out everywhere (step 6). `fleetlayer-control acl explain` says why someone can or can't reach a service, the same as for
 agents ([Access control](../access-control.md)).
 
 ## 4. A service that speaks OpenID Connect
@@ -172,7 +173,8 @@ clients:
 
 Then:
 
-- **Signing out** anywhere signs that browser out of every service it signed in to.
+- **Signing out** at the sign-in page, or of a service that passes it on (pages, the hub), signs that browser out of
+  every service it signed in to. A service that only ends its own session doesn't reach the others.
 - **Sign out everywhere**, on the sign-in page, ends every session the person has, on every browser.
 - **For an account that may be in someone else's hands,** your agent runs `fleetlayer-signin signout --dir
   ~/.local/state/fleetlayer/signin --person p_…` on the sign-in machine, then you remove the passkey or the account
@@ -208,7 +210,7 @@ Three things to know before relying on groups:
   plane doesn't answer, a sign-out has waited over an hour, or groups can't be read. Add it to your
   [monitoring](monitoring.md).
 - **Back it up.** Losing the folder means everyone makes new passkeys and every service gets a new secret. Back up
-  `people.json` and `keys/` from it ([Backups](backups.md)).
+  `people.json`, `keys/` and `logouts.json` (sign-outs not yet delivered) from it ([Backups](backups.md)).
 - **Keys rotate by themselves** every 90 days, and the old key stays published for two weeks so nothing breaks. If a
   key may have leaked: `fleetlayer-signin keys rotate --dir … --drop-previous`, and accept that people sign in to
   services again.
