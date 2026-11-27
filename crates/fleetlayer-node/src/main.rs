@@ -152,8 +152,8 @@ async fn run(cfg: NodeConfig) -> anyhow::Result<()> {
     // The sockets first: a second node on the same account stops here, before its plugins start.
     let socket = cfg.socket();
     let tools_socket = socket.with_extension("tools.sock");
-    let (local_listener, _socket_file) = socket::claim(&socket)?;
-    let (tools_listener, _tools_socket_file) = socket::claim(&tools_socket)?;
+    let (local_listener, _socket_file) = socket::claim(&socket, socket::WAIT)?;
+    let (tools_listener, _tools_socket_file) = socket::claim(&tools_socket, socket::WAIT)?;
     let key = keys::load_or_create(&config::config_dir().join("node-key"))?;
     let node = Arc::new(Node {
         name: cfg.name(),
