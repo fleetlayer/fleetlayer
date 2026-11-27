@@ -92,7 +92,11 @@ upstreams:
     tenant: acme
     client_id: "…"
     client_secret_file: ~/.config/fleetlayer/signin-upstreams/okta
+    domain: acme.example          # optional for oidc: only verified emails at this domain
 ```
+
+`join` is refused on an upstream with no `domain`, unless you write `join: {role: member, anyone_it_vouches_for:
+true}`: on a public provider that would let in anyone on the internet.
 
 - **The provider's side:** an OAuth client for a web application, with the return address
   `https://signin.example.com/upstream/<name>/callback`. For Google: Google Cloud console, APIs & Services,

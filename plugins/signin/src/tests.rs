@@ -500,6 +500,7 @@ async fn with_upstream(
         name: "acme-google".into(),
         label: "Google".into(),
         domain: Some("acme.example".into()),
+        hd: true,
         tenant: "acme".into(),
         join,
         oidc,
@@ -655,4 +656,50 @@ async fn an_upstream_signs_in_for_its_own_tenant_only() {
         call(&a, "GET", &format!("{}&tenant=home", authorize_uri("hub", &challenge)), Some(&cookie), None, "").await;
     assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.text);
     assert!(r.text.contains("Sign in with your passkey"), "{}", r.text);
+}
+
+#[test]
+fn join_without_a_domain_must_be_said_outright() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("token"), "fls_x").unwrap();
+    std::fs::write(dir.path().join("up"), "secret").unwrap();
+    let config = |join: &str| {
+        serde_json::from_value::<crate::Config>(json!({
+            "dir": dir.path().join("state"), "issuer": "https://signin.example.com",
+            "control_plane": "http://127.0.0.1:1", "token_file": dir.path().join("token"), "listen": "127.0.0.1:0",
+            "upstreams": [{"name": "gitlab", "kind": "oidc", "issuer": "https://gitlab.com", "tenant": "acme",
+                "client_id": "x", "client_secret_file": dir.path().join("up"), "join": serde_json::from_str::<Value>(join).unwrap()}],
+        }))
+        .unwrap()
+    };
+    let e = crate::build(config(r#"{"role": "member"}"#), dir.path()).err().expect("refused").to_string();
+    assert!(e.contains("anyone on the internet") && e.contains("anyone_it_vouches_for"), "{e}");
+    assert!(crate::build(config(r#"{"role": "member", "anyone_it_vouches_for": true}"#), dir.path()).is_ok());
+    assert!(crate::build(config(r#"{"role": "admin", "anyone_it_vouches_for": true}"#), dir.path()).is_err());
+}
+
+#[tokio::test]
+async fn an_oidc_upstream_with_a_domain_checks_the_verified_email_without_hd() {
+    let control = control_plane(Arc::new(Mutex::new(Seen::default()))).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (a, f) = with_upstream(dir.path(), &control, true).await;
+    // The same upstream as an OIDC provider: no hd claim to check, only the verified email's domain.
+    let a = {
+        let mut a = Arc::try_unwrap(a).ok().expect("one owner");
+        a.upstreams[0].hd = false;
+        Arc::new(a)
+    };
+    let without_hd = |n: &str| {
+        let mut c = workspace_claims(&f, n);
+        c.as_object_mut().unwrap().remove("hd");
+        c
+    };
+    assert_eq!(via_upstream(&a, &f, without_hd).await.status, StatusCode::OK);
+    let elsewhere = |n: &str| {
+        let mut c = without_hd(n);
+        c["email"] = json!("sam@gmail.com");
+        c["sub"] = json!("other");
+        c
+    };
+    assert_eq!(via_upstream(&a, &f, elsewhere).await.status, StatusCode::FORBIDDEN);
 }

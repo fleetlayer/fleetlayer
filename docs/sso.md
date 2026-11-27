@@ -382,6 +382,10 @@ upstreams:
   hand are kept.
 - An upstream signs people in for its own tenant only: signing in with Acme's Google doesn't, by itself, give access
   to Home.
+- **`join` needs a `domain`**, so only people with a verified email there (and, for Google, the Workspace's `hd`) can
+  join. Without one, `join` would let in anyone the provider vouches for, which on a public provider (GitLab.com, a
+  social sign-in) is anyone on the internet, so the settings must say it outright: `join: {role: member,
+  anyone_it_vouches_for: true}`. A `domain` works on `oidc` upstreams too (a verified email at it).
 
 ## Forward-auth
 

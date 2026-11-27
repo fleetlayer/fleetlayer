@@ -27,8 +27,10 @@ pub struct Upstream {
     pub name: String,
     /// What the button says ("Continue with Google").
     pub label: String,
-    /// For Google Workspace: the domain its people's `hd` claim must name, with a verified email.
+    /// The domain its people's verified email must be at (and, for Google Workspace, its `hd` claim name).
     pub domain: Option<String>,
+    /// Google Workspace: the `hd` claim must name the domain too (an OIDC provider has no such claim).
+    pub hd: bool,
     /// The tenant it signs people in for (slug or ID).
     pub tenant: String,
     /// Anyone it vouches for may join the tenant as a member.
@@ -111,7 +113,7 @@ fn claim<'a>(c: &'a Map<String, Value>, k: &str) -> Option<&'a str> {
 /// email at it.
 fn accepted(u: &Upstream, c: &Map<String, Value>) -> Result<(), String> {
     let Some(domain) = &u.domain else { return Ok(()) };
-    if claim(c, "hd") != Some(domain.as_str()) {
+    if u.hd && claim(c, "hd") != Some(domain.as_str()) {
         return Err(format!("this account isn't in {domain}"));
     }
     let verified = c.get("email_verified").and_then(Value::as_bool) == Some(true);

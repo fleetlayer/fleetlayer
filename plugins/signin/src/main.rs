@@ -89,6 +89,10 @@ struct UpstreamConfig {
 #[serde(deny_unknown_fields)]
 struct JoinConfig {
     role: String,
+    /// Required, and true, on an upstream with no `domain`: anyone that provider vouches for may join. On a public
+    /// provider (GitLab.com, a social sign-in) that's anyone on the internet, so it's never the default.
+    #[serde(default)]
+    anyone_it_vouches_for: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -211,6 +215,14 @@ fn build(cfg: Config, home: &Path) -> anyhow::Result<(Arc<web::App>, SocketAddr,
         };
         if let Some(j) = &u.join {
             anyhow::ensure!(j.role == "member", "upstream {}: join can only make members", u.name);
+            anyhow::ensure!(
+                u.domain.is_some() || j.anyone_it_vouches_for,
+                "upstream {}: join with no domain lets anyone {} vouches for into {} (on a public provider, anyone on \
+                 the internet). Set domain, or say it outright with join: {{role: member, anyone_it_vouches_for: true}}",
+                u.name,
+                issuer,
+                u.tenant
+            );
         }
         let secret =
             read_secret(&expand(home, &u.client_secret_file), &format!("upstream {}'s client secret", u.name))?;
@@ -220,6 +232,7 @@ fn build(cfg: Config, home: &Path) -> anyhow::Result<(Arc<web::App>, SocketAddr,
             name: u.name,
             label,
             domain: u.domain.map(|d| d.to_ascii_lowercase()),
+            hd: u.kind == "google",
             tenant: u.tenant,
             join: u.join.is_some(),
             oidc,

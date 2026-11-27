@@ -717,39 +717,53 @@ fn handle_from(hint: &str) -> String {
 /// member}` in the sign-in service's settings): a new person, a member, with a handle made from `hint` and kept
 /// unique (`sam`, `sam-2`...), never reusing a handle someone had. Recorded in the tenant's audit log as `by`.
 pub async fn join(db: &Db, tenant: &str, display_name: &str, hint: &str, by: &str) -> anyhow::Result<Redeemed> {
+    let name = display_name.trim();
+    anyhow::ensure!(!name.is_empty() && name.chars().count() <= 100, "a display name is 1 to 100 characters");
     let base = handle_from(hint);
-    let mut handle = base.clone();
-    for n in 2.. {
+    // The person, the membership and the team in one transaction: a handle taken meanwhile (two joins racing) rolls
+    // it all back and the next handle is tried, so no person is left without a membership.
+    for n in 1..1000 {
+        let handle = if n == 1 { base.clone() } else { format!("{base}-{n}") };
         let taken = sqlx::query("SELECT 1 FROM members WHERE tenant = ? AND handle = ?")
             .bind(tenant)
             .bind(&handle)
             .fetch_optional(db)
             .await?
             .is_some();
-        if !taken {
-            break;
+        if taken {
+            continue;
         }
-        anyhow::ensure!(n < 1000, "no free handle for {base}");
-        handle = format!("{base}-{n}");
+        let person = format!("p_{}", random_id(20));
+        let mut tx = db.begin().await?;
+        sqlx::query("INSERT INTO people (id, display_name, created_at) VALUES (?, ?, ?)")
+            .bind(&person)
+            .bind(name)
+            .bind(now_ms())
+            .execute(&mut *tx)
+            .await?;
+        let inserted =
+            sqlx::query("INSERT INTO members (tenant, person, handle, role, added_at) VALUES (?, ?, ?, 'member', ?)")
+                .bind(tenant)
+                .bind(&person)
+                .bind(&handle)
+                .bind(now_ms())
+                .execute(&mut *tx)
+                .await;
+        if inserted.is_err() {
+            tx.rollback().await?;
+            continue;
+        }
+        sqlx::query("INSERT OR IGNORE INTO team_members (tenant, team, person, role) VALUES (?, ?, ?, 'member')")
+            .bind(tenant)
+            .bind(EVERYONE)
+            .bind(&person)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        log(db, tenant, by, "member.join", &format!("person:{handle}"), "member").await?;
+        return Ok(Redeemed { tenant: tenant.into(), person, handle, recovery: false });
     }
-    let person = person_add(db, display_name).await?;
-    let mut tx = db.begin().await?;
-    sqlx::query("INSERT INTO members (tenant, person, handle, role, added_at) VALUES (?, ?, ?, 'member', ?)")
-        .bind(tenant)
-        .bind(&person)
-        .bind(&handle)
-        .bind(now_ms())
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("INSERT OR IGNORE INTO team_members (tenant, team, person, role) VALUES (?, ?, ?, 'member')")
-        .bind(tenant)
-        .bind(EVERYONE)
-        .bind(&person)
-        .execute(&mut *tx)
-        .await?;
-    tx.commit().await?;
-    log(db, tenant, by, "member.join", &format!("person:{handle}"), "member").await?;
-    Ok(Redeemed { tenant: tenant.into(), person, handle, recovery: false })
+    anyhow::bail!("no free handle for {base}")
 }
 
 // ---------------------------------------------------------------- node owners
