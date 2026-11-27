@@ -361,6 +361,17 @@ pub fn gateway_yaml_text(port: u16, local_control: bool, alerts_to: Option<&str>
     y
 }
 
+/// `control.url` in an existing node.yaml.
+fn existing_control_url(node_yaml: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(node_yaml).ok()?;
+    let v: serde_json::Value = yaml_serde::from_str(&text).ok()?;
+    v["control"]["url"].as_str().map(String::from)
+}
+
+fn is_local_control(url: &str) -> bool {
+    url.starts_with("ws://127.0.0.1:7600/") || url.starts_with("ws://localhost:7600/")
+}
+
 /// The machine's name, as the node works it out (it may have a name in node.yaml already).
 fn node_name(node_bin: &Path) -> anyhow::Result<String> {
     let out = run(Command::new(node_bin).arg("config"))?;
@@ -389,7 +400,10 @@ pub async fn up(a: UpArgs) -> anyhow::Result<()> {
     let l = Layout { config: config_dir(), state: state_dir() };
     let node_bin = find_bin("fleetlayer-node")?;
     let gateway_bin = find_bin("fleetlayer-gateway")?;
-    let control_bin = if a.join.is_none() { Some(find_bin("fleetlayer-control")?) } else { None };
+    // A node.yaml that already links elsewhere means this machine joined a fleet: no control plane here.
+    let existing_control = existing_control_url(&Layout { config: config_dir(), state: state_dir() }.node_yaml());
+    let joined = a.join.is_some() || existing_control.as_deref().is_some_and(|u| !is_local_control(u));
+    let control_bin = if joined { None } else { Some(find_bin("fleetlayer-control")?) };
     if !a.no_hub {
         find_bin("fleetlayer-claude-auth-manager")?;
     }
@@ -509,8 +523,10 @@ pub async fn up(a: UpArgs) -> anyhow::Result<()> {
                 dir.join("audit-key").display().to_string(),
             ],
         });
-    } else if !token_file.exists() {
+    } else if a.join.is_some() && !token_file.exists() {
         anyhow::bail!("--join needs the node's token: --token-file <file>");
+    } else if let Some(u) = existing_control.filter(|_| a.join.is_none()) {
+        println!("This node already links to the control plane at {u}, so none runs here.");
     }
 
     // The gateway.
@@ -675,6 +691,20 @@ mod tests {
 
     fn yaml_serde_from(s: &str) -> serde_json::Value {
         yaml_serde::from_str(s).unwrap_or_else(|e| panic!("{e}\n{s}"))
+    }
+
+    #[test]
+    fn an_existing_control_plane_is_kept() {
+        let d = std::env::temp_dir().join(format!("fl-up-test-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("node.yaml");
+        std::fs::write(&f, "name: laptop\ncontrol:\n  url: wss://control.example/v1/link\n  token_file: /x\n").unwrap();
+        assert_eq!(existing_control_url(&f).as_deref(), Some("wss://control.example/v1/link"));
+        assert!(!is_local_control("wss://control.example/v1/link"));
+        assert!(is_local_control("ws://127.0.0.1:7600/v1/link"));
+        std::fs::write(&f, "name: laptop\n").unwrap();
+        assert_eq!(existing_control_url(&f), None);
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]
