@@ -294,8 +294,8 @@ managers, machines that sleep.
 - **Testing user services as another Unix user.** `sudo -iu <user> systemctl --user …` fails with "Failed to connect
   to bus" unless `XDG_RUNTIME_DIR=/run/user/$(id -u)` is set, and the user's services stop at logout unless
   `loginctl enable-linger <user>`. Found testing `fleetlayer up` on a Linux build server, 27 Nov 2026.
-- **`fleetlayer-control` admin commands use `./fleetlayer-control.db` unless told otherwise.** Its `--db` defaults to a
-  file in the current directory, so `fleetlayer-control node add` or `acl apply` run from the wrong folder quietly
-  makes a new, empty database. After `fleetlayer up` the real one is `~/.local/state/fleetlayer/control/control.db`:
-  pass `--db` or set `FLEETLAYER_CONTROL_DB`. Where it lives: `docs/guides/untrusted-input.md`; the mini server session
-  was asked whether `up` should make that the default.
+- **`fleetlayer-control` admin commands used `./fleetlayer-control.db` unless told otherwise** (fixed in v0.3.8). Run
+  from the wrong folder, `node add` or `acl apply` quietly made a new, empty database. Since v0.3.8, with no `--db` it
+  uses `./fleetlayer-control.db` if that exists, else the one `fleetlayer up` makes
+  (`~/.local/state/fleetlayer/control/control.db`), and admin commands refuse to create a database at a path nobody
+  named. Where it lives: `crates/fleetlayer-control/src/main.rs`; the guides leave out `--db` on a laptop.

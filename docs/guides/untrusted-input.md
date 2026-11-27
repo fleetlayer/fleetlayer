@@ -35,12 +35,14 @@ scopes they offer (a mailbox it can read and label, but not send from, if that's
 
 ## 2. Its own node
 
-Enrol the new node in your control plane. With [`fleetlayer up`](laptop.md) on this machine, the control plane's
-database is in your state folder:
+Enrol the new node in your control plane, on the machine and as the user that runs it:
 
 ```sh
-fleetlayer-control --db ~/.local/state/fleetlayer/control/control.db node add triage
+fleetlayer-control node add triage
 ```
+
+After [`fleetlayer up`](laptop.md), `fleetlayer-control` finds the control plane's database by itself. On a server
+that keeps it elsewhere, pass `--db <path>` (or set `FLEETLAYER_CONTROL_DB`) on this and every command below.
 
 It prints a token. As the triage user, save it and install the node:
 
@@ -105,7 +107,7 @@ limits:
 ```
 
 ```sh
-fleetlayer-control --db ~/.local/state/fleetlayer/control/control.db acl apply policy.yaml
+fleetlayer-control acl apply policy.yaml
 ```
 
 A `deny` can't be undone by a broader rule anywhere else in the file, so a later `allow` for `"*"` doesn't reopen the
@@ -116,7 +118,7 @@ browser to it. Any session it messages may still reply, and the triage agent may
 Ask the control plane what it would decide, and why:
 
 ```sh
-fleetlayer-control --db ~/.local/state/fleetlayer/control/control.db acl explain \
+fleetlayer-control acl explain \
   --from triage@triage --can use_tool --to tool:browser@laptop
 ```
 
@@ -148,7 +150,7 @@ once you've agreed.
 Every refusal names the rule, and the agent that hit it is told to report it rather than work around it. To see them:
 
 ```sh
-fleetlayer-control --db ~/.local/state/fleetlayer/control/control.db acl log
+fleetlayer-control acl log
 ```
 
 To have a session hear about them as they happen, subscribe it to the `access` channel, where each one is published as
