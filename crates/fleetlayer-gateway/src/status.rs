@@ -175,11 +175,17 @@ pub async fn page(app: &App, unknown: Option<&str>) -> Response {
 <p>When something goes down or comes back: {alerts}.</p>{queued}
 <p>Moving a piece to a server: see the guide “Start on your laptop” in Fleetlayer's docs.</p>
 <details><summary>Advanced</summary>
-<p>Gateway on <code>{listen}</code>, services at <code>&lt;name&gt;.{domain}</code>. Settings: <code>{cfgpath}</code>. State: <code>{state}</code>.</p>
+<p>Gateway on {listen} (this machine only), services at <code>&lt;name&gt;.{domain}</code>. Settings: <code>{cfgpath}</code>. State: <code>{state}</code>.</p>
 <table><thead><tr><th>Name</th><th>Backend</th><th>Other hosts</th><th>From</th></tr></thead><tbody>{advanced}</tbody></table>
 <p>For a server's proxy and monitor: <code>fleetlayer-gateway emit traefik</code>, <code>fleetlayer-gateway emit gatus</code>. JSON: <a href="/api/status">/api/status</a>.</p>
 </details></main></body></html>"#,
-        listen = cfg.listen,
+        listen = {
+            let mut l = app.listening.lock().expect("not poisoned").clone();
+            if l.is_empty() {
+                l.push(cfg.listen.to_string());
+            }
+            l.iter().map(|a| format!("<code>{}</code>", esc(a))).collect::<Vec<_>>().join(" and ")
+        },
         domain = esc(&cfg.domain),
         cfgpath = esc(&app.config_path.display().to_string()),
         state = esc(&cfg.state_dir().display().to_string()),

@@ -68,7 +68,13 @@ async fn gateway(yaml: &str, dir: &std::path::Path) -> (SocketAddr, Arc<App>) {
     cfg.check().unwrap();
     let reg = Registry::new(cfg);
     let monitor = monitor::Monitor::new(reg.clone());
-    let app = Arc::new(App { reg, monitor, client: proxy::client(), config_path: dir.join("gateway.yaml") });
+    let app = Arc::new(App {
+        reg,
+        monitor,
+        client: proxy::client(),
+        config_path: dir.join("gateway.yaml"),
+        listening: Default::default(),
+    });
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = l.local_addr().unwrap();
     let router = crate::router(app.clone());

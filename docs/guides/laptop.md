@@ -42,7 +42,8 @@ Useful flags: `--alerts-to planning` (a session that hears when something goes d
 | Claude sign-in hub | `http://claude-hub.localhost:7680` | `~/.local/state/fleetlayer/claude-hub/` |
 | Pages and apps | `http://pages.localhost:7680`, apps at `<app>--<space>.apps.localhost:7680` | `~/Fleetlayer/personal/` |
 
-Everything listens on `127.0.0.1` only: nothing is reachable from your network. The hub and pages pick a free port each
+Everything listens on this machine's own addresses only (`127.0.0.1`, and `[::1]` for the gateway, since macOS
+answers `*.localhost` with `::1` first): nothing is reachable from your network. The hub and pages pick a free port each
 time they start and tell the node where they are; the gateway follows them. `fleetlayer services` lists every route.
 
 **Plain HTTP, on purpose.** Browsers send `*.localhost` to your own machine and treat it as a secure context, so
@@ -114,7 +115,7 @@ environment.
 
 ```yaml
 domain: localhost              # services are <name>.<domain>
-listen: 127.0.0.1:7680         # 0.0.0.0 exposes every service to your network, without TLS
+listen: 127.0.0.1:7680         # and [::1]:7680 too; 0.0.0.0 exposes every service to your network, without TLS
 services:                      # services that aren't plugins, or that moved to another machine
   control: { url: "http://127.0.0.1:7600", health: /healthz }
   # claude-hub: { hidden: true }   # no route and no check for a service a plugin announces

@@ -170,6 +170,16 @@ impl Config {
         self.node_socket.as_deref().map(expand).unwrap_or_else(default_node_socket)
     }
 
+    /// Where it listens besides `listen`: `[::1]` on the same port when `listen` is `127.0.0.1`, since some systems
+    /// (macOS) resolve `*.localhost` to `::1` first.
+    pub fn also_listen(&self) -> Vec<SocketAddr> {
+        if self.listen.ip() == std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST) {
+            vec![SocketAddr::new(std::net::Ipv6Addr::LOCALHOST.into(), self.listen.port())]
+        } else {
+            vec![]
+        }
+    }
+
     pub fn port(&self) -> u16 {
         self.public_port.unwrap_or(self.listen.port())
     }
@@ -202,6 +212,9 @@ mod tests {
         c.check().unwrap();
         assert_eq!(c.address("control"), "http://control.localhost:7680");
         assert_eq!(c.heartbeats["node"].every, 30);
+        assert_eq!(c.also_listen(), ["[::1]:7680".parse().unwrap()]);
+        let c: Config = yaml_serde::from_str("listen: 0.0.0.0:7680\n").unwrap();
+        assert!(c.also_listen().is_empty(), "0.0.0.0 already covers IPv4; IPv6 stays off unless asked for");
     }
 
     #[test]

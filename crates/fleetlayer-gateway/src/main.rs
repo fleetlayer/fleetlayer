@@ -106,6 +106,8 @@ pub struct App {
     pub monitor: Arc<monitor::Monitor>,
     pub client: proxy::HttpClient,
     pub config_path: PathBuf,
+    /// The addresses it really listens on.
+    pub listening: std::sync::Mutex<Vec<String>>,
 }
 
 pub fn html_escape(s: &str) -> String {
@@ -211,7 +213,13 @@ async fn serve(cfg: Config, config_path: PathBuf) -> anyhow::Result<()> {
     }
     let reg = Registry::new(cfg);
     let monitor = monitor::Monitor::new(reg.clone());
-    let app = Arc::new(App { reg: reg.clone(), monitor: monitor.clone(), client: proxy::client(), config_path });
+    let app = Arc::new(App {
+        reg: reg.clone(),
+        monitor: monitor.clone(),
+        client: proxy::client(),
+        config_path,
+        listening: Default::default(),
+    });
     tokio::spawn(reg.clone().follow_node());
     tokio::spawn(monitor.run());
     let listener = tokio::net::TcpListener::bind(listen).await.map_err(|e| {
@@ -219,8 +227,27 @@ async fn serve(cfg: Config, config_path: PathBuf) -> anyhow::Result<()> {
             "can't listen on {listen} ({e}); another program may have the port: set listen: in gateway.yaml"
         )
     })?;
-    tracing::info!(%listen, status = reg.cfg.address(registry::STATUS), "gateway listening");
-    axum::serve(listener, router(app).into_make_service_with_connect_info::<SocketAddr>()).await?;
+    let mut servers = vec![listener];
+    // macOS answers <name>.localhost with ::1 first: listen there too, or a browser tries it, fails, and only then
+    // falls back. Best effort, for machines with IPv6 switched off.
+    for also in reg.cfg.also_listen() {
+        match tokio::net::TcpListener::bind(also).await {
+            Ok(l) => servers.push(l),
+            Err(e) => tracing::warn!(%also, "not listening on {also} too: {e}"),
+        }
+    }
+    let bound: Vec<String> = servers.iter().filter_map(|l| l.local_addr().ok()).map(|a| a.to_string()).collect();
+    *app.listening.lock().expect("not poisoned") = bound.clone();
+    tracing::info!(listen = bound.join(", "), status = reg.cfg.address(registry::STATUS), "gateway listening");
+    let mut tasks = tokio::task::JoinSet::new();
+    for l in servers {
+        let svc = router(app.clone()).into_make_service_with_connect_info::<SocketAddr>();
+        tasks.spawn(async move { axum::serve(l, svc).await });
+    }
+    // Any listener ending ends the gateway, and the service manager restarts it.
+    if let Some(res) = tasks.join_next().await {
+        res??;
+    }
     Ok(())
 }
 
