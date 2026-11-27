@@ -115,7 +115,13 @@ managers, machines that sleep.
   - The guard that makes that safe: a `PreToolUse` hook on Bash (exit 2, the reason on stderr) refuses any `rm` or
     `rmdir` whose target uses a variable unless every variable is a `${NAME:?}` guard, set to a literal earlier in the
     same command, or `HOME`/`TMPDIR`; command substitutions and unquoted variables always; `${C:-/tmp}` isn't a guard.
-    Recursive deletes stay inside the session's directory and `/tmp`. The refusal gives the fix ("Rewrite it with a
+    Don't confine recursive deletes to the session's directory and `/tmp`: that refused a checked literal path to a
+    build folder in another repo that the person wanted gone. What works: refuse the shapes that go wrong without
+    anyone meaning it (a path from a command substitution; an unquoted variable; a variable that may be empty, with no
+    `${VAR:?}` guard and not set earlier in the same command; a relative path after a `cd` the hook can't follow;
+    `xargs rm -r`), plus a floor nobody means (`/`, the home directory, any top-level directory, or a glob of one:
+    `~/*`, `/*`), and let every other literal or guarded path run. Over `ssh`, refuse variables in a recursive delete
+    (they expand on the other host) and apply the same floor. The refusal gives the fix ("Rewrite it with a
     guard on every variable, e.g. "${C:?}"/"${ID:?}".json, or use a literal path"), so the agent retries at once.
     About 18 ms a call (`python3 -I`, standard library only).
   - The lesson: the hook must be at least as strict as Claude Code's prompt on the same command shapes, or the looser
