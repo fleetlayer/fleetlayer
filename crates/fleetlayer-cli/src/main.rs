@@ -435,6 +435,10 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 v["user"].as_str().unwrap_or("?"),
                 v["version"].as_str().unwrap_or("?")
             );
+            match v["health"].as_str() {
+                Some(problem) => println!("  unhealthy: {problem}"),
+                None => println!("  healthy"),
+            }
             for p in v["plugins"].as_array().into_iter().flatten() {
                 let roles: Vec<&str> = p["roles"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
                 let mut line = format!(

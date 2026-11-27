@@ -29,7 +29,8 @@ Each piece runs as a user service (a launchd agent on macOS, a systemd user serv
 log in and restarts if it crashes. On Linux, `loginctl enable-linger "$USER"` keeps them running while you're logged
 out. `fleetlayer down` stops them all and keeps every file; `fleetlayer up` again starts them where they left off.
 
-Useful flags: `--alerts-to planning` (a session that hears when something goes down), `--no-hub`, `--no-pages`,
+Useful flags: `--alerts-to planning` (a session that hears when something goes down; on a later `up` it doesn't
+change an existing gateway.yaml, so set `alerts.session` there), `--no-hub`, `--no-pages`,
 `--port 7680`.
 
 ## What's running
@@ -68,7 +69,7 @@ heartbeats:
 ```
 
 Who watches the gateway: launchd or systemd restart it, and the node's health includes the gateway's `/healthz`, so
-`fleetlayer status` says when it keeps failing.
+`fleetlayer status` prints `unhealthy: …` when it keeps failing (`health` in `fleetlayer status --json`).
 
 ## Moving a piece to a server
 
