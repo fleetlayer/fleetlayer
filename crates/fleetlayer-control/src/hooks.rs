@@ -693,3 +693,5 @@ mod tests {
         }
     }
 }
+
+fn ci_webhook_failure_test( ) {}
