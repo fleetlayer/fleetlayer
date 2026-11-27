@@ -78,7 +78,8 @@ node leaves that alone.
 - The node half serves the rotator's coordinator API on its socket (`coordinator.sock` in `~/.claude/account-rotator`,
   `GET /state` long polls, `POST /readings`), moved from Quietdeck's usage module (`src/coordinator/`, API 0.7.1). It
   runs in **borrow mode**: nothing is polled, refreshed or signed in, since setup tokens can't read usage or profiles.
-  Its accounts are the managed slots (the rotator's ID is the slot number); add, remove and sign-in answer 409.
+  Its accounts are the managed slots (the rotator's ID is the slot number); add, remove and sign-in answer 409. Its
+  state says `managedBy: "the auth hub"`, so the rotator (0.7.7 and later) offers no Sign in, Add or Remove.
   Readings sessions post are published as `claude.usage` keyed by account UUID, `data` the coordinator's reading shape
   `{fiveHour?, sevenDay?, models?, at, source}`; readings from elsewhere (the hub's polls, other nodes' sessions) come
   in by subscription and the newest whole reading wins, keeping model weeks. A token a session saw rejected, or a

@@ -1073,6 +1073,11 @@ async fn borrowing_refuses_to_add_remove_or_sign_in() {
         assert!(r.body.to_string().contains("auth hub"), "{}", r.body);
     }
     assert!(w.w().sign_outs.is_empty());
+    // The state says so, for the rotator to offer none of them.
+    let state = serde_json::to_value(c.state()).expect("state");
+    assert_eq!(state["managedBy"], json!("the auth hub"));
+    let own = started(&World::new(), None).await;
+    assert_eq!(serde_json::to_value(own.state()).expect("state").get("managedBy"), None);
 }
 
 #[tokio::test]

@@ -128,11 +128,14 @@ async fn answer<D: Deps>(
     };
     let res =
         coordinator.handle(Request { method: method.to_string(), path: uri.path().to_string(), query, body }).await;
-    // The node runs the API for as long as it runs: a coordinator's `cli.ts stop` or upgrade can't end it.
+    // The plugin runs the API for as long as it runs: a coordinator's `cli.ts stop` or upgrade (as rotators before
+    // 0.7.6 try, not knowing this plugin's name) can't end it.
     if res.shutdown {
         return json_response(
             409,
-            &json!({ "error": "Quietdeck's node serves this API, and keeps it running: it doesn't stop on request." }),
+            &json!({
+                "error": "Fleetlayer's claude-auth-manager serves this API, and keeps it running: it doesn't stop on request."
+            }),
         );
     }
     json_response(res.status, &res.body)

@@ -181,6 +181,9 @@ pub struct SignInState {
     pub since: Ms,
 }
 
+/// Who manages a borrowing monitor's sign-ins, as the rotator shows it ("Sign-ins come from the auth hub").
+pub const MANAGED_BY: &str = "the auth hub";
+
 /// Everything the monitor shares: what GET /state answers.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -196,6 +199,10 @@ pub struct SharedState {
     pub notices: Vec<Notice>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sign_in: Option<SignInState>,
+    /// Who manages the sign-ins when this monitor doesn't: "the auth hub" in borrow mode. The rotator then offers no
+    /// sign-in, add or remove (from 0.7.7).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed_by: Option<String>,
 }
 
 pub struct Request {
@@ -496,6 +503,7 @@ impl<D: Deps> Coordinator<D> {
             sessions: st.sessions.clone(),
             notices: st.notices.clone(),
             sign_in: st.signing.as_ref().map(|s| SignInState { account_id: s.account_id.clone(), since: s.since }),
+            managed_by: self.is_borrowed().then(|| MANAGED_BY.to_string()),
         }
     }
 
