@@ -12,7 +12,9 @@ tokens, private repo names, customer data or anything from Nathan's private note
   JSON-RPC on stdio (`docs/protocol.md`). Never compile a plugin into the node, never load dynamic libraries.
 - **The control plane holds no credentials.** Claude sign-ins and tokens, and any other secret, live only on machines
   the person controls. Secrets cross the control plane only as ciphertext sealed to a node's key, and are never
-  stored there.
+  stored there. It keeps only hashes of the tokens that reach it, plus one exception: a GitHub webhook's signing
+  secret, which it needs to check a delivery's signature and which can do no more than forge a delivery. Don't add
+  another exception without asking Nathan.
 - **Build on ACP, don't fork it.** Extensions use ACP's own rules: `_meta` keys and `_`-prefixed methods under the
   `fleetlayer.dev/` namespace. Never add fields at the root of an ACP type.
 - **Simple first, depth when it's needed.** Nobody should have to learn what SSO, OpenID, tenants or teams are to get
