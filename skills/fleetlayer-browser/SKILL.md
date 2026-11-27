@@ -47,7 +47,8 @@ renews while you use it.
 - **"browser@laptop didn't answer within 120s (the machine may be asleep, or its node restarting)":** tell your
   person once rather than retrying in a loop; the next call works normally once the machine is back. For pages that
   are slow on purpose, add `--call-timeout 300` after the target in the MCP server's command.
-- **The browser shows as disconnected** after 90 seconds with no traffic: that's expected. Your next use reconnects.
+- **The browser shows as disconnected:** the other machine went away (asleep, its node restarting) about 90 seconds
+  earlier. A browser left idle stays connected. Your next use reconnects once the machine is back.
 - **"Playwright Extension not found" or an extension error:** the laptop's setup needs fixing (the person's job,
   covered in Fleetlayer's browser guide).
 - **Refused by access control** ("may not use_tool tool:browser@…"): this session isn't allowed the browser. Tell
