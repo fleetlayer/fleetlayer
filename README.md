@@ -17,6 +17,10 @@ across machines and tools:
 
 Fleetlayer is a small set of components you run, and a large set of guides on plugging them into what you already use.
 
+**Start small, replace any component as you go.** Begin with everything on your laptop. Move a piece to a home server
+or a VPS when you outgrow it, or swap it for the tool you'd rather use (your own proxy, your company's sign-in, another
+session manager): each piece keeps its state in one place and speaks open protocols.
+
 **No vendor lock-in.** Keep using Anthropic's and OpenAI's own tools and features for as long as they serve you. When
 you outgrow them (several subscriptions, several machines, several accounts, agents from more than one vendor), you
 don't have to give anything up: Fleetlayer's parts work with any agent and any model, run on machines you control, and
