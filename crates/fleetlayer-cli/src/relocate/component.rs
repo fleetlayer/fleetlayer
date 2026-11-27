@@ -285,7 +285,7 @@ pub fn inspect_plugin(here: &Here, name: &str, announced: &[Value]) -> anyhow::R
     }
     if name == "signin" {
         i.notes.push(
-            "Passkeys belong to the address sign-in answers at: they keep working when its issuer and passkey domain stay the same (docs/sso.md, \"Moving it\")."
+            "Passkeys belong to its passkey domain (by default the issuer's parent domain), so they keep working on the new machine and at any address under that domain; a new issuer address still means repointing every service that signs in through it (docs/sso.md, \"Moving it\")."
                 .into(),
         );
     }

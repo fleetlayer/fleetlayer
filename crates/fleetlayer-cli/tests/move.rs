@@ -5,7 +5,7 @@
 //! hub's and pages' files, and that whatever pointed at the old address now reaches the new one. Another test proves a
 //! move that can't finish puts everything back.
 //!
-//! The other programs come from the same build (`cargo test --workspace` builds them all first).
+//! The other programs come from the same build: `cargo build --workspace --bins` before the tests (CI does).
 
 #![cfg(unix)]
 
@@ -27,7 +27,7 @@ fn bin_dir() -> PathBuf {
         "fleetlayer-signin",
         "fleetlayer-claude-auth-manager",
     ] {
-        assert!(dir.join(b).is_file(), "{b} isn't built next to fleetlayer: run `cargo test --workspace`");
+        assert!(dir.join(b).is_file(), "{b} isn't built next to fleetlayer: run `cargo build --workspace --bins` first");
     }
     dir
 }
@@ -424,7 +424,7 @@ fn sign_in_moves_with_its_signing_key() {
 
     let out = f.a.ok(&["move", "sign-in", &f.dest(), "--port", &new.to_string()]);
     assert!(out.contains("It's healthy there."), "{out}");
-    assert!(out.contains("Passkeys belong to the address"), "{out}");
+    assert!(out.contains("Passkeys belong to its passkey domain"), "{out}");
     assert_eq!(f.b.read(".local/state/fleetlayer/signin/keys/signing.pem"), key, "tokens it signed still verify");
     assert_eq!(f.b.read(".config/fleetlayer/signin-token"), "t".repeat(40));
     let (code, jwks) = http_get(new, "signin.localhost:7680", "/jwks").unwrap();

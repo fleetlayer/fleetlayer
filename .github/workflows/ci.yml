@@ -26,6 +26,9 @@ jobs:
       - run: cargo fmt --all --check
       - run: scripts/collect-skills "$RUNNER_TEMP/skills"   # every skill has a unique, valid name
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      # Every program first: fleetlayer-cli's move tests run the node, control plane, gateway and plugins, and cargo
+      # builds only a package's own binaries for its integration tests.
+      - run: cargo build --locked --workspace --bins
       - run: cargo test --locked --workspace
 
   # claude-auth-manager writes setup tokens into the macOS login keychain through /usr/bin/security, and
