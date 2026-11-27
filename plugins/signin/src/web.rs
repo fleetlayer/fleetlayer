@@ -38,6 +38,8 @@ pub struct Client {
     /// None: a public client (PKCE alone). PKCE is required of every client either way.
     pub secret: Option<String>,
     pub post_logout_redirect_uris: Vec<String>,
+    /// Where it takes back-channel logouts, if it does.
+    pub backchannel_logout_uri: Option<String>,
 }
 
 pub struct Settings {
@@ -57,6 +59,8 @@ struct Code {
     tenant: String,
     nonce: Option<String>,
     challenge: String,
+    /// The sign-in session's `sid`, for back-channel logout.
+    sid: String,
     auth_time: i64,
     expires: i64,
 }
@@ -149,7 +153,7 @@ impl App {
         })
     }
 
-    fn client(&self, id: &str) -> Option<&Client> {
+    pub(crate) fn client(&self, id: &str) -> Option<&Client> {
         self.settings.clients.iter().find(|c| c.name == id)
     }
 
@@ -207,21 +211,33 @@ impl App {
                 expires_at: now + SESSION_MS,
                 verified_at: now,
                 via_tenant: via_tenant.map(String::from),
+                clients: Default::default(),
             },
         );
         self.store.save_sessions(&sessions)?;
         Ok(self.session_cookie(&value, SESSION_MS / 1000))
     }
 
+    /// End this browser's session and send its logouts to the services it signed in to.
     async fn end_session(&self, headers: &HeaderMap) -> anyhow::Result<Option<String>> {
         let Some(value) = cookie(headers, self.cookie_name()) else { return Ok(None) };
-        let mut sessions = self.store.sessions.lock().await;
-        let gone = sessions.sessions.remove(&sha256_hex(&value));
-        self.store.save_sessions(&sessions)?;
-        Ok(gone.map(|s| s.person))
+        let key = sha256_hex(&value);
+        let gone = {
+            let mut sessions = self.store.sessions.lock().await;
+            let gone = sessions.sessions.remove(&key);
+            self.store.save_sessions(&sessions)?;
+            gone
+        };
+        let Some(s) = gone else { return Ok(None) };
+        self.queue(self.logouts_for(&key, &s, now_ms())).await?;
+        Ok(Some(s.person))
     }
 
-    /// What's wrong, for `/healthz` and the heartbeat.
+    /// Drop every access token a person holds (signing out everywhere).
+    pub(crate) async fn drop_access_tokens(&self, person: &str) {
+        self.pending.lock().await.access.retain(|_, a| a.person != person);
+    }
+
     /// Rotate the signing key when it's due, and pick up a rotation made by the `keys rotate` command (every minute,
     /// from a blocking task: making a key is slow).
     pub fn refresh_keys(&self) {
@@ -232,6 +248,7 @@ impl App {
         *self.key_error.lock().expect("key error lock") = result.err();
     }
 
+    /// What's wrong, for `/healthz` and the heartbeat.
     pub async fn problems(&self) -> Vec<String> {
         let mut out = vec![];
         if !self.store.writable() {
@@ -242,6 +259,9 @@ impl App {
         }
         if let Some(e) = self.key_error.lock().expect("key error lock").clone() {
             out.push(format!("rotating the token-signing key: {e}"));
+        }
+        if let Some(late) = self.late_logouts().await {
+            out.push(late);
         }
         out
     }
@@ -285,6 +305,7 @@ pub fn router(app: Arc<App>) -> axum::Router {
         .route("/token", post(token))
         .route("/userinfo", get(userinfo))
         .route("/logout", get(logout).post(logout))
+        .route("/logout/everywhere", post(logout_everywhere))
         .route("/login", get(login_page))
         .route("/invite", get(invite_page))
         .route("/invite/join", post(invite_join))
@@ -311,6 +332,8 @@ async fn discovery(State(app): State<Arc<App>>) -> Json<Value> {
         "userinfo_endpoint": format!("{i}/userinfo"),
         "jwks_uri": format!("{i}/jwks"),
         "end_session_endpoint": format!("{i}/logout"),
+        "backchannel_logout_supported": true,
+        "backchannel_logout_session_supported": true,
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code"],
         "subject_types_supported": ["public"],
@@ -389,10 +412,11 @@ async fn authorize(
         _ => return to_client_error(redirect_uri, "invalid_request", state),
     };
     let here = uri.path_and_query().map(|p| p.as_str().to_string()).unwrap_or_else(|| "/authorize".into());
-    let Some((session, _)) = app.session(&headers).await else {
+    let Some((session, cookie_value)) = app.session(&headers).await else {
         let ret: String = form_urlencoded::byte_serialize(here.as_bytes()).collect();
         return Redirect::to(&format!("/login?return={ret}")).into_response();
     };
+    let session_key = sha256_hex(&cookie_value);
     let person_id = session.person.clone();
     let person = match app.control.person(&person_id).await {
         Ok(Some(p)) => p,
@@ -488,6 +512,17 @@ async fn authorize(
             );
         }
     }
+    // Remember the service, so signing out reaches it.
+    {
+        let mut sessions = app.store.sessions.lock().await;
+        if let Some(s) = sessions.sessions.get_mut(&session_key)
+            && s.clients.insert(client.name.clone())
+            && let Err(e) = app.store.save_sessions(&sessions)
+        {
+            tracing::error!("saving the session: {e:#}");
+            return page(StatusCode::INTERNAL_SERVER_ERROR, "Try again", "<p>Sign-in couldn't save that.</p>");
+        }
+    }
     let code = random(32);
     {
         let mut p = app.pending.lock().await;
@@ -501,6 +536,7 @@ async fn authorize(
                 tenant: m.tenant.clone(),
                 nonce: q.nonce.clone(),
                 challenge,
+                sid: crate::logout::sid(&session_key),
                 auth_time: now_ms() / 1000,
                 expires: now_ms() + CODE_MS,
             },
@@ -591,6 +627,7 @@ async fn token(State(app): State<Arc<App>>, headers: HeaderMap, Form(f): Form<To
     claims["iat"] = json!(now);
     claims["exp"] = json!(now + TOKEN_SECS);
     claims["auth_time"] = json!(code.auth_time);
+    claims["sid"] = json!(code.sid);
     if let Some(n) = &code.nonce {
         claims["nonce"] = json!(n);
     }
@@ -673,6 +710,27 @@ async fn logout(State(app): State<Arc<App>>, headers: HeaderMap, Query(q): Query
         None => page(StatusCode::OK, "Signed out", "<p>You're signed out.</p>"),
     };
     resp.headers_mut().append(header::SET_COOKIE, clear);
+    resp
+}
+
+/// "Sign out everywhere": every session this person has, on every browser, and the services each signed in to.
+async fn logout_everywhere(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    let Some(person) = app.signed_in(&headers).await else { return Redirect::to("/login").into_response() };
+    if let Err(e) = app.sign_out_everywhere(&person, now_ms()).await {
+        tracing::error!("signing {person} out everywhere: {e:#}");
+        return page(StatusCode::INTERNAL_SERVER_ERROR, "Try again", "<p>Signing out everywhere didn't work.</p>");
+    }
+    if let Ok(Some(view)) = app.control.person(&person).await {
+        for m in &view.tenants {
+            app.control.event(&m.tenant, &person, "signed_out", None, "everywhere").await;
+        }
+    }
+    let mut resp = page(
+        StatusCode::OK,
+        "Signed out everywhere",
+        "<p>You're signed out on every browser and device, and of every service.</p>",
+    );
+    resp.headers_mut().append(header::SET_COOKIE, app.session_cookie("", 0));
     resp
 }
 
@@ -949,7 +1007,10 @@ async fn home(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
                 StatusCode::OK,
                 "Signed in",
                 &format!(
-                    "<p>You're signed in as <b>{}</b>.</p><form method=\"post\" action=\"/logout\"><button>Sign out</button></form>",
+                    "<p>You're signed in as <b>{}</b>.</p><form method=\"post\" action=\"/logout\"><button>Sign \
+                     out</button></form><form method=\"post\" action=\"/logout/everywhere\"><button>Sign out \
+                     everywhere</button></form><p class=\"hint\">Everywhere: every browser and device signed in as \
+                     you, and every service they signed in to.</p>",
                     esc(&name)
                 ),
             )

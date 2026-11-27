@@ -24,6 +24,7 @@ mod admin;
 mod control;
 mod domain;
 mod keys;
+mod logout;
 mod store;
 mod upstream;
 mod web;
@@ -58,6 +59,9 @@ struct ClientConfig {
     secret_file: Option<PathBuf>,
     #[serde(default)]
     post_logout_redirect_uris: Vec<String>,
+    /// Where it takes OpenID Connect back-channel logouts, so signing out here signs out there too.
+    #[serde(default)]
+    backchannel_logout_uri: Option<String>,
 }
 
 /// A provider people may sign in with (`docs/sso.md`, "Upstream providers").
@@ -159,7 +163,7 @@ fn build(cfg: Config, home: &Path) -> anyhow::Result<(Arc<web::App>, SocketAddr,
     for c in cfg.clients {
         anyhow::ensure!(valid_client_name(&c.name), "client {:?}: lower-case letters, digits and hyphens", c.name);
         anyhow::ensure!(!c.redirect_uris.is_empty(), "client {} has no redirect_uris", c.name);
-        for u in c.redirect_uris.iter().chain(&c.post_logout_redirect_uris) {
+        for u in c.redirect_uris.iter().chain(&c.post_logout_redirect_uris).chain(&c.backchannel_logout_uri) {
             let parsed = url::Url::parse(u).map_err(|e| anyhow::anyhow!("client {}: {u}: {e}", c.name))?;
             anyhow::ensure!(
                 parsed.scheme() == "https" || (parsed.scheme() == "http" && domain::local(&parsed)),
@@ -177,6 +181,7 @@ fn build(cfg: Config, home: &Path) -> anyhow::Result<(Arc<web::App>, SocketAddr,
             redirect_uris: c.redirect_uris,
             secret,
             post_logout_redirect_uris: c.post_logout_redirect_uris,
+            backchannel_logout_uri: c.backchannel_logout_uri,
         });
     }
     let dir = expand(home, &cfg.dir);
@@ -297,6 +302,16 @@ async fn run(
     let a = app.clone();
     tokio::spawn(async move {
         loop {
+            if let Err(e) = a.apply_revocations().await {
+                tracing::warn!("signing people out from revocations.json: {e:#}");
+            }
+            a.deliver_logouts().await;
+            tokio::time::sleep(Duration::from_secs(10)).await;
+        }
+    });
+    let a = app.clone();
+    tokio::spawn(async move {
+        loop {
             let problems = a.problems().await;
             for p in &problems {
                 tracing::warn!("{p}");
@@ -397,6 +412,29 @@ fn keys_command(args: &[&str]) -> anyhow::Result<()> {
     Ok(())
 }
 
+const SIGNOUT_USAGE: &str = "usage: fleetlayer-signin signout --dir <folder> --person <id>";
+
+/// `signout --dir <folder> --person <id>`: sign someone out everywhere (an account that may be in someone else's
+/// hands). The running service ends their sessions and sends the logouts within seconds.
+fn signout_command(args: &[&str]) -> anyhow::Result<()> {
+    let (mut dir, mut person) = (None, None);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match *a {
+            "--dir" => dir = it.next().map(PathBuf::from),
+            "--person" => person = it.next().map(|p| p.to_string()),
+            other => anyhow::bail!("unknown argument {other:?}\n{SIGNOUT_USAGE}"),
+        }
+    }
+    let (Some(dir), Some(person)) = (dir, person) else { anyhow::bail!("{SIGNOUT_USAGE}") };
+    let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    let dir = expand(&home, &dir);
+    anyhow::ensure!(dir.join("keys").exists(), "{} isn't a sign-in folder", dir.display());
+    logout::revoke(&dir, &person, store::now_ms())?;
+    println!("{person} is signed out everywhere within seconds, and of every service that takes sign-outs");
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -429,6 +467,13 @@ async fn main() {
         Some("keys") => {
             let rest: Vec<&str> = args[1..].iter().map(String::as_str).collect();
             if let Err(e) = keys_command(&rest) {
+                eprintln!("fleetlayer-signin: {e:#}");
+                std::process::exit(1);
+            }
+        }
+        Some("signout") => {
+            let rest: Vec<&str> = args[1..].iter().map(String::as_str).collect();
+            if let Err(e) = signout_command(&rest) {
                 eprintln!("fleetlayer-signin: {e:#}");
                 std::process::exit(1);
             }

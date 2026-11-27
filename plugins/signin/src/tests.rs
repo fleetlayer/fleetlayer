@@ -142,6 +142,11 @@ async fn control_plane(seen: Arc<Mutex<Seen>>) -> String {
 }
 
 fn app(dir: &std::path::Path, control: &str) -> Arc<web::App> {
+    app_with(dir, control, None)
+}
+
+/// The same, with the hub taking back-channel logouts at `backchannel`.
+fn app_with(dir: &std::path::Path, control: &str, backchannel: Option<String>) -> Arc<web::App> {
     let store = crate::store::Store::open(dir).unwrap();
     let keys = crate::keys::Keys::load_or_make(dir).unwrap();
     let client = |name: &str| web::Client {
@@ -149,6 +154,7 @@ fn app(dir: &std::path::Path, control: &str) -> Arc<web::App> {
         redirect_uris: vec![format!("https://{name}.example.com/cb")],
         secret: Some("s3cret".into()),
         post_logout_redirect_uris: vec![],
+        backchannel_logout_uri: if name == "hub" { backchannel.clone() } else { None },
     };
     let settings = web::Settings {
         issuer: ORIGIN.into(),
@@ -486,6 +492,7 @@ async fn with_upstream(
             redirect_uris: vec!["https://hub.example.com/cb".into()],
             secret: Some("s3cret".into()),
             post_logout_redirect_uris: vec![],
+            backchannel_logout_uri: None,
         }],
     };
     let oidc = fleetlayer_oidc::Oidc::with_redirect(
@@ -702,4 +709,178 @@ async fn an_oidc_upstream_with_a_domain_checks_the_verified_email_without_hd() {
         c
     };
     assert_eq!(via_upstream(&a, &f, elsewhere).await.status, StatusCode::FORBIDDEN);
+}
+
+/// A service's back-channel logout endpoint: keeps each logout token, and answers 503 while `up` is false.
+struct Receiver {
+    url: String,
+    up: Arc<std::sync::atomic::AtomicBool>,
+    tokens: Arc<Mutex<Vec<String>>>,
+}
+
+async fn receiver() -> Receiver {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let up = Arc::new(AtomicBool::new(true));
+    let tokens = Arc::new(Mutex::new(vec![]));
+    let (u, t) = (up.clone(), tokens.clone());
+    let router = axum::Router::new().route(
+        "/backchannel",
+        axum::routing::post(move |axum::Form(f): axum::Form<std::collections::HashMap<String, String>>| {
+            let (u, t) = (u.clone(), t.clone());
+            async move {
+                if !u.load(Ordering::SeqCst) {
+                    return StatusCode::SERVICE_UNAVAILABLE;
+                }
+                t.lock().unwrap().push(f["logout_token"].clone());
+                StatusCode::OK
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    Receiver { url: format!("http://{addr}/backchannel"), up, tokens }
+}
+
+/// Signed in to the hub: its ID token's claims and its access token.
+async fn signed_in_to_hub(a: &Arc<web::App>, cookie: &str) -> (Value, String) {
+    let (verifier, challenge) = pkce();
+    let r = call(a, "GET", &authorize_uri("hub", &challenge), Some(cookie), None, "").await;
+    let t = exchange(a, &code_of(r.location.as_deref().unwrap()), &verifier).await;
+    assert_eq!(t.status, StatusCode::OK, "{}", t.text);
+    let claims = crate::keys::verify(&a.keys.jwks(), t.body["id_token"].as_str().unwrap()).unwrap();
+    (claims, t.body["access_token"].as_str().unwrap().to_string())
+}
+
+fn header_of(token: &str) -> Value {
+    serde_json::from_slice(&B64.decode(token.split('.').next().unwrap()).unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn signing_out_sends_a_logout_token_to_each_service_the_session_signed_in_to() {
+    let control = control_plane(Arc::new(Mutex::new(Seen::default()))).await;
+    let rx = receiver().await;
+    let dir = tempfile::tempdir().unwrap();
+    let a = app_with(dir.path(), &control, Some(rx.url.clone()));
+    let cookie = register(&a, &mut SoftPasskey::new(true)).await;
+    let (id, _) = signed_in_to_hub(&a, &cookie).await;
+    let sid = id["sid"].as_str().expect("the ID token names the session").to_string();
+
+    let r = call(&a, "POST", "/logout", Some(&cookie), None, "").await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(a.store.logouts.lock().await.logouts.len(), 1, "one service signed in, one logout");
+    a.deliver_logouts().await;
+    let tokens = rx.tokens.lock().unwrap().clone();
+    assert_eq!(tokens.len(), 1);
+    assert_eq!(header_of(&tokens[0])["typ"], "logout+jwt");
+    let c = crate::keys::verify(&a.keys.jwks(), &tokens[0]).unwrap();
+    assert_eq!((c["iss"].as_str(), c["aud"].as_str(), c["sub"].as_str()), (Some(ORIGIN), Some("hub"), Some("p_a")));
+    assert_eq!(c["sid"], sid);
+    assert!(c["events"][crate::logout::EVENT].is_object());
+    assert!(c.get("nonce").is_none() && c["jti"].is_string());
+    assert!(a.store.logouts.lock().await.logouts.is_empty(), "delivered, so gone");
+    assert!(a.problems().await.is_empty());
+}
+
+#[tokio::test]
+async fn a_logout_a_service_misses_waits_on_disk_is_retried_and_is_a_problem_after_an_hour() {
+    use std::sync::atomic::Ordering;
+    let control = control_plane(Arc::new(Mutex::new(Seen::default()))).await;
+    let rx = receiver().await;
+    let dir = tempfile::tempdir().unwrap();
+    let a = app_with(dir.path(), &control, Some(rx.url.clone()));
+    let cookie = register(&a, &mut SoftPasskey::new(true)).await;
+    signed_in_to_hub(&a, &cookie).await;
+
+    rx.up.store(false, Ordering::SeqCst);
+    call(&a, "POST", "/logout", Some(&cookie), None, "").await;
+    a.deliver_logouts().await;
+    {
+        let out = a.store.logouts.lock().await;
+        let l = &out.logouts[0];
+        assert_eq!(l.attempts, 1);
+        assert!(l.next_at > crate::store::now_ms(), "backs off");
+        assert!(l.last_error.as_deref().unwrap().contains("503"), "{:?}", l.last_error);
+    }
+    // Not due yet: not sent again.
+    a.deliver_logouts().await;
+    assert_eq!(a.store.logouts.lock().await.logouts[0].attempts, 1);
+    // It survives a restart.
+    drop(a);
+    let a = app_with(dir.path(), &control, Some(rx.url.clone()));
+    assert_eq!(a.store.logouts.lock().await.logouts.len(), 1);
+
+    // Undelivered for over an hour: a problem.
+    a.store.logouts.lock().await.logouts[0].queued_at -= 2 * crate::logout::LATE_MS;
+    let problems = a.problems().await;
+    assert!(problems.iter().any(|p| p.contains("not delivered for more than an hour")), "{problems:?}");
+
+    // The service is back: delivered on the next try, and the problem clears.
+    rx.up.store(true, Ordering::SeqCst);
+    a.store.logouts.lock().await.logouts[0].next_at = 0;
+    a.deliver_logouts().await;
+    assert_eq!(rx.tokens.lock().unwrap().len(), 1);
+    assert!(a.problems().await.is_empty());
+}
+
+#[tokio::test]
+async fn a_logout_is_dropped_once_its_session_would_have_expired() {
+    use std::sync::atomic::Ordering;
+    let control = control_plane(Arc::new(Mutex::new(Seen::default()))).await;
+    let rx = receiver().await;
+    let dir = tempfile::tempdir().unwrap();
+    let a = app_with(dir.path(), &control, Some(rx.url.clone()));
+    let cookie = register(&a, &mut SoftPasskey::new(true)).await;
+    signed_in_to_hub(&a, &cookie).await;
+    rx.up.store(false, Ordering::SeqCst);
+    call(&a, "POST", "/logout", Some(&cookie), None, "").await;
+    a.store.logouts.lock().await.logouts[0].give_up_at = crate::store::now_ms() - 1;
+    a.deliver_logouts().await;
+    assert!(a.store.logouts.lock().await.logouts.is_empty());
+    assert!(rx.tokens.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn signing_out_everywhere_ends_every_session_its_access_tokens_and_tells_the_services() {
+    let control = control_plane(Arc::new(Mutex::new(Seen::default()))).await;
+    let rx = receiver().await;
+    let dir = tempfile::tempdir().unwrap();
+    let a = app_with(dir.path(), &control, Some(rx.url.clone()));
+    let mut key = SoftPasskey::new(true);
+    let laptop = register(&a, &mut key).await;
+    let phone = sign_in(&a, &mut key).await.cookie.expect("a second session");
+    let (_, access) = signed_in_to_hub(&a, &laptop).await;
+
+    let r = call(&a, "POST", "/logout/everywhere", Some(&phone), None, "").await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    assert!(a.store.sessions.lock().await.sessions.is_empty(), "both browsers signed out");
+    let (_, challenge) = pkce();
+    let r = call(&a, "GET", &authorize_uri("hub", &challenge), Some(&laptop), None, "").await;
+    assert!(r.location.as_deref().unwrap().starts_with("/login"), "{:?}", r.location);
+    let req = Request::builder()
+        .uri("/userinfo")
+        .header(header::AUTHORIZATION, format!("Bearer {access}"))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(web::router(a.clone()).oneshot(req).await.unwrap().status(), StatusCode::UNAUTHORIZED);
+    a.deliver_logouts().await;
+    assert_eq!(rx.tokens.lock().unwrap().len(), 1, "the hub, which the laptop signed in to");
+}
+
+#[tokio::test]
+async fn the_signout_command_signs_someone_out_everywhere_from_the_command_line() {
+    let control = control_plane(Arc::new(Mutex::new(Seen::default()))).await;
+    let dir = tempfile::tempdir().unwrap();
+    let a = app(dir.path(), &control);
+    let mut key = SoftPasskey::new(true);
+    register(&a, &mut key).await;
+    crate::logout::revoke(dir.path(), "p_a", crate::store::now_ms()).unwrap();
+    a.apply_revocations().await.unwrap();
+    assert!(a.store.sessions.lock().await.sessions.is_empty());
+    // Signing in again afterwards works, and the revocation doesn't end the new session.
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    let s = sign_in(&a, &mut key).await;
+    assert_eq!(s.status, StatusCode::OK);
+    a.apply_revocations().await.unwrap();
+    assert_eq!(a.store.sessions.lock().await.sessions.len(), 1);
 }

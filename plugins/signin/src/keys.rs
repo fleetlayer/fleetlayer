@@ -146,11 +146,16 @@ impl Keys {
 
     /// A signed JWT (RS256) carrying `claims`, with the current key.
     pub fn sign(&self, claims: &Value) -> anyhow::Result<String> {
+        self.sign_typed("JWT", claims)
+    }
+
+    /// The same, with its own `typ` (`logout+jwt` for a logout token, so it can't pass for an ID token).
+    pub fn sign_typed(&self, typ: &str, claims: &Value) -> anyhow::Result<String> {
         let (key, kid) = {
             let l = self.loaded.read().expect("keys lock");
             (l.current.key.clone(), l.current.kid.clone())
         };
-        let header = json!({"alg": "RS256", "typ": "JWT", "kid": kid});
+        let header = json!({"alg": "RS256", "typ": typ, "kid": kid});
         let input = format!("{}.{}", B64.encode(serde_json::to_vec(&header)?), B64.encode(serde_json::to_vec(claims)?));
         let signer = SigningKey::<Sha256>::new(key);
         let sig = signer.sign(input.as_bytes());

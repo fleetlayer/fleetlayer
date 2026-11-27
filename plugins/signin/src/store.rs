@@ -2,7 +2,7 @@
 //! `keys/signing.pem` (the token-signing key) and `sessions.json` (who is signed in on which browser, by the SHA-256
 //! of the cookie). Copy the folder and the settings file to move the service; nothing else holds state.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -61,6 +61,9 @@ pub struct Session {
     /// Signed in through an upstream provider: the one tenant it signs in for (its ID).
     #[serde(default)]
     pub via_tenant: Option<String>,
+    /// The services it signed in to, which are sent a logout when it ends.
+    #[serde(default)]
+    pub clients: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -74,6 +77,8 @@ pub struct Store {
     pub dir: PathBuf,
     pub people: Mutex<People>,
     pub sessions: Mutex<Sessions>,
+    /// Sign-outs still to deliver to services (`logouts.json`).
+    pub logouts: Mutex<crate::logout::Outbox>,
 }
 
 pub fn now_ms() -> i64 {
@@ -122,7 +127,13 @@ impl Store {
         }
         let people = read_json(&dir.join("people.json"))?;
         let sessions = read_json(&dir.join("sessions.json"))?;
-        Ok(Store { dir: dir.to_path_buf(), people: Mutex::new(people), sessions: Mutex::new(sessions) })
+        let logouts = read_json(&dir.join("logouts.json"))?;
+        Ok(Store {
+            dir: dir.to_path_buf(),
+            people: Mutex::new(people),
+            sessions: Mutex::new(sessions),
+            logouts: Mutex::new(logouts),
+        })
     }
 
     pub fn save_people(&self, people: &People) -> anyhow::Result<()> {
@@ -131,6 +142,10 @@ impl Store {
 
     pub fn save_sessions(&self, sessions: &Sessions) -> anyhow::Result<()> {
         write_private(&self.dir.join("sessions.json"), &serde_json::to_vec_pretty(sessions)?)
+    }
+
+    pub fn save_logouts(&self, out: &crate::logout::Outbox) -> anyhow::Result<()> {
+        write_private(&self.dir.join("logouts.json"), &serde_json::to_vec_pretty(out)?)
     }
 
     /// Whether the folder can still be written (for `/healthz`).
