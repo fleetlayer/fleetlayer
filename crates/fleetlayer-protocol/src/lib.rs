@@ -6,11 +6,13 @@
 //! - [`link`]: the node's link to the control plane.
 //! - [`summary`]: session summaries.
 //! - [`local`]: where a machine's own pieces find each other.
+//! - [`names`]: matching typed names, for suggestions.
 
 pub mod acp;
 pub mod ext;
 pub mod link;
 pub mod local;
+pub mod names;
 pub mod rpc;
 pub mod summary;
 

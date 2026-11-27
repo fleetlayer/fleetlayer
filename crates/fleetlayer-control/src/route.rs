@@ -48,12 +48,13 @@ pub async fn resolve_anywhere(
     }
     let mut exact = vec![];
     let mut near = vec![];
-    let want = name.to_lowercase();
     for (tab, node) in running {
         let target = format!("{tab}@{node}");
         if tab == name {
             exact.push(target);
-        } else if tab.to_lowercase().contains(&want) && crate::authz::may_read(app, tenant, from, &target).await {
+        } else if fleetlayer_protocol::names::similar(name, &tab)
+            && crate::authz::may_read(app, tenant, from, &target).await
+        {
             near.push(target);
         }
     }
@@ -83,18 +84,9 @@ pub async fn resolve_anywhere(
     }
 }
 
-/// Up to three known node names that contain `node` (or that it contains), in any case.
+/// Up to three known node names `node` likely meant (contained, or a typo away).
 pub fn suggest_nodes(known: &[String], node: &str) -> Vec<String> {
-    let want = node.to_lowercase();
-    known
-        .iter()
-        .filter(|n| {
-            let n = n.to_lowercase();
-            n.contains(&want) || want.contains(&n)
-        })
-        .take(3)
-        .cloned()
-        .collect()
+    known.iter().filter(|n| fleetlayer_protocol::names::similar(node, n)).take(3).cloned().collect()
 }
 
 /// Deliver to `<name>@<node>` through that node's link.

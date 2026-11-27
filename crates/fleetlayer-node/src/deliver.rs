@@ -61,14 +61,13 @@ fn suggestions(e: &RpcError) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Up to three running tabs whose names contain `name`, in any case, as `<tab>@<node>`.
+/// Up to three running tabs whose names `name` likely meant (contained, or a typo away), as `<tab>@<node>`.
 pub fn suggest(sessions: &[Session], name: &str, node: &str) -> Vec<String> {
-    let want = name.to_lowercase();
     let mut tabs: Vec<&str> = sessions
         .iter()
         .filter(|s| s.running())
         .filter_map(|s| s.tab())
-        .filter(|t| t.to_lowercase().contains(&want) || want.contains(&t.to_lowercase()))
+        .filter(|t| fleetlayer_protocol::names::similar(name, t))
         .collect();
     tabs.sort_unstable();
     tabs.dedup();
