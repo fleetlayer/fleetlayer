@@ -220,14 +220,16 @@ overseer agent speaking for them) can answer from anywhere:
   hooks said so; `screen` would mark a prompt only read off the terminal.
 - In a `session/update`, `"prompt": null` clears it and an absent `prompt` leaves it as it was. The harness's
   `session/list` is the whole truth: a session it lists with no prompt has none.
+- The prompt is visible to everyone who may read the session (the control plane keeps it with the session): a
+  permission prompt's `tool.input` (a command line, say) is cut to 2 KB (`{"truncated": true, "preview": …}`).
 - `background` is best effort: the work the agent reported still running when it last stopped (`[]`: none; absent:
   not known).
 
 Claude Code's plugin gets these from hooks it installs in `~/.claude/settings.json` (every other key and hook kept,
-the file replaced in one rename and never written through a symbolic link, put back if something rewrites the file;
-`hooks: false` in its config takes them out): `PreToolUse` for `AskUserQuestion` and `ExitPlanMode`, `PermissionRequest`, then `PostToolUse`,
+the file replaced in one rename, through a symbolic link to the file it names, put back if something rewrites the
+file; `hooks: false` in its config takes them out): `PreToolUse` for `AskUserQuestion` and `ExitPlanMode`, `PermissionRequest`, then `PostToolUse`,
 `PostToolUseFailure`, `PermissionDenied`, `UserPromptSubmit`, `Stop` (with its `background_tasks`) and `SessionEnd`
-to clear. Each runs the plugin's own binary by absolute path (`'…/fleetlayer-claude-code' hook`) asynchronously: it passes the event to the plugin's socket and exits
+to clear. Each runs the plugin's own binary by a path that doesn't depend on the session's PATH (`"$HOME"/'.local/bin/fleetlayer-claude-code' hook` under the home folder, so a settings file shared between machines works on each; the absolute path elsewhere), asynchronously: it passes the event to the plugin's socket and exits
 0 with no output, so it never holds Claude up or changes what it does.
 
 **Answering.** `fleetlayer session answer <session> --prompt <id> --pick N …` asks its node with

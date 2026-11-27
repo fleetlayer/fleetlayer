@@ -1,9 +1,8 @@
 //! What a Claude Code session is waiting for, from Claude Code's own hooks rather than its screen.
 //!
 //! The plugin installs a few hooks in `~/.claude/settings.json` (every other key and hook kept, the file replaced in
-//! one rename, never through a symbolic link). Each runs the plugin's own binary by absolute path (`'…/fleetlayer-claude-code'
-//! hook`) asynchronously, so it can never hold Claude up or change what
-//! it does: the hook passes its JSON to the plugin's socket and exits 0 with no output, and exits 0 too when the
+//! one rename, through a symbolic link to the file it names). Each runs the plugin's own binary by a path that doesn't
+//! depend on the session's PATH ([`command`]), asynchronously, so it can never hold Claude up or change what it does: the hook passes its JSON to the plugin's socket and exits 0 with no output, and exits 0 too when the
 //! plugin isn't running or isn't installed on that machine.
 //!
 //! From those events the [`Tracker`] keeps, per session, the prompt it's blocked on (an `AskUserQuestion` menu, a
@@ -22,11 +21,18 @@ use serde_json::{Map, Value, json};
 /// What marks a hook as this plugin's, so installing again replaces it and nothing else.
 const MARK: &str = "fleetlayer-claude-code";
 
-/// The hook's command: this plugin's own binary by absolute path (never whatever `fleetlayer-claude-code` comes first
-/// on a PATH), quiet and successful whatever happens.
-pub fn command(exe: &Path) -> String {
-    let quoted = exe.to_string_lossy().replace('\'', "'\\''");
-    format!("'{quoted}' hook 2>/dev/null || true")
+/// The hook's command: this plugin's own binary by a path that doesn't depend on the session's PATH (which can hold
+/// relative entries such as `./node_modules/.bin`, so a cloned repo could put its own program first), quiet and
+/// successful whatever happens. Under the home folder it's written from `$HOME`, which the shell expands when the hook
+/// runs, so a settings file shared between machines works on each; elsewhere it's the absolute path.
+pub fn command(exe: &Path, home: &Path) -> String {
+    let quote = |p: &str| p.replace('\'', "'\\''");
+    match exe.strip_prefix(home) {
+        Ok(rel) if !home.as_os_str().is_empty() => {
+            format!("\"$HOME\"/'{}' hook 2>/dev/null || true", quote(&rel.to_string_lossy()))
+        }
+        _ => format!("'{}' hook 2>/dev/null || true", quote(&exe.to_string_lossy())),
+    }
 }
 
 /// The events it listens to, with their tool matcher (None: the event has none).
@@ -83,11 +89,8 @@ fn ours(entry: &Value) -> bool {
 }
 
 fn edit(settings: &Path, want: Option<&str>) -> Result<bool, String> {
-    // Never through a link: a settings file that's a symlink is left alone, and the person adds the hooks by hand.
-    if std::fs::symlink_metadata(settings).is_ok_and(|m| m.file_type().is_symlink()) {
-        return Err(format!("{} is a symbolic link, so Fleetlayer won't write to it", settings.display()));
-    }
-    let path = settings.to_path_buf();
+    // Through a symlink to the file it names, so a synced or linked settings file stays linked.
+    let path = std::fs::canonicalize(settings).unwrap_or_else(|_| settings.to_path_buf());
     let before: Value = match std::fs::read(&path) {
         Ok(b) => serde_json::from_slice(&b).map_err(|e| format!("{} isn't JSON: {e}", path.display()))?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -188,7 +191,7 @@ impl Tracker {
                         at: now,
                         source: "hook".into(),
                         questions: vec![],
-                        tool: Some(PromptTool { name: tool.to_string(), input: v["tool_input"].clone() }),
+                        tool: Some(PromptTool { name: tool.to_string(), input: capped(&v["tool_input"]) }),
                         plan: None,
                         options: vec![],
                         options_from: None,
@@ -221,6 +224,23 @@ impl Tracker {
         self.sessions.insert(session.clone(), w);
         Some(session)
     }
+}
+
+/// The most of a permission prompt's tool input passed on, as JSON bytes: it reaches the control plane and everyone
+/// who may read the session.
+pub const TOOL_INPUT_MAX: usize = 2048;
+
+/// A tool input cut to [`TOOL_INPUT_MAX`]: `{"truncated": true, "preview": "<the start of its JSON>"}` when longer.
+fn capped(input: &Value) -> Value {
+    let text = input.to_string();
+    if text.len() <= TOOL_INPUT_MAX {
+        return input.clone();
+    }
+    let mut end = TOOL_INPUT_MAX - 64;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    json!({"truncated": true, "preview": &text[..end]})
 }
 
 /// An ID for a prompt the hook gives none for: new for every prompt.
@@ -369,7 +389,8 @@ mod tests {
             {"matcher": "Bash", "hooks": [{"type": "command", "command": "/usr/local/bin/guard", "timeout": 15}]}
         ]}});
         std::fs::write(&p, serde_json::to_vec(&theirs).unwrap()).unwrap();
-        let cmd = command(Path::new("/opt/fleet layer/bin/fleetlayer-claude-code"));
+        let home = Path::new("/home/a");
+        let cmd = command(Path::new("/opt/fleet layer/bin/fleetlayer-claude-code"), home);
         assert_eq!(cmd, "'/opt/fleet layer/bin/fleetlayer-claude-code' hook 2>/dev/null || true");
         assert!(install(&p, &cmd).unwrap());
         let v: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
@@ -383,7 +404,7 @@ mod tests {
         assert_eq!(pre[1]["hooks"][0]["command"], cmd);
         assert!(!install(&p, &cmd).unwrap(), "already there: unchanged");
         // A moved binary replaces its own hooks, not anyone else's.
-        assert!(install(&p, &command(Path::new("/usr/local/bin/fleetlayer-claude-code"))).unwrap());
+        assert!(install(&p, &command(Path::new("/usr/local/bin/fleetlayer-claude-code"), home)).unwrap());
         let v: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
         assert_eq!(v["hooks"]["PreToolUse"].as_array().unwrap().len(), 2);
         assert!(uninstall(&p).unwrap());
@@ -392,15 +413,45 @@ mod tests {
     }
 
     #[test]
-    fn a_linked_settings_file_is_never_written() {
+    fn a_linked_settings_file_stays_linked() {
         let d = tempfile::tempdir().unwrap();
         let real = d.path().join("real.json");
         std::fs::write(&real, "{}").unwrap();
         let link = d.path().join("settings.json");
         std::os::unix::fs::symlink(&real, &link).unwrap();
-        let e = install(&link, &command(Path::new("/x/fleetlayer-claude-code"))).unwrap_err();
-        assert!(e.contains("symbolic link"), "{e}");
+        install(&link, &command(Path::new("/x/fleetlayer-claude-code"), Path::new("/home/a"))).unwrap();
         assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
-        assert_eq!(std::fs::read_to_string(&real).unwrap(), "{}");
+        let v: Value = serde_json::from_slice(&std::fs::read(&real).unwrap()).unwrap();
+        assert!(v["hooks"]["Stop"].is_array());
+    }
+
+    /// The command never depends on the session's PATH: it's absolute, or anchored at `$HOME`. An older bare entry is
+    /// replaced on upgrade.
+    #[test]
+    fn the_command_is_absolute_or_home_anchored_and_replaces_the_old_bare_one() {
+        let home = Path::new("/home/a");
+        let under = command(Path::new("/home/a/.local/bin/fleetlayer-claude-code"), home);
+        assert_eq!(under, "\"$HOME\"/'.local/bin/fleetlayer-claude-code' hook 2>/dev/null || true");
+        for c in [under.clone(), command(Path::new("/usr/local/bin/fleetlayer-claude-code"), home)] {
+            assert!(c.starts_with("'/") || c.starts_with("\"$HOME\"/"), "{c}");
+        }
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("settings.json");
+        let old = json!({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "fleetlayer-claude-code hook 2>/dev/null || true"}]}]}});
+        std::fs::write(&p, serde_json::to_vec(&old).unwrap()).unwrap();
+        install(&p, &under).unwrap();
+        let v: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+        let stop = v["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(stop.len(), 1);
+        assert_eq!(stop[0]["hooks"][0]["command"], under);
+    }
+
+    #[test]
+    fn a_long_tool_input_is_cut() {
+        let long = json!({"command": "x".repeat(5000)});
+        let c = capped(&long);
+        assert_eq!(c["truncated"], true);
+        assert!(c.to_string().len() <= TOOL_INPUT_MAX);
+        assert_eq!(capped(&json!({"command": "ls"})), json!({"command": "ls"}));
     }
 }

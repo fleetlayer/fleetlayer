@@ -219,7 +219,7 @@ async fn start_hooks(plugin: Arc<Plugin>, peer: Peer, home: PathBuf, settings: P
     }
     // The hook runs this very binary, by absolute path.
     let command = match std::env::current_exe().and_then(std::fs::canonicalize) {
-        Ok(exe) => hooks::command(&exe),
+        Ok(exe) => hooks::command(&exe, &home),
         Err(e) => {
             tracing::warn!("can't tell where fleetlayer-claude-code is ({e}); not installing the prompt hooks");
             return;
