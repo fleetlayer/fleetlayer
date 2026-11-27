@@ -63,6 +63,7 @@ export const pages = [
   { file: "credentials", group: "Reference", label: "Credentials" },
   { file: "secrets", group: "Reference", label: "Secrets" },
   { file: "access-control", group: "Reference", label: "Access control" },
+  { file: "releasing", group: "Reference", label: "Releases and updates" },
   { file: "protocol", group: "Reference", label: "Plugin protocol" },
   { file: "link", group: "Reference", label: "Node link" },
   { file: "sso", group: "Advanced", label: "Sign-in and SSO" },

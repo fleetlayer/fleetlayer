@@ -1,57 +1,76 @@
-# Releasing
+# Releases and updates
 
-A version tag (`v0.4.0`) starts `.github/workflows/release.yml`: it builds every binary for Linux and macOS, signs and
-notarises the macOS ones, attests each tarball, and publishes them with `SHA256SUMS` as a GitHub release. A tag with a
-`-` (`v0.4.0-rc.1`) makes a prerelease that `install.sh` and the nodes' own update skip.
+Fleetlayer ships one release per set of features: a version tag (`v0.4.0`) with release notes, never every build.
+Each release can need a backup or a look at its notes before you roll it out, so read them first. A tag outside that
+rhythm is for an urgent security fix or a bug that breaks someone's work, and its notes say which.
 
-## macOS: signed and notarised
+Each release on [GitHub](https://github.com/fleetlayer/fleetlayer/releases) has a tarball of every binary for each
+platform (Linux and macOS, x86-64 and ARM), a `SHA256SUMS` file, and a build attestation for each tarball. A tag with
+a `-` (`v0.4.0-rc.1`) is a prerelease: the installer and the nodes' own updates skip it.
 
-Each macOS binary is signed with a Developer ID Application certificate, with the hardened runtime, Apple's timestamp
-and an identifier that never changes (`dev.fleetlayer.node` for `fleetlayer-node`, `dev.fleetlayer.cli` for
-`fleetlayer`, `dev.fleetlayer.<rest>` for `fleetlayer-<rest>`). Apple then notarises them.
-`scripts/release/sign-macos.sh` does both, and fails the build if Apple or Gatekeeper refuses a binary.
+## How nodes update themselves
 
-Why it matters:
+A node installed by the installer checks for a new release every 6 hours, downloads the tarball for its platform,
+checks it against the release's `SHA256SUMS`, puts the new binaries in place and restarts into them. A node installed
+any other way (a package, Ansible, a build of your own) only logs that a release is out, since whatever installed it
+should update it. Choose per machine in `node.yaml`:
 
-- **Permissions survive upgrades,** together with a path that doesn't change. macOS remembers a permission (Files
-  and Folders, Local Network) for a command-line program by its path, and checks the program found there against the
-  signature it saw when the person answered. For a signed program that check is the team and identifier, the same in
-  every release, so a new build at the same path keeps the permission. For an unsigned one it's the exact bytes, so
-  no new build ever does. Signing isn't enough by itself: a signed release installed in a new folder was asked again,
-  and a different signed build put at a path that already had the permission wasn't (both tested, 28 Nov 2026). So
-  from v0.3.13 the installer and the node's own update keep every binary at one path, `~/.local/lib/fleetlayer/`,
-  and replace the files there (`crates/fleetlayer-node/src/update.rs`).
-- **A tarball downloaded in a browser runs.** Without notarisation macOS refuses it ("Apple could not verify...").
+```yaml
+update:
+  mode: auto        # auto: install it. notify: only log that it's out. off: don't check.
+  every_hours: 6
+```
 
-What to know:
+Set `mode: notify` on a machine where you want to choose the moment. Upgrading by hand, going back to the previous
+release, and where the files live are in [Set up a node that keeps running](guides/node-services.md#5-updates).
 
-- **Nothing is stapled.** Only apps, disk images and installer packages can carry their notarisation ticket. For a bare
-  binary, macOS looks the ticket up online, by the binary's code hash, the first time it checks one that carries the
-  downloaded mark. `install.sh` and the node's own update fetch with curl and HTTPS, which don't set that mark, so they
-  work offline too. Only a tarball downloaded in a browser, first run with no network, is refused until the Mac is
-  online.
-- **No entitlements.** The hardened runtime restricts loading other people's libraries, generating code and
-  debugging. The binaries do none of those. Starting other programs isn't restricted, so the node runs its plugins and
-  tools as before, and the plugins still use the keychain through `/usr/bin/security`.
-- **Never change an identifier.** It's half of what macOS stores with a permission. A renamed identifier means every
-  person is asked again. A new binary gets its identifier from the rule in `sign-macos.sh`.
-- **Signatures outlive the certificate.** They're timestamped, so a release signed before the certificate expires
-  stays valid. A release after it fails in the signing step until the secrets hold a new certificate. A new
-  certificate from the same team keeps everyone's permissions.
+## Check a release
 
-To check a release on a Mac:
+The installer and the node check each tarball's SHA-256 against `SHA256SUMS`, which catches a damaged download. Both
+come from the same release, though, so to check that a tarball was built by Fleetlayer's own release workflow from
+the tagged source, verify its build attestation with GitHub's CLI:
+
+```sh
+gh attestation verify fleetlayer-v0.4.0-aarch64-apple-darwin.tar.gz --repo fleetlayer/fleetlayer
+```
+
+It prints the workflow and the commit that built it, or fails.
+
+On a Mac, also check the signature of the installed binaries:
 
 ```sh
 codesign -dv --verbose=2 ~/.local/bin/fleetlayer-node    # Authority=Developer ID Application..., flags=...(runtime)
-codesign -dr - ~/.local/bin/fleetlayer-node              # identifier "dev.fleetlayer.node" and ... your team
+codesign -dr - ~/.local/bin/fleetlayer-node              # identifier "dev.fleetlayer.node"
 spctl --assess --type open --context context:primary-signature -v ~/.local/bin/fleetlayer-node
 # source=Notarized Developer ID
 ```
 
-## The secrets
+## macOS: signed and notarised
 
-All optional. Without the `CODESIGN_*` secrets the macOS step warns and leaves the binaries unsigned, so a fork's
-release still builds; with them and without the `APPLE_NOTARY_*` ones it signs and warns that it didn't notarise.
+Each macOS binary is signed with Fleetlayer's Developer ID, with the hardened runtime and an identifier that never
+changes (`dev.fleetlayer.node` for `fleetlayer-node`, `dev.fleetlayer.cli` for `fleetlayer`, `dev.fleetlayer.<rest>`
+for `fleetlayer-<rest>`), and notarised by Apple. That does two things for you:
+
+- **Permissions you give survive upgrades.** macOS remembers a permission (Files and Folders, Local Network) for a
+  command-line program by its path, and checks the program there against what it saw when you answered: for a signed
+  program, the team and identifier, which stay the same in every release. So from v0.3.13 the installer and the
+  node's own update keep every binary at one path, `~/.local/lib/fleetlayer/`, and replace the files there. Moving to
+  that layout is a new path, so macOS asks once more, then never again for an upgrade.
+- **A tarball downloaded in a browser runs.** Without notarisation, macOS refuses it ("Apple could not verify...").
+
+Two things to know:
+
+- **The first run of a browser download needs the network.** A bare binary can't carry its notarisation ticket, so
+  macOS looks it up online the first time it runs a downloaded one. The installer and the node's own update download
+  in a way that doesn't need that check, so they work offline too.
+- **No special rights.** The binaries ask for no entitlements: they don't load others' libraries, generate code or
+  allow debugging. Starting other programs isn't restricted, so the node runs its plugins and tools as usual.
+
+## Signing your own releases
+
+A fork's release workflow builds without any of this: without the `CODESIGN_*` secrets, the macOS step warns and
+leaves the binaries unsigned; with them and without the `APPLE_NOTARY_*` ones, it signs and warns that it didn't
+notarise.
 
 | Secret | What it is |
 | --- | --- |
@@ -63,25 +82,23 @@ release still builds; with them and without the `APPLE_NOTARY_*` ones it signs a
 
 Both come from a paid Apple Developer account. Only its Account Holder can create a Developer ID certificate
 (developer.apple.com > Certificates; pick the G2 Sub-CA), and Apple lets you download the `.p8` once (App Store
-Connect > Users and Access > Integrations). Keep both in a password manager and set the secrets straight from it,
-so they never sit in a file or a shell history:
+Connect > Users and Access > Integrations). Keep both in a password manager and set the secrets straight from it, so
+they never sit in a file or a shell history:
 
 ```sh
 <read the .p12 from the password manager> | base64 | gh secret set CODESIGN_CERTIFICATE --repo <owner>/<repo>
 ```
 
-If you make the `.p12` with OpenSSL 3, add `-legacy`: macOS's keychain can't import its default format.
+If you make the `.p12` with OpenSSL 3, add `-legacy`: macOS's keychain can't import its default format. To try new
+credentials before a tag, run `scripts/release/sign-macos.sh <folder> fleetlayer fleetlayer-node` on a Mac with the
+same variables set, against a folder of built binaries. It uses a temporary keychain and removes it afterwards.
 
-The script runs on any Mac with the same variables in the environment, against a folder of built binaries, which is
-the quickest way to check new credentials before a tag:
+What to keep in mind:
 
-```sh
-scripts/release/sign-macos.sh <folder> fleetlayer fleetlayer-node
-```
-
-It makes a temporary keychain for the certificate and removes it when it's done.
-
-## A fork's releases
-
-A fork that signs with its own Developer ID is a different team, so macOS treats its binaries as different programs
-from the official ones: someone who moves between the two is asked for each permission again.
+- **Your releases are different programs to macOS.** Your Developer ID is a different team, so someone who moves
+  between your builds and the official ones is asked for each permission again.
+- **Never change an identifier.** It's half of what macOS stores with a permission, so renaming one means everyone is
+  asked again. A new binary gets its identifier from the rule in `sign-macos.sh`.
+- **Signatures outlive the certificate.** They're timestamped, so a release signed before the certificate expires
+  stays valid. After it expires, the signing step fails until the secrets hold a new certificate, and a new certificate
+  from the same team keeps everyone's permissions.

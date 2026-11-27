@@ -140,7 +140,7 @@ it over it. `VERSION` there names the live release, and `versions/<tag>/` keeps 
 they were unpacked. To go back, copy the binaries from `versions/<tag>/` over the live ones and restart the node (set
 `update: {mode: notify}` first, or it updates again). An install from before v0.3.13, with a folder per release, moves
 itself to this layout the first time a v0.3.13 node starts, and restarts once. The fixed path is what lets macOS keep
-the permissions you gave the node across upgrades ([Releasing](../releasing.md)); that first move is a new path, so
+the permissions you gave the node across upgrades ([Releases and updates](../releasing.md)); that first move is a new path, so
 macOS asks once more.
 
 **What a self-update relinks.** The node repoints the links for every binary in the release: `fleetlayer`,
