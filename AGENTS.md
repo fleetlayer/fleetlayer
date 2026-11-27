@@ -70,4 +70,6 @@ Fleetlayer is built semi-autonomously: agent sessions commit, push to main, rele
 asking Nathan first (unlike projects where he reviews each change). Before pushing, tell the other sessions working in
 this repo what you're pushing and which files, and wait for them if they're mid-change in the same files. Each
 session works in its own git worktree (`git worktree add ../fleetlayer-<tab> main`), never in another session's
-checkout. Releases still follow the rhythm below. Quote commit hashes only from git output, after committing.
+checkout. To reach another session, use its herdr tab name, which survives restarts: `fleetlayer msg send --to "<tab>@<node>"`.
+Claude Code's own session names (`fleetlayer-3d`) are random and change whenever the machine restarts. Releases still
+follow the rhythm below. Quote commit hashes only from git output, after committing.

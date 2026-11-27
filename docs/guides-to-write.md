@@ -270,3 +270,6 @@ managers, machines that sleep.
   one can set a cookie for the parent domain and shadow another's. `__Host-` cookies (host-only, Secure, Path=/)
   close that. Sign-in to many apps without registering each one: the pages site brokers OIDC-shaped one-time codes
   bound to each app's host and a state value. Where it lives: `docs/plugins/apps.md` ("Sign-in").
+- **Messaging between agent sessions after a restart.** Claude Code's cross-session names are random (`<project>-3d`)
+  and all change when a machine restarts, so sessions lose each other. Address sessions by their session manager's
+  tab name instead (`fleetlayer msg send --to "<tab>@<node>"`), which is stable. Where it lives: AGENTS.md (Git).
