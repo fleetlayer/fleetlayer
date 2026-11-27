@@ -365,6 +365,13 @@ impl<D: Deps> Coordinator<D> {
         if let Some(p) = persisted {
             load(&mut st, p);
         }
+        if is_borrowed {
+            // Who each sign-in belongs to is never worked out in borrow mode (no profiles are read), so any holders
+            // here are a polling coordinator's, for normal sign-ins the slots no longer hold: they named account 1 by
+            // another account's email after a machine switched to setup tokens. The accounts' own emails come from the
+            // managed slots.
+            st.holders.clear();
+        }
         if !st.accounts.iter().any(|a| a.slot.is_empty()) {
             st.accounts.retain(|a| a.id != "1");
             st.accounts.insert(0, Account { id: "1".into(), slot: String::new(), ..Default::default() });

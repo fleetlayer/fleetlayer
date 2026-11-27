@@ -1048,6 +1048,27 @@ fn models(fable: f64) -> Option<std::collections::BTreeMap<String, UsageWindow>>
 }
 
 #[tokio::test]
+async fn borrowing_drops_a_polling_coordinators_holders() {
+    let w = World::new();
+    let persisted = json!({
+        "accounts": [{ "id": "1", "slot": "", "email": "one@example.com" }],
+        "readings": {}, "health": {},
+        "holders": { "1": { "token": "old-refresh", "who": { "email": "someone-else@example.com" } } },
+    });
+    let c = Coordinator::borrowing(
+        w.clone(),
+        Info { version: "0.7.1".into(), pid: 1, started_at: now0(), is_managed: true },
+        Some(&persisted),
+    );
+    c.start().await;
+    settle().await;
+    assert!(account(&c, "1").holder.is_none(), "a stale holder would name account 1 as someone else");
+    // A polling coordinator keeps them.
+    let p = started(&w, Some(&persisted)).await;
+    assert!(account(&p, "1").holder.is_some());
+}
+
+#[tokio::test]
 async fn borrowing_never_polls_refreshes_reads_profiles_or_signs_in() {
     let w = World::new();
     let c = borrowed(&w).await;
