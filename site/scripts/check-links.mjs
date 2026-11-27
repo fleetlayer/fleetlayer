@@ -48,6 +48,21 @@ for (const file of files) {
     if (l === "" || l.startsWith("/_astro/") || l.startsWith("/pagefind/")) continue;
     if (!(await exists(l))) broken.push(`${rel} -> ${l}`);
   }
+  // Anchors: a link to /page/#section needs an element with that id on the page.
+  if (file.endsWith(".html")) {
+    const html = await readFile(file, "utf8");
+    for (const m of html.matchAll(/\shref="((?:\/[^"#]*)?)#([^"]+)"/g)) {
+      const [, path, anchor] = m;
+      const target = path ? join(dist, decodeURIComponent(path), path.endsWith("/") ? "index.html" : "") : file;
+      let page;
+      try {
+        page = await readFile(target, "utf8");
+      } catch {
+        continue; // a missing page is reported above
+      }
+      if (!page.includes(`id="${decodeURIComponent(anchor)}"`)) broken.push(`${rel} -> ${path}#${anchor}`);
+    }
+  }
 }
 
 if (broken.length) {

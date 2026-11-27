@@ -54,6 +54,8 @@ The tools the author's own fleet runs on, and what Fleetlayer does with each:
 Begin with everything on your laptop. When you outgrow it, move one piece to a home server or a VPS, or swap it for
 the tool you'd rather use. Each piece keeps its state in one folder and speaks open protocols.
 
+Ask your agent: "Set up Fleetlayer on this machine. The docs are at https://fleetlayer.ai/llms.txt". What it runs:
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/fleetlayer/fleetlayer/main/install.sh | sh
 fleetlayer up        # everything on this machine; status page at http://fleetlayer.localhost:7680

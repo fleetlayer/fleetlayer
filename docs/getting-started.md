@@ -2,6 +2,10 @@
 
 Fleetlayer is early. Expect breaking changes.
 
+The docs are written for your agent as much as for you. To have it set Fleetlayer up, ask it to, and point it at
+https://fleetlayer.ai/llms.txt (every page, as Markdown). This page is what it does, step by step. A few steps are
+yours alone, such as approving a prompt on a Mac or pasting a secret; the guides mark them.
+
 ## Install
 
 ```sh

@@ -9,9 +9,11 @@ managers, machines that sleep.
   exists only on GitHub Enterprise Server (it answers 404 on github.com, whatever the token's scopes). An agent can
   create repos with `gh repo create <org>/<name>`, but a person makes the organization once in the web UI
   (github.com/account/organizations/new). Where it matters: any guide that has an agent set up a new project's org.
+  Written: `docs/guides/agents-building-software.md`.
 - **On macOS the node must run as a per-user LaunchAgent.** Writing Claude Code's keychain item needs the login
   keychain unlocked: a LaunchDaemon, or an SSH session on a Mac whose keychain is locked, fails with "User
   interaction is not allowed". Where it lives: `docs/plugins/claude-auth-manager.md`.
+  Written: `docs/guides/node-services.md`, `docs/guides/claude-accounts.md`.
 - **Driving your own signed-in browser from an agent on another machine.** Written: `docs/guides/browser.md`. Playwright
   MCP's extension mode, with its server on the laptop (the extension only talks to loopback). Interim transport: the laptop dials out over SSH with
   a reverse stream-local forward, a socket-activated launchd agent starts one `@playwright/mcp --extension
@@ -21,12 +23,13 @@ managers, machines that sleep.
 - **Claude Code sessions in bypass mode hold every Fleetlayer message for approval** unless
   `~/.claude/settings.json` has `"crossSessionInbound": "accept"`. That setting also accepts unattested messages from
   any process of the same user that can read the session's key file: the guide says so and leaves the choice to the
-  user. Where it lives: `plugins/claude-code/src/main.rs`.
+  user. Where it lives: `plugins/claude-code/src/main.rs`. Written: `docs/guides/unattended-agents.md`.
 - **Access control for a fleet with an agent you trust less.** A new control plane allows every message. Before a node
   that reads untrusted input joins (an email triage agent), add rules: `fleetlayer-control acl add --from
   '*@triage-node' --to 'inbox@main' allow`, then `--from '*@triage-node' --to '*' deny`, or set `acl default deny`
   and list what's allowed. A node sees only the sessions it may message, and subscribes only its own. Where it
-  lives: `crates/fleetlayer-control/src/acl.rs`. Written: `docs/guides/untrusted-input.md` (version 2 policy, tested with `acl test`
+  lives: `crates/fleetlayer-control/src/acl.rs`.
+  Written: `docs/guides/untrusted-input.md` (version 2 policy, tested with `acl test`
   against v0.3.7).
 - **A browser MCP server started by launchd can't find Chrome's profile.** macOS doesn't let a launchd-spawned process
   read Chrome's profile folders, so Playwright MCP's extension mode fails with "Playwright Extension not found". Fix:
@@ -35,11 +38,12 @@ managers, machines that sleep.
   homeserver session, 26 Nov 2026. Fleetlayer's node will hit the same thing when it starts the server.
 - **Stopping test processes with `pkill -f` can kill your own shell**: the pattern matches the shell's own command
   line. Use a bracket (`pkill -f 'bin/[f]leetlayer-node'`), and never `pkill -x fleetlayer-node` on a machine where the
-  node runs as a service.
+  node runs as a service. Written: `docs/guides/node-services.md`, `docs/guides/agents-building-software.md`.
 - **macOS Local Network privacy can block the node's first links.** On macOS 15+, a launchd-started binary that isn't
   Apple's dialling a LAN address gets "No route to host (os error 65)" until Local Network access is allowed. The
   node retries with backoff, so it usually links once the person allows the prompt. If a fresh install keeps failing
   that way, check System Settings > Privacy & Security > Local Network. Seen installing the first Mac node, 26 Nov 2026.
+  Written: `docs/guides/node-services.md`.
 - **The browser over an SSH bridge (the interim before Fleetlayer's shared tools).** From the homeserver session's
   build, 26 Nov 2026: OpenSSH's `AllowTcpForwarding no` also refuses Unix-socket remote forwards, so use
   `AllowTcpForwarding remote` with `PermitListen none`; a socket created in a setgid directory inherits its group;
@@ -49,58 +53,64 @@ managers, machines that sleep.
 - **After upgrading by hand, rerun `fleetlayer-node install` if the service runs a versioned path.** Since 26 Nov the
   installer writes the `PATH` symlink (`~/.local/bin/fleetlayer-node`) when it points at the running binary, so
   swapping symlinks reaches the service; older installs wrote the versioned path and kept running the old binary.
+  Written: `docs/guides/node-services.md`.
 - **Proxies close idle WebSockets.** Traefik 3.4's default entrypoint idleTimeout is 180 s, and a shared tool's stream
-  (a browser session between tasks) can sit idle much longer. Fleetlayer's nodes ping their stream sockets every 30 s
-  and the link every 30 s. If you put another proxy in front of a control plane, check its idle timeout is longer than
-  30 s. Found when a 5-minute idle browser stream was dropped, 26 Nov 2026.
+  (a browser session between tasks) can sit idle much longer. Fleetlayer's nodes ping their stream sockets every 30 s,
+  and the control plane pings each node's link every 30 s. If you put another proxy in front of a control plane, check its idle timeout is longer than
+  30 s. Found when a 5-minute idle browser stream was dropped, 26 Nov 2026. Written: `docs/guides/monitoring.md`.
 - **Don't let a node summarise another user's sessions.** Archive or RAG syncs can mirror one Unix user's Claude
   transcripts into another's `~/.claude/projects`. The summaries plugin now skips sessions whose recorded cwd is
   outside its own user's home; any tool that reads transcripts needs the same check.
+  Written: `docs/guides/day-to-day.md`.
 - **launchctl bootstrap right after bootout can fail** with "Bootstrap failed: 5: Input/output error": bootout returns
   before launchd has unloaded the service. `fleetlayer-node install` now waits until `launchctl print` no longer finds
   it, then bootstraps, retrying once. Found by the homeserver session installing the Mac node (1 in 3 runs).
+  Written: `docs/guides/node-services.md`.
 - **Test nodes on a machine where people work must set `typing_fallback: false`.** A test node with only the herdr
   plugin types messages into the real tab when it can't use Claude Code's socket, so a test message lands as the
   person's input in the middle of their work. Happened once while testing access policy v2, 26 Nov 2026.
+  Written: `docs/guides/node-services.md`.
 - **Sharing a browser MCP server safely (Playwright MCP 0.0.86, extension mode).** Found by the homeserver session,
   26 Nov 2026: `browser_run_code_unsafe` is always on (deny it with `tools:`); file arguments are confined to the
   client's MCP roots or the server's working directory, so pass `--ignore-roots` and give it an empty `cwd` (a
   launchd service's cwd is `/`); `browser_close` only disconnects in extension mode and leaves tabs in a grey group, so
   clean up with `browser_tabs {action: close, index: 0}` repeated one at a time (pipelined calls race and leave tabs).
-  Where it lives: docs/getting-started.md, docs/access-control.md.
+  Where it lives: docs/getting-started.md, docs/access-control.md. Written: `docs/guides/browser.md`.
 - **A LaunchAgent can't find `claude`.** launchd gives agents a PATH without `~/.local/bin`, where Claude Code's
   installer puts it, so anything a node runs that calls `claude` fails with "No such file or directory". The
   claude-auth-manager plugin looks on PATH and then in the installers' places (`~/.local/bin`, `~/.claude/local`,
   Homebrew), and takes `claude:` in its config. Other plugins that run `claude` need the same. Found writing the
-  token checks, 26 Nov 2026.
+  token checks, 26 Nov 2026. Written: `docs/guides/unattended-agents.md`.
 - **Running `claude -p` from a token slot without touching the person's setup.** Set
   `CLAUDE_SECURESTORAGE_CONFIG_DIR` to the slot (that's where the credentials are read from, on macOS and Linux) and
   `CLAUDE_CONFIG_DIR` to a scratch directory, so Claude Code leaves its config files there and not in the slot; add
   `--setting-sources project` from an empty working directory (no user settings, so no plugins or hooks),
   `--strict-mcp-config` and `--no-session-persistence`; remove `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` and the
   other overriding variables. Tested with Claude Code 2.1.332, 26 Nov 2026; it lives in claude-auth-manager's
-  `health.rs`.
+  `health.rs`. Written: `docs/guides/claude-accounts.md`.
 - **One coordinator per user for the Claude account rotator.** `coordinator.sock` in `~/.claude/account-rotator` is
   served by whichever process holds `coordinator.lock`: the rotator's own coordinator, Quietdeck's node, or
   claude-auth-manager. Where claude-auth-manager runs, Quietdeck's node must have its Claude part off
   (`usage: { claude: false }` in its node.yaml, since quietdeck 37c7e31; it keeps Codex), or the plugin waits (its
   `claude.coordinator` reading says so); a rotator's own coordinator is asked to step down. Sessions need rotator
-  0.7.6 or later to leave the plugin's coordinator alone. 26 Nov 2026.
+  0.7.6 or later to leave the plugin's coordinator alone. 26 Nov 2026. Written: `docs/guides/claude-accounts.md`.
 - **Syncing a checkout to a build server with `rsync -a` can make cargo skip a changed file.** It copies the local
   modification time, which can be older than the server's last build, so the build uses stale code and reports
   errors about things that exist. `scripts/on-dev` now syncs by content (`--checksum`) with fresh times on changed
-  files. Found 26 Nov 2026.
+  files. Found 26 Nov 2026. Written: `docs/guides/agents-building-software.md`.
 - **Signing Claude Code in on a machine with no browser.** `claude auth login --claudeai` prints a URL and reads a
   pasted code from stdin (a pipe is enough); `claude setup-token` needs a pseudo-terminal and prints the token on
   screen. Tested with 2.1.332, 26 Nov 2026; details in docs/plugins/claude-auth-manager.md.
+  Written: `docs/guides/claude-accounts.md`.
 - **Running the Claude sign-in hub.** An always-on machine (never the laptop), its own Unix user as a hardened system
   service, its page behind a private HTTPS proxy with `trusted_proxies` set (else one person's typos lock everyone out),
   a firewall rule so only the proxy reaches its port, an uptime check on `/healthz` plus its heartbeat, its folder left
   out of backups on purpose. How it went is in docs/plugins/claude-auth-manager.md ("The hub").
+  Written: `docs/guides/claude-accounts.md`.
 - **Watching and driving any session's terminal from anywhere.** `fleetlayer attach <tab>@<node>` (Ctrl-] leaves,
   `--observe` only watches). herdr's `terminal session observe|control` is the stream; the access policy's `read` and
   `attach` decide who. A shell inside a herdr pane carries `HERDR_SOCKET_PATH`, which beats `HERDR_SESSION`: unset it
-  to reach a named test session. Design: docs/protocol.md ("Terminals").
+  to reach a named test session. Design: docs/protocol.md ("Terminals"). Written: `docs/guides/day-to-day.md`.
 - **Replacing Claude Code's built-in "dangerous command" prompts with your own hooks, so unattended agents never
   block** (Claude Code 2.1.332, Linux).
   - The trap: Claude Code's own Bash check, "Dangerous rm operation on possibly-empty variable path" (also `rmdir`,
@@ -129,17 +139,20 @@ managers, machines that sleep.
     cases fall through to the prompt and hang. A hook must answer fast and never ask. Pair the switch with the hook, so
     nothing is deleted unchecked.
   - Where it lives now: the author's home-server setup (the guard script and the session manager's unit).
+  Written: `docs/guides/unattended-agents.md`.
 - **Setup tokens can't use claude.ai features.** A `claude setup-token` token has only the inference scope: claude.ai
   connectors disappear, and very likely artifacts, Remote Control and cloud sessions. Fine for a fleet with its own
   replacements; say so before people switch. Where it lives: docs/plugins/claude-auth-manager.md ("What a setup token
-  can't do").
+  can't do"). Written: `docs/guides/claude-accounts.md`.
 - **Reading a token off a terminal UI.** Read the screen through a terminal emulator (`vt100`), take the token from
   one line only, and test it with one request before keeping it: joining lines once glued the next line of text onto
   every token, and all of them failed. Where it lives: plugins/claude-auth-manager/src/hub.rs (`find_token`).
+  Written: `docs/guides/claude-accounts.md`.
 - **Claude Code's keychain items on macOS.** `Claude Code-credentials` for the default sign-in, and
   `Claude Code-credentials-<first 8 hex of sha256(NFC config dir)>` for others, account `$USER`, written with
   `security -i` and `add-generic-password -U`. Overwrite in place: deleting first leaves a moment where sessions see
   no sign-in. Where it lives: docs/plugins/claude-auth-manager.md ("The tokens bundle").
+  Written: `docs/guides/claude-accounts.md`.
 - **Why claude.ai connectors (and other account-bound features) break down with several accounts and several
   machines**, and what replaces them.
   - **Several Claude accounts.** Connectors belong to a claude.ai account: each account has its own set, set up by
@@ -159,7 +172,7 @@ managers, machines that sleep.
     tools (Playwright MCP) instead of Claude in Chrome, a phone relay for remote control, and your own page or
     document tooling for artifacts.
   - Where it lives now: docs/plugins/claude-auth-manager.md ("What a setup token can't do", "Token facts"), the
-    author's research notes on Claude OAuth tokens and account rotation.
+    author's research notes on Claude OAuth tokens and account rotation. Written: `docs/guides/claude-accounts.md`.
 - **Recommended tools, with "X vs Y and why we chose X".** A series of short comparisons, each fair to the tool not
   chosen: what it does well, and why the pick fits a fleet that agents run from config in git.
   - **Gatus vs Uptime Kuma for uptime checks and heartbeats.** Gatus keeps every check in config files: they live in
@@ -176,7 +189,7 @@ managers, machines that sleep.
   `activeAccountNumber` present (null) and `supportsAccountSwitching: false` when the program can't switch, or
   CodexBar offers a switch that can't work; a GUI app on macOS has no `XDG_RUNTIME_DIR`, so the program must find the
   node's socket the same way the node does. Where it lives now: docs/plugins/claude-auth-manager.md ("Every account
-  in a menu bar").
+  in a menu bar"). Written: `docs/guides/claude-accounts.md`.
 - **A new binary in a release isn't on PATH after a self-update.** The updating node links only the binaries the
   *old* version knew, so a binary added in the new release stayed unlinked. Fixed: on start, a node running from the
   installer's release folder links any of its release's binaries that have no link in `~/.local/bin` yet, and never
@@ -188,10 +201,10 @@ managers, machines that sleep.
     - claude-swap (realiti4/claude-swap, MIT, ~5k stars): a command line that keeps several accounts and switches the
       active one (`--switch-to`), with a JSON account list that CodexBar reads. It reads usage for setup-token
       accounts from the rate-limit headers of a one-token request (`usage.headerProbe`, `usage.fableProbe` for the
-      Fable week). One active account at a time; verify how it handles many sessions at once when writing.
+      Fable week). It switches the machine's active account, and also runs accounts side by side (`cswap run 2`).
     - claude-account-rotator (ivokund, the original Claude Code mod): shows each account's usage under the prompt and
-      moves a session to another account before the one it's on runs out. Each session polls on its own: fine for a
-      few sessions.
+      moves a session to another account before the one it's on runs out. Sessions share their readings and check each
+      account at most every 5 minutes between them (per its README).
     - The fork (ndbroadbent/claude-account-rotator): one coordinator per machine polls every account for all sessions
       (no polling storm at 40-60 sessions), handles Claude in Chrome's one-account limit, and had a menu bar app, now
       retired in favour of CodexBar.
@@ -200,7 +213,7 @@ managers, machines that sleep.
       CodexBar shows every account through `fleetlayer-claude-accounts`, which speaks claude-swap's list format.
     The pick depends on scale: one machine and a few sessions, claude-swap or the original; many sessions on one
     machine, the fork; many machines, claude-auth-manager. Where it lives now: docs/plugins/claude-auth-manager.md,
-    the fork's README, the codexbar brief.
+    the fork's README, the codexbar brief. Written: `docs/guides/node-services.md`.
 - **A web page for secrets that ships inside a Rust binary.** The hub's page (sign-in links and codes pass through
   it) embeds its HTML, CSS and JS with `include_str!` and serves them from its own routes, so the CSP can be
   `script-src 'self'; style-src 'self'` with no `unsafe-inline`. Footguns: inline `style=""` attributes are blocked
@@ -208,38 +221,41 @@ managers, machines that sleep.
   sign-in page leaks the page's address unless `Referrer-Policy: no-referrer`; a native `<dialog>` closed with Escape
   fires `cancel`, which must also stop the server-side flow or the program keeps running until its timeout. Where it
   lives: `plugins/claude-auth-manager/src/hub.rs` (`security_headers`, `ASSETS`) and `web/`.
+  Written: `docs/guides/agents-building-software.md`.
 - **Claude's sign-in codes have a `#` in the middle, and copying from the browser can cut them short.** `claude auth
   login` says so and waits for the code again; `claude setup-token` fails outright and needs a new link. The hub's
   page refuses a code without a `#` before sending it, so a setup token isn't lost to a short copy. Where it lives:
-  `plugins/claude-auth-manager/web/app.js` (`sendCode`).
+  `plugins/claude-auth-manager/web/app.js` (`sendCode`). Written: `docs/guides/claude-accounts.md`.
 - **Screenshots of a web UI from a small headless VM.** Use a Playwright browser already on the machine
   (`playwright-core` + `chromium_headless_shell`, pointing `executablePath` at it when versions differ) on
   localhost, with a small mock of the API that serves the real page files, so every state (failures, a code cut
   short, done) can be shown without real sign-ins and nothing opens to the network.
+  Written: `docs/guides/agents-building-software.md`.
 - **A Claude setup token belongs to whoever the browser was signed in as, and nothing checks it.** Making a token for
   account 2 while claude.ai is signed in as account 1 gives account 1's token, and every "does it work" check
   passes. Compare organizations: the profile's at sign-in, and the `anthropic-organization-id` header on one tiny
   `/v1/messages` request made with the token (`anthropic-beta: oauth-2025-04-20`). Where it lives:
-  `plugins/claude-auth-manager/src/hub.rs` (`token_org`, `wrong_account`).
+  `plugins/claude-auth-manager/src/hub.rs` (`token_org`, `wrong_account`). Written: `docs/guides/claude-accounts.md`.
 - **Filesystem events miss writes made on the other side of a share.** inotify sees only changes made through the
   local kernel: a vault shared into a VM over virtiofs (often re-exported through FUSE), an SMB or NFS mount, or a
   folder another machine writes over a network share never fires an event for writes made elsewhere. A service that
   reacts to new files (pages' live updates) has to poll: stat the few files of an open page every second and a
   folder's list every few seconds, which costs nothing at this scale. Where it lives: `plugins/pages/src/web.rs`
-  (`watch`), `docs/plugins/pages.md` ("Live").
+  (`watch`), `docs/plugins/pages.md` ("Live"). Written: `docs/guides/pages.md`.
 - **A dropped share looks like an empty folder.** When a synced or mounted folder goes away, a service reading it sees
   no files rather than an error, and happily serves an empty list. Put a marker file in the folder when you set it up
   (`.fleetlayer-space` for pages) and fail the health check and heartbeat when it's missing. Where it lives:
-  `docs/plugins/pages.md` ("Monitoring").
+  `docs/plugins/pages.md` ("Monitoring"). Written: `docs/guides/pages.md`.
 - **Pages for people instead of vendor artifacts.** Claude's artifacts (and other vendors' hosted previews) open only
   for the account that published them, which breaks with several accounts or several models. Agents write a folder
   (`index.md` and `img/`) into their space of a synced vault, the pages service hosts it, and an agent you trust less
   gets only its own space's folder mounted. Where it lives: `docs/plugins/pages.md`; the setup guide (a vault share
-  of its own, mounts per agent user) comes with the first deploy.
+  of its own, mounts per agent user) comes with the first deploy. Written: `docs/guides/pages.md`.
 - **A sandboxed frame without `allow-same-origin` loses the sign-in cookie.** A mock-up shown in `<iframe sandbox>`
   gets an opaque origin, so its own CSS and images are requested cross-site and a SameSite=Strict session cookie
   isn't sent: they fail to load behind a login. Use `sandbox="allow-same-origin"` with no `allow-scripts` (and a
   `script-src 'none'` policy on the file) so nothing can use that origin. Where it lives: `plugins/pages/src/web.rs`.
+  Written: `docs/guides/pages.md`.
 - **One sign-in for a household's and a company's services, with agents that work for both.** A person is one
   account across every tenant they belong to; each tenant admits people and agents and decides with its own policy;
   a shared machine belongs to a team or tenant so it stays when the person who set it up leaves. The guide walks a
@@ -255,25 +271,29 @@ managers, machines that sleep.
   backed up; a dependency tree is hundreds of thousands of files that sync slowly, churn backups and can be rebuilt
   from the lock file. Exclude it on every share (Syncthing `.stignore`, the backup excludes), with the usual build
   caches (`.next`, `.turbo`, `.cache`, `target`, `.venv`, `__pycache__`). Rule from Nathan, 27 Nov 2026. Where it
-  lives: `docs/plugins/apps.md` ("Configuration"), the apps skill, the deploy notes.
+  lives: `docs/plugins/apps.md` ("Configuration"), the apps skill, the deploy notes. Written: `docs/guides/pages.md`.
 - **Secure cookies are refused on plain-HTTP subdomains of localhost.** A browser treats `http://localhost` as secure
   enough for a `Secure` cookie but not `http://app.apps.localhost`, so a sign-in that sets `__Host-` cookies works in
   production (HTTPS) and silently fails on a laptop. Pages drops `Secure` and the prefix when its address is plain
   HTTP, and allows plain HTTP only for localhost. Where it lives: `plugins/pages/src/apps.rs` (`cookies`).
+  Written: `docs/guides/pages.md`.
 - **A wildcard certificate covers one level.** `*.home.example` doesn't cover `app.apps.home.example`: per-app
   subdomains need a wildcard for their own domain, or names one level under an existing wildcard
-  (`app--space.home.example`). Where it lives: `docs/plugins/apps.md`.
+  (`app--space.home.example`). Where it lives: `docs/plugins/apps.md`. Written: `docs/guides/pages.md`.
 - **Agent-written apps and a strict content policy.** Agents often write inline `<script>` blocks and load libraries
   from CDNs; an app origin's policy that allows only its own script files blocks both, so the service lists them as
   problems on the space's page and the apps skill tells agents up front (files only, bundle libraries). Where it
   lives: `plugins/pages/src/apps.rs` (`check_html`), `plugins/pages/apps-skill/SKILL.md`.
+  Written: `docs/guides/pages.md`.
 - **Isolated apps on sibling subdomains.** Each app on its own origin keeps scripts apart, but siblings share a site:
   one can set a cookie for the parent domain and shadow another's. `__Host-` cookies (host-only, Secure, Path=/)
   close that. Sign-in to many apps without registering each one: the pages site brokers OIDC-shaped one-time codes
   bound to each app's host and a state value. Where it lives: `docs/plugins/apps.md` ("Sign-in").
+  Written: `docs/guides/pages.md`.
 - **Messaging between agent sessions after a restart.** Claude Code's cross-session names are random (`<project>-3d`)
   and all change when a machine restarts, so sessions lose each other. Address sessions by their session manager's
   tab name instead (`fleetlayer msg send --to "<tab>@<node>"`), which is stable. Where it lives: AGENTS.md (Git).
+  Written: `docs/guides/unattended-agents.md`, `docs/guides/day-to-day.md`.
 - **`*.localhost` gives every laptop service its own address without TLS or root.** Browsers send any
   `<name>.localhost` to the loopback address and treat it as a secure context, so passkeys and sign-in work over plain
   HTTP. Programs outside the browser ask the system resolver, which differs: Debian 13 answers, Ubuntu 22.04 (and its
@@ -287,13 +307,15 @@ managers, machines that sleep.
   the node rather than as a node plugin, so a dead node still shows on the status page and still alerts (a desktop
   notification at once, the session message when the node is back). launchd/systemd restart the gateway, and the
   node's health includes the gateway's `/healthz`. Where it lives: `crates/fleetlayer-gateway/src/main.rs`.
+  Written: `docs/guides/monitoring.md`.
 - **Alerts an agent can act on: one per change, one message per round.** Stopping the control plane also drops the
   node's link, so the gateway sends both changes as one message; a crash the service manager fixes within seconds is
   no alert; a message the node refuses (no such session) is shown on the status page instead of retried forever.
-  Where it lives: `crates/fleetlayer-gateway/src/monitor.rs`.
+  Where it lives: `crates/fleetlayer-gateway/src/monitor.rs`. Written: `docs/guides/monitoring.md`.
 - **Testing user services as another Unix user.** `sudo -iu <user> systemctl --user …` fails with "Failed to connect
   to bus" unless `XDG_RUNTIME_DIR=/run/user/$(id -u)` is set, and the user's services stop at logout unless
   `loginctl enable-linger <user>`. Found testing `fleetlayer up` on a Linux build server, 27 Nov 2026.
+  Written: `docs/guides/node-services.md`.
 - **`fleetlayer-control` admin commands used `./fleetlayer-control.db` unless told otherwise** (fixed in v0.3.8). Run
   from the wrong folder, `node add` or `acl apply` quietly made a new, empty database. Since v0.3.8, with no `--db` it
   uses `./fleetlayer-control.db` if that exists, else the one `fleetlayer up` makes

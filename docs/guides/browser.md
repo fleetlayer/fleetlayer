@@ -89,9 +89,10 @@ What each line is for:
 
 The node's `allow:` list is one half. The control plane's access policy is the other, and both must agree.
 
-With no policy of your own, every session the node allows can use the browser, but each one's first use is refused
-until you approve it once (`fleetlayer-control approvals list`, then `approvals approve <id>`), and the approval holds
-for 30 days. That's a safe start. Once you know which agents should have it, say so in your policy file:
+With no policy file applied, every session the node's `allow:` list names can use the browser. Once you apply a
+version 2 policy that leaves `ask:` out, each session's first use is refused until you approve it once
+(`fleetlayer-control approvals list`, then `approvals approve <id>`), and the approval holds for 30 days. To decide
+up front which agents have it, say so in your policy file:
 
 ```yaml
 version: 2

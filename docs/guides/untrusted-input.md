@@ -67,7 +67,11 @@ plugins:
     command: fleetlayer-claude-code
 ```
 
+On Linux, a shell opened with `sudo -iu` has no `XDG_RUNTIME_DIR`, so `systemctl --user` (which the install runs)
+fails with "Failed to connect to bus" and `fleetlayer status` can't find the node. Set it first:
+
 ```sh
+export XDG_RUNTIME_DIR=/run/user/$(id -u)     # Linux, in the sudo -iu shell
 fleetlayer-node install
 fleetlayer status       # "linked to the control plane"
 ```
