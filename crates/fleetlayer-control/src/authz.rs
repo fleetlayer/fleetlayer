@@ -60,6 +60,8 @@ pub struct Authz {
     fleet: RwLock<Option<(i64, Arc<Fleet>)>>,
     /// Recent messages per sender, for rate limits: (when, recipient).
     sent: Mutex<HashMap<String, VecDeque<(Instant, String)>>>,
+    /// Policy files (`serve --policy-file`) that couldn't be applied, by path: why. Shown in `/healthz`.
+    pub file_errors: std::sync::Mutex<std::collections::BTreeMap<String, String>>,
 }
 
 pub async fn stored(db: &Db, tenant: &str) -> anyhow::Result<Option<String>> {

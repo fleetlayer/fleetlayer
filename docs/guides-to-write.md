@@ -510,6 +510,11 @@ managers, machines that sleep.
   user's token; `gh run watch` polls every 3 s by default (about 1,200 an hour per watcher), so a few agents watching
   CI exhaust it. Use `--interval 60`, no loops over `gh run list`, `gh api rate_limit` to check, webhooks instead of
   polling. Found 27 Nov 2026; in AGENTS.md (e3473b6). Written: `docs/guides/agents-building-software.md`.
+- **A policy change shouldn't restart the control plane.** A Kubernetes setup applied the policy with an init container
+  and restarted the pod on every ConfigMap change (Reloader): a minute without node links per change. Solved:
+  `serve --policy-file` (`FLEETLAYER_CONTROL_POLICY_FILE`) applies the mounted file at start and every 10 s by content
+  (a ConfigMap update swaps a symlink, which inotify misses); a broken file keeps the old policy and shows in
+  `/healthz`. Where it lives: `deploy/README.md` ("The access policy", with the move from an init container).
 - **SQLite shared by a server and admin commands.** A second process opening the control plane's database read-write
   (a CronJob running `audit verify`, `kubectl exec … acl explain`) ran migrations and set the journal mode, which take
   the write lock, and the server's audit writes timed out with "database is locked": access decisions were refused

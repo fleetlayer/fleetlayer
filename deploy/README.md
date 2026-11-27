@@ -43,6 +43,7 @@ reconnect as soon as the new process listens.
 | `FLEETLAYER_CONTROL_DB` | `/data/control.db` | SQLite, WAL mode; migrations run at start-up |
 | `FLEETLAYER_CONTROL_LISTEN` | `0.0.0.0:7600` | |
 | `FLEETLAYER_CONTROL_HOOKS_LISTEN` | `0.0.0.0:7601` | |
+| `FLEETLAYER_CONTROL_POLICY_FILE` | unset | Version 2 policy files the server applies itself, at start and when they change (see [The access policy](#the-access-policy)): `<tenant>=<path>`, a bare `<path>` for the first tenant, or a folder of `<tenant>.yaml`; commas between several |
 | `FLEETLAYER_CONTROL_ADMIN_TOKEN_FILE` | unset | A file holding the admin token (mount a secret). The API also takes tokens made with `token add` |
 | `FLEETLAYER_CONTROL_AUDIT_KEY_FILE` | unset | The audit log's HMAC key, at least 32 characters (mount a secret; keep a copy outside the cluster, since verifying needs it). Unset: plain SHA-256 chain |
 | `FLEETLAYER_CONTROL_AUDIT_ANCHOR_DIR` | unset | Optional: a directory outside the database (another volume, a git checkout) for hourly anchors |
@@ -75,10 +76,33 @@ SQLite in WAL mode needs its `-shm` file writable even to read.
   `curl -f` exits non-zero on the 409, so the CronJob fails and your alerting sees it. Keep the retry on refused
   connections: with a network policy, a new pod's first connections can be refused until the policy controller has
   programmed it (k3s takes a few seconds).
-- `acl apply <file> [--check]`: make the access rules match a YAML file exactly (example: `deploy/examples/acl.yaml`),
-  printing what changed; running it again changes nothing. Keep the file in git and apply it on every start (an init
-  container), so the agents the rules limit can't change them. `acl list|add|remove|default|check` for inspection.
+- `acl apply <file> [--check]`: make the access policy match a YAML file (a version 2 policy, example
+  `deploy/examples/policy.yaml`, or version 1 rules, `deploy/examples/acl.yaml`), printing what changed; running it
+  again changes nothing. For a version 2 policy, prefer `FLEETLAYER_CONTROL_POLICY_FILE` (below).
+  `acl explain|show|list|check` for inspection.
 - `subscribe <channel> <tab>@<node> [--subject s]`, `unsubscribe …`, `fallback <channel> <tab>@<node>|--none`.
+
+### The access policy
+
+Keep the policy in git, where the agents it limits can't change it, and let the server apply it: mount it (a
+ConfigMap) and point `FLEETLAYER_CONTROL_POLICY_FILE` at it. The server applies it before it answers anything, then
+reads it again every 10 seconds and applies any change at once: no restart, no init container, and nothing else
+writing the policy. A file that isn't a valid version 2 policy is refused: the policy already stored keeps deciding,
+the error is logged, and `/healthz` reports it (`?strict` answers 503) until the file is fixed. Check a change before
+it's merged with `acl apply <file> --check` and `acl test` in CI.
+
+For several tenants, mount a folder with one `<tenant slug>.yaml` per tenant, or give `<slug>=<path>` for each.
+
+Moving from an init container that runs `acl apply` (and a restart on every ConfigMap change, such as Reloader's):
+
+1. Deploy this version with `FLEETLAYER_CONTROL_POLICY_FILE` pointing at the mounted file, and keep the init container
+   for this one rollout. Both apply the same text, so the second finds nothing to change.
+2. Check `/healthz` shows nothing degraded, and that the log says the policy applied (or nothing, when it already
+   matched).
+3. Remove the init container and the restart-on-change annotation for the policy. From now on a ConfigMap change takes
+   effect within about a minute (the kubelet's sync, then the server's 10-second check), with no restart.
+
+To move back, add the init container again and unset the variable.
 
 ### Backups
 

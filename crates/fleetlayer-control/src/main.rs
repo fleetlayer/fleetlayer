@@ -19,6 +19,7 @@ mod me;
 mod pages;
 mod people;
 mod policy;
+mod policy_files;
 mod readings;
 mod route;
 mod signin;
@@ -73,6 +74,12 @@ enum Command {
         /// A directory outside the database for hourly audit anchors (another disk, a git checkout). Optional.
         #[arg(long, env = "FLEETLAYER_CONTROL_AUDIT_ANCHOR_DIR")]
         audit_anchor_dir: Option<PathBuf>,
+        /// Version 2 policy files the server applies itself, at start and whenever they change (checked every 10 s):
+        /// `<tenant>=<path>`, a bare `<path>` for the first tenant, or a folder of `<tenant>.yaml` files. Repeat it
+        /// for several (or separate them with commas in the variable). An invalid file is refused and shown in
+        /// `/healthz`; the stored policy stays.
+        #[arg(long = "policy-file", env = "FLEETLAYER_CONTROL_POLICY_FILE", value_delimiter = ',')]
+        policy_files: Vec<policy_files::Source>,
     },
     /// Tenants: add, list, rename (an ID never changes; a slug and name can).
     Tenant {
@@ -514,7 +521,7 @@ async fn main() -> anyhow::Result<()> {
     };
     let t = DEFAULT_TENANT;
     match cli.command {
-        Command::Serve { listen, hooks_listen, admin_token_file, audit_key_file, audit_anchor_dir } => {
+        Command::Serve { listen, hooks_listen, admin_token_file, audit_key_file, audit_anchor_dir, policy_files } => {
             let audit_key = read_key(audit_key_file.as_deref())?;
             let admin_token_hash = match admin_token_file {
                 Some(f) => Some(db::hash(std::fs::read_to_string(&f)?.trim())),
@@ -534,6 +541,11 @@ async fn main() -> anyhow::Result<()> {
             }
             tokio::spawn(audit::run(app.clone(), audit_anchor_dir));
             tokio::spawn(link::sync_approved(app.clone()));
+            if !policy_files.is_empty() {
+                // Applied before the server answers, so it never decides with an older policy than the file's.
+                policy_files::apply_all(&app, &policy_files).await;
+                tokio::spawn(policy_files::run(app.clone(), policy_files));
+            }
             serve(app, listen, hooks_listen).await
         }
         Command::Node { command: NodeCommand::Add { name, owner, no_admit } } => {
@@ -916,24 +928,19 @@ async fn main() -> anyhow::Result<()> {
                 }
                 AclCommand::Apply { file, check } if is_v2(&file) => {
                     let text = std::fs::read_to_string(&file)?;
-                    policy::Compiled::parse(&text).map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?;
-                    let old = authz::stored(&db, &pt).await?.unwrap_or_default();
-                    if old == text {
+                    let diff = policy_files::apply_text(&db, &pt, &text, check)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?;
+                    let Some(diff) = diff else {
                         println!("The access policy already matches {}.", file.display());
                         return Ok(());
-                    }
-                    let (old_lines, new_lines): (Vec<&str>, Vec<&str>) =
-                        (old.lines().collect(), text.lines().collect());
-                    for l in old_lines.iter().filter(|l| !new_lines.contains(l)) {
-                        println!("- {l}");
-                    }
-                    for l in new_lines.iter().filter(|l| !old_lines.contains(l)) {
-                        println!("+ {l}");
+                    };
+                    for l in &diff {
+                        println!("{l}");
                     }
                     if check {
                         println!("Would apply {} (version 2).", file.display());
                     } else {
-                        authz::store(&db, &pt, &text).await?;
                         println!("Applied {} (version 2). Version 1 rules no longer decide anything.", file.display());
                     }
                     Ok(())

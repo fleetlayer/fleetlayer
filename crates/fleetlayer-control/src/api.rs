@@ -212,14 +212,15 @@ pub async fn post_approval(
 /// `/healthz`: ok when the database answers, with the number of linked nodes.
 /// `{ok, linkedNodes, degraded: [reason]}`. 200 while the server can answer, so Kubernetes' probes don't restart it
 /// over a problem a restart won't fix; `ok` is false while something is degraded (an audit write failed within the
-/// last five minutes). `?strict` answers 503 then, for an uptime check that only reads the status.
+/// last five minutes, or a policy file couldn't be applied). `?strict` answers 503 then, for an uptime check that only reads the status.
 pub async fn healthz(
     State(app): State<Arc<App>>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<(StatusCode, Json<Value>), StatusCode> {
     sqlx::query("SELECT 1").execute(&app.db).await.map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
     let linked = app.links.nodes.lock().await.len();
-    let degraded: Vec<String> = app.audit.degraded().into_iter().collect();
+    let mut degraded: Vec<String> = app.audit.degraded().into_iter().collect();
+    degraded.extend(app.authz.file_errors.lock().unwrap_or_else(|e| e.into_inner()).values().cloned());
     let ok = degraded.is_empty();
     let status = if !ok && q.contains_key("strict") { StatusCode::SERVICE_UNAVAILABLE } else { StatusCode::OK };
     Ok((status, Json(json!({"ok": ok, "linkedNodes": linked, "degraded": degraded}))))
