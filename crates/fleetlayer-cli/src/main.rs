@@ -664,6 +664,16 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 }
                 println!("{line}");
             }
+            let skills = &v["skills"];
+            if let Some(n) = skills["note"].as_str() {
+                println!("  skills: {n}");
+            }
+            for d in skills["skipped"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+                println!(
+                    "  skill skipped: {d} is someone's own, so Fleetlayer's isn't installed there. To use Fleetlayer's, \
+                     move it away and restart the node"
+                );
+            }
         }
         Command::Me => {
             let v: Value = peer.request("node/me", &json!({"caller": caller()})).await?;

@@ -12,7 +12,8 @@ managers, machines that sleep.
   instructions. Claude Code reads skills from `~/.claude/skills/<name>/`, Codex from `~/.agents/skills/<name>/`, and
   Codex's global instructions are `~/.codex/AGENTS.md` (`$CODEX_HOME`). `fleetlayer me` (v0.3.9) lists what a
   session may use, so neither the skills nor the instructions keep a list that goes stale. Written:
-  `docs/guides/agents-know-fleetlayer.md`. Still to come: the node installing the skills itself.
+  `docs/guides/agents-know-fleetlayer.md`. The node installs the skills itself from v0.3.9 (`crates/fleetlayer-node/src/skills.rs`,
+  release tarballs' `skills/` from `scripts/collect-skills`), never over a folder a person made.
 - **A GitHub organization can't be created from the CLI or the API on github.com.** `POST /admin/organizations`
   exists only on GitHub Enterprise Server (it answers 404 on github.com, whatever the token's scopes). An agent can
   create repos with `gh repo create <org>/<name>`, but a person makes the organization once in the web UI

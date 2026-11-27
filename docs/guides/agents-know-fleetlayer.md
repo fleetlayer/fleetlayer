@@ -46,27 +46,38 @@ the agent checks `fleetlayer me` first.
 
 ## Install the skills
 
-Claude Code reads skills from `~/.claude/skills/<name>/SKILL.md`, Codex from `~/.agents/skills/<name>/SKILL.md`. From
-a checkout of the release you run:
+From v0.3.9 the node installs them itself. Each release carries them, and when the node starts it copies every skill
+into Claude Code's folder (`~/.claude/skills/<name>/`, if you use Claude Code) and Codex's (`~/.agents/skills/<name>/`,
+if you use Codex), on every machine. A self-update restarts the node, so the new release's skills arrive with it.
 
-```sh
-git clone --depth 1 --branch v0.3.9 https://github.com/fleetlayer/fleetlayer /tmp/fleetlayer-src
-cd /tmp/fleetlayer-src
-for d in skills/* plugins/folders/skill plugins/claude-auth-manager/skill plugins/pages/skill plugins/pages/apps-skill; do
-  name=$(sed -n 's/^name: //p' "$d/SKILL.md" | head -1)
-  for root in ~/.claude/skills ~/.agents/skills; do
-    mkdir -p "$root/$name" && cp "$d/SKILL.md" "$root/$name/"
-  done
-done
-```
+- **Your own skills are safe.** The node marks each folder it writes with a `.fleetlayer` file and only ever replaces
+  or removes folders with that file. If you already have a skill of the same name (a `pages` skill you installed by
+  hand, say), it's left alone, and `fleetlayer status` says so:
 
-Copy the files, don't link them into a checkout: the [files plugin](sync.md) never follows a link that points outside
-the folder it syncs, so a linked skill wouldn't reach your other machines. If you sync `~/.claude/skills` from one
-machine with the files plugin, installing them there once is enough.
+  ```text
+  skill skipped: /home/you/.claude/skills/pages is someone's own, so Fleetlayer's isn't installed there. To use
+  Fleetlayer's, move it away and restart the node
+  ```
 
-Update them with each Fleetlayer release, since they describe that release's commands. Fleetlayer checks every
-command a skill names against its own command line in its tests, so a skill never tells an agent to run something
-that doesn't exist.
+- **It never writes through a symbolic link.** If `~/.claude`, `~/.claude/skills` or `~/.agents/skills` is a link
+  (into a dotfiles repo, say), the node writes nothing there and `fleetlayer status` says why: copy the skills by hand
+  (below) into the real folder.
+- **To install none**, put `skills: false` in the node's `node.yaml`.
+- **A node not installed from a release** (built from source, a package) has no skills to copy, and `fleetlayer
+  status` says that too. Copy them by hand from a checkout of the release you run:
+
+  ```sh
+  git clone --depth 1 --branch v0.3.9 https://github.com/fleetlayer/fleetlayer /tmp/fleetlayer-src
+  /tmp/fleetlayer-src/scripts/collect-skills /tmp/fleetlayer-skills
+  cp -R /tmp/fleetlayer-skills/* ~/.claude/skills/    # and ~/.agents/skills/ for Codex
+  ```
+
+If you sync `~/.claude/skills` between machines with the [files plugin](sync.md), let each node install its own copy
+and leave Fleetlayer's skill folders out of the synced set. The files plugin never overwrites a file it didn't write,
+so the two don't fight, but the copies would only be duplicates.
+
+Fleetlayer checks every command a skill names against its own command line in its tests, so a skill never tells an
+agent to run something that doesn't exist.
 
 ## What the agent sees
 

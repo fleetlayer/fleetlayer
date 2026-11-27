@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Copy every skill in the repo (skills/*/, and plugins/*/skill/ and plugins/*/*-skill/) into <dest>/<name>/, named by the `name:`
+# in its SKILL.md. The release puts them in each tarball's skills/, and the node installs them from there
+# (crates/fleetlayer-node/src/skills.rs).
+#
+#   scripts/collect-skills <dest>
+set -euo pipefail
+dest=${1:?usage: scripts/collect-skills <dest>}
+root=$(cd "$(dirname "$0")/.." && pwd)
+mkdir -p "$dest"
+shopt -s nullglob
+for f in "$root"/skills/*/SKILL.md "$root"/plugins/*/*skill/SKILL.md; do
+  name=$(sed -n '2,5s/^name: *//p' "$f" | head -1)
+  [[ $name =~ ^[a-z0-9-]+$ ]] || { echo "collect-skills: $f has no valid name:" >&2; exit 1; }
+  [ ! -e "$dest/$name" ] || { echo "collect-skills: two skills are named $name" >&2; exit 1; }
+  cp -R "$(dirname "$f")" "$dest/$name"
+done
+ls "$dest"

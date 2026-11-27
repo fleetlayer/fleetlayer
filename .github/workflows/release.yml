@@ -62,6 +62,7 @@ jobs:
             cp "target/${{ matrix.target }}/release/$b" "dist/$name/"
           done
           cp LICENSE NOTICE README.md "dist/$name/"
+          scripts/collect-skills "dist/$name/skills"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
       - uses: actions/attest-build-provenance@v2
         with:

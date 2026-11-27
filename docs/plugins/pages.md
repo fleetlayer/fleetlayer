@@ -279,4 +279,4 @@ its images in `img/`. Images on consecutive lines make a gallery, alt text is th
 it to check it shows no problems, then give the person that link.
 ```
 
-The `pages` skill (`plugins/pages/skill/SKILL.md`) is the longer version, and the `apps` skill (`plugins/pages/apps-skill/SKILL.md`) covers apps: install them as skills, or sync them to every node with the files plugin.
+The `pages` skill (`plugins/pages/skill/SKILL.md`) is the longer version, and the `apps` skill (`plugins/pages/apps-skill/SKILL.md`) covers apps: from v0.3.9 the node installs both on every machine ([Tell your agents about Fleetlayer](../guides/agents-know-fleetlayer.md)).

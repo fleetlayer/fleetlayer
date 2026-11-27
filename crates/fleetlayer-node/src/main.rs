@@ -14,6 +14,7 @@ mod plugins;
 mod readings;
 mod service;
 mod sessions;
+mod skills;
 mod start;
 mod sync;
 mod terminals;
@@ -80,6 +81,8 @@ pub struct Node {
     pub sync: sync::Sync,
     pub opt_ins: tools::OptIns,
     pub readings: readings::Readings,
+    /// What installing the release's skills did at start (`fleetlayer status`).
+    pub skills: skills::Report,
 }
 
 impl Node {
@@ -171,6 +174,7 @@ async fn run(cfg: NodeConfig) -> anyhow::Result<()> {
         sync: sync::Sync::default(),
         opt_ins: tools::OptIns::default(),
         readings: readings::Readings::default(),
+        skills: skills::at_start(cfg.skills, &config::home(), env!("CARGO_PKG_VERSION")),
     });
     tracing::info!(node = %node.name, machine = %node.machine, plugins = node.plugins.len(), "fleetlayer-node starting");
     for p in &node.plugins {

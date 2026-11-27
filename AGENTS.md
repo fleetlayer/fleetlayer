@@ -70,7 +70,9 @@ shared tool that isn't a plugin (`skills/fleetlayer-browser/`), and one beside e
 (`plugins/<name>/skill/SKILL.md`, `plugins/pages/apps-skill/`). A change to a command, a plugin's tools or a message an
 agent sees (a refusal, an outside-data line) that changes what an agent should do updates its skill in the same
 commit. Check every command and flag against the code before writing it down. A test in `crates/fleetlayer-cli`
-(`skill_commands.rs`) fails when a skill names a `fleetlayer` command or flag that doesn't exist.
+(`skill_commands.rs`) fails when a skill names a `fleetlayer` command or flag that doesn't exist. A skill's folder
+name doesn't matter: its `name:` does, unique across the repo (`scripts/collect-skills`, run in CI, puts each in the
+release's `skills/<name>/`, and the node installs them on every machine).
 
 ## Releases
 

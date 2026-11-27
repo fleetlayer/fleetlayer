@@ -125,6 +125,7 @@ impl Handler for Local {
                     "user": node.user,
                     "version": env!("CARGO_PKG_VERSION"),
                     "plugins": plugins,
+                    "skills": node.skills,
                 }))
             }
             "node/tools_enable" | "node/tools_disable" => {

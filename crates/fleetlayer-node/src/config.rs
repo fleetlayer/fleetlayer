@@ -52,6 +52,10 @@ pub struct NodeConfig {
     pub gateway: Option<String>,
     /// Self-update from Fleetlayer's releases (`crate::update`).
     pub update: Option<crate::update::UpdateConfig>,
+    /// Install the skills that ship with the release where Claude Code and Codex read them (`crate::skills`).
+    /// Default true.
+    #[serde(default = "yes")]
+    pub skills: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]

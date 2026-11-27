@@ -65,8 +65,9 @@ Agents use pages only if they know about them. Add the snippet from
 read, with your own folder, address and space in place of the placeholders (on a laptop set up by `fleetlayer up`,
 the folder is `~/Fleetlayer/personal/pages/` and the address `http://pages.localhost:7680/personal/<folder>/`).
 
-For more than a few lines of instructions, install the two skills that ship with the plugin:
-`plugins/pages/skill/SKILL.md` (pages) and `plugins/pages/apps-skill/SKILL.md` (apps). They tell an agent to use a
+For more than a few lines of instructions, there are two skills that ship with the plugin:
+`plugins/pages/skill/SKILL.md` (pages) and `plugins/pages/apps-skill/SKILL.md` (apps), which the node installs on
+every machine from v0.3.9 ([Tell your agents about Fleetlayer](agents-know-fleetlayer.md)). They tell an agent to use a
 page wherever it would have published an artifact, how to lay out screenshots, and what an app may and may not
 contain.
 
