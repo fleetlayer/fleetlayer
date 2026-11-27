@@ -538,6 +538,25 @@ main > section {
   margin-top: var(--space-xl);
 }
 
+/* Security: a lede, the protections, and what's coming next. */
+.secure {
+  padding-block: var(--space-3xl);
+  border-top: var(--rule-hair) solid var(--color-rule);
+}
+.secure > h2 {
+  font-size: var(--text-2xl);
+  font-weight: 600;
+}
+.secure__lede {
+  margin: var(--space-sm) 0 var(--space-xl);
+  max-width: var(--measure);
+}
+.secure__next {
+  margin-top: var(--space-xl);
+  max-width: var(--measure);
+  color: var(--color-muted);
+}
+
 /* Foundation: the primitives, and what's built on them. */
 .found {
   padding-block: var(--space-3xl);

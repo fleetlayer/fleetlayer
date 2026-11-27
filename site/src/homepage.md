@@ -52,6 +52,25 @@ credentials) and `fleetlayer` (the command line).
 - **Tools that live on one machine**: your signed-in browser on a laptop, used by an agent on a server with
   `fleetlayer mcp browser@laptop`.
 
+## All the security, none of the pain
+
+Most people run Claude Code with every token in their shell and hope nothing goes wrong. That works until an agent
+reads a malicious email, or a stray `rm -rf` runs in the wrong folder. Fleetlayer gives you the protections a security
+team would ask for, an agent sets them up for you, and each one can be switched off when you don't need it.
+
+- **Ask before the risky things.** Access rules decide which agent may message, start or take over which session.
+  Anything sensitive waits for your approval, and you can leave approvals off for the work you trust.
+- **Everything on the record.** An audit log shows who did what and when, and you can check it hasn't been altered.
+- **Secrets stay on your machines.** Tokens travel encrypted to the machine that needs them, and the control plane
+  never stores them.
+- **Untrusted input stays untrusted.** Messages from an agent that reads email or the web arrive marked as outside
+  data. That agent runs as its own user and can't borrow a trusted agent's rights.
+- **One sign-in, one sign-out.** One sign-in for your self-hosted services (experimental), and signing out of one
+  signs you out of all of them.
+
+Coming next: secrets granted by role and scrubbed from everything that leaves a machine; an allowlist of where agents
+may connect, with you approving new hosts; an admin role that stays switched off until you open a time-limited window.
+
 ## A foundation for your own agent workflows
 
 Fleetlayer started inside Quietdeck. Once we saw how useful that layer was on its own, we pulled it out into its own
