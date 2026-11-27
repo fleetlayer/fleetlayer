@@ -84,11 +84,12 @@ fn spawn(c: &TerminalCommand) -> Result<tokio::process::Child, RpcError> {
         .map_err(|e| RpcError::refused(format!("starting {}: {e}", c.command)))
 }
 
-/// Is this line from a watcher a request it may make: `terminal.scrollback`, which reads and changes nothing?
-fn watcher_may_send(line: &str) -> bool {
-    serde_json::from_str::<Value>(line)
-        .ok()
-        .is_some_and(|v| v.get("type").and_then(Value::as_str) == Some("terminal.scrollback"))
+/// A watcher's line as it may reach the command: a `terminal.scrollback` request, which reads and changes nothing,
+/// re-serialised from what was parsed (so a duplicated key can't say one thing to this check and another to the
+/// command); anything else, None.
+fn watcher_request(line: &str) -> Option<String> {
+    let v = serde_json::from_str::<Value>(line).ok()?;
+    (v.get("type").and_then(Value::as_str) == Some("terminal.scrollback")).then(|| v.to_string())
 }
 
 /// Pass a watcher's scrollback requests to the command and drop everything else, until the watcher's side ends. The
@@ -100,11 +101,49 @@ where
 {
     let mut lines = tokio::io::BufReader::new(reader).lines();
     while let Ok(Some(line)) = lines.next_line().await {
-        if watcher_may_send(&line) && stdin.write_all(format!("{line}\n").as_bytes()).await.is_err() {
+        if let Some(req) = watcher_request(&line)
+            && stdin.write_all(format!("{req}\n").as_bytes()).await.is_err()
+        {
             break;
         }
     }
     stdin
+}
+
+/// A line from the terminal command on its way to the caller: a `terminal.scrollback` reply has every secret
+/// delivered to this node redacted from its text (the frames are the terminal's raw bytes, where a value can be split
+/// between frames: not scrubbed, `docs/credentials.md`).
+fn scrub_line(secrets: &crate::secrets::Secrets, line: String, context: &str) -> String {
+    if !line.contains("terminal.scrollback") {
+        return line;
+    }
+    let Ok(mut v) = serde_json::from_str::<Value>(&line) else { return line };
+    if v["type"] != "terminal.scrollback" {
+        return line;
+    }
+    if let Some(text) = v["text"].as_str() {
+        let clean = crate::secrets::scrub_with(secrets, text, context).0.into_owned();
+        v["text"] = Value::String(clean);
+    }
+    v.to_string()
+}
+
+/// The command's stdout, line by line, with scrollback replies scrubbed (`scrub_line`).
+fn scrubbed_stdout<R>(node: Arc<Node>, stdout: R, context: String) -> tokio::io::DuplexStream
+where
+    R: AsyncRead + Unpin + Send + 'static,
+{
+    let (mut near, far) = tokio::io::duplex(256 * 1024);
+    tokio::spawn(async move {
+        let mut lines = tokio::io::BufReader::new(stdout).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let line = scrub_line(&node.secrets, line, &context);
+            if near.write_all(format!("{line}\n").as_bytes()).await.is_err() {
+                break;
+            }
+        }
+    });
+    far
 }
 
 /// Control plane → node: stream a terminal here into the stream it paired.
@@ -118,6 +157,7 @@ pub async fn serve(node: Arc<Node>, req: TerminalServe) -> Result<Value, RpcErro
         return Err(RpcError::internal("the terminal command's pipes didn't open"));
     };
     tracing::info!(session = %req.session, caller = %req.caller, mode = ?req.mode, "terminal opened");
+    let stdout = scrubbed_stdout(node.clone(), stdout, format!("scrollback of {} for {}", req.session, req.caller));
     let observe = req.mode == TerminalMode::Observe;
     tokio::spawn(async move {
         // Watching only: of what the caller sends, only scrollback requests reach the command, whatever the manager
@@ -148,7 +188,12 @@ where
     if here {
         match command(&node, name, req.mode, req.cols, req.rows).await.and_then(|c| spawn(&c)) {
             Ok(mut child) => {
-                let (Some(mut stdin), Some(mut stdout)) = (child.stdin.take(), child.stdout.take()) else { return };
+                let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else { return };
+                let mut stdout = scrubbed_stdout(
+                    node.clone(),
+                    stdout,
+                    format!("scrollback of {name} for a caller on {}", node.name),
+                );
                 if writer.write_all(b"{\"ok\":true}\n").await.is_err() {
                     return;
                 }
@@ -228,7 +273,8 @@ async fn open_remote(
 mod tests {
     use super::*;
 
-    /// A watcher may ask for scrollback (it reads, as watching does) but never type, paste, resize or release.
+    /// A watcher may ask for scrollback (it reads, as watching does) but never type, paste, resize or release; what it
+    /// sends on is re-serialised, so a duplicated key can't slip a different type past the check.
     #[tokio::test]
     async fn a_watcher_may_only_ask_for_scrollback() {
         let sent = concat!(
@@ -238,8 +284,30 @@ mod tests {
             "{\"type\":\"terminal.input\",\"text\":\"x\"}\n",
             "not json\n",
             "{\"type\":\"terminal.resize\",\"cols\":10,\"rows\":5}\n",
+            "{\"type\":\"terminal.paste\",\"text\":\"evil\",\"type\":\"terminal.scrollback\"}\n",
         );
-        let out = watcher_lines(sent.as_bytes(), Vec::new()).await;
-        assert_eq!(String::from_utf8(out).unwrap(), "{\"type\":\"terminal.scrollback\",\"lines\":50,\"id\":\"s1\"}\n");
+        let out = String::from_utf8(watcher_lines(sent.as_bytes(), Vec::new()).await).unwrap();
+        let lines: Vec<serde_json::Value> = out.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(lines[0], serde_json::json!({"type": "terminal.scrollback", "lines": 50, "id": "s1"}));
+        assert!(lines.iter().all(|v| v["type"] == "terminal.scrollback"), "{out}");
+        assert!(!out.contains("terminal.paste"), "the duplicated key goes as the type that was checked: {out}");
+    }
+
+    /// Scrollback replies leave the node with delivered secrets redacted; frames and other records pass as they are.
+    #[test]
+    fn scrollback_replies_are_scrubbed() {
+        let home = tempfile::tempdir().unwrap();
+        let s = fleetlayer_secrets::Secret {
+            reference: "op://vault/db/password".into(),
+            value: "hunter2-but-longer-9f8e".into(),
+        };
+        fleetlayer_secrets::registry::register(home.path(), "1password", std::slice::from_ref(&s)).unwrap();
+        let secrets = crate::secrets::Secrets::new(home.path().to_path_buf());
+        let reply = serde_json::json!({"type": "terminal.scrollback", "id": "r", "text": "$ echo hunter2-but-longer-9f8e\nhunter2-but-longer-9f8e\n"}).to_string();
+        let out = scrub_line(&secrets, reply, "a test");
+        assert!(!out.contains("9f8e"), "{out}");
+        assert!(out.contains("[REDACTED op://vault/db/password]"), "{out}");
+        let frame = r#"{"type":"terminal.frame","seq":1,"bytes":"aGVsbG8="}"#.to_string();
+        assert_eq!(scrub_line(&secrets, frame.clone(), "a test"), frame);
     }
 }

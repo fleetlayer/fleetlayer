@@ -761,7 +761,9 @@ pub struct TranscriptServe {
     pub caller: String,
 }
 
-/// Part of a transcript: `data` (base64) is the bytes from `offset`; `size` is the whole file's size now.
+/// Part of a transcript: `data` (base64) is the lines from `offset`, with every secret delivered to the serving node
+/// redacted; `next` is where the following read starts (redaction changes the length, so it isn't `offset` plus the
+/// data's); `size` is the whole file's size now.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptChunk {
@@ -770,5 +772,6 @@ pub struct TranscriptChunk {
     pub format: String,
     pub size: u64,
     pub offset: u64,
+    pub next: u64,
     pub data: String,
 }

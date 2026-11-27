@@ -57,6 +57,10 @@ agents they limit can't change.
 | What someone owns | `owned-by:person:<handle>`, `owned-by:team:<name>`; `owner` in `to` | `owned-by:team:support` |
 | An agent from outside this tenant | `outside` | |
 
+A session also answers to its session ID (`<id>@<node>`), and a caller may name it either way. Its rules hold under
+both names: a request is checked against the rules for its tab name and for its ID, and a refusal under either
+refuses. Approvals and reasons are asked once, under the tab name.
+
 `*` matches any run of characters. A node is one machine, or one Unix user on a shared machine: the node is the trust
 boundary, because every process of that user can claim to be any of its sessions. Give an agent you trust less its
 own Unix user and its own node ([Run an agent that reads strangers' text](guides/untrusted-input.md)).

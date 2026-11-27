@@ -339,6 +339,13 @@ pub async fn remove_session(db: &Db, tenant: &str, node: &str, id: &str) -> anyh
 }
 
 /// Every session in the tenant, as (node, session JSON).
+/// One node's sessions, whichever tenant keeps them (node names are unique).
+pub async fn node_sessions(db: &Db, node: &str) -> anyhow::Result<Vec<serde_json::Value>> {
+    let rows =
+        sqlx::query("SELECT data FROM sessions WHERE node = ? ORDER BY session_id").bind(node).fetch_all(db).await?;
+    Ok(rows.into_iter().filter_map(|r| serde_json::from_str(&r.get::<String, _>(0)).ok()).collect())
+}
+
 pub async fn sessions(db: &Db, tenant: &str) -> anyhow::Result<Vec<(String, serde_json::Value)>> {
     let rows = sqlx::query("SELECT node, data FROM sessions WHERE tenant = ? ORDER BY node, session_id")
         .bind(tenant)

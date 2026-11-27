@@ -294,8 +294,9 @@ answers with a helper that translates:
 
 The three modes:
 
-- `observe`: watch. Of what the caller sends, the node passes only `terminal.scrollback` to the command, whatever the
-  manager would allow. Access verb `read`.
+- `observe`: watch. Of what the caller sends, the node passes only `terminal.scrollback` to the command (re-serialised
+  from what it checked), whatever the manager would allow. Scrollback replies leave the node with delivered secrets
+  redacted from their text. Access verb `read`.
 - `input`: watch and type with `terminal.keys` and `terminal.paste`, never resizing the terminal or taking it from
   the person's own window (herdr's `observe --input`). For a phone or a chat beside the person's terminal. Access verb
   `attach`. A manager with no such mode answers with its `control` command.
@@ -536,7 +537,7 @@ Numbers, never secrets, flow with readings: account usage and reset times, healt
 | `_fleetlayer.dev/sync/publish` | [Section 8](#8-sync-and-sealed-secrets) |
 | `_fleetlayer.dev/reading/publish`, `/reading/subscribe` | [Section 9](#9-readings) |
 | `_fleetlayer.dev/sessions/query` `{node?, name?, harness?}` | This node's sessions (grant `sessions.query`) |
-| `_fleetlayer.dev/transcript/read` `{to, offset?, tail?, max?, why?}` | `{sessionId, format, size, offset, data}`: part of a session's transcript (`data` base64), here or on another node, checked as `read` on it. From byte `offset`, or the last `tail` bytes starting at a line; at most `max` bytes (1 MiB at most), whole lines only. The session's harness plugin names the file (`_fleetlayer.dev/harness/transcript`); the control plane passes the bytes on and keeps none (grant `transcript.read`) |
+| `_fleetlayer.dev/transcript/read` `{to, offset?, tail?, max?, why?}` | `{sessionId, format, size, offset, next, data}`: part of a session's transcript (`data` base64, with every secret delivered to the serving node redacted from the plain text; `next` is where the following read starts, since redaction changes the length), here or on another node, checked as `read` on it. From byte `offset`, or the last `tail` bytes starting at a line; at most `max` bytes (1 MiB at most), whole lines only. The session's harness plugin names the file (`_fleetlayer.dev/harness/transcript`); the control plane passes the bytes on and keeps none (grant `transcript.read`) |
 | `_fleetlayer.dev/fleet/query` `{}` | `{nodes, sessions}`: every node and session in the fleet that this node may see, as the control plane has them, without summaries, so it's light enough to poll every few seconds (grant `fleet.query`) |
 | `_fleetlayer.dev/access/check` `{tenant, who, can, to}` | `{allowed, rules, reason}`: may this person (`person:<handle>` or their ID) or agent do this to something the tenant owns (`service:…`, `page:…`, `app:…`)? Grant `access.check`; answered only if the node is a member of that tenant ([`sso.md`](sso.md)) |
 | `_fleetlayer.dev/log` `{level, message}` | A structured log line (stderr works too) |

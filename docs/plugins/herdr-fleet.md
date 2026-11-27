@@ -37,9 +37,23 @@ copies the other machines' Claude Code transcripts into `<state_dir>/claude/proj
 out as Claude Code lays out its own, so pointing the client at `<state_dir>/claude` finds them too (the relay:
 `HERDR_CLAUDE_CONFIG_DIRS`). A session seen for the first time gets the end of its transcript (`transcript_tail_kb`,
 1 MB by default, from a line start); after that only what's appended, while it works and once after each change of
-status. A copy is deleted when its session ends, and the folder is emptied when the plugin starts. Each read is checked
-as `read` on the session, and the control plane passes the bytes on without keeping them. Without the grant nothing
-is copied.
+status, one read per session every five seconds at most. Each read is checked as `read` on the session; the machine
+the transcript is on redacts every secret delivered to it from the text before it leaves (as everything a node sends
+the control plane is scrubbed, [credentials](../credentials.md#scrubbing-what-leaves-a-node)), and the control plane
+passes the bytes on without keeping them. Without the grant nothing is copied.
+
+What's copied stays bounded, and goes when it should:
+
+- A copy is deleted when its session ends, when a read is refused (the access was taken away, or waits for the
+  person's approval; that session is asked again after ten minutes), and when the plugin starts.
+- One copy grows to `transcript_file_mb` (8 MB) at most, then starts again from the transcript's end. All copies hold
+  `transcript_total_mb` (256 MB) at most; past that, nothing new is copied and the plugin reports a problem.
+- The client finds a transcript by its session ID alone, so a session ID that two machines both claim, or that this
+  machine's own Claude Code already has, isn't copied at all, and the plugin reports a problem naming them: a copy
+  must never stand in for another session's conversation.
+
+Removing the plugin leaves its state folder behind: delete `<state_dir>` (by default
+`~/.local/state/fleetlayer/herdr-fleet`) to remove the copies with it.
 
 ## Setup
 
@@ -58,6 +72,8 @@ plugins:
       local_socket: ~/.config/herdr/herdr.sock   # default: what `herdr status server` reports
       poll_seconds: 3                      # how often the fleet listing is read
       transcript_tail_kb: 1024             # how much of a transcript is copied when it's first seen
+      transcript_file_mb: 8                # the most one copy grows to before it starts again from the end
+      transcript_total_mb: 256             # the most all copies hold
 ```
 
 The plugin makes, in its state folder:

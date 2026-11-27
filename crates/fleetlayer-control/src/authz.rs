@@ -200,13 +200,89 @@ pub async fn check_why(
     why: Option<&str>,
 ) -> Result<(), RpcError> {
     let fleet = app.authz.fleet(&app.db).await.map_err(RpcError::internal)?;
-    let deciders: Vec<String> = fleet.deciders(who, target).iter().map(|t| t.id.clone()).collect();
     let reply = crate::acl::replying(&app.db, home, who, target).await.map_err(RpcError::internal)?;
-    let out = decide_in(app, &fleet, &deciders, Some(home), (who, verb, target), why, reply, None).await?;
+    // A session goes by its tab name and its ID: rules written for either hold whichever it's called by. Every other
+    // name's rules are checked first (a refusal of any refuses); then the request is decided, approved and audited
+    // once, under its canonical name.
+    let names = session_names(app, target).await;
+    let canonical = names.first().map(String::as_str).unwrap_or(target);
+    // Membership is recorded under a session's tab name, so its other names are decided in the canonical name's
+    // tenants as well as their own.
+    let mut alias_deciders: Vec<String> = fleet.deciders(who, canonical).iter().map(|t| t.id.clone()).collect();
+    for alias in names.iter().skip(1) {
+        for t in fleet.deciders(who, alias) {
+            if !alias_deciders.contains(&t.id) {
+                alias_deciders.push(t.id.clone());
+            }
+        }
+    }
+    for alias in names.iter().skip(1) {
+        for tenant in alias_deciders.clone() {
+            let Some((say, _)) = say_in(app, &fleet, &tenant, (who, verb, alias), reply).await? else { continue };
+            if !say.allowed {
+                let e = crate::audit::Entry {
+                    decision: "denied".into(),
+                    subject: who.into(),
+                    verb: verb.into(),
+                    target: canonical.into(),
+                    reason: format!("as {alias}: {}", say.because),
+                };
+                app.audit.record(&app.db, &tenant, e).await.map_err(|err| {
+                    tracing::error!("the audit log can't be written, so refusing {who} {verb} {canonical}: {err}");
+                    RpcError::refused("the control plane's audit log can't be written now, so nothing is allowed")
+                })?;
+                crate::route::denied(app, home, who, canonical, verb).await;
+                return Err(RpcError::refused(format!(
+                    "{who} may not {verb} {canonical} (access control, as {alias}: {}). If this stops you doing your \
+                     job, report it to your person",
+                    say.because
+                )));
+            }
+        }
+    }
+    let deciders: Vec<String> = fleet.deciders(who, canonical).iter().map(|t| t.id.clone()).collect();
+    let out = decide_in(app, &fleet, &deciders, Some(home), (who, verb, canonical), why, reply, None).await?;
     match out.refusal {
         Some(e) => Err(e),
         None => Ok(()),
     }
+}
+
+/// Every name the session `target` (`<name>@<node>`) goes by, its canonical one first: `<tab>@<node>` when it has a
+/// tab, then `<session id>@<node>` (for a tab name, every session that ran under it). Anything that isn't one of a
+/// node's sessions (`-@<node>`, `tool:…`, a service, a person, a session the node hasn't reported) is just itself.
+pub async fn session_names(app: &App, target: &str) -> Vec<String> {
+    let only = || vec![target.to_string()];
+    let Some((name, node)) = target.rsplit_once('@') else { return only() };
+    if name.is_empty() || name == "-" || name.contains(':') {
+        return only();
+    }
+    let Ok(sessions) = crate::db::node_sessions(&app.db, node).await else { return only() };
+    let mut tabs: Vec<String> = vec![];
+    let mut ids: Vec<String> = vec![];
+    for s in &sessions {
+        let id = s["sessionId"].as_str().unwrap_or_default();
+        let tab = s["meta"]["tab"].as_str().filter(|t| !t.is_empty());
+        if id == name || tab == Some(name) {
+            if let Some(t) = tab
+                && !tabs.iter().any(|x| x == t)
+            {
+                tabs.push(t.to_string());
+            }
+            if !id.is_empty() && !ids.iter().any(|x| x == id) {
+                ids.push(id.to_string());
+            }
+        }
+    }
+    if tabs.is_empty() && ids.is_empty() {
+        return only();
+    }
+    let mut out: Vec<String> = tabs.iter().chain(ids.iter()).map(|n| format!("{n}@{node}")).collect();
+    // The name asked for is checked too, even when it's neither (it can't be, but cheaply sure).
+    if !out.iter().any(|n| n == target) {
+        out.push(target.to_string());
+    }
+    out
 }
 
 /// One tool call through the MCP gate (`link/tool_call`): verb `call` on `target`, decided, audited and filed for
@@ -802,6 +878,48 @@ mod tests {
         crate::db::enrol(db, "default", "web").await.unwrap();
         people::node_owner(db, "web", Some(&Owner::Tenant(acme.clone())), "admin", &acme).await.unwrap();
         (app, acme)
+    }
+
+    /// A rule written for a session's tab name holds when the session is named by its ID, and one written for its ID
+    /// holds when it's named by its tab: both names are checked, and a refusal of either refuses.
+    #[tokio::test]
+    async fn a_session_named_by_its_id_gets_no_way_past_rules_for_its_tab() {
+        let (app, _) = example().await;
+        let id = "0b5e6f3c-1d2e-4f5a-9b8c-7d6e5f4a3b2c";
+        crate::db::replace_sessions(
+            &app.db,
+            "default",
+            "laptop",
+            &[serde_json::json!({
+            "sessionId": id, "manager": "herdr", "meta": {"tab": "recipes", "running": true}})],
+        )
+        .await
+        .unwrap();
+        store(
+            &app.db,
+            "default",
+            "version: 2\ndefault: allow\nask: []\ndeny:\n  - { who: \"*\", can: read, to: recipes@laptop }\n",
+        )
+        .await
+        .unwrap();
+        for target in ["recipes@laptop", &format!("{id}@laptop")] {
+            let e = check(&app, "default", "billing@laptop", "read", target).await;
+            let e = e.err().unwrap_or_else(|| panic!("reading {target} was allowed"));
+            assert!(e.message.contains("deny[0]"), "{target}: {}", e.message);
+        }
+        check(&app, "default", "billing@laptop", "message", &format!("{id}@laptop")).await.unwrap();
+        // A rule for the ID holds for the tab name too.
+        store(
+            &app.db,
+            "default",
+            &format!(
+                "version: 2\ndefault: allow\nask: []\ndeny:\n  - {{ who: \"*\", can: attach, to: \"{id}@laptop\" }}\n"
+            ),
+        )
+        .await
+        .unwrap();
+        let e = check(&app, "default", "billing@laptop", "attach", "recipes@laptop").await.unwrap_err();
+        assert!(e.message.contains("deny[0]"), "{}", e.message);
     }
 
     #[tokio::test]

@@ -13,7 +13,8 @@
 //! - `local_socket`: this machine's herdr socket (default: what `herdr status server` reports).
 //! - `poll_seconds`: how often the fleet listing is read (default 3).
 //! - `transcript_tail_kb`: how much of an other machine's Claude Code transcript is copied when it's first seen (default
-//!   1024). Copying needs the grant `transcript.read` (`mirror.rs`).
+//!   1024); `transcript_file_mb`, the most one copy may grow to (default 8); `transcript_total_mb`, the most all copies
+//!   may hold (default 256). Copying needs the grant `transcript.read` (`mirror.rs`).
 
 mod fleet;
 mod mirror;
@@ -44,6 +45,8 @@ struct Config {
     local_socket: Option<PathBuf>,
     poll_seconds: Option<u64>,
     transcript_tail_kb: Option<u64>,
+    transcript_file_mb: Option<u64>,
+    transcript_total_mb: Option<u64>,
 }
 
 fn expand(home: &Path, p: PathBuf) -> PathBuf {
@@ -101,6 +104,8 @@ impl mirror::Reader for NodeReader {
                     mirror::ReadError::NotGranted("this node is too old to read transcripts".into())
                 } else if e.message.contains("isn't granted") {
                     mirror::ReadError::NotGranted(e.message)
+                } else if refused_by_policy(&e.message) {
+                    mirror::ReadError::Refused(e.message)
                 } else {
                     mirror::ReadError::Other(e.message)
                 }
@@ -108,8 +113,19 @@ impl mirror::Reader for NodeReader {
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(v["data"].as_str().unwrap_or_default())
             .map_err(|e| mirror::ReadError::Other(format!("the node's answer: {e}")))?;
-        Ok(mirror::Chunk { offset: v["offset"].as_u64().unwrap_or(0), size: v["size"].as_u64().unwrap_or(0), bytes })
+        let offset = v["offset"].as_u64().unwrap_or(0);
+        let next = v["next"]
+            .as_u64()
+            .ok_or_else(|| mirror::ReadError::Other("the node's answer has no next offset".into()))?;
+        Ok(mirror::Chunk { offset, next, size: v["size"].as_u64().unwrap_or(0), bytes })
     }
+}
+
+/// Whether a refusal comes from the access policy (or waits for the person's approval): the session's copy must go.
+fn refused_by_policy(message: &str) -> bool {
+    ["access control", "approve request", "refused request", "isn't a member of any tenant", "may not read"]
+        .iter()
+        .any(|m| message.contains(m))
 }
 
 struct NodeCloser(Peer);
@@ -248,10 +264,19 @@ async fn run(peer: Peer, node: NodeMeta, config: Config) -> anyhow::Result<()> {
 
     // Other machines' Claude Code transcripts, for clients that read them from disk.
     let (c, h, pr) = (ctx.clone(), health.clone(), peer.clone());
-    let tail = config.transcript_tail_kb.unwrap_or(1024).clamp(16, 64 * 1024) * 1024;
+    let limits = mirror::Limits {
+        tail_bytes: config.transcript_tail_kb.unwrap_or(1024).clamp(16, 64 * 1024) * 1024,
+        file_cap: config.transcript_file_mb.unwrap_or(8).clamp(1, 1024) << 20,
+        total_cap: config.transcript_total_mb.unwrap_or(256).clamp(1, 64 * 1024) << 20,
+    };
     let root = p.state.join("claude");
+    // This machine's own Claude Code transcripts, which a copy must never stand in for.
+    let mut local_roots = vec![home.join(".claude")];
+    if let Some(d) = std::env::var_os("CLAUDE_CONFIG_DIR") {
+        local_roots.push(PathBuf::from(d));
+    }
     tokio::spawn(async move {
-        let mut m = mirror::Mirror::new(root, tail);
+        let mut m = mirror::Mirror::new(root, limits, local_roots);
         let reader = NodeReader(pr.clone());
         loop {
             tokio::time::sleep(Duration::from_secs(5)).await;
@@ -263,7 +288,22 @@ async fn run(peer: Peer, node: NodeMeta, config: Config) -> anyhow::Result<()> {
             for e in &r.errors {
                 tracing::debug!("copying a transcript: {e}");
             }
-            *h.mirror.lock().await = json!({"copies": m.len(), "off": m.off, "lastErrors": r.errors.len()});
+            let problem = if r.over_total > 0 {
+                Some(format!(
+                    "the transcript copies hold their limit ({} MB): {} session(s) aren't copied; raise transcript_total_mb",
+                    limits.total_cap >> 20,
+                    r.over_total
+                ))
+            } else if !r.ambiguous.is_empty() {
+                Some(format!(
+                    "a session ID is claimed by more than one machine, or by this one, so its transcript isn't copied: {}",
+                    r.ambiguous.join(", ")
+                ))
+            } else {
+                None
+            };
+            *h.mirror.lock().await = json!({"copies": m.len(), "bytes": m.total(), "off": m.off,
+                "lastErrors": r.errors.len(), "problem": problem});
         }
     });
 
@@ -301,8 +341,11 @@ async fn report(ctx: &serve::Ctx, h: &Health) -> (Option<String>, Value) {
     let ok_at = *h.fleet_ok_at.lock().await;
     let err = h.fleet_error.lock().await.clone();
     let check = h.self_check.lock().await.clone();
+    let mirror_problem = h.mirror.lock().await["problem"].as_str().map(str::to_string);
     let problem = if let Some(c) = &check {
         Some(format!("the merged herdr socket doesn't answer: {c}"))
+    } else if let Some(m) = mirror_problem {
+        Some(m)
     } else if let Some((since, e)) = &err
         && Timestamp::now().duration_since(*since).as_secs() >= 120
     {

@@ -37,13 +37,24 @@ pub async fn read_here(node: &Node, name: &str, range: &TranscriptRange) -> Resu
         .await
         .map_err(|e| RpcError::internal(e.to_string()))?
         .map_err(|e| RpcError::refused(format!("reading {name}'s transcript: {e}")))?;
+    let next = offset + bytes.len() as u64;
+    let clean = scrubbed(&node.secrets, &bytes, &format!("the transcript of {name} on {}", node.name));
     Ok(TranscriptChunk {
         session_id: session.session_id,
         format,
         size,
         offset,
-        data: base64::engine::general_purpose::STANDARD.encode(bytes),
+        next,
+        data: base64::engine::general_purpose::STANDARD.encode(clean),
     })
+}
+
+/// The lines with every secret delivered to this node redacted, in plain text, before they're encoded: the scrubber
+/// on the link to the control plane sees only base64 by then, where a redaction would break the encoding and a value
+/// JSON-escaped inside it wouldn't be found.
+pub fn scrubbed(secrets: &crate::secrets::Secrets, bytes: &[u8], context: &str) -> Vec<u8> {
+    let text = String::from_utf8_lossy(bytes);
+    crate::secrets::scrub_with(secrets, &text, context).0.into_owned().into_bytes()
 }
 
 /// A transcript here or on another node, for a caller on this node (`<name>` for a session, `plugin:<name>`).
@@ -139,6 +150,25 @@ mod tests {
         assert_eq!((o, b.as_slice()), (9, &b"line two\nline three\n"[..]), "a tail that starts on a line keeps it");
         let (o, _, _) = read_range(&p, &r(None, Some(1000), None)).unwrap();
         assert_eq!(o, 0);
+    }
+
+    /// A delivered secret in a transcript line, as Claude Code writes one (inside a JSON string, so JSON-escaped), is
+    /// redacted before encoding, and the copy still decodes.
+    #[test]
+    fn secrets_are_redacted_in_plain_text_before_encoding() {
+        let home = tempfile::tempdir().unwrap();
+        let s = fleetlayer_secrets::Secret {
+            reference: "op://vault/item/token".into(),
+            value: "tok_\"quoted\"_9f8e7d6c5b4a".into(),
+        };
+        fleetlayer_secrets::registry::register(home.path(), "1password", std::slice::from_ref(&s)).unwrap();
+        let secrets = crate::secrets::Secrets::new(home.path().to_path_buf());
+        let line = format!("{}\n", serde_json::json!({"message": {"content": format!("the token is {}", s.value)}}));
+        let out = String::from_utf8(scrubbed(&secrets, line.as_bytes(), "a test")).unwrap();
+        assert!(!out.contains("9f8e7d6c5b4a"), "{out}");
+        assert!(out.contains("[REDACTED op://vault/item/token]"), "{out}");
+        let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+        assert!(v["message"]["content"].as_str().unwrap().starts_with("the token is [REDACTED"));
     }
 
     #[test]
