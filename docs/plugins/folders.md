@@ -93,7 +93,8 @@ File Provider folders) are listed with `not_downloaded: true` and refused on rea
 ## macOS privacy protection
 
 macOS keeps programs out of Downloads, Desktop and Documents until you allow them. The node runs as a LaunchAgent,
-so `fleetlayer-folders` asks under the node's name: allow it once in System Settings > Privacy & Security > Files and
-Folders (or Full Disk Access). Until then the `folders` tool and every read say so. A folder of your own, such as
-`~/Screenshots`, isn't protected and needs nothing. Each Fleetlayer release is a new binary, so macOS may ask again
-after an update.
+so the first read of such a folder puts up a prompt naming `fleetlayer-node`, and the call waits until someone answers
+it on the Mac. Once allowed, it's under System Settings > Privacy & Security > Files and Folders. If it's refused, the
+`folders` tool and every read say so. A folder of your own, such as `~/Screenshots`, isn't protected and needs
+nothing. macOS remembers the answer for the node's binary at its exact path, and each release installs to a new
+path, so macOS asks again once after an upgrade.

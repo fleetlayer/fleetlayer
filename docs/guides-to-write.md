@@ -449,19 +449,22 @@ managers, machines that sleep.
   user's token; `gh run watch` polls every 3 s by default (about 1,200 an hour per watcher), so a few agents watching
   CI exhaust it. Use `--interval 60`, no loops over `gh run list`, `gh api rate_limit` to check, webhooks instead of
   polling. Found 27 Nov 2026; in AGENTS.md (e3473b6). Written: `docs/guides/agents-building-software.md`.
-- **Agents elsewhere reading your Mac's screenshots and downloads.** `fleetlayer-folders`, a read-only MCP server
-  shared as a node tool (`fleetlayer mcp folders@<mac>`). Footguns: macOS privacy protection (TCC) keeps the node's
-  LaunchAgent, and every tool it starts, out of ~/Downloads, ~/Desktop and ~/Documents until its person allows the
-  node once under Files and Folders (or Full Disk Access); a folder of your own (~/Screenshots, set in Shift-Command-5
-  > Options) needs nothing. Each release is a new unsigned binary, so macOS may ask again after an update (to confirm
-  on a real Mac at the first deploy). iCloud/Dropbox placeholders are refused rather than downloaded. A reply is one
-  WebSocket message (16 MiB limit), so reads are capped at 8-10 MB and images downscaled to 1568 px. Downloads holds
-  strangers' files and private documents: decode images with limits, and share it as its own tool when it needs
-  stricter access than screenshots. Writing (`--upload`, `--delete` per folder): the policy decides per tool entry, not
-  per MCP tool, so per-agent write rights mean sharing the folder twice (a read entry for many, a manage entry for a
-  named session). Uploads are linked into place without clobbering, never executable, quarantined on macOS, refused
-  under 1 GB free; deletes go to a hidden trash purged after 30 days, judged by the time in the trashed name (a rename
-  keeps the old modified time). Written: `docs/guides/folders.md`, `docs/plugins/folders.md`.
+- **Agents elsewhere reading your Mac's screenshots and downloads.** `fleetlayer-folders`, a read-only MCP server shared
+  as a node tool (`fleetlayer mcp folders@<mac>`). Footguns: macOS privacy protection (TCC) keeps the node's
+  LaunchAgent, and every tool it starts, out of ~/Downloads, ~/Desktop and ~/Documents until its person allows the node
+  once under Files and Folders (or Full Disk Access); a folder of your own (~/Screenshots, set in Shift-Command-5 >
+  Options) needs nothing. Confirmed on a real Mac (27 Nov 2026): the prompt names fleetlayer-node by its real versioned
+  path (the responsible process launchd started, not the tool), the tool call blocks until it's answered, and the grant
+  is stored keyed by that path (unsigned binary), so each upgrade to a new versioned folder prompts again. A stable real
+  path for the node, replaced in place, or a code-signing identity would keep the grant. iCloud/Dropbox placeholders are
+  refused rather than downloaded. A reply is one WebSocket message (16 MiB limit), so reads are capped at 8-10 MB and
+  images downscaled to 1568 px. Downloads holds strangers' files and private documents: decode images with limits, and
+  share it as its own tool when it needs stricter access than screenshots. Writing (`--upload`, `--delete` per folder):
+  the policy decides per tool entry, not per MCP tool, so per-agent write rights mean sharing the folder twice (a read
+  entry for many, a manage entry for a named session). Uploads are linked into place without clobbering, never
+  executable, quarantined on macOS, refused under 1 GB free; deletes go to a hidden trash purged after 30 days, judged
+  by the time in the trashed name (a rename keeps the old modified time). Written: `docs/guides/folders.md`,
+  `docs/plugins/folders.md`.
 - **A plugin that runs but can't do its job looked healthy.** A session manager whose program isn't on the service's
   PATH (herdr in `~/.local/bin`, which launchd doesn't expand) answered every `session/list` with an error, yet
   `fleetlayer status` said "running" and the heartbeat stayed green. Since then a failing `session/list` shows the

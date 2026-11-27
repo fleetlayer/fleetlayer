@@ -49,16 +49,18 @@ with `fleetlayer tools enable folders --for 2h`.
 ## 3. Let the node into Downloads
 
 macOS keeps programs out of Downloads, Desktop and Documents until you allow them, and that includes a program the
-node starts. The first time an agent reads Downloads, macOS either asks you, on the Mac's screen, to let the node in,
-or refuses quietly. The tool tells the agent which, and the agent tells you.
+node starts. The first time an agent reads Downloads, a prompt appears on the Mac's screen asking whether
+`fleetlayer-node` may access files in your Downloads folder. macOS asks for the node, not the tool, because the node
+is the program launchd started. The agent's call waits until you answer, so it's worth being at the Mac the first
+time: click **Allow** and the call goes through. If you click **Don't Allow**, or nobody answers, the tool tells the
+agent that macOS refused, and the agent tells you.
 
-To allow it up front: System Settings > Privacy & Security > **Files and Folders**, find `fleetlayer-node` and turn on
-**Downloads Folder**. If it isn't listed, add it under **Full Disk Access** instead: the `+` button, then
-Shift-Command-G and the node's real path (`readlink ~/.local/bin/fleetlayer-node` prints it). Restart the node
-afterwards.
+To change it later: System Settings > Privacy & Security > **Files and Folders**, find `fleetlayer-node` and turn
+**Downloads Folder** on or off.
 
-Each Fleetlayer release is a new binary, and macOS may ask again after an update. Asking an agent to run the `folders`
-tool shows at once whether each folder can be read.
+macOS remembers the answer for the node's binary at its exact path. Fleetlayer installs each release in a folder of
+its own (`readlink ~/.local/bin/fleetlayer-node` shows the current one), so after an upgrade macOS asks again, once.
+Asking an agent to run the `folders` tool after an upgrade shows at once whether each folder can still be read.
 
 ## 4. Decide which agents see them
 
@@ -136,7 +138,9 @@ ask: "look at my latest screenshot", "read the CSV I downloaded this morning". T
 
 ## When it doesn't work
 
-- **"macOS refused access to the downloads folder"**: section 3.
+- **"macOS refused access to the downloads folder"**: section 3. After an upgrade this is expected once: answer the
+  prompt on the Mac, or turn the node back on under Files and Folders.
+- **An agent's first read of Downloads hangs**: macOS is waiting for someone to answer its prompt on the Mac's screen.
 - **"is kept in the cloud and isn't downloaded"**: the file is an iCloud Drive or Dropbox placeholder. Open it in
   Finder once to download it, and ask again. The tool never starts a download itself.
 - **"more than the 8.0 MB this tool sends in one reply"**: big files don't fit through one reply. Images are scaled
