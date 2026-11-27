@@ -29,8 +29,8 @@ As the user the node will run as, on the new machine:
 curl -fsSL https://raw.githubusercontent.com/fleetlayer/fleetlayer/main/install.sh | sh
 ```
 
-It puts the latest release in `~/.local/lib/fleetlayer/<version>/`, checked against the release's checksums, and links
-each binary from `~/.local/bin`. If it prints "Add ~/.local/bin to your PATH", do that before step 3: the service
+It puts the latest release in `~/.local/lib/fleetlayer/`, checked against the release's checksums, and links each
+binary from `~/.local/bin`. If it prints "Add ~/.local/bin to your PATH", do that before step 3: the service
 remembers the PATH you install it with.
 
 ## 2. Enrol it
@@ -133,6 +133,15 @@ Set `mode: notify` on a machine where you want to choose the moment.
 **Upgrading by hand.** Rerun the installer, then `fleetlayer-node install`. A node installed before 26 November 2026
 wrote the versioned path (`~/.local/lib/fleetlayer/<version>/fleetlayer-node`) into its service file, so swapping
 the links never reached it and it kept running the old binary. Rerunning `install` writes the link instead.
+
+**Where the files are, and going back.** From v0.3.13 the live binaries sit directly in `~/.local/lib/fleetlayer/`
+and keep the same paths from one release to the next: an upgrade copies each new binary beside the old one and renames
+it over it. `VERSION` there names the live release, and `versions/<tag>/` keeps the live release and the one before as
+they were unpacked. To go back, copy the binaries from `versions/<tag>/` over the live ones and restart the node (set
+`update: {mode: notify}` first, or it updates again). An install from before v0.3.13, with a folder per release, moves
+itself to this layout the first time a v0.3.13 node starts, and restarts once. The fixed path is what lets macOS keep
+the permissions you gave the node across upgrades ([Releasing](../releasing.md)); that first move is a new path, so
+macOS asks once more.
 
 **What a self-update relinks.** The node repoints the links for every binary in the release: `fleetlayer`,
 `fleetlayer-node`, the plugins, and (from v0.3.8) `fleetlayer-control`, `fleetlayer-gateway` and `fleetlayer-pages`.

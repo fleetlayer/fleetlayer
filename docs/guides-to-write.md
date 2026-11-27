@@ -73,9 +73,12 @@ managers, machines that sleep.
   Tested with two signed, notarised releases, 28 Nov 2026: the second release in its own versioned folder was asked
   again, although its designated requirement was identical; a different signed build copied to a path that already
   had the permission was not asked. So it takes both: sign the builds, and keep the binary at one path across
-  upgrades (replace the files in a fixed folder; a symlink to a versioned folder doesn't count). Not done yet in
-  `install.sh` and the node's update, which use `~/.local/lib/fleetlayer/<version>/`. Untested: an app bundle, which
-  macOS knows by bundle ID. For the signing: an explicit `--identifier` per binary (the linker's default,
+  upgrades (replace the files in a fixed folder; a symlink to a versioned folder doesn't count). From v0.3.13
+  `install.sh` and the node's update do that: live binaries in `~/.local/lib/fleetlayer/`, each replaced by a rename,
+  releases kept under `versions/<tag>/` for going back, and an older install moves itself once (its old folder
+  becomes a link to the live one, so a service file that names it still starts). Each path a program ran from leaves
+  its own row under Files and Folders, all with the same name. Untested: an app bundle, which macOS knows by bundle
+  ID. For the signing: an explicit `--identifier` per binary (the linker's default,
   `fleetlayer_node-<hash>`, changes every build), the hardened runtime (Apple won't notarise without it; Rust binaries
   that start other programs need no entitlements), and `--timestamp`. Bare binaries can't be stapled, so notarise a
   zip of them and let macOS look the ticket up online; curl and the node's update don't mark files as downloaded, so

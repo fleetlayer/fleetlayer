@@ -58,15 +58,21 @@ agent that macOS refused, and the agent tells you.
 To change it later: System Settings > Privacy & Security > **Files and Folders**, find `fleetlayer-node` and turn
 **Downloads Folder** on or off.
 
-macOS remembers the answer for the node's binary at its exact path. Fleetlayer installs each release in a folder of
-its own (`readlink ~/.local/bin/fleetlayer-node` shows the current one), so after an upgrade macOS asks again, once.
-Asking an agent to run the `folders` tool after an upgrade shows at once whether each folder can still be read.
+macOS remembers the answer for the node's binary at its exact path, and for a signed binary it keeps the answer
+when a new build replaces the old one there. From v0.3.13 that's how Fleetlayer upgrades: the macOS releases are
+signed with a Developer ID and notarised by Apple ([how](../releasing.md)), and the installer and the node's own
+update keep the node at one path, `~/.local/lib/fleetlayer/fleetlayer-node`. So you answer once.
 
-From v0.3.9 the macOS releases are signed with a Developer ID and notarised by Apple ([how](../releasing.md)). That
-alone doesn't stop the question: macOS still knows a signed command-line program by its path, and a new release in a
-new folder is a new program to it (tested between two signed releases, 28 Nov 2026). What signing changes is that a
-new build put at the *same* path keeps the permission, which an unsigned build never does. So an install that keeps
-the node at one path (a package, or your own script that replaces the files in place) is asked once and never again.
+Three cases ask again:
+
+- **Moving to v0.3.13 from an earlier release**, once: earlier releases each lived in a folder of their own, so the
+  node's path changes one last time.
+- **v0.3.12 and earlier**, after every upgrade, for the same reason. Signing alone (from v0.3.9) didn't stop it.
+- **A node you built yourself**, or an unsigned build from a fork, after every upgrade even at one path: macOS knows
+  an unsigned program by its exact bytes.
+
+Asking an agent to run the `folders` tool after an upgrade shows at once whether each folder can still be read. Each
+path the node has run from leaves a `fleetlayer-node` row under Files and Folders; the old ones can be removed.
 
 ## 4. Decide which agents see them
 
@@ -144,8 +150,8 @@ ask: "look at my latest screenshot", "read the CSV I downloaded this morning". T
 
 ## When it doesn't work
 
-- **"macOS refused access to the downloads folder"**: section 3. After an upgrade this is expected once: answer the
-  prompt on the Mac, or turn the node back on under Files and Folders.
+- **"macOS refused access to the downloads folder"**: section 3. Answer the prompt on the Mac, or turn the node back
+  on under Files and Folders. Before v0.3.13, and with an unsigned build, this is expected once after every upgrade.
 - **An agent's first read of Downloads hangs**: macOS is waiting for someone to answer its prompt on the Mac's screen.
 - **"is kept in the cloud and isn't downloaded"**: the file is an iCloud Drive or Dropbox placeholder. Open it in
   Finder once to download it, and ask again. The tool never starts a download itself.

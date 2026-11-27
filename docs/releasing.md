@@ -13,14 +13,14 @@ and an identifier that never changes (`dev.fleetlayer.node` for `fleetlayer-node
 
 Why it matters:
 
-- **A permission can survive an upgrade.** macOS remembers a permission (Files and Folders, Local Network) for a
-  command-line program by its path, and checks the program found there against the signature it saw when the person
-  answered. For a signed program that check is the team and identifier, the same in every release, so a new build at
-  the same path keeps the permission. For an unsigned one it's the exact bytes, so no new build ever does. Signing
-  isn't enough by itself: a release installed in a new folder is asked again whether it's signed or not (tested
-  between two signed releases, 28 Nov 2026). The installer and the node's own update still put each release in
-  `~/.local/lib/fleetlayer/<version>/`, so they still get one question per upgrade until they keep the node at one
-  path.
+- **Permissions survive upgrades,** together with a path that doesn't change. macOS remembers a permission (Files
+  and Folders, Local Network) for a command-line program by its path, and checks the program found there against the
+  signature it saw when the person answered. For a signed program that check is the team and identifier, the same in
+  every release, so a new build at the same path keeps the permission. For an unsigned one it's the exact bytes, so
+  no new build ever does. Signing isn't enough by itself: a signed release installed in a new folder was asked again,
+  and a different signed build put at a path that already had the permission wasn't (both tested, 28 Nov 2026). So
+  from v0.3.13 the installer and the node's own update keep every binary at one path, `~/.local/lib/fleetlayer/`,
+  and replace the files there (`crates/fleetlayer-node/src/update.rs`).
 - **A tarball downloaded in a browser runs.** Without notarisation macOS refuses it ("Apple could not verify...").
 
 What to know:

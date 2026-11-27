@@ -12,8 +12,8 @@ yours alone, such as approving a prompt on a Mac or pasting a secret; the guides
 curl -fsSL https://raw.githubusercontent.com/fleetlayer/fleetlayer/main/install.sh | sh
 ```
 
-It installs the latest release's binaries for Linux or macOS into `~/.local/lib/fleetlayer/<version>/`, checked
-against the release's checksums, with symlinks in `~/.local/bin`. A node installed this way updates itself from later
+It installs the latest release's binaries for Linux or macOS into `~/.local/lib/fleetlayer/`, checked against the
+release's checksums, with symlinks in `~/.local/bin`. A node installed this way updates itself from later
 releases (`update: {mode: auto | notify | off}` in node.yaml); one installed any other way only logs that a release is
 out.
 
