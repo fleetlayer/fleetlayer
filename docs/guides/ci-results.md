@@ -47,6 +47,23 @@ manager. With `--github-secret-file`, a request must also carry GitHub's signatu
 (`X-Hub-Signature-256`) made with that secret, or it's refused. `fleetlayer-control endpoint secret <id>
 --github-secret-file …` adds one to an endpoint you already have.
 
+**If the URL leaks** (it ended up in a log, a screenshot or a chat), give the endpoint a new one. These commands come
+in v0.3.12. `fleetlayer-control endpoint list` shows each endpoint's ID, and `endpoint rotate <id>` prints a new
+`/hooks/<id>/<secret>` once. The old URL answers 404 at once, and the label, channel and GitHub signing secret stay.
+Deliveries fail until GitHub has the new URL; its Recent Deliveries tab can send them again. For no gap at all, add a
+second endpoint with the same `--github-secret-file`, repoint GitHub to it, then `endpoint remove <old id>`.
+
+To repoint a webhook with `gh`, send the whole config, because a `PATCH` of `config` replaces all of it, then ask
+GitHub to ping it:
+
+```sh
+gh api -X PATCH repos/your-org/your-repo/hooks/<hook-id> -f config[url]="$NEW_HOOK_URL" \
+  -f config[content_type]=json -f config[secret]="$(cat github-secret)"
+gh api -X POST repos/your-org/your-repo/hooks/<hook-id>/pings
+```
+
+The ping's result shows in Recent Deliveries: it should be 200.
+
 **2. Expose only the hooks listener.** The control plane listens for webhooks on a port of their own (`--hooks-listen`,
 7601 by default), apart from its API. Put just that one behind a public HTTPS address: a Cloudflare Tunnel, or a
 route on your reverse proxy that sends only `/hooks/` there (and `/healthz`, if you want an uptime check of it).
