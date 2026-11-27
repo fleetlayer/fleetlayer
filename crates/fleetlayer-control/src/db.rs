@@ -1,6 +1,7 @@
 //! The control plane's store: SQLite through sqlx, migrations in `migrations/`. Every query is scoped to a tenant.
 
 use std::path::Path;
+use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
@@ -10,6 +11,10 @@ pub type Db = SqlitePool;
 
 pub const DEFAULT_TENANT: &str = "default";
 
+/// How long a statement waits for another connection's write lock before failing with "database is locked".
+pub const BUSY_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Open the database for the server and commands that change it: created if missing, migrated.
 pub async fn open(path: &Path) -> anyhow::Result<Db> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -18,10 +23,58 @@ pub async fn open(path: &Path) -> anyhow::Result<Db> {
         .filename(path)
         .create_if_missing(true)
         .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(BUSY_TIMEOUT)
         .foreign_keys(true);
     let db = SqlitePoolOptions::new().max_connections(8).connect_with(opts).await?;
     sqlx::migrate!("./migrations").run(&db).await?;
     Ok(db)
+}
+
+/// Open the database for a command that only reads (`audit verify`, `acl explain`, the lists), next to a running
+/// server: no migrations and no journal-mode change (both take the write lock, and held the server's audit writes up
+/// past their timeout), and `query_only`, so nothing here can write. Not SQLite's read-only mode: a WAL reader must be
+/// able to create the `-shm` file when the server isn't running. Refuses a database whose schema isn't this
+/// version's, rather than misreading it.
+pub async fn open_read_only(path: &Path) -> anyhow::Result<Db> {
+    anyhow::ensure!(path.exists(), "no control plane database at {}", path.display());
+    let opts = SqliteConnectOptions::new().filename(path).busy_timeout(BUSY_TIMEOUT).pragma("query_only", "ON");
+    let db = SqlitePoolOptions::new().max_connections(2).connect_with(opts).await?;
+    check_schema(&db, path).await?;
+    Ok(db)
+}
+
+/// The newest migration this build has, and the database's.
+async fn check_schema(db: &Db, path: &Path) -> anyhow::Result<()> {
+    let expected = sqlx::migrate!("./migrations").migrations.iter().map(|m| m.version).max().unwrap_or(0);
+    let have: Option<i64> = sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations WHERE success")
+        .fetch_one(db)
+        .await
+        .map_err(|_| anyhow::anyhow!("{} isn't a control plane database (it has no schema)", path.display()))?;
+    let have = have.unwrap_or(0);
+    anyhow::ensure!(
+        have >= expected,
+        "the database at {} has an older schema ({have}) than this fleetlayer-control expects ({expected}): \
+         start the new server once (it migrates the database), then run this again",
+        path.display()
+    );
+    anyhow::ensure!(
+        have == expected,
+        "the database at {} has a newer schema ({have}) than this fleetlayer-control knows ({expected}): \
+         use the same version as the server",
+        path.display()
+    );
+    Ok(())
+}
+
+/// Whether an error is SQLite's "database is busy" or "locked" (another connection holds the lock), which a retry
+/// can get past.
+pub fn is_busy(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| match c.downcast_ref::<sqlx::Error>() {
+        Some(sqlx::Error::Database(d)) => {
+            d.code().and_then(|c| c.parse::<i64>().ok()).is_some_and(|c| matches!(c & 0xff, 5 | 6))
+        }
+        _ => false,
+    })
 }
 
 /// A database in memory: for tests, and commands that read only their own files (`acl test`).

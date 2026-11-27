@@ -25,6 +25,30 @@ use crate::db::{Db, now_ms};
 
 const GENESIS: &str = "genesis";
 const REPEAT_WINDOW_MS: i64 = 60_000;
+/// Tries of a write that finds the database busy, and the pause before each retry.
+const WRITE_TRIES: u32 = 3;
+const RETRY_AFTER: [Duration; 2] = [Duration::from_millis(250), Duration::from_secs(1)];
+/// How long `/healthz` reports degraded after a write failed.
+pub const DEGRADED_FOR: Duration = Duration::from_secs(300);
+
+/// Run `op`, again after a pause while it fails with SQLite's busy or locked, up to [`WRITE_TRIES`] times in all.
+async fn retry_busy<F, Fut>(mut op: F) -> anyhow::Result<()>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<()>>,
+{
+    let mut tries = 1;
+    loop {
+        match op().await {
+            Err(e) if tries < WRITE_TRIES && crate::db::is_busy(&e) => {
+                tracing::warn!("audit: the database is busy ({e}); trying again");
+                tokio::time::sleep(RETRY_AFTER[(tries - 1) as usize]).await;
+                tries += 1;
+            }
+            r => return r,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
@@ -38,7 +62,11 @@ pub struct Entry {
 
 pub struct Audit {
     key: Option<Vec<u8>>,
+    /// Where hourly anchors go (`--audit-anchor-dir`), for `GET /v1/audit/verify`.
+    anchors: Option<PathBuf>,
     write: Mutex<()>,
+    /// The last time a row couldn't be written, and why: `/healthz` reports degraded for a while after.
+    failed: std::sync::Mutex<Option<(std::time::Instant, String)>>,
     /// Denials seen again within the window: key → (first seen, repeats since, entry).
     repeats: Mutex<HashMap<String, (i64, i64, String, Entry)>>,
 }
@@ -50,7 +78,26 @@ fn lp(out: &mut Vec<u8>, v: &str) {
 
 impl Audit {
     pub fn new(key: Option<Vec<u8>>) -> Audit {
-        Audit { key, write: Mutex::new(()), repeats: Mutex::default() }
+        Audit { key, anchors: None, write: Mutex::new(()), failed: Default::default(), repeats: Mutex::default() }
+    }
+
+    pub fn with_anchors(mut self, dir: Option<PathBuf>) -> Audit {
+        self.anchors = dir;
+        self
+    }
+
+    pub fn anchors(&self) -> Option<&Path> {
+        self.anchors.as_deref()
+    }
+
+    /// Why the audit log is failing, if a write failed within the last [`DEGRADED_FOR`].
+    pub fn degraded(&self) -> Option<String> {
+        let failed = self.failed.lock().unwrap_or_else(|e| e.into_inner());
+        failed.as_ref().filter(|(at, _)| at.elapsed() < DEGRADED_FOR).map(|(_, why)| why.clone())
+    }
+
+    fn failed(&self, why: String) {
+        *self.failed.lock().unwrap_or_else(|e| e.into_inner()) = Some((std::time::Instant::now(), why));
     }
 
     pub fn keyed(&self) -> bool {
@@ -75,9 +122,19 @@ impl Audit {
         }
     }
 
-    /// Append one row.
+    /// Append one row. When the database is busy or locked (another process holds its write lock), it's tried again
+    /// up to [`WRITE_TRIES`] times in all; a write that still fails marks the audit log degraded (`/healthz`).
     pub async fn write(&self, db: &Db, tenant: &str, e: &Entry, count: i64) -> anyhow::Result<()> {
         let _guard = self.write.lock().await;
+        let r = retry_busy(|| self.write_once(db, tenant, e, count)).await;
+        if let Err(err) = &r {
+            tracing::error!("audit: a decision couldn't be written: {err}");
+            self.failed(format!("the audit log can't be written: {err}"));
+        }
+        r
+    }
+
+    async fn write_once(&self, db: &Db, tenant: &str, e: &Entry, count: i64) -> anyhow::Result<()> {
         let last = sqlx::query("SELECT seq, hash FROM audit_log ORDER BY seq DESC LIMIT 1").fetch_optional(db).await?;
         let (seq, prev) = match last {
             Some(r) => (r.get::<i64, _>(0) + 1, r.get::<String, _>(1)),
@@ -179,8 +236,17 @@ fn latest_anchor(dir: &Path) -> anyhow::Result<Option<(String, serde_json::Value
     }
 }
 
-fn is_anchor(p: &Path) -> bool {
+pub fn is_anchor(p: &Path) -> bool {
     p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("anchor-") && n.ends_with(".json"))
+}
+
+/// Whether a line of [`verify`]'s report is a problem found, not one of its summary lines.
+pub fn is_problem(line: &str) -> bool {
+    !(line.starts_with("Audit chain:")
+        || line.starts_with("Anchors:")
+        || line.starts_with("No anchors given")
+        || line.starts_with("Result:")
+        || line.ends_with("aren't anchored yet"))
 }
 
 /// Check the chain (and the anchors in `anchors`, if given). Returns the report's lines and whether it's intact.
@@ -418,5 +484,57 @@ mod tests {
         assert!(ok, "{report:?}");
         assert!(report.iter().any(|l| l.contains("rows 3..3 were written after the latest anchor")), "{report:?}");
         assert!(report[0].contains("no key"));
+    }
+
+    /// Two pools on one file: `a` (the server's) and `b`, whose statements give up at once when `a` holds the lock.
+    async fn two_pools() -> (tempfile::TempDir, Db, Db) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("control.db");
+        let a = crate::db::open(&path).await.unwrap();
+        let opts = sqlx::sqlite::SqliteConnectOptions::new().filename(&path).busy_timeout(Duration::ZERO);
+        let b = sqlx::sqlite::SqlitePoolOptions::new().max_connections(1).connect_with(opts).await.unwrap();
+        (dir, a, b)
+    }
+
+    fn entry() -> Entry {
+        Entry {
+            decision: "allowed".into(),
+            subject: "a@laptop".into(),
+            verb: "message".into(),
+            target: "b@server".into(),
+            reason: "test".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_write_that_finds_the_database_locked_is_tried_again() {
+        let (_dir, a, b) = two_pools().await;
+        let mut lock = a.acquire().await.unwrap();
+        sqlx::query("BEGIN IMMEDIATE").execute(&mut *lock).await.unwrap();
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            sqlx::query("COMMIT").execute(&mut *lock).await.unwrap();
+        });
+        let audit = Audit::new(None);
+        audit.write(&b, "default", &entry(), 1).await.expect("written once the lock is released");
+        release.await.unwrap();
+        assert_eq!(audit.degraded(), None);
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit_log").fetch_one(&a).await.unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[tokio::test]
+    async fn a_write_that_keeps_failing_marks_the_log_degraded() {
+        let (_dir, a, b) = two_pools().await;
+        let mut lock = a.acquire().await.unwrap();
+        sqlx::query("BEGIN IMMEDIATE").execute(&mut *lock).await.unwrap();
+        let audit = Audit::new(None);
+        let started = std::time::Instant::now();
+        let e = audit.write(&b, "default", &entry(), 1).await.unwrap_err();
+        assert!(crate::db::is_busy(&e), "{e}");
+        assert!(started.elapsed() >= Duration::from_millis(1200), "tried three times: {:?}", started.elapsed());
+        let why = audit.degraded().expect("degraded");
+        assert!(why.starts_with("the audit log can't be written"), "{why}");
+        sqlx::query("ROLLBACK").execute(&mut *lock).await.unwrap();
     }
 }

@@ -27,8 +27,14 @@ Two parts:
 | 7600 | `GET /healthz`, the node links (`GET /v1/link`, a WebSocket), the API (`GET /v1/fleet`, `/v1/events`, `/v1/subscriptions`, `/v1/endpoints`, `/v1/summaries`; `POST /v1/sessions/<id>/catchup`) | Private network only, through an HTTPS ingress that passes WebSocket upgrades through unbuffered, with long idle timeouts (the link pings every 30 s) |
 | 7601 | `GET /healthz` and `POST /hooks/<endpoint id>/<secret>`, nothing else | Public, through a tunnel whose ingress sends only `^/hooks/` here and answers everything else with 404 |
 
-Health: `GET /healthz` on 7600 answers `{"ok":true,"linkedNodes":N}` once the database answers, 503 otherwise. Use it
-for liveness and readiness, and for an uptime check.
+Health: `GET /healthz` on 7600 answers `{"ok":true,"linkedNodes":N,"degraded":[]}` once the database answers, 503
+otherwise. Use it for liveness and readiness. It stays 200 while something is degraded (`ok` false, the reason in
+`degraded`: an audit write failed within the last five minutes, so access decisions are being refused), because a
+restart wouldn't fix that. For an uptime check that alerts on it, use `GET /healthz?strict`, which answers 503 while
+degraded.
+
+On SIGTERM the control plane stops within a few seconds: it closes node links with "restarting" (1012), so nodes
+reconnect as soon as the new process listens.
 
 ### Environment
 
@@ -44,7 +50,12 @@ for liveness and readiness, and for an uptime check.
 
 ### Admin commands
 
-Run inside the container (`kubectl exec … -- fleetlayer-control <command>`), against the same database:
+Run inside the container (`kubectl exec … -- fleetlayer-control <command>`), against the same database. Commands that
+only read (`audit verify|tail`, `acl explain|list|show|log|check|suggest`, every `list`) open it without migrating or
+writing, so they never hold up the server's writes; they refuse a database whose schema is older or newer than their
+own version. Commands that change it take SQLite's write lock briefly, as the server does, and wait up to 15 s for it.
+Run admin commands from the same image as the server. A read-only volume mount isn't a way to make a command safe:
+SQLite in WAL mode needs its `-shm` file writable even to read.
 
 - `node add <name>`: enrol a node; prints its token once. `node list`, `node remove <name>`.
 - `endpoint add --label <l> --channel <c>`: a webhook endpoint; prints `/hooks/<id>/<secret>` once. `endpoint list`.
@@ -54,7 +65,14 @@ Run inside the container (`kubectl exec … -- fleetlayer-control <command>`), a
   once. A `send` token makes its service a member of the token's tenant, so the access policy decides its messages
   (the `message` verb) like any other sender's, audited and rate-limited. `token list`, `token remove <name>`.
 - `audit verify` (exits non-zero on any break) and `audit tail [--denied]`: the tamper-evident log of every access
-  decision. Run `audit verify` on a schedule (an hourly CronJob with the same key) and alert when it fails.
+  decision. Check it on a schedule and alert when it fails. The server does it for you with `GET /v1/audit/verify`,
+  so a CronJob needs only `curl` and a token, not the database volume or the audit key. It answers only the result
+  and counts, never rows: 200 `{"result":"OK","keyed":true,"rows":N,"problems":0,"anchors":N}`, 409 with
+  `"result":"FAILED"` and how many problems (run `audit verify` in the container to see which rows). It needs an
+  admin token: make one for the check alone (`token add audit-check --scope admin`), put it in a Secret, and mount it
+  in the CronJob, for example as the file `/run/secrets/audit-check/token`:
+  `curl -fsS -H "Authorization: Bearer $(cat /run/secrets/audit-check/token)" http://<control>:7600/v1/audit/verify`.
+  `curl -f` exits non-zero on the 409, so the CronJob fails and your alerting sees it.
 - `acl apply <file> [--check]`: make the access rules match a YAML file exactly (example: `deploy/examples/acl.yaml`),
   printing what changed; running it again changes nothing. Keep the file in git and apply it on every start (an init
   container), so the agents the rules limit can't change them. `acl list|add|remove|default|check` for inspection.

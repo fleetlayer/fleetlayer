@@ -490,6 +490,14 @@ managers, machines that sleep.
   user's token; `gh run watch` polls every 3 s by default (about 1,200 an hour per watcher), so a few agents watching
   CI exhaust it. Use `--interval 60`, no loops over `gh run list`, `gh api rate_limit` to check, webhooks instead of
   polling. Found 27 Nov 2026; in AGENTS.md (e3473b6). Written: `docs/guides/agents-building-software.md`.
+- **SQLite shared by a server and admin commands.** A second process opening the control plane's database read-write
+  (a CronJob running `audit verify`, `kubectl exec … acl explain`) ran migrations and set the journal mode, which take
+  the write lock, and the server's audit writes timed out with "database is locked": access decisions were refused
+  for about 20 s. Solved: reading commands open the database `query_only` with no migrations and refuse a schema that
+  isn't theirs; the server waits 15 s for the lock and retries an audit write three times; a failed audit write shows
+  in `/healthz` (`?strict` for uptime checks); `GET /v1/audit/verify` lets the scheduled check run in the server. A
+  read-only mount doesn't help: WAL readers need the `-shm` file writable. Where it lives: `deploy/README.md`,
+  `crates/fleetlayer-control/tests/read_only.rs`.
 - **A server in a container that ignores SIGTERM.** A process running as PID 1 gets no default action for SIGTERM,
   so without its own handler it keeps running until Kubernetes kills it when the grace period ends (30 s by default),
   and every node sees 503s while the new pod waits. The control plane now handles SIGTERM and SIGINT: it stops taking

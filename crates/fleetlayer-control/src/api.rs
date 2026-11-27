@@ -4,10 +4,11 @@
 //! (`fleetlayer-control token add <name> --scope read`). A self-hosted control plane has one tenant; the
 //! hosted one will sign people in instead.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use serde_json::{Value, json};
 use subtle::ConstantTimeEq;
@@ -209,10 +210,51 @@ pub async fn post_approval(
 }
 
 /// `/healthz`: ok when the database answers, with the number of linked nodes.
-pub async fn healthz(State(app): State<Arc<App>>) -> Result<Json<Value>, StatusCode> {
+/// `{ok, linkedNodes, degraded: [reason]}`. 200 while the server can answer, so Kubernetes' probes don't restart it
+/// over a problem a restart won't fix; `ok` is false while something is degraded (an audit write failed within the
+/// last five minutes). `?strict` answers 503 then, for an uptime check that only reads the status.
+pub async fn healthz(
+    State(app): State<Arc<App>>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Result<(StatusCode, Json<Value>), StatusCode> {
     sqlx::query("SELECT 1").execute(&app.db).await.map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
     let linked = app.links.nodes.lock().await.len();
-    Ok(Json(json!({"ok": true, "linkedNodes": linked})))
+    let degraded: Vec<String> = app.audit.degraded().into_iter().collect();
+    let ok = degraded.is_empty();
+    let status = if !ok && q.contains_key("strict") { StatusCode::SERVICE_UNAVAILABLE } else { StatusCode::OK };
+    Ok((status, Json(json!({"ok": ok, "linkedNodes": linked, "degraded": degraded}))))
+}
+
+/// `GET /v1/audit/verify` (admin token): check the audit chain and anchors in the server, so a scheduled check doesn't
+/// open the database itself. Answers only the result and counts, never rows or their content: 200 `{result: "OK",
+/// keyed, rows, problems: 0, anchors}`, 409 with `result: "FAILED"` and how many problems. `audit verify` in the
+/// container says which rows.
+pub async fn get_audit_verify(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+) -> Result<(StatusCode, Json<Value>), (StatusCode, String)> {
+    match scope_of(&app, &headers).await {
+        Some(Scope::Admin) => {}
+        Some(_) => return Err((StatusCode::FORBIDDEN, "an admin token is needed".into())),
+        None => return Err((StatusCode::UNAUTHORIZED, "an admin token is needed".into())),
+    }
+    let (report, ok) = crate::audit::verify(&app.audit, &app.db, app.audit.anchors()).await.map_err(internal)?;
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit_log")
+        .fetch_one(&app.db)
+        .await
+        .map_err(|e| internal(e.into()))?;
+    let anchors = app.audit.anchors().map(|d| {
+        std::fs::read_dir(d)
+            .map(|r| r.filter(|e| e.as_ref().is_ok_and(|e| crate::audit::is_anchor(&e.path()))).count())
+            .unwrap_or(0)
+    });
+    let problems = report.iter().filter(|l| crate::audit::is_problem(l)).count();
+    let status = if ok { StatusCode::OK } else { StatusCode::CONFLICT };
+    Ok((
+        status,
+        Json(json!({"result": if ok { "OK" } else { "FAILED" }, "keyed": app.audit.keyed(), "rows": rows,
+            "problems": problems, "anchors": anchors})),
+    ))
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -255,4 +297,93 @@ pub async fn post_message(State(app): State<Arc<App>>, headers: HeaderMap, Json(
             (status, serde_json::to_string(&e).unwrap_or(e.message))
         })?;
     Ok(Json(serde_json::to_value(delivered).unwrap_or_default()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn app() -> Arc<App> {
+        Arc::new(App {
+            db: db::open_memory().await.unwrap(),
+            links: Default::default(),
+            hook_limits: Default::default(),
+            admin_token_hash: Some(db::hash("admin-token")),
+            streams: Default::default(),
+            authz: Default::default(),
+            audit: crate::audit::Audit::new(None),
+        })
+    }
+
+    fn query(strict: bool) -> Query<HashMap<String, String>> {
+        Query(if strict { [("strict".to_string(), String::new())].into() } else { HashMap::new() })
+    }
+
+    #[tokio::test]
+    async fn a_failed_audit_write_shows_in_healthz() {
+        let app = app().await;
+        let (status, Json(v)) = healthz(State(app.clone()), query(true)).await.unwrap();
+        assert_eq!((status, v["ok"].clone()), (StatusCode::OK, json!(true)));
+
+        // The table gone: every write fails, as when the database stays locked.
+        sqlx::query("DROP TABLE audit_log").execute(&app.db).await.unwrap();
+        let e = crate::audit::Entry {
+            decision: "allowed".into(),
+            subject: "a@laptop".into(),
+            verb: "message".into(),
+            target: "b@laptop".into(),
+            reason: "test".into(),
+        };
+        assert!(app.audit.write(&app.db, "default", &e, 1).await.is_err());
+
+        let (status, Json(v)) = healthz(State(app.clone()), query(false)).await.unwrap();
+        assert_eq!(status, StatusCode::OK, "probes keep passing: a restart wouldn't fix it");
+        assert_eq!(v["ok"], false);
+        assert!(v["degraded"][0].as_str().unwrap().starts_with("the audit log can't be written"), "{v}");
+        let (status, _) = healthz(State(app), query(true)).await.unwrap();
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "?strict fails, for the uptime check");
+    }
+
+    #[tokio::test]
+    async fn audit_verify_needs_the_admin_token() {
+        let app = app().await;
+        let mut h = HeaderMap::new();
+        assert_eq!(get_audit_verify(State(app.clone()), h.clone()).await.unwrap_err().0, StatusCode::UNAUTHORIZED);
+        h.insert("authorization", "Bearer admin-token".parse().unwrap());
+        let (status, Json(v)) = get_audit_verify(State(app.clone()), h.clone()).await.unwrap();
+        assert_eq!(v, json!({"result": "OK", "keyed": false, "rows": 0, "problems": 0, "anchors": null}));
+        assert_eq!(status, StatusCode::OK);
+
+        // A row changed: FAILED with a count, and nothing about the row.
+        let e = crate::audit::Entry {
+            decision: "allowed".into(),
+            subject: "secret-subject@laptop".into(),
+            verb: "message".into(),
+            target: "b@laptop".into(),
+            reason: "test".into(),
+        };
+        app.audit.write(&app.db, "default", &e, 1).await.unwrap();
+        let triggers: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'audit_log'")
+                .fetch_all(&app.db)
+                .await
+                .unwrap();
+        for t in triggers {
+            sqlx::query(sqlx::AssertSqlSafe(format!("DROP TRIGGER {t}"))).execute(&app.db).await.unwrap();
+        }
+        sqlx::query("UPDATE audit_log SET reason = 'edited'").execute(&app.db).await.unwrap();
+        let (status, Json(v)) = get_audit_verify(State(app.clone()), h).await.unwrap();
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(
+            (v["result"].clone(), v["rows"].clone(), v["problems"].clone()),
+            (json!("FAILED"), json!(1), json!(1))
+        );
+        assert!(!v.to_string().contains("secret-subject"), "{v}");
+
+        // A read token isn't enough.
+        let read = db::add_token(&app.db, DEFAULT_TENANT, "reader", "read").await.unwrap();
+        let mut h = HeaderMap::new();
+        h.insert("authorization", format!("Bearer {read}").parse().unwrap());
+        assert_eq!(get_audit_verify(State(app), h).await.unwrap_err().0, StatusCode::FORBIDDEN);
+    }
 }

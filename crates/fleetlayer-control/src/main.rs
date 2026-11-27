@@ -492,11 +492,14 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
     let cli = Cli::parse();
-    // `acl test` reads only its files: it works anywhere, with no database (CI runs it in a clean checkout).
+    // `acl test` reads only its files: it works anywhere, with no database (CI runs it in a clean checkout), and never
+    // opens the one --db names.
     let offline = matches!(&cli.command, Command::Acl { command: AclCommand::Test { .. } });
+    let read_only = reads_only(&cli.command);
+    let open = |p: PathBuf| async move { if read_only { db::open_read_only(&p).await } else { db::open(&p).await } };
     let db = match &cli.db {
-        Some(p) => db::open(p).await?,
-        None if offline => db::open_memory().await?,
+        _ if offline => db::open_memory().await?,
+        Some(p) => open(p.clone()).await?,
         None => {
             let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"));
             let path = default_db(std::path::Path::new("fleetlayer-control.db"), &home);
@@ -506,7 +509,7 @@ async fn main() -> anyhow::Result<()> {
                 "no control plane database at {} (pass --db, or set FLEETLAYER_CONTROL_DB)",
                 path.display()
             );
-            db::open(&path).await?
+            open(path).await?
         }
     };
     let t = DEFAULT_TENANT;
@@ -524,7 +527,7 @@ async fn main() -> anyhow::Result<()> {
                 admin_token_hash,
                 streams: streams::Streams::default(),
                 authz: authz::Authz::default(),
-                audit: audit::Audit::new(audit_key.clone()),
+                audit: audit::Audit::new(audit_key.clone()).with_anchors(audit_anchor_dir.clone()),
             });
             if audit_key.is_none() {
                 tracing::warn!("no --audit-key-file: the audit log is chained with plain SHA-256, not an HMAC");
@@ -1120,6 +1123,7 @@ async fn serve(app: Arc<App>, listen: SocketAddr, hooks_listen: SocketAddr) -> a
         .route("/v1/summaries", get(api::get_summaries))
         .route("/v1/sessions/{id}/catchup", axum::routing::post(api::post_catchup))
         .route("/v1/approvals", get(api::get_approvals))
+        .route("/v1/audit/verify", get(api::get_audit_verify))
         .route("/v1/messages", axum::routing::post(api::post_message))
         .route("/v1/approvals/{id}", axum::routing::post(api::post_approval))
         .route("/v1/signin/person", axum::routing::post(signin::post_person))
@@ -1216,6 +1220,35 @@ async fn shutdown_signal() {
 /// makes.
 fn default_db(cwd_db: &std::path::Path, home: &std::path::Path) -> PathBuf {
     if cwd_db.exists() { cwd_db.to_path_buf() } else { home.join(".local/state/fleetlayer/control/control.db") }
+}
+
+/// Commands that only read the database. They open it without migrating or writing, so they never take the write
+/// lock from a running server (`db::open_read_only`).
+fn reads_only(c: &Command) -> bool {
+    matches!(
+        c,
+        Command::Audit { command: AuditCommand::Verify { .. } | AuditCommand::Tail { .. } }
+            | Command::Acl {
+                command: AclCommand::List
+                    | AclCommand::Explain { .. }
+                    | AclCommand::Suggest { .. }
+                    | AclCommand::Show
+                    | AclCommand::Log { .. }
+                    | AclCommand::Check { .. }
+            }
+            | Command::Node { command: NodeCommand::List }
+            | Command::Endpoint { command: EndpointCommand::List }
+            | Command::Token { command: TokenCommand::List }
+            | Command::Signin { command: SigninCommand::Tokens }
+            | Command::Approvals { command: ApprovalsCommand::List { .. } }
+            | Command::Tools { .. }
+            | Command::Tenant { command: TenantCommand::List }
+            | Command::Person { command: PersonCommand::List }
+            | Command::Member { command: MemberCommand::List }
+            | Command::Team { command: TeamCommand::List }
+            | Command::Agent { command: AgentCommand::List }
+            | Command::Invite { command: InviteCommand::List }
+    )
 }
 
 /// A GitHub signing secret from a file: its text, trimmed, not empty.
