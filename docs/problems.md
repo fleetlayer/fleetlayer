@@ -73,8 +73,18 @@ Marked **(planned)** where it isn't built yet.
     schedule.
 18. **An agent blocked by a rule fails silently.** Every refusal says which rule and why, and how to report it if it
     gets in the way of the job.
+19a. **Every small service grows its own login** (a key here, a passkey there, a token for the next one), and none of
+    them know your groups or spaces. One sign-in for every service you run, through Fleetlayer, with your company's
+    provider (Google Workspace, Okta and others) or a simple built-in directory, and permissions from the same access
+    policy as your agents. **(planned)**
 19. **Your credentials end up on someone else's server.** The control plane holds no credentials; secrets cross it
     only as ciphertext for one machine.
+
+### Pages
+
+- **Agents' pages for people (screenshots, reports, mock-ups) are locked to one vendor and one account.** Pages are
+  plain folders in your synced vault, written by any agent or model; Fleetlayer hosts whatever is there, with access
+  per space. **(planned)**
 
 ### Running it
 
