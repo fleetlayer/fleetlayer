@@ -13,9 +13,9 @@ skill). `fleetlayer me` lists each entry you may use, with its folders and what 
 claude mcp add shared-folders -- fleetlayer mcp shared-folders@laptop
 ```
 
-The entry's name isn't a folder's name. The entry may be `shared-folders@laptop` or `downloads-manage@laptop`, with folders
-called `screenshots` and `downloads` inside. The `folders` tool (and the server's instructions) name the folders; the
-`folder` argument can be left out only when there's one.
+The entry's name isn't a folder's name. The entry may be `shared-folders@laptop` or `downloads-manage@laptop`, with
+folders called `screenshots` and `downloads` inside. The `folders` tool (and the server's instructions) name the
+folders; the `folder` argument can be left out only when there's one.
 
 ## Reading
 
