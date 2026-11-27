@@ -47,6 +47,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/_/login/start", get(login_start))
         .route("/_/auth/callback", get(auth_callback))
         .route("/_/signed-out", get(signed_out))
+        .route("/_/auth/backchannel-logout", post(backchannel_logout))
         .route("/_/logout", post(logout))
         .route("/_/assets/{name}", get(asset))
         .route("/_/events", get(events))
@@ -373,6 +374,30 @@ async fn login(
     }
     let sid = app.auth.start(Viewer { person: None }).await;
     ([(header::SET_COOKIE, auth::cookie(&sid, app.secure_cookies()))], Redirect::to(&next)).into_response()
+}
+
+#[derive(Deserialize)]
+struct BackchannelForm {
+    logout_token: Option<String>,
+}
+
+/// OpenID Connect back-channel logout: the sign-in service says someone signed out there, so their sessions here,
+/// on the site and in apps, end too. A token that doesn't check out is refused and ends nothing.
+async fn backchannel_logout(State(app): Ctx, axum::Form(f): axum::Form<BackchannelForm>) -> Response {
+    let no_store = [(header::CACHE_CONTROL, "no-store")];
+    let Some(oidc) = &app.auth.oidc else { return (StatusCode::NOT_FOUND, no_store).into_response() };
+    let Some(token) = f.logout_token else { return (StatusCode::BAD_REQUEST, no_store).into_response() };
+    match oidc.verify_logout(&token).await {
+        Ok(out) => {
+            let ended = app.auth.end_signed_out(&out).await + app.broker.end_signed_out(&out).await;
+            tracing::info!(ended, "signed out by the sign-in service");
+            (StatusCode::OK, no_store).into_response()
+        }
+        Err(e) => {
+            tracing::warn!("a back-channel logout was refused: {e:#}");
+            (StatusCode::BAD_REQUEST, no_store).into_response()
+        }
+    }
 }
 
 async fn logout(State(app): Ctx, headers: HeaderMap) -> Response {
@@ -1481,6 +1506,56 @@ mod tests {
         r.headers().get_all(header::SET_COOKIE).iter().filter_map(|v| v.to_str().ok()).find_map(|c| {
             c.strip_prefix(&format!("{name}=")).map(|rest| rest.split(';').next().unwrap_or_default().to_string())
         })
+    }
+
+    /// Signed in through the fake issuer with a session `sid` at the sign-in service: the pages session cookie.
+    async fn signed_in_with_sid(app: &Arc<App>, f: &fleetlayer_oidc::testing::FakeIssuer, sid: &str) -> String {
+        let r = get(app, "/_/login/start?next=/personal/", None).await;
+        let to = r.headers()[header::LOCATION].to_str().unwrap().to_string();
+        let state = fleetlayer_oidc::testing::param(&to, "state");
+        let mut claims = f.claims(&fleetlayer_oidc::testing::param(&to, "nonce"));
+        claims["sid"] = serde_json::json!(sid);
+        *f.token.lock().unwrap() = Some(fleetlayer_oidc::testing::good(f, claims));
+        let r = get_with(app, &format!("/_/auth/callback?code=c&state={state}"), &format!("pages_oidc={state}")).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        cookie_set(&r, auth::COOKIE).unwrap()
+    }
+
+    async fn backchannel(app: &Arc<App>, token: &str) -> StatusCode {
+        let form = format!("logout_token={token}");
+        let req = Request::post("/_/auth/backchannel-logout")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from(form))
+            .unwrap();
+        router(app.clone()).oneshot(req).await.unwrap().status()
+    }
+
+    #[tokio::test]
+    async fn a_back_channel_logout_ends_that_sign_in_session_here_and_a_bad_one_ends_nothing() {
+        use fleetlayer_oidc::testing::{logout_claims, logout_token};
+        let (app, _d, f) = signin_app().await;
+        let laptop = signed_in_with_sid(&app, &f, "s-laptop").await;
+        let phone = signed_in_with_sid(&app, &f, "s-phone").await;
+        assert_eq!(get(&app, "/personal/", Some(&laptop)).await.status(), StatusCode::OK);
+
+        // Refused, and nothing ends: another audience, a forged signature, no token.
+        let mut other = logout_claims(&f, "s-laptop");
+        other["aud"] = serde_json::json!("hub");
+        assert_eq!(backchannel(&app, &logout_token(&f, other)).await, StatusCode::BAD_REQUEST);
+        let mut forged = logout_token(&f, logout_claims(&f, "s-laptop"));
+        forged.truncate(forged.len() - 4);
+        forged.push_str("AAAA");
+        assert_eq!(backchannel(&app, &forged).await, StatusCode::BAD_REQUEST);
+        assert_eq!(backchannel(&app, "").await, StatusCode::BAD_REQUEST);
+        assert_eq!(get(&app, "/personal/", Some(&laptop)).await.status(), StatusCode::OK);
+
+        // The laptop's sign-in session ended: its pages session ends, the phone's doesn't.
+        let token = logout_token(&f, logout_claims(&f, "s-laptop"));
+        assert_eq!(backchannel(&app, &token).await, StatusCode::OK);
+        assert_ne!(get(&app, "/personal/", Some(&laptop)).await.status(), StatusCode::OK);
+        assert_eq!(get(&app, "/personal/", Some(&phone)).await.status(), StatusCode::OK);
+        // The same token again is a replay.
+        assert_eq!(backchannel(&app, &token).await, StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

@@ -24,6 +24,10 @@ const LEEWAY: u64 = 60;
 const JWKS_REFETCH: Duration = Duration::from_secs(60);
 /// The discovery document is fetched again after this long.
 const META_TTL: Duration = Duration::from_secs(3600);
+/// A logout token older (or newer) than this, by its `iat`, is refused; its `jti` is remembered this long.
+const LOGOUT_MAX_AGE: Duration = Duration::from_secs(5 * 60);
+/// The `events` member every logout token carries (OpenID Connect Back-Channel Logout 1.0).
+pub const LOGOUT_EVENT: &str = "http://schemas.openid.net/event/backchannel-logout";
 
 #[derive(Debug, Clone, Deserialize)]
 struct Meta {
@@ -60,6 +64,27 @@ pub struct Oidc {
     meta: Mutex<Option<(Meta, Instant)>>,
     keys: Mutex<Keys>,
     pending: Mutex<HashMap<String, Pending>>,
+    /// Logout tokens' `jti`s seen in the last [`LOGOUT_MAX_AGE`] (twice), so one can't be replayed.
+    seen_logouts: Mutex<HashMap<String, Instant>>,
+}
+
+/// Who a back-channel logout signs out: the sign-in session (`sid`), or, when the token names none, every session
+/// of the person (`sub`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedOut {
+    pub sub: Option<String>,
+    pub sid: Option<String>,
+}
+
+impl SignedOut {
+    /// Whether a session of `person` ends.
+    pub fn ends(&self, person: &Person) -> bool {
+        match (&self.sid, &self.sub) {
+            (Some(sid), sub) => person.sid.as_ref() == Some(sid) && sub.as_ref().is_none_or(|s| *s == person.sub),
+            (None, Some(sub)) => *sub == person.sub,
+            (None, None) => false,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -76,6 +101,8 @@ pub struct Person {
     pub tenant: String,
     pub handle: Option<String>,
     pub name: Option<String>,
+    /// The sign-in session this came from (the `sid` claim): a back-channel logout names it.
+    pub sid: Option<String>,
 }
 
 /// 32 random bytes from the kernel (`/dev/urandom` on Linux and macOS), hex.
@@ -171,6 +198,7 @@ impl Oidc {
             meta: Mutex::default(),
             keys: Mutex::default(),
             pending: Mutex::default(),
+            seen_logouts: Mutex::default(),
         })
     }
 
@@ -223,7 +251,7 @@ impl Oidc {
         let tenant =
             get("fleetlayer.dev/tenant").ok_or_else(|| anyhow::anyhow!("the ID token doesn't say which tenant"))?;
         let sub = get("sub").unwrap_or_default();
-        Ok((Person { sub, tenant, handle: get("preferred_username"), name: get("name") }, next))
+        Ok((Person { sub, tenant, handle: get("preferred_username"), name: get("name"), sid: get("sid") }, next))
     }
 
     /// [`finish`](Self::finish) for any provider: the ID token's claims once checked (signature by a key from the
@@ -320,6 +348,40 @@ impl Oidc {
             "the ID token has no subject"
         );
         Ok(c)
+    }
+
+    /// Check a back-channel logout token (the `logout_token` the issuer POSTs to a service): signed by a key from
+    /// the issuer's JWKS with RS256, from the issuer, for this client, issued within five minutes, with the logout
+    /// event, no nonce (so an ID token can't pass for one), a `sid` or `sub`, and a `jti` not seen before.
+    pub async fn verify_logout(&self, token: &str) -> anyhow::Result<SignedOut> {
+        let meta = self.meta().await?;
+        let header = jsonwebtoken::decode_header(token)?;
+        anyhow::ensure!(header.alg == Algorithm::RS256, "the logout token isn't signed with RS256");
+        let kid = header.kid.ok_or_else(|| anyhow::anyhow!("the logout token names no key"))?;
+        let key = self.key(&meta, &kid).await?;
+        let mut v = Validation::new(Algorithm::RS256);
+        v.set_issuer(&[&self.issuer, &meta.issuer]);
+        v.set_audience(&[&self.client]);
+        v.set_required_spec_claims(&["exp", "iss", "aud"]);
+        v.leeway = LEEWAY;
+        let c = jsonwebtoken::decode::<serde_json::Map<String, serde_json::Value>>(token, &key, &v)?.claims;
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
+        let iat =
+            c.get("iat").and_then(|v| v.as_i64()).ok_or_else(|| anyhow::anyhow!("the logout token has no iat"))?;
+        anyhow::ensure!((now - iat).abs() <= LOGOUT_MAX_AGE.as_secs() as i64, "the logout token is too old");
+        anyhow::ensure!(
+            c.get("events").and_then(|e| e.get(LOGOUT_EVENT)).is_some_and(|e| e.is_object()),
+            "the token isn't a logout token (no logout event)"
+        );
+        anyhow::ensure!(c.get("nonce").is_none(), "a logout token never has a nonce");
+        let get = |k: &str| c.get(k).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(str::to_string);
+        let out = SignedOut { sub: get("sub"), sid: get("sid") };
+        anyhow::ensure!(out.sub.is_some() || out.sid.is_some(), "the logout token names no session or person");
+        let jti = get("jti").ok_or_else(|| anyhow::anyhow!("the logout token has no jti"))?;
+        let mut seen = self.seen_logouts.lock().await;
+        seen.retain(|_, at| at.elapsed() < LOGOUT_MAX_AGE * 2);
+        anyhow::ensure!(seen.insert(jti, Instant::now()).is_none(), "that logout token was already used");
+        Ok(out)
     }
 
     /// Where to send the browser after signing out here, so the sign-in service ends its session too.
@@ -422,6 +484,18 @@ pub mod testing {
 
     pub fn good(f: &FakeIssuer, c: Value) -> String {
         f.sign(json!({"alg": "RS256", "typ": "JWT", "kid": "k1"}), c)
+    }
+
+    /// The claims of a back-channel logout token for session `sid` of `p_123`, as the sign-in service sends.
+    pub fn logout_claims(f: &FakeIssuer, sid: &str) -> Value {
+        let now = jiff::Timestamp::now().as_second();
+        json!({"iss": f.url, "aud": f.client, "iat": now, "exp": now + 120, "jti": new_id(), "sub": "p_123",
+            "sid": sid, "events": {LOGOUT_EVENT: {}}})
+    }
+
+    /// A signed logout token with these claims.
+    pub fn logout_token(f: &FakeIssuer, c: Value) -> String {
+        f.sign(json!({"alg": "RS256", "typ": "logout+jwt", "kid": "k1"}), c)
     }
 }
 
@@ -556,5 +630,69 @@ mod tests {
         assert!(valid_issuer("http://signin.localhost:7680"));
         assert!(!valid_issuer("http://signin.example"));
         assert_eq!(b64url(b"\xfb\xff"), "-_8");
+    }
+
+    #[tokio::test]
+    async fn a_logout_token_is_checked_fully_and_used_once() {
+        let f = FakeIssuer::start().await;
+        let o = Oidc::new(&f.url, "pages", "s3cret", "https://pages.example").unwrap();
+        let fine = logout_token(&f, logout_claims(&f, "s1"));
+        let out = o.verify_logout(&fine).await.unwrap();
+        assert_eq!(out, SignedOut { sub: Some("p_123".into()), sid: Some("s1".into()) });
+        assert!(o.verify_logout(&fine).await.unwrap_err().to_string().contains("already used"), "no replay");
+
+        let now = jiff::Timestamp::now().as_second();
+        type Change = Box<dyn Fn(&mut Value)>;
+        let bad: Vec<(&str, Change)> = vec![
+            ("another client", Box::new(|c| c["aud"] = json!("hub"))),
+            ("another issuer", Box::new(|c| c["iss"] = json!("https://evil.example"))),
+            ("too old", Box::new(move |c| c["iat"] = json!(now - 600))),
+            ("no event", Box::new(|c| c["events"] = json!({}))),
+            ("a nonce: an ID token", Box::new(|c| c["nonce"] = json!("n"))),
+            (
+                "no session or person",
+                Box::new(|c| {
+                    c.as_object_mut().unwrap().remove("sub");
+                    c.as_object_mut().unwrap().remove("sid");
+                }),
+            ),
+            (
+                "no jti",
+                Box::new(|c| {
+                    c.as_object_mut().unwrap().remove("jti");
+                }),
+            ),
+            ("expired", Box::new(move |c| c["exp"] = json!(now - 300))),
+        ];
+        for (why, change) in bad {
+            let mut c = logout_claims(&f, "s1");
+            change(&mut c);
+            assert!(o.verify_logout(&logout_token(&f, c)).await.is_err(), "{why}");
+        }
+        // A forged signature, and an ID token, aren't logout tokens.
+        let mut forged = logout_token(&f, logout_claims(&f, "s1"));
+        forged.truncate(forged.len() - 4);
+        forged.push_str("AAAA");
+        assert!(o.verify_logout(&forged).await.is_err(), "forged");
+        assert!(o.verify_logout(&good(&f, f.claims("n"))).await.is_err(), "an ID token");
+    }
+
+    #[test]
+    fn a_logout_ends_the_session_it_names_or_every_session_of_the_person() {
+        let p = |sub: &str, sid: Option<&str>| Person {
+            sub: sub.into(),
+            tenant: "home".into(),
+            handle: None,
+            name: None,
+            sid: sid.map(String::from),
+        };
+        let by_sid = SignedOut { sub: Some("p_1".into()), sid: Some("s1".into()) };
+        assert!(by_sid.ends(&p("p_1", Some("s1"))));
+        assert!(!by_sid.ends(&p("p_1", Some("s2"))), "their other browser stays signed in");
+        assert!(!by_sid.ends(&p("p_2", Some("s1"))));
+        assert!(!by_sid.ends(&p("p_1", None)));
+        let by_sub = SignedOut { sub: Some("p_1".into()), sid: None };
+        assert!(by_sub.ends(&p("p_1", Some("s2"))) && by_sub.ends(&p("p_1", None)));
+        assert!(!by_sub.ends(&p("p_2", None)));
     }
 }

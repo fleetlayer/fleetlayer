@@ -156,6 +156,14 @@ impl Auth {
         self.sessions.lock().await.remove(&sid).map(|(v, _)| v)
     }
 
+    /// End the sessions a back-channel logout names (the person signed out at the sign-in service); how many ended.
+    pub async fn end_signed_out(&self, out: &fleetlayer_oidc::SignedOut) -> usize {
+        let mut s = self.sessions.lock().await;
+        let before = s.len();
+        s.retain(|_, (v, _)| !v.person.as_ref().is_some_and(|p| out.ends(p)));
+        before - s.len()
+    }
+
     pub async fn viewer(&self, headers: &HeaderMap) -> Option<Viewer> {
         let sid = session_id(headers)?;
         let mut s = self.sessions.lock().await;
@@ -257,7 +265,13 @@ mod tests {
 
     fn alice() -> Viewer {
         Viewer {
-            person: Some(Person { sub: "p_1".into(), tenant: "home".into(), handle: Some("alice".into()), name: None }),
+            person: Some(Person {
+                sub: "p_1".into(),
+                tenant: "home".into(),
+                handle: Some("alice".into()),
+                name: None,
+                sid: None,
+            }),
         }
     }
 

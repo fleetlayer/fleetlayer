@@ -323,6 +323,16 @@ impl Broker {
         sid
     }
 
+    /// End the app sessions, and codes not yet used, of someone a back-channel logout signs out; how many ended.
+    pub async fn end_signed_out(&self, out: &fleetlayer_oidc::SignedOut) -> usize {
+        let ends = |v: &Viewer| v.person.as_ref().is_some_and(|p| out.ends(p));
+        self.codes.lock().await.retain(|_, c| !ends(&c.viewer));
+        let mut s = self.sessions.lock().await;
+        let before = s.len();
+        s.retain(|_, x| !ends(&x.viewer));
+        before - s.len()
+    }
+
     async fn session(&self, headers: &HeaderMap, host: &str, secure: bool) -> Option<Viewer> {
         let sid = cookie_value(headers, cookies(secure).session)?;
         let s = self.sessions.lock().await;

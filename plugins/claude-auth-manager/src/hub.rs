@@ -211,8 +211,9 @@ pub struct Hub {
     cfg: HubConfig,
     store: Mutex<Store>,
     flows: Mutex<HashMap<String, Flow>>,
-    /// Each session, and whether it came through Fleetlayer (so signing out ends that sign-in too).
-    sessions: Mutex<HashMap<String, (Instant, bool)>>,
+    /// Each session, and the person when it came through Fleetlayer (so signing out ends that sign-in too, and a
+    /// back-channel logout from the sign-in service ends it here).
+    sessions: Mutex<HashMap<String, (Instant, Option<fleetlayer_oidc::Person>)>>,
     failures: Mutex<HashMap<IpAddr, VecDeque<Instant>>>,
     polled: Mutex<HashMap<u32, Polled>>,
     login: Option<String>,
@@ -1139,6 +1140,7 @@ pub fn router(hub: Arc<Hub>) -> Router {
         .route("/_/auth/start", get(signin_start))
         .route("/_/auth/callback", get(signin_callback))
         .route("/_/signed-out", get(signed_out))
+        .route("/_/auth/backchannel-logout", post(backchannel_logout))
         .route("/", get(page))
         .route("/api/state", get(api_state))
         .route("/api/accounts", post(api_add))
@@ -1269,15 +1271,15 @@ async fn login(
         tracing::warn!(%ip, "a failed hub login");
         return (StatusCode::UNAUTHORIZED, login_html(&hub, "That isn't the hub's login key.")).into_response();
     }
-    let cookie = hub.start_session(false).await;
+    let cookie = hub.start_session(None).await;
     ([(header::SET_COOKIE, cookie)], Redirect::to("/")).into_response()
 }
 
 impl Hub {
     /// A new session, and its cookie.
-    async fn start_session(&self, through_fleetlayer: bool) -> String {
+    async fn start_session(&self, person: Option<fleetlayer_oidc::Person>) -> String {
         let sid = new_id();
-        self.sessions.lock().await.insert(sid.clone(), (Instant::now(), through_fleetlayer));
+        self.sessions.lock().await.insert(sid.clone(), (Instant::now(), person));
         format!("hub_session={sid}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age={}", SESSION_HOURS * 3600)
     }
 }
@@ -1324,7 +1326,7 @@ async fn signin_callback(State(hub): Ctx, headers: HeaderMap, Query(q): Query<Ca
     match oidc.finish(code, state, bound.as_deref()).await {
         Ok((person, _)) => {
             tracing::info!(who = %person.sub, handle = ?person.handle, tenant = %person.tenant, "signed in to the hub through Fleetlayer");
-            let session = hub.start_session(true).await;
+            let session = hub.start_session(Some(person)).await;
             // A page, not a redirect: the session cookie is SameSite=Strict (fleetlayer_oidc::continue_page).
             let mut res =
                 Html(fleetlayer_oidc::continue_page("/", "Signed in · Claude hub", "Continue")).into_response();
@@ -1336,6 +1338,32 @@ async fn signin_callback(State(hub): Ctx, headers: HeaderMap, Query(q): Query<Ca
         Err(e) => {
             tracing::warn!("a Fleetlayer sign-in to the hub failed: {e:#}");
             (StatusCode::FORBIDDEN, login_html(&hub, "Signing in didn't work. Sign in again.")).into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct BackchannelForm {
+    logout_token: Option<String>,
+}
+
+/// OpenID Connect back-channel logout: the sign-in service says someone signed out there, so their hub sessions end
+/// too. A token that doesn't check out is refused and ends nothing.
+async fn backchannel_logout(State(hub): Ctx, Form(f): Form<BackchannelForm>) -> Response {
+    let no_store = [(header::CACHE_CONTROL, "no-store")];
+    let Some(oidc) = &hub.oidc else { return (StatusCode::NOT_FOUND, no_store).into_response() };
+    let Some(token) = f.logout_token else { return (StatusCode::BAD_REQUEST, no_store).into_response() };
+    match oidc.verify_logout(&token).await {
+        Ok(out) => {
+            let mut sessions = hub.sessions.lock().await;
+            let before = sessions.len();
+            sessions.retain(|_, (_, p)| !p.as_ref().is_some_and(|p| out.ends(p)));
+            tracing::info!(ended = before - sessions.len(), "signed out by the sign-in service");
+            (StatusCode::OK, no_store).into_response()
+        }
+        Err(e) => {
+            tracing::warn!("a back-channel logout was refused: {e:#}");
+            (StatusCode::BAD_REQUEST, no_store).into_response()
         }
     }
 }
@@ -1352,7 +1380,7 @@ async fn logout(State(hub): Ctx, headers: HeaderMap) -> Response {
     {
         let ended = hub.sessions.lock().await.remove(&sid);
         // Signed in through Fleetlayer: sign out there too. A page, not a redirect (the form's `form-action 'self'`).
-        if ended.is_some_and(|(_, fl)| fl)
+        if ended.is_some_and(|(_, p)| p.is_some())
             && let Some(oidc) = &hub.oidc
             && let Some(url) = oidc.logout_url().await
         {
@@ -1704,6 +1732,34 @@ mod tests {
         assert!(body.contains(&format!("{}/logout", f.url)), "{body}");
         let (status, _, _, _) = get(&hub, "/", Some(&session)).await;
         assert!(status.is_redirection(), "the session is gone");
+
+        // Signing out at the sign-in service (from another service, or everywhere) ends it here too.
+        let (_, _, to, _) = get(&hub, "/_/auth/start", None).await;
+        let to = to.unwrap();
+        let state = param(&to, "state");
+        let mut claims = f.claims(&param(&to, "nonce"));
+        claims["sid"] = serde_json::json!("s2");
+        *f.token.lock().unwrap() = Some(good(&f, claims));
+        let (_, cookies, _, _) =
+            get(&hub, &format!("/_/auth/callback?code=c&state={state}"), Some(&format!("hub_oidc={state}"))).await;
+        let session = cookies.iter().find(|c| c.starts_with("hub_session=")).unwrap().clone();
+        let backchannel = |token: String| {
+            let req = axum::http::Request::builder()
+                .method("POST")
+                .uri("/_/auth/backchannel-logout")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(axum::body::Body::from(format!("logout_token={token}")))
+                .unwrap();
+            let r = router(hub.clone());
+            async move { r.oneshot(req).await.unwrap().status() }
+        };
+        use fleetlayer_oidc::testing::{logout_claims, logout_token};
+        let mut wrong = logout_claims(&f, "s2");
+        wrong["aud"] = serde_json::json!("pages");
+        assert_eq!(backchannel(logout_token(&f, wrong)).await, StatusCode::BAD_REQUEST);
+        assert_eq!(get(&hub, "/", Some(&session)).await.0, StatusCode::OK, "a refused token ends nothing");
+        assert_eq!(backchannel(logout_token(&f, logout_claims(&f, "s2"))).await, StatusCode::OK);
+        assert!(get(&hub, "/", Some(&session)).await.0.is_redirection(), "signed out by the sign-in service");
     }
 
     #[tokio::test]
