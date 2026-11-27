@@ -349,3 +349,9 @@ managers, machines that sleep.
   the rest read-only.
 - **Where it lives:** `docs/plugins/pages.md`, "From another machine".
 
+- **Claude Code's folder trust prompt blocks a session you start for an agent.** Claude Code 2.1.332 asks "Do you trust
+  this folder?" even in a folder whose parent is trusted, and never remembers trust for the home folder, so an
+  unattended session started there waits forever. Before starting a session, mark the exact folder trusted
+  (`projects.<absolute path>.hasTrustDialogAccepted: true` in `~/.claude.json`, written atomically), and start
+  sessions in a project or scratch folder, never the home folder. Where it lives: Quietdeck's session start
+  (control.rs `trust_in`); Fleetlayer's `fleetlayer session start` (planned).
