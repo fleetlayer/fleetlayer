@@ -138,7 +138,10 @@ async fn control_plane(seen: Arc<Mutex<Seen>>) -> String {
                     && b["can"] == "sign_in"
                     && b["to"] == "service:hub";
                 Json(json!({"allowed": ok, "rules": if ok { vec!["allow[0]"] } else { vec![] },
-                    "reason": if ok { "allow[0]" } else { "no rule allows it" }}))
+                "reason": if ok { "allow[0]".to_string() } else {
+                    format!("person:a may not sign_in {} (access control: no rule allows it). If this stops you \
+                             doing your job, report it to your person.", b["to"].as_str().unwrap_or(""))
+                }}))
             }),
         )
         .route(
@@ -338,6 +341,8 @@ async fn an_invite_a_passkey_and_a_token_for_a_service_the_policy_allows() {
     let r = call(&a, "GET", &authorize_uri("vault", &challenge), Some(&cookie), None, "").await;
     assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.text);
     assert!(r.text.contains("don&#39;t have access") || r.text.contains("don't have access"), "{}", r.text);
+    assert!(r.text.contains("no rule allows it") && r.text.contains("ask one of its admins"), "{}", r.text);
+    assert!(!r.text.contains("your person"), "the line for agents isn't shown to people: {}", r.text);
 
     // A wrong verifier, and no PKCE at all, get nothing.
     let r = call(&a, "GET", &authorize_uri("hub", &challenge), Some(&cookie), None, "").await;

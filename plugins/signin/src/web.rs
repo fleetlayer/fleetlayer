@@ -320,6 +320,11 @@ impl App {
     }
 }
 
+/// A refusal's reason as a person reads it: without the control plane's line for agents ("report it to your person").
+fn for_people(reason: &str) -> &str {
+    reason.split(" If this stops you doing your job").next().unwrap_or(reason).trim_end()
+}
+
 pub fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
     headers.get_all(header::COOKIE).iter().filter_map(|v| v.to_str().ok()).flat_map(|v| v.split(';')).find_map(|c| {
         let (k, v) = c.trim().split_once('=')?;
@@ -556,10 +561,11 @@ async fn authorize(
                 StatusCode::FORBIDDEN,
                 "No access",
                 &format!(
-                    "<p>You don't have access to <b>{}</b> in {}.</p><p class=\"why\">{}</p>",
+                    "<p>You don't have access to <b>{}</b> in {}. If you need it, ask one of its admins.</p>\
+                     <p class=\"why\">{}</p>",
                     esc(&client.name),
                     esc(&m.name),
-                    esc(&d.reason)
+                    esc(for_people(&d.reason))
                 ),
             );
         }
