@@ -6,6 +6,12 @@ Unix user and its own permissions, while you still see and steer all of them fro
 agent can set the whole thing up, adding a new agent, or a whole isolated worker with its own permissions, takes
 minutes.
 
+It's built for people whose work and life share the same agents. A solo founder with a family, say: a company's
+agents (features, infrastructure, support, finances) and the family's (personal errands, email, home infrastructure)
+on one system, with a partner who signs in to their own space, and an agent like finances that is deliberately allowed
+to see both sides. Few products try to serve personal and professional use at once; most make you choose, or run two
+of everything.
+
 One driver runs through all of it: **no vendor lock-in**. You can keep using Anthropic's and OpenAI's tooling and
 built-in features (connectors, artifacts, remote control, their apps). When you outgrow them and hit their limits, you
 don't have to give anything up: each problem below has an answer that works with any agent, any model and any vendor,
