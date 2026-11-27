@@ -365,6 +365,18 @@ pub async fn subscriptions(db: &Db, tenant: &str) -> anyhow::Result<Vec<Subscrip
     Ok(rows.into_iter().map(|r| Subscription { channel: r.get(0), subject: r.get(1), target: r.get(2) }).collect())
 }
 
+/// The targets an event on `channel` goes to when it matches any of `subjects` (a GitHub workflow run matches its
+/// branch and its commit): each target once.
+pub async fn targets_any(db: &Db, tenant: &str, channel: &str, subjects: &[&str]) -> anyhow::Result<Vec<String>> {
+    let mut out = targets(db, tenant, channel, subjects.first().copied()).await?;
+    for s in subjects.iter().skip(1) {
+        out.extend(targets(db, tenant, channel, Some(s)).await?);
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
 /// The targets an event on `channel` about `subject` goes to: subscriptions to the whole channel, and those to its
 /// subject.
 pub async fn targets(db: &Db, tenant: &str, channel: &str, subject: Option<&str>) -> anyhow::Result<Vec<String>> {
@@ -389,14 +401,27 @@ pub struct Endpoint {
     pub created_at: i64,
     pub event_count: i64,
     pub last_event_at: Option<i64>,
+    /// GitHub's signing secret (X-Hub-Signature-256); never shown.
+    #[serde(skip)]
+    pub github_secret: Option<String>,
+    /// Deliver every action of a workflow run, not only `completed`.
+    pub all_actions: bool,
 }
 
 /// Add a webhook endpoint: returns it and its secret, shown once.
-pub async fn add_endpoint(db: &Db, tenant: &str, label: &str, channel: &str) -> anyhow::Result<(Endpoint, String)> {
+pub async fn add_endpoint(
+    db: &Db,
+    tenant: &str,
+    label: &str,
+    channel: &str,
+    github_secret: Option<&str>,
+    all_actions: bool,
+) -> anyhow::Result<(Endpoint, String)> {
     let (id, secret) = (new_id(), new_secret());
     let now = now_ms();
     sqlx::query(
-        "INSERT INTO endpoints (tenant, id, secret_hash, label, channel, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO endpoints (tenant, id, secret_hash, label, channel, created_at, github_secret, all_actions)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(tenant)
     .bind(&id)
@@ -404,6 +429,8 @@ pub async fn add_endpoint(db: &Db, tenant: &str, label: &str, channel: &str) -> 
     .bind(label)
     .bind(channel)
     .bind(now)
+    .bind(github_secret)
+    .bind(all_actions)
     .execute(db)
     .await?;
     let e = Endpoint {
@@ -413,13 +440,16 @@ pub async fn add_endpoint(db: &Db, tenant: &str, label: &str, channel: &str) -> 
         created_at: now,
         event_count: 0,
         last_event_at: None,
+        github_secret: github_secret.map(str::to_string),
+        all_actions,
     };
     Ok((e, secret))
 }
 
 pub async fn endpoints(db: &Db, tenant: &str) -> anyhow::Result<Vec<Endpoint>> {
     let rows = sqlx::query(
-        "SELECT id, label, channel, created_at, event_count, last_event_at FROM endpoints WHERE tenant = ? ORDER BY label",
+        "SELECT id, label, channel, created_at, event_count, last_event_at, github_secret, all_actions FROM endpoints
+         WHERE tenant = ? ORDER BY label",
     )
     .bind(tenant)
     .fetch_all(db)
@@ -433,6 +463,8 @@ pub async fn endpoints(db: &Db, tenant: &str) -> anyhow::Result<Vec<Endpoint>> {
             created_at: r.get(3),
             event_count: r.get(4),
             last_event_at: r.get(5),
+            github_secret: r.get(6),
+            all_actions: r.get(7),
         })
         .collect())
 }
@@ -440,7 +472,8 @@ pub async fn endpoints(db: &Db, tenant: &str) -> anyhow::Result<Vec<Endpoint>> {
 /// The endpoint an incoming webhook names, if its secret matches: (tenant, endpoint).
 pub async fn endpoint_for(db: &Db, id: &str, secret: &str) -> anyhow::Result<Option<(String, Endpoint)>> {
     let row = sqlx::query(
-        "SELECT tenant, id, label, channel, created_at, event_count, last_event_at, secret_hash FROM endpoints WHERE id = ?",
+        "SELECT tenant, id, label, channel, created_at, event_count, last_event_at, secret_hash, github_secret, all_actions
+         FROM endpoints WHERE id = ?",
     )
     .bind(id)
     .fetch_optional(db)
@@ -460,8 +493,140 @@ pub async fn endpoint_for(db: &Db, id: &str, secret: &str) -> anyhow::Result<Opt
             created_at: r.get(4),
             event_count: r.get(5),
             last_event_at: r.get(6),
+            github_secret: r.get(8),
+            all_actions: r.get(9),
         },
     )))
+}
+
+/// Set or clear an endpoint's GitHub signing secret. False when there's no such endpoint.
+pub async fn set_github_secret(db: &Db, tenant: &str, id: &str, secret: Option<&str>) -> anyhow::Result<bool> {
+    let r = sqlx::query("UPDATE endpoints SET github_secret = ? WHERE tenant = ? AND id = ?")
+        .bind(secret)
+        .bind(tenant)
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(r.rows_affected() > 0)
+}
+
+// ---------------------------------------------------------------- workflow runs per commit
+
+/// How long runs and commit subscriptions are kept.
+pub const COMMIT_KEEP_MS: i64 = 24 * 3600 * 1000;
+
+/// A workflow run's state, as GitHub's last action for it said.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitRun {
+    pub repo: String,
+    pub sha: String,
+    pub run_id: i64,
+    pub workflow: String,
+    pub attempt: i64,
+    pub status: String,
+}
+
+pub async fn record_run(db: &Db, tenant: &str, channel: &str, r: &CommitRun, event: Option<i64>) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO commit_runs (tenant, channel, repo, sha, run_id, workflow, attempt, status, event_id, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (tenant, channel, repo, run_id) DO UPDATE SET sha = excluded.sha, workflow = excluded.workflow,
+           attempt = excluded.attempt, status = excluded.status, event_id = excluded.event_id,
+           updated_at = excluded.updated_at
+         -- GitHub doesn't promise order: a late 'in_progress' never undoes 'completed' of the same attempt.
+         WHERE excluded.attempt > commit_runs.attempt
+            OR (excluded.attempt = commit_runs.attempt AND commit_runs.status != 'completed')",
+    )
+    .bind(tenant)
+    .bind(channel)
+    .bind(&r.repo)
+    .bind(&r.sha)
+    .bind(r.run_id)
+    .bind(&r.workflow)
+    .bind(r.attempt)
+    .bind(&r.status)
+    .bind(event)
+    .bind(now_ms())
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+/// A commit's runs: the workflows still pending, and the stored events of those completed (oldest first).
+pub async fn commit_state(
+    db: &Db,
+    tenant: &str,
+    channel: &str,
+    repo: &str,
+    sha: &str,
+) -> anyhow::Result<(Vec<String>, Vec<i64>)> {
+    let rows = sqlx::query(
+        "SELECT workflow, status, event_id FROM commit_runs WHERE tenant = ? AND channel = ? AND repo = ? AND sha = ?
+         ORDER BY updated_at, run_id",
+    )
+    .bind(tenant)
+    .bind(channel)
+    .bind(repo)
+    .bind(sha)
+    .fetch_all(db)
+    .await?;
+    let (mut pending, mut done) = (vec![], vec![]);
+    for r in rows {
+        let (workflow, status, event): (String, String, Option<i64>) = (r.get(0), r.get(1), r.get(2));
+        if status == "completed" {
+            done.extend(event);
+        } else {
+            pending.push(workflow);
+        }
+    }
+    Ok((pending, done))
+}
+
+/// Remove every subscription to `subject` on `channel`: the targets it had.
+pub async fn drop_subject(db: &Db, tenant: &str, channel: &str, subject: &str) -> anyhow::Result<Vec<String>> {
+    let rows =
+        sqlx::query("DELETE FROM subscriptions WHERE tenant = ? AND channel = ? AND subject = ? RETURNING target")
+            .bind(tenant)
+            .bind(channel)
+            .bind(subject)
+            .fetch_all(db)
+            .await?;
+    Ok(rows.into_iter().map(|r| r.get(0)).collect())
+}
+
+/// Forget runs, and subscriptions to commits (`<repo>@<40 hex>`), older than a day.
+pub async fn prune_commits(db: &Db) -> anyhow::Result<()> {
+    let before = now_ms() - COMMIT_KEEP_MS;
+    sqlx::query("DELETE FROM commit_runs WHERE updated_at < ?").bind(before).execute(db).await?;
+    let sha = format!("*@{}", "[0-9a-f]".repeat(40));
+    sqlx::query("DELETE FROM subscriptions WHERE created_at < ? AND subject GLOB ?")
+        .bind(before)
+        .bind(sha)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+/// A stored event and its source.
+pub async fn event(db: &Db, id: i64) -> anyhow::Result<Option<(fleetlayer_protocol::ext::Event, String)>> {
+    let row =
+        sqlx::query("SELECT channel, kind, subject, summary, body, source, dedupe_key, at FROM events WHERE id = ?")
+            .bind(id)
+            .fetch_optional(db)
+            .await?;
+    Ok(row.map(|r| {
+        let body: String = r.get(4);
+        let e = fleetlayer_protocol::ext::Event {
+            channel: r.get(0),
+            kind: r.get(1),
+            subject: r.get(2),
+            summary: r.get(3),
+            body: serde_json::from_str(&body).unwrap_or(serde_json::Value::String(body)),
+            dedupe_key: r.get(6),
+            at: jiff::Timestamp::from_millisecond(r.get(7)).unwrap_or_else(|_| jiff::Timestamp::now()),
+        };
+        (e, r.get(5))
+    }))
 }
 
 pub async fn endpoint_hit(db: &Db, id: &str) -> anyhow::Result<()> {
@@ -591,7 +756,7 @@ mod tests {
     #[tokio::test]
     async fn an_endpoint_needs_its_secret_and_events_dedupe() {
         let db = open_memory().await.unwrap();
-        let (e, secret) = add_endpoint(&db, DEFAULT_TENANT, "github", "ci").await.unwrap();
+        let (e, secret) = add_endpoint(&db, DEFAULT_TENANT, "github", "ci", None, false).await.unwrap();
         assert!(endpoint_for(&db, &e.id, &secret).await.unwrap().is_some());
         assert!(endpoint_for(&db, &e.id, "wrong").await.unwrap().is_none());
         let ev = fleetlayer_protocol::ext::Event {

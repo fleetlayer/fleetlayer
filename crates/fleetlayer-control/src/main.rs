@@ -450,6 +450,21 @@ enum EndpointCommand {
         label: String,
         #[arg(long)]
         channel: String,
+        /// A file holding the secret GitHub signs deliveries with (the webhook's "Secret"): requests whose
+        /// X-Hub-Signature-256 doesn't verify are refused.
+        #[arg(long)]
+        github_secret_file: Option<PathBuf>,
+        /// Deliver every action of a GitHub workflow run (requested, in_progress), not only completed ones.
+        #[arg(long)]
+        all_actions: bool,
+    },
+    /// Set an existing endpoint's GitHub signing secret from a file, or remove it with --clear.
+    Secret {
+        id: String,
+        #[arg(long, conflicts_with = "clear", required_unless_present = "clear")]
+        github_secret_file: Option<PathBuf>,
+        #[arg(long)]
+        clear: bool,
     },
     List,
 }
@@ -701,17 +716,29 @@ async fn main() -> anyhow::Result<()> {
             println!("Removed {name}; its token no longer works.");
             Ok(())
         }
-        Command::Endpoint { command: EndpointCommand::Add { label, channel } } => {
-            let (e, secret) = db::add_endpoint(&db, t, &label, &channel).await?;
+        Command::Endpoint { command: EndpointCommand::Add { label, channel, github_secret_file, all_actions } } => {
+            let github = github_secret_file.as_deref().map(read_github_secret).transpose()?;
+            let (e, secret) = db::add_endpoint(&db, t, &label, &channel, github.as_deref(), all_actions).await?;
             println!("/hooks/{}/{secret}", e.id);
             eprintln!(
                 "Endpoint {label} posts to channel {channel}. The path above holds its secret and isn't shown again."
             );
             Ok(())
         }
+        Command::Endpoint { command: EndpointCommand::Secret { id, github_secret_file, clear } } => {
+            let github =
+                if clear { None } else { github_secret_file.as_deref().map(read_github_secret).transpose()? };
+            anyhow::ensure!(db::set_github_secret(&db, t, &id, github.as_deref()).await?, "no endpoint {id}");
+            println!(
+                "{}",
+                if clear { "GitHub signatures are no longer checked." } else { "GitHub signatures are checked." }
+            );
+            Ok(())
+        }
         Command::Endpoint { command: EndpointCommand::List } => {
             for e in db::endpoints(&db, t).await? {
-                println!("{:<18} {:<20} {:<12} {} events", e.id, e.label, e.channel, e.event_count);
+                let signed = if e.github_secret.is_some() { "  signed" } else { "" };
+                println!("{:<18} {:<20} {:<12} {} events{signed}", e.id, e.label, e.channel, e.event_count);
             }
             Ok(())
         }
@@ -1115,6 +1142,14 @@ async fn serve(app: Arc<App>, listen: SocketAddr, hooks_listen: SocketAddr) -> a
 /// makes.
 fn default_db(cwd_db: &std::path::Path, home: &std::path::Path) -> PathBuf {
     if cwd_db.exists() { cwd_db.to_path_buf() } else { home.join(".local/state/fleetlayer/control/control.db") }
+}
+
+/// A GitHub signing secret from a file: its text, trimmed, not empty.
+fn read_github_secret(path: &std::path::Path) -> anyhow::Result<String> {
+    let s = std::fs::read_to_string(path).map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
+    let s = s.trim().to_string();
+    anyhow::ensure!(!s.is_empty(), "{} is empty", path.display());
+    Ok(s)
 }
 
 #[cfg(test)]

@@ -174,6 +174,10 @@ struct SubscribeArgs {
     channel: String,
     #[arg(long)]
     subject: Option<String>,
+    /// A commit of the git repository here (default HEAD): its CI results, matched by commit, so a push to a branch
+    /// others push to too (main) reaches only you. Ends by itself once every run of the commit has completed.
+    #[arg(long, num_args = 0..=1, default_missing_value = "HEAD", value_name = "REV", conflicts_with = "subject")]
+    commit: Option<String>,
     /// `<tab>@<node>`. Default: the session this runs in.
     #[arg(long)]
     target: Option<String>,
@@ -605,10 +609,16 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Subscribe(a) | Command::Unsubscribe(a) => {
             let subscribing = matches!(cli.command_name, "subscribe");
             let method = if subscribing { "node/subscribe" } else { "node/unsubscribe" };
-            let args = json!({"channel": a.channel, "subject": a.subject, "target": a.target, "caller": caller()});
+            let subject = match &a.commit {
+                Some(rev) => Some(commit_subject(rev)?),
+                None => a.subject.clone(),
+            };
+            let args = json!({"channel": a.channel, "subject": subject, "target": a.target, "caller": caller()});
             let v: Value = peer.request(method, &args).await?;
             if cli.json {
                 println!("{v}");
+            } else if subscribing && !v["commit"].is_null() {
+                print!("{}", commit_report(&a.channel, &v["commit"]));
             } else if subscribing {
                 println!("Subscribed to {}.", a.channel);
             } else {
@@ -732,4 +742,95 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// `<owner/repo>@<full sha>` for `rev` in the git repository here, from its `origin` remote on GitHub.
+fn commit_subject(rev: &str) -> anyhow::Result<String> {
+    let git = |args: &[&str]| -> anyhow::Result<String> {
+        let out = std::process::Command::new("git").args(args).output()?;
+        anyhow::ensure!(
+            out.status.success(),
+            "git {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+    let url = git(&["remote", "get-url", "origin"])?;
+    let repo =
+        github_repo(&url).ok_or_else(|| anyhow::anyhow!("origin ({url}) isn't a GitHub repository; use --subject"))?;
+    let sha = git(&["rev-parse", "--verify", &format!("{rev}^{{commit}}")])?;
+    Ok(format!("{repo}@{sha}"))
+}
+
+/// `owner/repo` from a GitHub remote URL (https or SSH).
+fn github_repo(url: &str) -> Option<String> {
+    let rest = url
+        .strip_prefix("git@github.com:")
+        .or_else(|| url.strip_prefix("ssh://git@github.com/"))
+        .or_else(|| url.strip_prefix("https://github.com/"))
+        .or_else(|| url.strip_prefix("http://github.com/"))?;
+    let rest = rest.trim_end_matches('/');
+    let rest = rest.strip_suffix(".git").unwrap_or(rest);
+    let (owner, repo) = rest.split_once('/')?;
+    (!owner.is_empty() && !repo.is_empty() && !repo.contains('/')).then(|| format!("{owner}/{repo}"))
+}
+
+/// What a commit subscription found: results already in, runs still pending, whether it ended at once.
+fn commit_report(channel: &str, c: &Value) -> String {
+    let subject = c["subject"].as_str().unwrap_or_default();
+    let short = match subject.rsplit_once('@') {
+        Some((repo, sha)) => format!("{repo}@{}", &sha[..sha.len().min(7)]),
+        None => subject.to_string(),
+    };
+    let mut out = format!("Subscribed to {channel} for {short}.\n");
+    let delivered = c["delivered"].as_array().cloned().unwrap_or_default();
+    for d in &delivered {
+        let how = if d["ok"].as_bool() == Some(true) { "sent to you now" } else { "couldn't be sent" };
+        out.push_str(&format!("Already in ({how}): {}\n", d["summary"].as_str().unwrap_or_default()));
+    }
+    let pending: Vec<&str> = c["pending"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    if !pending.is_empty() {
+        out.push_str(&format!(
+            "Pending: {}. Each result arrives as a message when it completes.\n",
+            pending.join(", ")
+        ));
+    } else if c["ended"].as_bool() == Some(true) {
+        out.push_str("Nothing pending, so the subscription has ended.\n");
+    } else if delivered.is_empty() {
+        out.push_str("No runs seen yet for this commit; each result arrives as a message when it completes.\n");
+    }
+    out
+}
+
+#[cfg(test)]
+mod commit_tests {
+    use super::*;
+
+    #[test]
+    fn github_remotes_name_their_repository() {
+        for url in [
+            "git@github.com:fleetlayer/fleetlayer.git",
+            "https://github.com/fleetlayer/fleetlayer",
+            "https://github.com/fleetlayer/fleetlayer.git/",
+            "ssh://git@github.com/fleetlayer/fleetlayer.git",
+        ] {
+            assert_eq!(github_repo(url).as_deref(), Some("fleetlayer/fleetlayer"), "{url}");
+        }
+        assert_eq!(github_repo("git@gitlab.com:a/b.git"), None);
+        assert_eq!(github_repo("https://github.com/a"), None);
+    }
+
+    #[test]
+    fn a_commit_subscription_says_what_it_found() {
+        let c = json!({"subject": "o/r@1a2b3c4d5e", "pending": ["CI"],
+            "delivered": [{"summary": "Site success on o/r@main 1a2b3c4", "ok": true}], "ended": false});
+        assert_eq!(
+            commit_report("ci", &c),
+            "Subscribed to ci for o/r@1a2b3c4.\nAlready in (sent to you now): Site success on o/r@main 1a2b3c4\n\
+             Pending: CI. Each result arrives as a message when it completes.\n"
+        );
+        let c = json!({"subject": "o/r@1a2b3c4d5e", "pending": [], "delivered": [], "ended": false});
+        assert!(commit_report("ci", &c).contains("No runs seen yet"));
+    }
 }

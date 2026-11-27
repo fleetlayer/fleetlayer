@@ -288,8 +288,7 @@ impl Handler for FromNode {
                 let s: Subscription = params(p)?;
                 self.own(&s.target)?;
                 crate::authz::check(app, tenant, &s.target, "subscribe", &format!("channel:{}", s.channel)).await?;
-                db::subscribe(&app.db, tenant, &s).await.map_err(RpcError::internal)?;
-                Ok(json!({}))
+                crate::hooks::subscribe(app, tenant, &s).await
             }
             l::method::UNSUBSCRIBE => {
                 let s: Subscription = params(p)?;

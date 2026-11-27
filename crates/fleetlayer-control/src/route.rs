@@ -264,36 +264,61 @@ pub fn render_event(e: &Event, source: &str) -> String {
 
 /// Publish an event: store it, then deliver it to every subscriber, or the channel's fallback when none.
 pub async fn publish(app: &App, tenant: &str, e: Event, source: &str) -> Result<PublishResult, RpcError> {
+    Ok(publish_matching(app, tenant, e, source, &[]).await?.1)
+}
+
+/// Publish an event that also matches subscriptions to the subjects in `also` (a workflow run's commit, besides its
+/// branch). Answers the stored event's ID too, None for a duplicate.
+pub async fn publish_matching(
+    app: &App,
+    tenant: &str,
+    e: Event,
+    source: &str,
+    also: &[String],
+) -> Result<(Option<i64>, PublishResult), RpcError> {
     let Some(id) = db::add_event(&app.db, tenant, &e, source).await.map_err(RpcError::internal)? else {
-        return Ok(PublishResult { duplicate: true, deliveries: vec![] });
+        return Ok((None, PublishResult { duplicate: true, deliveries: vec![] }));
     };
-    let mut targets =
-        db::targets(&app.db, tenant, &e.channel, e.subject.as_deref()).await.map_err(RpcError::internal)?;
+    let mut subjects: Vec<&str> = vec![];
+    if let Some(s) = e.subject.as_deref() {
+        subjects.push(s);
+    }
+    subjects.extend(also.iter().map(String::as_str));
+    let mut targets = if subjects.len() > 1 {
+        db::targets_any(&app.db, tenant, &e.channel, &subjects).await
+    } else {
+        db::targets(&app.db, tenant, &e.channel, subjects.first().copied()).await
+    }
+    .map_err(RpcError::internal)?;
     if targets.is_empty()
         && let Some(f) = db::fallback(&app.db, tenant, &e.channel).await.map_err(RpcError::internal)?
     {
         targets.push(f);
     }
-    let text = render_event(&e, source);
     let mut deliveries = vec![];
     for target in targets {
-        let d = DeliverRequest {
-            name: String::new(),
-            delivery_id: format!("event-{tenant}-{id}-{target}"),
-            kind: DeliveryKind::Event,
-            subkind: Some(e.kind.clone()),
-            untrusted: true,
-            from: From { label: format!("{source} via Fleetlayer"), ..Default::default() },
-            text: text.clone(),
-        };
-        let r = deliver(app, tenant, &target, d).await;
-        deliveries.push(TargetResult { target, ok: r.is_ok(), error: r.err().map(|e| e.message) });
+        deliveries.push(deliver_event(app, tenant, id, &e, source, target).await);
     }
     if deliveries.is_empty() {
         tracing::info!(channel = %e.channel, "an event reached no session: nobody subscribes and the channel has no fallback");
     }
     let _ = db::event_delivered(&app.db, id, &serde_json::to_value(&deliveries).unwrap_or_default()).await;
-    Ok(PublishResult { duplicate: false, deliveries })
+    Ok((Some(id), PublishResult { duplicate: false, deliveries }))
+}
+
+/// Deliver stored event `id` to one target, as outside data.
+pub async fn deliver_event(app: &App, tenant: &str, id: i64, e: &Event, source: &str, target: String) -> TargetResult {
+    let d = DeliverRequest {
+        name: String::new(),
+        delivery_id: format!("event-{tenant}-{id}-{target}"),
+        kind: DeliveryKind::Event,
+        subkind: Some(e.kind.clone()),
+        untrusted: true,
+        from: From { label: format!("{source} via Fleetlayer"), ..Default::default() },
+        text: render_event(e, source),
+    };
+    let r = deliver(app, tenant, &target, d).await;
+    TargetResult { target, ok: r.is_ok(), error: r.err().map(|e| e.message) }
 }
 
 #[cfg(test)]

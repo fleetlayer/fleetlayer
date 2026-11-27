@@ -456,6 +456,17 @@ managers, machines that sleep.
   user's token; `gh run watch` polls every 3 s by default (about 1,200 an hour per watcher), so a few agents watching
   CI exhaust it. Use `--interval 60`, no loops over `gh run list`, `gh api rate_limit` to check, webhooks instead of
   polling. Found 27 Nov 2026; in AGENTS.md (e3473b6). Written: `docs/guides/agents-building-software.md`.
+- **CI results for a shared branch reach every session on it.** When agents all push to main, a webhook subscription
+  to `<repo>@main` hands each agent everyone's results. Solved with commit subscriptions (`fleetlayer subscribe ci
+  --commit` after pushing): GitHub's workflow runs match `<repo>@<sha>` too, the control plane tracks each commit's runs
+  (from their `requested` events) and ends the subscription once none is pending, and results that finished before
+  the agent subscribed are sent at once. Footguns: GitHub's workflow run payload has no job list (the message names
+  the workflow; the agent runs `gh run view --log-failed`), and a workflow chained by `on: workflow_run` starts after
+  the others finished. Written: `docs/guides/ci-results.md`.
+- **CircleCI results the same way.** CircleCI's webhooks (`workflow-completed`, `job-completed`) have their own payload:
+  project slug, branch, `pipeline.vcs.revision` for the commit, and a signature in `circleci-signature` (`v1=<hex
+  HMAC-SHA256>`). Not parsed yet: add it to the control plane's hooks once the GitHub path has run for a while, mapping
+  to the same `<repo>@<branch>` and `<repo>@<sha>` subjects so `--commit` works unchanged.
 - **Agents elsewhere reading your Mac's screenshots and downloads.** `fleetlayer-folders`, a read-only MCP server shared
   as a node tool (`fleetlayer mcp folders@<mac>`). Footguns: macOS privacy protection (TCC) keeps the node's
   LaunchAgent, and every tool it starts, out of ~/Downloads, ~/Desktop and ~/Documents until its person allows the node

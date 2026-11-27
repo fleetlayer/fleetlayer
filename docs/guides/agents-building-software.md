@@ -181,7 +181,7 @@ The fix:
   Sixty seconds is plenty for a CI run that takes minutes. Never poll `gh run list` in a loop.
 - **Check the allowance** when something fails oddly: `gh api rate_limit` shows what's left and when it resets.
 - **Let CI tell the agent instead of asking.** A webhook on the repository can deliver each result to the session
-  that owns the branch, with no polling at all: [CI results to the agent that wrote the branch](ci-results.md).
+  that pushed the commit, with no polling at all: [CI results to the agent that pushed](ci-results.md).
 - **Put the rule in the agents' shared instructions** (`AGENTS.md`), since every new session would otherwise start
   with the default.
 
