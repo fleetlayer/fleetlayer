@@ -589,6 +589,38 @@ pub fn notice_html(info: &Info, state: &str) -> String {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn a_back_channel_logout_ends_that_sign_in_sessions_app_sessions_and_codes() {
+        let viewer = |sid: Option<&str>| Viewer {
+            person: Some(fleetlayer_oidc::Person {
+                sub: "p_1".into(),
+                tenant: "home".into(),
+                handle: None,
+                name: None,
+                sid: sid.map(String::from),
+            }),
+        };
+        let b = Broker::default();
+        let host = "recipes--personal.apps.example";
+        let laptop = b.start(host, viewer(Some("s-laptop"))).await;
+        let phone = b.start(host, viewer(Some("s-phone"))).await;
+        b.start(host, Viewer { person: None }).await;
+        let code = b.issue(host, "st", viewer(Some("s-laptop"))).await;
+        let cookie = |sid: &str| {
+            let mut h = HeaderMap::new();
+            h.insert(header::COOKIE, HeaderValue::from_str(&format!("{}={sid}", cookies(true).session)).unwrap());
+            h
+        };
+        assert!(b.session(&cookie(&laptop), host, true).await.is_some());
+
+        let out = fleetlayer_oidc::SignedOut { sub: Some("p_1".into()), sid: Some("s-laptop".into()) };
+        assert_eq!(b.end_signed_out(&out).await, 1);
+        assert!(b.session(&cookie(&laptop), host, true).await.is_none(), "the laptop's app session ended");
+        assert!(b.session(&cookie(&phone), host, true).await.is_some(), "the phone's didn't");
+        assert!(b.redeem(&code, host, "st").await.is_none(), "nor can its unused code be redeemed");
+        assert_eq!(b.sessions.lock().await.len(), 2, "the login key's session stays");
+    }
+
     #[test]
     fn host_names_map_to_apps() {
         let d = "apps.home.example";
