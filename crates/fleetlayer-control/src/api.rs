@@ -61,6 +61,11 @@ fn internal(e: anyhow::Error) -> (StatusCode, String) {
 
 /// Every node (with whether it's linked now) and every session, as last pushed.
 pub async fn fleet(app: &App, tenant: &str) -> anyhow::Result<Value> {
+    fleet_with(app, tenant, true).await
+}
+
+/// The fleet, with each session's latest summary when `summaries` is set.
+pub async fn fleet_with(app: &App, tenant: &str, summaries: bool) -> anyhow::Result<Value> {
     let online = app.links.online(tenant).await;
     let nodes: Vec<Value> = db::nodes(&app.db, tenant)
         .await?
@@ -72,7 +77,7 @@ pub async fn fleet(app: &App, tenant: &str) -> anyhow::Result<Value> {
             v
         })
         .collect();
-    let latest = crate::summaries::latest(&app.db, tenant).await?;
+    let latest = if summaries { crate::summaries::latest(&app.db, tenant).await? } else { Default::default() };
     let sessions: Vec<Value> = db::sessions(&app.db, tenant)
         .await?
         .into_iter()

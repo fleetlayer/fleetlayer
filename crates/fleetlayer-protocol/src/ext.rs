@@ -21,6 +21,9 @@ pub mod method {
     /// `SESSIONS_UPDATE` notifications.
     pub const SESSIONS_SUBSCRIBE: &str = "_fleetlayer.dev/sessions/subscribe";
     pub const SESSIONS_UPDATE: &str = "_fleetlayer.dev/sessions/update";
+    /// Plugin → node: every node and running session in the fleet that this node may see, as the control plane has
+    /// them, without summaries (light enough to poll). `{}` → `{nodes, sessions}`; grant `fleet.query`.
+    pub const FLEET_QUERY: &str = "_fleetlayer.dev/fleet/query";
     /// Plugin → node: a summary event (`crate::summary::SummaryEvent`), for the control plane.
     pub const SUMMARY_PUBLISH: &str = "_fleetlayer.dev/summary/publish";
     /// Node → summaries plugin: a session's catch-up. `{sessionId}` → `crate::summary::Catchup`.
@@ -168,12 +171,17 @@ pub struct SessionManagerRole {
     pub keys: bool,
 }
 
-/// Watching a terminal, or driving it too.
+/// Watching a terminal, typing into it beside whoever has it open, or driving it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TerminalMode {
+    /// Watch only. The caller may still ask for scrollback (`terminal.scrollback`); nothing else reaches it.
     #[default]
     Observe,
+    /// Watch and type (`terminal.keys`, `terminal.paste`), never resizing the terminal or taking it from the person's
+    /// own window: herdr's `observe --input`. For a phone or a chat beside the person's terminal.
+    Input,
+    /// Drive it: raw input, and the terminal takes the caller's size.
     Control,
 }
 
@@ -182,7 +190,7 @@ impl TerminalMode {
     pub fn verb(self) -> &'static str {
         match self {
             TerminalMode::Observe => "read",
-            TerminalMode::Control => "attach",
+            TerminalMode::Input | TerminalMode::Control => "attach",
         }
     }
 }
@@ -769,6 +777,8 @@ mod tests {
     fn terminal_modes_map_to_policy_verbs_and_read_as_snake_case() {
         assert_eq!(TerminalMode::Observe.verb(), "read");
         assert_eq!(TerminalMode::Control.verb(), "attach");
+        assert_eq!(TerminalMode::Input.verb(), "attach", "typing is attaching, even without a resize");
+        assert_eq!(serde_json::to_value(TerminalMode::Input).unwrap(), "input");
         let r: TerminalCommandRequest =
             serde_json::from_value(serde_json::json!({"sessionId":"a","mode":"control","cols":80,"rows":24})).unwrap();
         assert_eq!(r.mode, TerminalMode::Control);

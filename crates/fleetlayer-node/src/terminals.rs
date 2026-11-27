@@ -13,7 +13,7 @@ use fleetlayer_protocol::link::{self as l, TerminalOpen, TerminalServe, ToolOpen
 use fleetlayer_protocol::rpc::RpcError;
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt};
 
 use crate::Node;
 
@@ -84,6 +84,29 @@ fn spawn(c: &TerminalCommand) -> Result<tokio::process::Child, RpcError> {
         .map_err(|e| RpcError::refused(format!("starting {}: {e}", c.command)))
 }
 
+/// Is this line from a watcher a request it may make: `terminal.scrollback`, which reads and changes nothing?
+fn watcher_may_send(line: &str) -> bool {
+    serde_json::from_str::<Value>(line)
+        .ok()
+        .is_some_and(|v| v.get("type").and_then(Value::as_str) == Some("terminal.scrollback"))
+}
+
+/// Pass a watcher's scrollback requests to the command and drop everything else, until the watcher's side ends. The
+/// command's stdin is handed back still open: closing it could read as a goodbye.
+async fn watcher_lines<R, W>(reader: R, mut stdin: W) -> W
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut lines = tokio::io::BufReader::new(reader).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        if watcher_may_send(&line) && stdin.write_all(format!("{line}\n").as_bytes()).await.is_err() {
+            break;
+        }
+    }
+    stdin
+}
+
 /// Control plane → node: stream a terminal here into the stream it paired.
 pub async fn serve(node: Arc<Node>, req: TerminalServe) -> Result<Value, RpcError> {
     let c = command(&node, &req.session, req.mode, req.cols, req.rows).await?;
@@ -97,11 +120,13 @@ pub async fn serve(node: Arc<Node>, req: TerminalServe) -> Result<Value, RpcErro
     tracing::info!(session = %req.session, caller = %req.caller, mode = ?req.mode, "terminal opened");
     let observe = req.mode == TerminalMode::Observe;
     tokio::spawn(async move {
-        // Watching only: nothing the caller sends reaches the terminal, whatever the manager would allow. Its stdin
-        // stays open until the end, so the command doesn't take end-of-file for a goodbye.
+        // Watching only: of what the caller sends, only scrollback requests reach the command, whatever the manager
+        // would allow. Its stdin stays open until the end, so the command doesn't take end-of-file for a goodbye.
         if observe {
-            crate::tools::pipe(stdout, tokio::io::sink(), ws).await;
-            drop(stdin);
+            let (near, far) = tokio::io::duplex(64 * 1024);
+            let watcher = tokio::spawn(watcher_lines(far, stdin));
+            crate::tools::pipe(stdout, near, ws).await;
+            watcher.abort();
         } else {
             crate::tools::pipe(stdout, stdin, ws).await;
         }
@@ -131,9 +156,9 @@ where
                 let observe = req.mode == TerminalMode::Observe;
                 let up = async move {
                     if observe {
-                        // Watching only: read and drop what the caller sends; the end of it still ends the stream.
-                        let _ = tokio::io::copy(&mut reader, &mut tokio::io::sink()).await;
-                        drop(stdin);
+                        // Watching only: scrollback requests pass, the rest is dropped; the end of it still ends the
+                        // stream.
+                        let _stdin = watcher_lines(reader, stdin).await;
                     } else {
                         let _ = tokio::io::copy(&mut reader, &mut stdin).await;
                     }
@@ -197,4 +222,24 @@ async fn open_remote(
         .await
         .map_err(|e| e.message)?;
     crate::tools::connect_stream(node, &opened.stream_id, "use").await.map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A watcher may ask for scrollback (it reads, as watching does) but never type, paste, resize or release.
+    #[tokio::test]
+    async fn a_watcher_may_only_ask_for_scrollback() {
+        let sent = concat!(
+            "{\"type\":\"terminal.keys\",\"keys\":[\"enter\"]}\n",
+            "{\"type\":\"terminal.scrollback\",\"lines\":50,\"id\":\"s1\"}\n",
+            "{\"type\":\"terminal.paste\",\"text\":\"rm -rf /\"}\n",
+            "{\"type\":\"terminal.input\",\"text\":\"x\"}\n",
+            "not json\n",
+            "{\"type\":\"terminal.resize\",\"cols\":10,\"rows\":5}\n",
+        );
+        let out = watcher_lines(sent.as_bytes(), Vec::new()).await;
+        assert_eq!(String::from_utf8(out).unwrap(), "{\"type\":\"terminal.scrollback\",\"lines\":50,\"id\":\"s1\"}\n");
+    }
 }

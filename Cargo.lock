@@ -1865,6 +1865,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "fleetlayer-herdr-fleet"
+version = "0.3.12"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "fleetlayer-plugin",
+ "fleetlayer-protocol",
+ "jiff 1.0.3",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "fleetlayer-node"
 version = "0.3.12"
 dependencies = [

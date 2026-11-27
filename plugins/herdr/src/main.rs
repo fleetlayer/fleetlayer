@@ -119,24 +119,17 @@ impl Plugin {
 
 /// herdr's own terminal stream: `herdr terminal session observe|control <pane>` speaks the terminal stream format.
 fn terminal_command(program: &str, pane: &str, mode: ext::TerminalMode, cols: u16, rows: u16) -> ext::TerminalCommand {
-    let mode = match mode {
-        ext::TerminalMode::Observe => "observe",
-        ext::TerminalMode::Control => "control",
+    let (mode, input) = match mode {
+        ext::TerminalMode::Observe => ("observe", false),
+        ext::TerminalMode::Input => ("observe", true),
+        ext::TerminalMode::Control => ("control", false),
     };
-    ext::TerminalCommand {
-        command: program.into(),
-        args: vec![
-            "terminal".into(),
-            "session".into(),
-            mode.into(),
-            pane.into(),
-            "--cols".into(),
-            cols.max(20).to_string(),
-            "--rows".into(),
-            rows.max(5).to_string(),
-        ],
-        ..Default::default()
+    let mut args: Vec<String> = vec!["terminal".into(), "session".into(), mode.into(), pane.into()];
+    if input {
+        args.push("--input".into());
     }
+    args.extend(["--cols".into(), cols.max(20).to_string(), "--rows".into(), rows.max(5).to_string()]);
+    ext::TerminalCommand { command: program.into(), args, ..Default::default() }
 }
 
 fn not_running(session_id: &str) -> RpcError {
@@ -436,5 +429,11 @@ mod tests {
         let c = terminal_command("herdr", "w1:p1", ext::TerminalMode::Observe, 3, 1);
         assert_eq!(c.args[2], "observe");
         assert_eq!((c.args[5].as_str(), c.args[7].as_str()), ("20", "5"), "a usable minimum size");
+        let c = terminal_command("herdr", "w1:p2", ext::TerminalMode::Input, 80, 24);
+        assert_eq!(
+            c.args,
+            ["terminal", "session", "observe", "w1:p2", "--input", "--cols", "80", "--rows", "24"],
+            "typing beside the person's window is an observer with input, which never resizes the pane"
+        );
     }
 }

@@ -277,7 +277,7 @@ anywhere in the fleet, under the access policy: `read` to watch, `attach` to typ
 
 | Request | Params | Result |
 |---|---|---|
-| `_fleetlayer.dev/terminal/command` | `{sessionId, mode: "observe" \| "control", cols, rows}` | `{command, args[], env?, envRemove?}` |
+| `_fleetlayer.dev/terminal/command` | `{sessionId, mode: "observe" \| "input" \| "control", cols, rows}` | `{command, args[], env?, envRemove?}` |
 
 The plugin names a command, and the node runs it. The command writes the **terminal stream format** on stdout and
 reads it on stdin, one JSON object per line. The format is herdr's own (`herdr terminal session observe|control`
@@ -288,9 +288,20 @@ answers with a helper that translates:
   "encoding":"ansi", "bytes": <base64>}` (the bytes to write to a terminal of that size; `full` frames redraw the
   whole screen); `{"type":"terminal.closed", "code", "reason"}`; `{"type":"terminal.error", ...}`.
 - in: `{"type":"terminal.input", "text": …}` or `{"type":"terminal.input", "bytes": <base64>}`;
-  `{"type":"terminal.resize", "cols", "rows"}`; `{"type":"terminal.release"}` (leave).
+  `{"type":"terminal.resize", "cols", "rows"}`; `{"type":"terminal.release"}` (leave); `{"type":"terminal.keys",
+  "keys":[…]}` and `{"type":"terminal.paste", "text"}` (press keys, paste text); `{"type":"terminal.scrollback",
+  "lines", "format", "id"}` (answered with `terminal.scrollback` `{text, truncated, id}`).
 
-In `observe` mode the node passes nothing from the caller to the command, whatever the manager would allow. A caller
+The three modes:
+
+- `observe`: watch. Of what the caller sends, the node passes only `terminal.scrollback` to the command, whatever the
+  manager would allow. Access verb `read`.
+- `input`: watch and type with `terminal.keys` and `terminal.paste`, never resizing the terminal or taking it from
+  the person's own window (herdr's `observe --input`). For a phone or a chat beside the person's terminal. Access verb
+  `attach`. A manager with no such mode answers with its `control` command.
+- `control`: drive it, raw input included; the terminal takes the caller's size. Access verb `attach`.
+
+A caller
 on the same node is connected straight to the command. A caller on another node gets a stream the control plane
 pairs (`link/terminal_open` → `link/terminal_serve`), the same way as shared tools; the control plane checks access
 and reads nothing in it. `fleetlayer attach <tab>@<node>` is the reference client (`--observe` to watch,
@@ -518,7 +529,8 @@ Numbers, never secrets, flow with readings: account usage and reset times, healt
 | `_fleetlayer.dev/event/publish` | [Section 6](#6-events-the-event-source-role) |
 | `_fleetlayer.dev/sync/publish` | [Section 8](#8-sync-and-sealed-secrets) |
 | `_fleetlayer.dev/reading/publish`, `/reading/subscribe` | [Section 9](#9-readings) |
-| `_fleetlayer.dev/sessions/query` `{node?, name?, harness?}` | The fleet's sessions, as the control plane sees them |
+| `_fleetlayer.dev/sessions/query` `{node?, name?, harness?}` | This node's sessions (grant `sessions.query`) |
+| `_fleetlayer.dev/fleet/query` `{}` | `{nodes, sessions}`: every node and session in the fleet that this node may see, as the control plane has them, without summaries, so it's light enough to poll every few seconds (grant `fleet.query`) |
 | `_fleetlayer.dev/access/check` `{tenant, who, can, to}` | `{allowed, rules, reason}`: may this person (`person:<handle>` or their ID) or agent do this to something the tenant owns (`service:…`, `page:…`, `app:…`)? Grant `access.check`; answered only if the node is a member of that tenant ([`sso.md`](sso.md)) |
 | `_fleetlayer.dev/log` `{level, message}` | A structured log line (stderr works too) |
 | `_fleetlayer.dev/service/listening` `{name, url, health?, hosts?}` | A notification: this plugin serves HTTP (below) |

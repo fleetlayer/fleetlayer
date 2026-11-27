@@ -565,7 +565,9 @@ impl Handler for FromNode {
                 answer(&json!({"summaries": visible}))
             }
             l::method::FLEET => {
-                let mut fleet = crate::api::fleet(app, tenant).await.map_err(RpcError::internal)?;
+                // `{"summaries": false}` leaves them out: a plugin polling for status changes needs only the sessions.
+                let summaries = p.get("summaries").and_then(Value::as_bool).unwrap_or(true);
+                let mut fleet = crate::api::fleet_with(app, tenant, summaries).await.map_err(RpcError::internal)?;
                 let me = self.me();
                 if let Some(list) = fleet["sessions"].as_array_mut() {
                     let all = std::mem::take(list);

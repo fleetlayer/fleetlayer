@@ -478,6 +478,13 @@ impl Handler for FromPlugin {
                 }
                 answer(&json!({"sessions": self.node.registry.all().await, "ownMessages": own}))
             }
+            ext::method::FLEET_QUERY => {
+                self.grant("fleet.query")?;
+                let peer = self.node.link.peer().await.ok_or_else(|| {
+                    RpcError::not_here(format!("{} isn't linked to a control plane now", self.node.name))
+                })?;
+                peer.request::<_, Value>(fleetlayer_protocol::link::method::FLEET, &json!({"summaries": false})).await
+            }
             ext::method::SESSION_ANSWER | ext::method::SESSION_CLOSE => {
                 let close = method == ext::method::SESSION_CLOSE;
                 self.grant(if close { "session.close" } else { "session.answer" })?;

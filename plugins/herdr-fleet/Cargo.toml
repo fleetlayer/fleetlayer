@@ -1,0 +1,26 @@
+[package]
+name = "fleetlayer-herdr-fleet"
+description = "fleetlayer-herdr-fleet: every herdr in the fleet as one herdr, for herdr clients such as a phone relay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+fleetlayer-protocol.workspace = true
+fleetlayer-plugin.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+jiff.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+async-trait = "0.1.92"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[lints]
+workspace = true

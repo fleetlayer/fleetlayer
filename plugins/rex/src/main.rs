@@ -181,7 +181,8 @@ fn terminal_command(
     let helper = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "fleetlayer-rex".into());
     let mode = match mode {
         ext::TerminalMode::Observe => "observe",
-        ext::TerminalMode::Control => "control",
+        // Rex has no observer that types: typing takes the block, as control does.
+        ext::TerminalMode::Input | ext::TerminalMode::Control => "control",
     };
     let mut args: Vec<String> = vec![
         "terminal".into(),
