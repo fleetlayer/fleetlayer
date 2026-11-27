@@ -603,6 +603,14 @@ managers, machines that sleep.
   (`fleetlayer-control person email`, trusted as verified) or an upstream provider that verified it. It never uses an
   email to link accounts. Where it lives: `docs/plugins/signin.md` ("For a service"). To write: a section of
   `docs/guides/sign-in.md`, with the Executor guide from the session that sets it up.
+- **Confirming a sensitive approval with a passkey, not a signed-in browser.** A browser left signed in shouldn't be
+  enough to approve something risky, such as giving an agent admin rights for a while. A session's age doesn't
+  prove the person is there either. A step-up runs a fresh WebAuthn check (a new challenge, user verification
+  required, the signed-in person's own passkey) for that one request, and the control plane accepts the approval
+  only from the person who just did it, within minutes, once. Two traps: the page must show what's being approved, or
+  the person confirms blind; and `return` must be allowlisted, or the page becomes an open redirect. Where it lives:
+  `docs/plugins/signin.md` ("Confirming a request with a passkey"), `plugins/signin/src/stepup.rs`. To write: part
+  of `docs/guides/admin-window.md`.
 - **Groups from an identity provider as permissions.** Mapping a provider's groups (Google Workspace, Okta) to an
   app's teams has three traps. Groups are only seen when someone signs in, so a person removed from a group, or
   suspended, keeps the access until they next sign in, which may be never: read the directory again on a schedule

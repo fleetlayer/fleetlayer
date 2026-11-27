@@ -35,6 +35,7 @@ async fn control_plane(seen: Arc<Mutex<Seen>>) -> String {
         "teams": ["engineering"], "groups": ["acme", "acme/engineering", "acme/role:admin"]}]});
     let s1 = seen.clone();
     let s2 = seen.clone();
+    let s3 = seen.clone();
     let router = axum::Router::new()
         .route(
             "/v1/signin/admin/view",
@@ -131,6 +132,31 @@ async fn control_plane(seen: Arc<Mutex<Seen>>) -> String {
             }),
         )
         .route(
+            "/v1/signin/approval_view",
+            post(|Json(b): Json<Value>| async move {
+                let status = match (b["tenant"].as_str(), b["approval"].as_str()) {
+                    (Some("acme"), Some("ap_1" | "ap_refused")) => "pending",
+                    (Some("acme"), Some("ap_done")) => "approved",
+                    _ => return (StatusCode::NOT_FOUND, Json(json!({}))),
+                };
+                (StatusCode::OK, Json(json!({"id": b["approval"], "from": "admin-window@laptop", "verb": "activate",
+                    "to": "window:infra", "detail": "rotate <the> keys", "status": status, "holdMs": 0, "createdAt": 1})))
+            }),
+        )
+        .route(
+            "/v1/signin/stepup",
+            post(move |Json(b): Json<Value>| {
+                let s = s3.clone();
+                async move {
+                    if b["approval"] == "ap_refused" {
+                        return (StatusCode::FORBIDDEN, "person:a isn't an admin of acme".to_string());
+                    }
+                    s.lock().unwrap().events.push(format!("stepup_call {} {} {}", b["tenant"], b["person"], b["approval"]));
+                    (StatusCode::OK, json!({"approval": b["approval"], "person": "person:a", "expiresAt": 1}).to_string())
+                }
+            }),
+        )
+        .route(
             "/v1/signin/check",
             post(|Json(b): Json<Value>| async move {
                 let ok = (b["tenant"] == "t_acme" || b["tenant"] == "t_home")
@@ -186,6 +212,7 @@ fn app_with(dir: &std::path::Path, control: &str, backchannel: Option<String>) -
         passkeys_fixed: false,
         previous_issuers: vec![],
         forward: None,
+        stepup_return_origins: vec![],
         clients: vec![client("hub"), client("vault")],
     };
     Arc::new(web::App::new(settings, store, keys, crate::control::Control::new(control, "fls_test")).unwrap())
@@ -499,6 +526,7 @@ async fn on_plain_http_localhost_the_cookie_isnt_secure_and_everywhere_else_it_i
         passkeys_fixed: true,
         previous_issuers: vec![],
         forward: None,
+        stepup_return_origins: vec![],
         clients: vec![],
     };
     let local = Arc::new(web::App::new(settings, store, keys, crate::control::Control::new(&control, "t")).unwrap());
@@ -523,6 +551,7 @@ async fn with_upstream(
         passkeys_fixed: false,
         previous_issuers: vec![],
         forward: None,
+        stepup_return_origins: vec![],
         clients: vec![web::Client {
             name: "hub".into(),
             redirect_uris: vec!["https://hub.example.com/cb".into()],
@@ -1391,4 +1420,82 @@ async fn the_email_scope_gives_a_verified_email_only_when_asked_and_only_one_som
     assert_eq!(a.email(&p).await.as_deref(), Some("a@home.example"));
     p.email = None;
     assert_eq!(a.email(&p).await.as_deref(), Some("a@acme.example"));
+}
+
+/// A step-up through the page's endpoints with the software passkey: the finish response.
+async fn step_up(a: &Arc<web::App>, cookie: &str, key: &mut SoftPasskey, approval: &str, ret: &str) -> Resp {
+    let (user_id, cred_id) = {
+        let people = a.store.people.lock().await;
+        let k = &people.people["p_a"].passkeys[0];
+        (k.user_id, k.passkey.cred_id().clone())
+    };
+    let body = json!({"tenant": "acme", "approval": approval, "return": ret}).to_string();
+    let start = call(a, "POST", "/stepup/start", Some(cookie), Some(Body::from(body)), "application/json").await;
+    assert_eq!(start.status, StatusCode::OK, "{}", start.text);
+    let mut options = start.body["options"].clone();
+    assert_eq!(options["publicKey"]["userVerification"], "required", "a fresh check of the person, not a touch");
+    options["publicKey"]["allowCredentials"] =
+        json!([{"type": "public-key", "id": B64.encode(AsRef::<[u8]>::as_ref(&cred_id))}]);
+    let mut cred =
+        key.do_authentication(Url::parse(ORIGIN).unwrap(), serde_json::from_value(options).unwrap()).unwrap();
+    cred.response.user_handle = Some(user_id.as_bytes().to_vec());
+    let body = json!({"id": start.body["id"], "credential": cred}).to_string();
+    call(a, "POST", "/stepup/finish", Some(cookie), Some(Body::from(body)), "application/json").await
+}
+
+#[tokio::test]
+async fn a_step_up_shows_the_request_checks_a_fresh_passkey_and_tells_the_control_plane() {
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let control = control_plane(seen.clone()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let a = app(dir.path(), &control);
+    let mut key = SoftPasskey::new(true);
+    let cookie = register(&a, &mut key).await;
+
+    // Not signed in: sign in first, then back here.
+    let r = call(&a, "GET", "/stepup?tenant=acme&approval=ap_1&return=%2Fdone", None, None, "").await;
+    let to = r.location.expect("off to sign in");
+    assert!(to.starts_with("/login?return=%2Fstepup%3Ftenant%3Dacme%26approval%3Dap_1"), "{to}");
+
+    // The page shows what's being approved, escaped.
+    let r = call(&a, "GET", "/stepup?tenant=acme&approval=ap_1", Some(&cookie), None, "").await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    assert!(r.text.contains("window:infra") && r.text.contains("rotate &lt;the&gt; keys"), "{}", r.text);
+    assert!(r.text.contains("Confirm with your passkey"));
+    // Decided already, or no such request: no button.
+    let r = call(&a, "GET", "/stepup?tenant=acme&approval=ap_done", Some(&cookie), None, "").await;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+    assert!(r.text.contains("already approved") && !r.text.contains("id=\"go\""), "{}", r.text);
+    let r = call(&a, "GET", "/stepup?tenant=acme&approval=ap_x", Some(&cookie), None, "").await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+
+    // The passkey: the control plane hears it, and the browser goes back to an allowed address.
+    let r = step_up(&a, &cookie, &mut key, "ap_1", "https://hub.example.com/approvals").await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    assert_eq!(r.body["redirect"], "https://hub.example.com/approvals", "a client's origin is allowed");
+    let events = seen.lock().unwrap().events.clone();
+    assert!(events.iter().any(|e| e == "stepup_call \"acme\" \"p_a\" \"ap_1\""), "{events:?}");
+
+    // Anywhere else: the "close this tab" page, never an open redirect.
+    let r = step_up(&a, &cookie, &mut key, "ap_1", "https://evil.example.net/x").await;
+    assert_eq!(r.body["redirect"], "/stepup/done");
+    let r = step_up(&a, &cookie, &mut key, "ap_1", "//evil.example.net/x").await;
+    assert_eq!(r.body["redirect"], "/stepup/done");
+
+    // The control plane's refusal is shown as it gave it.
+    let r = step_up(&a, &cookie, &mut key, "ap_refused", "").await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    assert_eq!(r.body["error"], "person:a isn't an admin of acme");
+
+    // Without the session that started it, or with another browser's session: refused.
+    let body = json!({"tenant": "acme", "approval": "ap_1"}).to_string();
+    let r = call(&a, "POST", "/stepup/start", None, Some(Body::from(body)), "application/json").await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+}
+
+#[test]
+fn step_up_return_origins_are_only_origins() {
+    assert_eq!(crate::stepup::origins(&["https://deck.example.com".into()]).unwrap(), ["https://deck.example.com"]);
+    assert!(crate::stepup::origins(&["http://deck.example.com".into()]).is_err());
+    assert!(crate::stepup::origins(&["https://deck.example.com/approve".into()]).is_err());
 }

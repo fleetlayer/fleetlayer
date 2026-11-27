@@ -27,6 +27,7 @@ mod forward;
 mod google;
 mod keys;
 mod logout;
+mod stepup;
 mod store;
 mod teams;
 mod upstream;
@@ -176,6 +177,10 @@ struct Config {
     /// Forward-auth for services that can't speak OpenID Connect (`docs/plugins/signin.md`).
     #[serde(default)]
     forward_auth: Option<ForwardConfig>,
+    /// Where a passkey step-up (`/stepup`) may send the browser back to, besides the issuer and the clients' own
+    /// addresses: origins such as `https://deck.example.com`.
+    #[serde(default)]
+    stepup_return_origins: Vec<String>,
     control_plane: String,
     /// The sign-in token (`fleetlayer-control signin token`).
     token_file: PathBuf,
@@ -330,6 +335,7 @@ fn build(cfg: Config, home: &Path) -> anyhow::Result<(Arc<web::App>, SocketAddr,
         clients,
         previous_issuers,
         forward,
+        stepup_return_origins: stepup::origins(&cfg.stepup_return_origins)?,
     };
     let mut upstreams = vec![];
     for u in cfg.upstreams {

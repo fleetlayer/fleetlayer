@@ -55,6 +55,8 @@ pub struct Settings {
     pub previous_issuers: Vec<String>,
     /// Forward-auth, for services that can't speak OpenID Connect.
     pub forward: Option<crate::forward::Settings>,
+    /// Origins a passkey step-up may send the browser back to, besides the issuer's and the clients' (`/stepup`).
+    pub stepup_return_origins: Vec<String>,
 }
 
 struct Code {
@@ -92,18 +94,21 @@ struct Registering {
 }
 
 #[derive(Default)]
-struct Pending {
+pub(crate) struct Pending {
     registering: HashMap<String, Registering>,
     authenticating: HashMap<String, (DiscoverableAuthentication, i64)>,
+    /// Passkey step-ups under way (`/stepup`).
+    pub(crate) stepping: HashMap<String, crate::stepup::Stepping>,
     codes: HashMap<String, Code>,
     access: HashMap<String, Access>,
 }
 
 impl Pending {
-    fn sweep(&mut self) {
+    pub(crate) fn sweep(&mut self) {
         let now = now_ms();
         self.registering.retain(|_, r| r.expires > now);
         self.authenticating.retain(|_, (_, e)| *e > now);
+        self.stepping.retain(|_, st| st.expires > now);
         self.codes.retain(|_, c| c.expires > now);
         self.access.retain(|_, a| a.expires > now);
     }
@@ -124,16 +129,16 @@ pub struct App {
     /// How reading upstream groups is going (step 4b).
     pub(crate) teams_tracker: crate::teams::Tracker,
     pub control: Control,
-    webauthn: Webauthn,
-    pending: Mutex<Pending>,
+    pub(crate) webauthn: Webauthn,
+    pub(crate) pending: Mutex<Pending>,
 }
 
-fn random(n: usize) -> String {
+pub(crate) fn random(n: usize) -> String {
     let bytes: Vec<u8> = (0..n).map(|_| rand::random::<u8>()).collect();
     B64.encode(bytes)
 }
 
-fn bad(status: StatusCode, msg: impl Into<String>) -> Response {
+pub(crate) fn bad(status: StatusCode, msg: impl Into<String>) -> Response {
     (status, Json(json!({"error": msg.into()}))).into_response()
 }
 
@@ -352,6 +357,10 @@ pub fn router(app: Arc<App>) -> axum::Router {
         .route("/forward-auth", get(crate::forward::check))
         .route("/forward/start", get(crate::forward::start))
         .route("/login", get(login_page))
+        .route("/stepup", get(crate::stepup::page_for))
+        .route("/stepup/start", post(crate::stepup::start))
+        .route("/stepup/finish", post(crate::stepup::finish))
+        .route("/stepup/done", get(crate::stepup::done))
         .route("/invite", get(invite_page))
         .route("/invite/join", post(invite_join))
         .route("/passkey/login/start", post(login_start))
@@ -1137,18 +1146,18 @@ async function post(path, body) {
   const r = await fetch(path, {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body)});
   const j = await r.json(); if (!r.ok) throw new Error(j.error || r.statusText); return j;
 }
-function signIn() {
+function signIn(start = '/passkey/login/start', finish = '/passkey/login/finish', extra = {}) {
   const go = document.getElementById('go');
   go.onclick = async () => {
     try {
-      const {id, options} = await post('/passkey/login/start', {});
+      const {id, options} = await post(start, extra);
       const pk = options.publicKey; pk.challenge = u2b(pk.challenge);
       (pk.allowCredentials||[]).forEach(c => c.id = u2b(c.id));
       const c = await navigator.credentials.get({publicKey: pk});
       const credential = {id: c.id, rawId: b2u(c.rawId), type: c.type, extensions: {}, response: {
         authenticatorData: b2u(c.response.authenticatorData), clientDataJSON: b2u(c.response.clientDataJSON),
         signature: b2u(c.response.signature), userHandle: c.response.userHandle ? b2u(c.response.userHandle) : null}};
-      const done = await post('/passkey/login/finish', {id, credential, return: go.dataset.return});
+      const done = await post(finish, {...extra, id, credential, return: go.dataset.return});
       location.href = done.redirect;
     } catch (e) { msg(e.message); }
   };

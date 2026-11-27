@@ -173,6 +173,7 @@ For Google, the service account, once:
 | `upstreams` | Providers people may sign in with (above): `name`, `kind` (`google` or `oidc`), `issuer` (oidc), `domain` (required for google), `label`, `tenant`, `client_id`, `client_secret_file`, `join`; groups as teams: `teams` (google: `service_account_file`, `map`, `subject`), `teams_claim` and `map` (oidc), `teams_grace_hours`, `teams_expire_days`. |
 | `previous_issuers` | Addresses it had before, still pointed at it while services are repointed (below). |
 | `forward_auth` | `cookie_domain` and `hosts` (`host`, `service`, `tenant`), for services behind a proxy's forward-auth (above). |
+| `stepup_return_origins` | Origins, such as `https://deck.example.com`, that a passkey confirmation may send the browser back to, besides the sign-in service's own and its clients' (below). |
 | `heartbeat` | Pushed every five minutes; it fails when `/healthz` would. |
 
 ## For a service
@@ -325,6 +326,24 @@ location / {
 ```
 
 On nginx's other sites, `proxy_set_header X-Fleetlayer-Person "";` (and the same for the other three) removes them.
+
+## Confirming a request with a passkey
+
+Some requests need the person who approves them to confirm with a passkey there and then. Being signed in isn't
+enough. Opening an admin window is one ([The admin window](../guides/admin-window.md)). The control plane asks for
+it, and the link that comes with the request opens
+`https://signin.example.com/stepup?tenant=<place>&approval=<id>&return=<where to go after>`:
+
+- The page shows the request: who asks, what for and on what. If it was decided already, or there's no such request,
+  it says so and has no button.
+- **Confirm with your passkey** runs a new passkey check, with a fresh challenge and user verification (a fingerprint,
+  face or PIN, not only a touch). The passkey must be the signed-in person's own.
+- Then the sign-in service tells the control plane, over its token, that this person just confirmed this request.
+  The control plane keeps that for five minutes, uses it once, and accepts the approval only from that person, and
+  only if they're an admin of the place. It records it in the audit log (`signin.stepup`).
+- Afterwards the browser goes to `return` only if it's a path on the sign-in service, or an address at one of three
+  origins: its own, a client's (from its `redirect_uris`), or one in `stepup_return_origins`. Anywhere else, the page
+  says "you can close this tab", so the link can't be used to send someone to another site.
 
 ## Signing out
 

@@ -128,6 +128,39 @@ impl Control {
         }
     }
 
+    /// What an approval asks (`{id, from, verb, to, detail, status, holdMs, createdAt}`); none if there's no such
+    /// approval in that tenant.
+    pub async fn approval_view(&self, tenant: &str, approval: &str) -> anyhow::Result<Option<Value>> {
+        self.post("/v1/signin/approval_view", json!({"tenant": tenant, "approval": approval})).await
+    }
+
+    /// Tell the control plane `person` just passed a fresh passkey check for `approval`. `Err` carries the control
+    /// plane's own reason when it refuses (not an admin, not pending...).
+    pub async fn stepup(&self, tenant: &str, person: &str, approval: &str) -> Result<Value, String> {
+        let body = json!({"tenant": tenant, "person": person, "approval": approval});
+        let r = self
+            .http
+            .post(format!("{}/v1/signin/stepup", self.base))
+            .bearer_auth(&self.token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("the control plane didn't answer: {e}"))?;
+        let status = r.status();
+        let text = r.text().await.unwrap_or_default();
+        if status.is_success() {
+            return serde_json::from_str(&text).map_err(|e| format!("the control plane's answer: {e}"));
+        }
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Err("there's no such request".into());
+        }
+        Err(if text.trim().is_empty() {
+            format!("the control plane answered {status}")
+        } else {
+            text.trim().to_string()
+        })
+    }
+
     /// Whether the control plane answers (`/healthz`).
     pub async fn reachable(&self) -> bool {
         matches!(self.http.get(format!("{}/healthz", self.base)).send().await, Ok(r) if r.status().is_success())
