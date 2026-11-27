@@ -48,7 +48,9 @@ one link for everyone who may read the space, whichever agent or model wrote it.
      readers mustn't see.
 
 3. **Check it:** fetch the page's address. A page with problems (no title or summary, a missing image, raw HTML) shows
-   them in a box with `id="problems"` at the top; fix them until it's gone.
+   them in a box with `id="problems"` at the top; fix them until it's gone. If the address sends you to sign in
+   (a 303 to `/_/login`), you can't read it yourself: check the folder instead (the first line is `# Title`, a summary
+   paragraph follows, every image and link points at a file in the folder, no HTML) and give the person the link.
 
 4. **Give the person the link** on a line of its own, with one sentence on what the page shows.
 
