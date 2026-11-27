@@ -67,6 +67,9 @@ gh api repos/your-org/your-repo/hooks -f name=web -F active=true -f 'events[]=wo
 git push && fleetlayer subscribe ci --commit
 ```
 
+Keep polling only as a fallback: if nothing arrives within the usual CI time plus five minutes, the agent checks once
+with `gh run watch <id> --interval 60`.
+
 `--commit` reads the repository from the `origin` remote and the commit from `HEAD` (or give one: `--commit
 <rev>`), and subscribes to `<owner/repo>@<sha>`. This is what makes it work when every agent pushes to the same
 branch: results for `main` go to whoever pushed that commit, not to every session on `main`. The command says what it
@@ -89,7 +92,9 @@ Each result arrives as one message, marked as outside data:
 CI failure on your-org/your-repo@main 1a2b3c4 "Fix the login form" https://github.com/your-org/your-repo/actions/runs/123
 ```
 
-followed by the details (workflow, conclusion, branch, commit, run URL, attempt). Sessions never get GitHub's raw
+followed by the details (workflow, conclusion, branch, commit, run URL, attempt). A `cancelled` result usually means
+someone pushed on top, and a workflow that cancels older runs stopped this one: the agent fetches and subscribes to the
+newer commit. Sessions never get GitHub's raw
 payload, which is long and full of URLs (a ping's includes the webhook's own URL, secret path and all): other GitHub
 events arrive as a short summary of the same fields, a ping as one line, and the endpoint's secret is removed from
 anything delivered. Only completed runs are delivered;
