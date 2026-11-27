@@ -52,6 +52,7 @@ roles:
     presets: [anthropic]
     hosts:
       - fleet.example.net        # your control plane, which the role's node links to
+    networks: [100.101.102.103/32]   # its address, when it's on your tailnet or LAN (private addresses need this)
 ```
 
 Check it, then restart the egress node so the plugin starts:

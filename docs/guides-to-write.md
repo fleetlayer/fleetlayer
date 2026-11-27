@@ -765,7 +765,13 @@ managers, machines that sleep.
   applies them; the proxy must run as a user outside every role or the agents can replace it; a restricted user in
   the `docker` group isn't restricted (the daemon is root); connect to the host by name, never the address the client
   dialled, or an allowed name can reach any IP; keep restricted roles off private addresses (LAN, tailnet,
-  169.254.169.254) unless a host is named exactly; QUIC and ECH just fall back when refused. Claude Code honours
+  169.254.169.254) except ranges the role lists, whatever name led there (an approved name's owner can repoint it);
+  match the role's subordinate uids too (`/etc/subuid`: rootless podman's processes aren't the user's uid); find a
+  connection's owner only among ESTABLISHED sockets with an inode (a TIME_WAIT row shows uid 0), and refuse when two
+  owners share the address or the uid belongs to nobody; pass plain HTTP one request per connection (a second
+  request can name another host on a shared CDN address); let only a role's own node file its requests, the proxy
+  only looks; mark the agent's reason as outside data where the approver reads it; QUIC and ECH just fall back when
+  refused. Claude Code honours
   `HTTPS_PROXY`; Node tools often don't, which the transparent redirect covers. Written: `docs/egress.md`,
   `docs/guides/egress.md`, `plugins/egress/`. Still to write: other TCP ports transparently (by matching the
   addresses the resolver handed out), and macOS (a Lima VM for now).

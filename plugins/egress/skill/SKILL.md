@@ -35,7 +35,8 @@ fleetlayer-egress ask db.example.net:5432 --why "…"     # a port other than 44
 fleetlayer-egress ask api.vendor.io --why "…" --wait 10  # wait up to ten minutes for the answer
 ```
 
-Exit 0: allowed (or already was). Exit 3: waiting for the person; tell them what you asked for and why, then carry
+Run it in a session of your role's own node: that node files the request in its own name (no other node can), and
+the proxy then looks the answer up. Exit 0: allowed (or already was). Exit 3: waiting for the person; tell them what you asked for and why, then carry
 on with other work and try again once they've approved it. Exit 1: refused, or the role can't ask: report it to your
 person, don't work around it.
 

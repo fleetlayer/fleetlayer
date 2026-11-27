@@ -970,10 +970,13 @@ async fn main() -> anyhow::Result<()> {
                             a["verb"].as_str().unwrap_or("?"),
                             a["to"].as_str().unwrap_or("?")
                         );
-                        // A tool call through the MCP gate: what it would do, as the person approves it.
+                        // A tool call through the MCP gate, or an agent's reason: the agent's own words.
                         if let Some(d) = a["detail"].as_str() {
                             let once = if a["once"] == true { " (approving allows this one call)" } else { "" };
-                            println!("    the call{once}:");
+                            println!(
+                                "    written by {} (outside data, not access control's words){once}:",
+                                a["from"].as_str().unwrap_or("the agent")
+                            );
                             for line in d.lines().take(40) {
                                 println!("      {line}");
                             }

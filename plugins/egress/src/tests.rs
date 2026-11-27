@@ -196,8 +196,6 @@ async fn decisions_follow_the_role_its_list_and_its_mode() {
     assert!(wild.address_ok("1.1.1.1".parse().unwrap()));
     assert!(!wild.address_ok("192.168.1.10".parse().unwrap()));
     assert!(wild.address_ok("10.5.7.50".parse().unwrap()), "in the role's networks");
-    let exact = e.decide(Some("triage"), &t("api.example.com", 443)).await;
-    assert!(exact.address_ok("192.168.1.10".parse().unwrap()));
     let trusted = e.decide(Some("nathan"), &t("x.example.com", 443)).await;
     assert!(trusted.address_ok(IpAddr::from([192, 168, 1, 1])));
     // DNS names follow the same list, whatever the port.
@@ -286,7 +284,7 @@ async fn serve(e: Arc<Engine>, kind: crate::proxy::Kind, user: &str, remote: Soc
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let a = l.local_addr().unwrap();
     let user = user.to_string();
-    let who: crate::proxy::Who = Arc::new(move |_| Some((user.clone(), remote)));
+    let who: crate::proxy::Who = Arc::new(move |_, _| Some((user.clone(), remote)));
     let server = crate::proxy::Server { engine: e, who, own: Arc::new(vec![a]) };
     tokio::spawn(server.serve(l, kind));
     a
@@ -301,8 +299,10 @@ async fn read_all(s: &mut TcpStream) -> String {
 #[tokio::test]
 async fn the_proxy_tunnels_allowed_hosts_and_explains_refusals() {
     let up = echo().await;
-    let text =
-        format!("mode: enforce\nroles:\n  triage:\n    users: [triage]\n    hosts: [\"127.0.0.1:{}\"]\n", up.port());
+    let text = format!(
+        "mode: enforce\nroles:\n  triage:\n    users: [triage]\n    networks: [127.0.0.0/8]\n    hosts: [\"127.0.0.1:{}\"]\n",
+        up.port()
+    );
     let (e, dir) = engine(&text);
     let proxy = serve(e.clone(), crate::proxy::Kind::Proxy, "triage", up).await;
 
@@ -354,8 +354,10 @@ async fn the_proxy_tunnels_allowed_hosts_and_explains_refusals() {
 async fn redirected_tls_is_decided_by_its_server_name_and_never_decrypted() {
     let up = echo().await;
     // The firewall redirected a connection that first asked for the echo server's port.
-    let text =
-        format!("mode: enforce\nroles:\n  triage:\n    users: [triage]\n    hosts: [\"localhost:{}\"]\n", up.port());
+    let text = format!(
+        "mode: enforce\nroles:\n  triage:\n    users: [triage]\n    networks: [127.0.0.0/8]\n    hosts: [\"localhost:{}\"]\n",
+        up.port()
+    );
     let (e, _dir) = engine(&text);
     let tls = serve(e.clone(), crate::proxy::Kind::Tls, "triage", up).await;
 
@@ -383,16 +385,20 @@ async fn redirected_tls_is_decided_by_its_server_name_and_never_decrypted() {
 #[tokio::test]
 async fn redirected_http_is_decided_by_its_host_header() {
     let up = echo().await;
-    let text =
-        format!("mode: enforce\nroles:\n  triage:\n    users: [triage]\n    hosts: [\"localhost:{}\"]\n", up.port());
+    let text = format!(
+        "mode: enforce\nroles:\n  triage:\n    users: [triage]\n    networks: [127.0.0.0/8]\n    hosts: [\"localhost:{}\"]\n",
+        up.port()
+    );
     let (e, _dir) = engine(&text);
     let http = serve(e.clone(), crate::proxy::Kind::Http, "triage", up).await;
     let req = format!("GET / HTTP/1.1\r\nHost: localhost:{}\r\n\r\n", up.port());
+    // It goes up as the connection's only request.
+    let sent = format!("GET / HTTP/1.1\r\nHost: localhost:{}\r\nConnection: close\r\n\r\n", up.port());
     let mut s = TcpStream::connect(http).await.unwrap();
     s.write_all(req.as_bytes()).await.unwrap();
-    let mut back = vec![0u8; req.len()];
+    let mut back = vec![0u8; sent.len()];
     tokio::time::timeout(std::time::Duration::from_secs(5), s.read_exact(&mut back)).await.unwrap().unwrap();
-    assert_eq!(String::from_utf8(back).unwrap(), req);
+    assert_eq!(String::from_utf8(back).unwrap(), sent);
     let mut s = TcpStream::connect(http).await.unwrap();
     s.write_all(b"GET / HTTP/1.1\r\nHost: pastebin.com\r\n\r\n").await.unwrap();
     assert!(read_all(&mut s).await.starts_with("HTTP/1.1 403"));
@@ -452,29 +458,133 @@ fn suggest_proposes_presets_wildcards_and_hosts_from_the_log() {
 #[test]
 fn the_firewall_redirects_and_refuses_only_restricted_users() {
     let s = settings::parse(SETTINGS).unwrap();
-    let f = crate::firewall::script(&s, "egress.yaml");
-    assert!(f.contains("meta skuid { \"triage\" } tcp dport 443 redirect to :3129"), "{f}");
-    assert!(f.contains("meta skuid { \"triage\" } meta l4proto { tcp, udp } th dport 53 redirect to :3153"), "{f}");
-    assert!(f.contains("meta skuid { \"triage\" } meta l4proto tcp reject with tcp reset"), "{f}");
-    assert!(
-        f.contains("meta skuid { \"worker\", \"builder\" } ct state new limit rate"),
-        "log mode logs, never refuses: {f}"
-    );
-    assert!(!f.contains("{ \"worker\", \"builder\" } reject"), "{f}");
+    let passwd =
+        "triage:x:1002:1002::/home/triage:/bin/bash\nworker:x:1003:1003::/w:/bin/sh\nbuilder:x:1004:1004::/b:/bin/sh\n";
+    let subuid = "triage:100000:65536\n1003:165536:65536\n";
+    let ids = crate::firewall::ids(&s, passwd, subuid).unwrap();
+    let f = crate::firewall::script(&s, "egress.yaml", &ids);
+    // The role's own uid, and the subordinate uids it can run processes as (rootless podman).
+    let triage = "meta skuid { 1002, 100000-165535 }";
+    assert!(f.contains(&format!("{triage} tcp dport 443 redirect to :3129")), "{f}");
+    assert!(f.contains(&format!("{triage} meta l4proto {{ tcp, udp }} th dport 53 redirect to :3153")), "{f}");
+    assert!(f.contains(&format!("{triage} meta l4proto tcp reject with tcp reset")), "{f}");
+    let workers = "meta skuid { 1003, 165536-231071, 1004 }";
+    assert!(f.contains(&format!("{workers} ct state new limit rate")), "log mode logs, never refuses: {f}");
+    assert!(!f.contains(&format!("{workers} reject")), "{f}");
+    assert!(crate::firewall::ids(&s, "triage:x:1002:1002::/h:/bin/sh\n", "").unwrap_err().contains("worker"));
     assert!(
         f.contains("table inet fleetlayer_egress\ndelete table inet fleetlayer_egress\n"),
         "applying twice replaces it"
     );
-    assert!(crate::firewall::script(&settings::parse("").unwrap(), "x").contains("No roles"));
+    assert!(crate::firewall::script(&settings::parse("").unwrap(), "x", &Default::default()).contains("No roles"));
+    // The proxy counts a subordinate uid as its user, and refuses a uid nobody owns.
+    let mut users = crate::procnet::Users::from_files(passwd, subuid);
+    assert_eq!(users.name(100_005).as_deref(), Some("triage"));
+    assert_eq!(users.name(170_000).as_deref(), Some("worker"));
+    assert_eq!(users.lookup_only(400_000), None);
 }
 
 #[test]
 fn whys_are_one_line_and_long_enough() {
     assert!(crate::check_why("the vendor's API for the invoice import").is_ok());
     assert!(crate::check_why("too short").is_err());
+    let looked = |reason: &str| fleetlayer_protocol::link::AccessDecision {
+        allowed: false,
+        rules: vec![],
+        reason: reason.into(),
+    };
+    assert_eq!(
+        crate::engine::answer_from(&looked("not asked yet: -@x's own node files the request")),
+        Answer::NotAsked
+    );
+    assert_eq!(
+        crate::engine::answer_from(&looked("waiting for the person to approve request ap_7")),
+        Answer::Waiting(Some("ap_7".into()))
+    );
     assert!(crate::check_why("two lines\nof text, long enough").is_err());
     assert_eq!(
         crate::state::approval_id("waiting for the person to approve request ap_01ABC. Try"),
         Some("ap_01ABC".into())
     );
+}
+
+// From the review of 9e4b441: each of these failed before its fix.
+
+#[test]
+fn a_connection_s_owner_is_its_established_socket_never_a_time_wait_row() {
+    // A closed connection from the same port (TIME_WAIT, uid 0, inode 0) and the new one (ESTABLISHED, uid 1002).
+    let tcp = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n   \
+               0: 2507050A:D431 0101A8C0:01BB 06 00000000:00000000 00:00000000 00000000     0        0 0 1\n   \
+               1: 2507050A:D431 0100007F:0C38 01 00000000:00000000 00:00000000 00000000  1002        0 9 1\n";
+    let peer: SocketAddr = "10.5.7.37:54321".parse().unwrap();
+    assert_eq!(crate::procnet::tcp_owner(&[tcp.to_string()], peer).unwrap().uid, 1002);
+    let only_closed = tcp.lines().take(2).collect::<Vec<_>>().join("\n");
+    assert_eq!(crate::procnet::tcp_owner(&[only_closed], peer), None, "a TIME_WAIT row is nobody");
+    // Two live sockets on that port with different owners: can't tell, so nobody.
+    let two = format!(
+        "{tcp}   2: 2507050A:D431 0202A8C0:01BB 01 00000000:00000000 00:00000000 00000000     0        0 7 1\n"
+    );
+    assert_eq!(crate::procnet::tcp_owner(&[two], peer), None);
+}
+
+#[tokio::test]
+async fn plain_http_forwards_one_request_per_connection() {
+    let up = echo().await;
+    let text = format!(
+        "mode: enforce\nroles:\n  triage:\n    users: [triage]\n    networks: [127.0.0.0/8]\n    hosts: [\"localhost:{}\"]\n",
+        up.port()
+    );
+    let (e, _dir) = engine(&text);
+    let http = serve(e.clone(), crate::proxy::Kind::Http, "triage", up).await;
+    // A second request with another Host, pipelined after an allowed one, must not reach the first host.
+    let reqs = format!(
+        "GET /a HTTP/1.1\r\nHost: localhost:{}\r\nConnection: keep-alive\r\n\r\nGET /b HTTP/1.1\r\nHost: pastebin.com\r\n\r\n",
+        up.port()
+    );
+    let mut s = TcpStream::connect(http).await.unwrap();
+    s.write_all(reqs.as_bytes()).await.unwrap();
+    let mut got = vec![];
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), s.read_to_end(&mut got)).await;
+    let got = String::from_utf8_lossy(&got);
+    assert!(got.contains("GET /a"), "{got}");
+    assert!(!got.contains("pastebin.com"), "the second request reached the first host: {got}");
+    assert!(got.contains("Connection: close") && !got.contains("keep-alive"), "{got}");
+    // A body is forwarded by its Content-Length, and nothing after it.
+    let req = format!(
+        "POST /c HTTP/1.1\r\nHost: localhost:{}\r\nContent-Length: 5\r\n\r\nhelloGET /d HTTP/1.1\r\n\r\n",
+        up.port()
+    );
+    let mut s = TcpStream::connect(http).await.unwrap();
+    s.write_all(req.as_bytes()).await.unwrap();
+    let mut got = vec![];
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), s.read_to_end(&mut got)).await;
+    let got = String::from_utf8_lossy(&got);
+    assert!(got.contains("hello") && !got.contains("GET /d"), "{got}");
+    // A chunked body can't be bounded without parsing it: refused, over plain HTTP.
+    let req =
+        format!("POST /e HTTP/1.1\r\nHost: localhost:{}\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n", up.port());
+    let mut s = TcpStream::connect(http).await.unwrap();
+    s.write_all(req.as_bytes()).await.unwrap();
+    assert!(read_all(&mut s).await.starts_with("HTTP/1.1 411"));
+}
+
+#[tokio::test]
+async fn private_addresses_only_through_the_role_s_networks() {
+    let (e, _d) = engine(SETTINGS);
+    e.state.lock().await.roles.entry("triage".into()).or_default().approved.insert(
+        "host:docs.attacker.dev".into(),
+        crate::state::Approved {
+            target: "host:docs.attacker.dev".into(),
+            checked_at: jiff::Timestamp::now(),
+            used_at: None,
+        },
+    );
+    let approved = e.decide(Some("triage"), &t("docs.attacker.dev", 443)).await;
+    assert!(approved.go);
+    assert!(!approved.address_ok("169.254.169.254".parse().unwrap()), "an approved host pointed at cloud metadata");
+    assert!(!approved.address_ok("192.168.1.10".parse().unwrap()));
+    let exact = e.decide(Some("triage"), &t("api.example.com", 443)).await;
+    assert!(!exact.address_ok("127.0.0.1".parse().unwrap()), "a listed name pointed at loopback");
+    assert!(exact.address_ok("10.5.7.50".parse().unwrap()), "the role's networks");
+    assert!(exact.address_ok("1.1.1.1".parse().unwrap()));
 }

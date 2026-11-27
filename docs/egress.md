@@ -15,7 +15,8 @@ It's off by default. Most fleets start without it, and an agent sets it up when 
 
 A role is a Unix user with its own node ([Credentials](credentials.md#whats-coming)). For each restricted role:
 
-1. **A firewall rule per Unix user.** nftables matches the role's users (`meta skuid`). Their connections to ports 443
+1. **A firewall rule per Unix user.** nftables matches the role's users (`meta skuid`), and the subordinate uids each
+   may run processes as (its ranges in `/etc/subuid`, which rootless podman uses). Their connections to ports 443
    and 80 are redirected to the egress proxy, their DNS questions to its resolver, and once the role is enforced,
    everything else they send off the machine is refused: other ports, the LAN, the tailnet, UDP. Other users, yours
    included, are untouched.
@@ -23,14 +24,16 @@ A role is a Unix user with its own node ([Credentials](credentials.md#whats-comi
    TLS ClientHello, then passes the bytes on untouched. For plain HTTP it reads the `Host` header, and for tools that
    use `HTTPS_PROXY` it reads the `CONNECT` line. It connects to the host by name, resolving the name itself, so a
    client can't name an allowed host and reach a different address. A restricted role is also kept off private
-   addresses (the LAN, the tailnet, cloud metadata at 169.254.169.254) unless you named that host exactly or listed
-   the range.
+   addresses (the LAN, the tailnet, loopback, cloud metadata at 169.254.169.254) unless the address is in a range the
+   role lists under `networks`: a listed or approved name never widens that, since its owner can point it anywhere.
+   Plain HTTP passes one request per connection, so a second request can't name another host on the same address.
 3. **A resolver that refuses names off the list.** The role's DNS questions are logged, and names it may not reach
    get `REFUSED`, which closes DNS as a way to send data out in the names it looks up.
 4. **An audit line per connection:** user, role, host, port, decision, bytes each way, and how long it lasted.
-5. **Asking for a host.** A refused agent is told how to ask. Its request goes through Fleetlayer's
-   [approvals](access-control.md#asking-the-person-approval-and-justification) as the role's node, with the agent's
-   one-line reason. Once a person approves it, the host stays allowed for that role.
+5. **Asking for a host.** A refused agent is told how to ask. Its own node files the request through Fleetlayer's
+   [approvals](access-control.md#asking-the-person-approval-and-justification), in that node's name, with the agent's
+   one-line reason; the proxy only looks the answer up. Once a person approves it, the host stays allowed for that
+   role.
 
 The proxy runs as a node plugin under a Unix user outside every restricted role (a user of its own is best), so the
 agents it restricts can't stop or replace it. A small probe on each restricted role's node checks that the rules
@@ -64,13 +67,14 @@ roles:
       - "*.docs.example.org"  # any name under it (not docs.example.org itself)
       - github.com:22         # another port: say which
       - fleet.example.net     # your control plane, if the role's node reaches it through here
-    networks: []              # private ranges the role may reach (10.5.0.0/16): none by default
+    networks: []              # private ranges the role may reach (100.101.102.103/32 for a control plane on the
+                              # tailnet, 10.5.0.0/16 for a LAN): none by default
     loopback: true            # its own test servers on this machine (default true)
 ```
 
 A host without a port allows 443 and 80. An entry with `*.` matches names under it at any depth. A private address
-is reached only through a host named exactly (not by `*.`), a host a person approved by name, or a range in
-`networks`. A name with no dot (`intranet`) isn't accepted: write the full name.
+is reached only in a range under `networks`, whatever name led there. A name with no dot (`intranet`) isn't
+accepted: write the full name.
 
 ### Presets
 
@@ -106,8 +110,11 @@ fleetlayer-egress ask api.vendor.io --why "the vendor's API for the invoice impo
 fleetlayer-egress ask api.vendor.io --why "…" --wait 10    # wait up to ten minutes for the answer
 ```
 
-The proxy asks the control plane whether `-@<role's node>` may `connect` to `host:api.vendor.io`. The policy decides
-like any other request:
+`ask` runs in a session of the role's own node: that node asks the control plane whether `-@<node>` may `connect` to
+`host:api.vendor.io`, and the request is filed in its name. The control plane files requests only for the node that
+asks, so no other node (the proxy's included) can ask in a role's name; the proxy only looks the answer up (an access
+check with `peek`). The agent's reason reaches the person marked as the agent's own words, outside data. The policy
+decides like any other request:
 
 - Fleetlayer's default asks first ([access control](access-control.md#asking-the-person-approval-and-justification)):
   the request is published as `access.ask` on the `access` channel for your Inbox or phone, and you approve it with
@@ -202,6 +209,9 @@ Both plugins report through `plugin.status`, so the node's health check and hear
 - **QUIC (HTTP/3 over UDP) is refused once enforced.** Browsers and clients fall back to TCP by themselves.
 - **Encrypted Client Hello** hides the real server name behind a public one, so such a connection is decided by the
   public name, which won't be on your list. Clients fall back where it's refused.
+- **Requests aren't rate-limited by the control plane yet.** A role's node files its own requests, and a person can
+  refuse them, but a hijacked agent can still file many: the proxy counts at most ten new hosts an hour per user, and
+  a limit in the control plane is planned.
 - **One restricted user could take the proxy's port while the proxy is down.** The probe notices (a blocked host gets
   through), and reports it.
 - **Linux only for now.** On a Mac, run the agents in a Linux VM ([guides to come](https://github.com/fleetlayer/fleetlayer/blob/main/docs/guides-to-write.md)).

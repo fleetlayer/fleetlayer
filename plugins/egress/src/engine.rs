@@ -23,9 +23,12 @@ pub enum Answer {
     /// Waiting for a person; the request's ID when there is one.
     Waiting(Option<String>),
     Refused(String),
+    /// Nobody asked from the role's node (or its approval lapsed).
+    NotAsked,
 }
 
-/// Asks the control plane (through the node, `_fleetlayer.dev/access/check`), or a test's stand-in.
+/// Looks up whether a role's node may connect to a host (`_fleetlayer.dev/access/check` with `peek`: it never files a
+/// request; the role's own node does that, for `fleetlayer-egress ask`), or a test's stand-in.
 #[async_trait]
 pub trait Asker: Send + Sync {
     async fn ask(&self, node: &str, target: &str, why: &str) -> Result<Answer, String>;
@@ -329,6 +332,18 @@ impl Engine {
                         request: id,
                     }
                 }
+                Ok(Answer::NotAsked) => {
+                    rs.pending.remove(target);
+                    rs.approved.remove(target);
+                    AskResult {
+                        status: "not_asked",
+                        message: format!(
+                            "{target} hasn't been asked for from role {role}'s node: `fleetlayer-egress ask` asks through \
+                             the node of the session it runs in, which must be the role's node"
+                        ),
+                        request: None,
+                    }
+                }
                 Ok(Answer::Refused(r)) => {
                     rs.pending.remove(target);
                     rs.approved.remove(target);
@@ -430,10 +445,11 @@ fn verdict(role: &Role, allowed: bool, reason: String, private_ok: bool) -> Deci
 }
 
 impl Decision {
-    /// Whether this connection may reach `ip`: anything public; a private address only when the host was named
-    /// exactly or approved, or the address is in one of the role's networks.
+    /// Whether this connection may reach `ip`: anything public, and a private address (the LAN, the tailnet,
+    /// loopback, cloud metadata) only in one of the role's networks. A listed or approved name never widens that: its
+    /// owner can point it anywhere.
     pub fn address_ok(&self, ip: IpAddr) -> bool {
-        !self.restricted || !is_private(ip) || self.private_ok || self.networks.iter().any(|c| c.contains(ip))
+        !self.restricted || !is_private(ip) || self.networks.iter().any(|c| c.contains(ip))
     }
 }
 
@@ -456,6 +472,8 @@ impl AskResult {
 pub fn answer_from(d: &fleetlayer_protocol::link::AccessDecision) -> Answer {
     if d.allowed {
         Answer::Allowed
+    } else if d.reason.contains("not asked yet") {
+        Answer::NotAsked
     } else if d.reason.contains("waiting for the person to approve") {
         Answer::Waiting(approval_id(&d.reason))
     } else {

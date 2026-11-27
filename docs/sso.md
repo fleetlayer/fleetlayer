@@ -250,7 +250,10 @@ Two ways, used together:
    - a Fleetlayer plugin (pages, the hub) asks its own node: `_fleetlayer.dev/access/check {tenant, who, can, to}`
      → `{allowed, rules, reason}`, with grant `access.check`, `tenant` being the tenant that owns what's asked about
      (the space's, the data's). The node forwards it as `link/access_check`; the control plane answers only if the
-     asking node's `-@<node>` is a member of that tenant, so a service can ask only about tenants that admitted it;
+     asking node's `-@<node>` is a member of that tenant, so a service can ask only about tenants that admitted it.
+     About an agent on another node (`-@<other>`, `<tab>@<other>`) it may only look (`peek: true`: the decision,
+     with no audit entry and no approval request); requests are filed only by the node they're for. A `why` is
+     recorded with the decision and shown to whoever approves, marked as the asker's own words;
    - any other service asks the sign-in service: `POST /api/check` with its client credentials, `{tenant, person,
      can, to}`; the sign-in service asks the control plane with its sign-in token.
 

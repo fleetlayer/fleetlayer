@@ -346,6 +346,10 @@ pub struct AccessCheck {
     /// asking the egress plugin for a host says why.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
+    /// Only look: never file an approval request (an approved one in use is renewed). A node asks about an agent on
+    /// another node (`-@<other>`, `<tab>@<other>`) only this way; requests are filed only in a node's own name.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub peek: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

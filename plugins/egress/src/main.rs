@@ -182,13 +182,15 @@ struct NodeAsker(Peer);
 
 #[async_trait]
 impl Asker for NodeAsker {
-    async fn ask(&self, node: &str, target: &str, why: &str) -> Result<Answer, String> {
+    async fn ask(&self, node: &str, target: &str, _why: &str) -> Result<Answer, String> {
+        // Only looks: requests are filed by the role's own node (`node/host_ask`), never in its name from here.
         let req = AccessCheck {
             tenant: String::new(),
             who: format!("-@{node}"),
             can: "connect".into(),
             to: target.to_string(),
-            why: Some(why.to_string()),
+            why: None,
+            peek: true,
         };
         self.0
             .request_within::<_, AccessDecision>(ext::method::ACCESS_CHECK, &req, Duration::from_secs(15))
@@ -260,12 +262,13 @@ pub async fn start(engine: Arc<Engine>, settings_path: PathBuf, peer: Option<Pee
     let resolver = dns::Resolver {
         engine: engine.clone(),
         who: Arc::new(move |peer| {
+            // A uid nobody owns (no user, no user's subordinate range) is nobody: refused.
             let uid = procnet::udp(peer)?;
-            Some(users.users.lock().ok()?.name(uid).unwrap_or(format!("uid {uid}")))
+            users.users.lock().ok()?.name(uid)
         }),
         who_tcp: Arc::new(move |peer| {
-            let o = procnet::tcp(peer)?;
-            Some(users_tcp.users.lock().ok()?.name(o.uid).unwrap_or(format!("uid {}", o.uid)))
+            let o = procnet::tcp(peer, None)?;
+            users_tcp.users.lock().ok()?.name(o.uid)
         }),
     };
     for l in dns_tcp {
@@ -554,24 +557,83 @@ async fn status(proxy: &str, as_json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn ask(proxy: &str, host: &str, why: &str, wait: u64) -> anyhow::Result<()> {
-    check_why(why).map_err(anyhow::Error::msg)?;
-    let body = serde_json::to_string(&json!({"host": host, "why": why}))?;
+struct NoRequests;
+
+#[async_trait]
+impl Handler for NoRequests {
+    async fn request(&self, _peer: &Peer, method: &str, _p: Value) -> Result<Value, RpcError> {
+        Err(RpcError::method_not_found(method))
+    }
+}
+
+/// One request to this user's own node, on its local socket (`$FLEETLAYER_SOCKET`, else the node's default).
+async fn node_call(method: &str, params: Value) -> anyhow::Result<Value> {
+    let socket = std::env::var_os("FLEETLAYER_SOCKET")
+        .map(PathBuf::from)
+        .unwrap_or_else(fleetlayer_protocol::local::default_node_socket);
+    let stream = tokio::net::UnixStream::connect(&socket).await.map_err(|e| {
+        anyhow::anyhow!("can't reach your Fleetlayer node at {} ({e}): is fleetlayer-node running?", socket.display())
+    })?;
+    let (r, w) = stream.into_split();
+    let (peer, _task) = fleetlayer_plugin::connect(r, w, Arc::new(NoRequests));
+    peer.request_within::<_, Value>(method, &params, Duration::from_secs(20)).await.map_err(|e| {
+        if e.code == fleetlayer_protocol::rpc::code::METHOD_NOT_FOUND {
+            anyhow::anyhow!("your Fleetlayer node is older than this command (no {method}): update it")
+        } else {
+            anyhow::anyhow!("{}", e.message)
+        }
+    })
+}
+
+async fn proxy_note(proxy: &str, host: &str) -> anyhow::Result<Value> {
+    let body = serde_json::to_string(&json!({"host": host}))?;
     let req = format!(
         "POST /ask HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         proxy::API_HOST,
         body.len()
     );
+    let (code, text) = probe::http(proxy, &req)
+        .await
+        .map_err(|e| anyhow::anyhow!("the egress proxy at {proxy} isn't answering ({e})"))?;
+    anyhow::ensure!(code == 200, "the egress proxy answered {code}: {}", text.trim());
+    Ok(serde_json::from_str(&text)?)
+}
+
+/// Ask for a host: the request is filed by this session's own node, in that node's name (the control plane files
+/// requests only for the node that asks), then the proxy looks the answer up for the role.
+async fn ask(proxy: &str, host: &str, why: &str, wait: u64) -> anyhow::Result<()> {
+    check_why(why).map_err(anyhow::Error::msg)?;
+    let t = hosts::parse_authority(host, 443)
+        .ok_or_else(|| anyhow::anyhow!("{host:?} isn't a host name, name:port or IP address"))?;
+    let v = proxy_note(proxy, host).await?;
+    if matches!(v["status"].as_str(), Some("already" | "allowed")) {
+        println!("{}", v["message"].as_str().unwrap_or(""));
+        return Ok(());
+    }
+    // The proxy names the role's node; the request has to come from it.
+    if let (Ok(me), Ok(st)) = (node_call("node/status", json!({})).await, api_get(proxy, "/status").await)
+        && let (Some(mine), Some(role_node)) = (me["node"].as_str(), st["node"].as_str())
+        && mine != role_node
+    {
+        anyhow::bail!(
+            "this session's node is {mine}, but role {} asks through node {role_node}: run this in a session of that \
+             node, or ask your person to fix the role's node in the egress settings",
+            st["role"].as_str().unwrap_or("?")
+        );
+    }
     let deadline = std::time::Instant::now() + Duration::from_secs(wait * 60);
     loop {
-        let (code, text) = probe::http(proxy, &req)
-            .await
-            .map_err(|e| anyhow::anyhow!("the egress proxy at {proxy} isn't answering ({e})"))?;
-        anyhow::ensure!(code == 200, "the egress proxy answered {code}: {}", text.trim());
-        let v: Value = serde_json::from_str(&text)?;
+        let d = node_call("node/host_ask", json!({"to": t.policy_name(), "why": why})).await?;
+        let v = proxy_note(proxy, host).await?;
         let st = v["status"].as_str().unwrap_or("");
         if st != "waiting" || std::time::Instant::now() >= deadline {
-            println!("{}", v["message"].as_str().unwrap_or(""));
+            let msg = v["message"].as_str().unwrap_or("");
+            // The node's own answer says more when the proxy only saw a refusal.
+            if st == "refused" || st == "not_asked" {
+                println!("{}", d["reason"].as_str().unwrap_or(msg));
+            } else {
+                println!("{msg}");
+            }
             return match st {
                 "allowed" | "already" => Ok(()),
                 "waiting" => std::process::exit(3),
@@ -659,7 +721,10 @@ fn firewall_cmd(settings_path: &Path, apply: bool, remove: bool, unit: bool) -> 
         return Ok(());
     }
     let (_, s) = read_settings(settings_path).map_err(anyhow::Error::msg)?;
-    let script = firewall::script(&s, &settings_path.display().to_string());
+    let passwd = std::fs::read_to_string("/etc/passwd").unwrap_or_default();
+    let subuid = std::fs::read_to_string("/etc/subuid").unwrap_or_default();
+    let ids = firewall::ids(&s, &passwd, &subuid).map_err(anyhow::Error::msg)?;
+    let script = firewall::script(&s, &settings_path.display().to_string(), &ids);
     if !apply {
         print!("{script}");
         return Ok(());

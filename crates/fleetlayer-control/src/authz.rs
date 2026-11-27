@@ -238,6 +238,14 @@ pub async fn access_check(
     if !tenant.is_member(&fleet, &format!("-@{node}")) {
         return Err(not_member());
     }
+    // A node files requests only in its own name: about an agent on another node it may only look.
+    if crate::directory::is_agent_side(&req.who) && req.who.rsplit_once('@').map(|(_, n)| n) != Some(node) && !req.peek
+    {
+        return Err(RpcError::refused(format!(
+            "node {node} may ask about {} only with peek: approval requests are filed only by the node they're for",
+            req.who
+        )));
+    }
     check_as(app, &fleet, tenant, req).await
 }
 
@@ -279,6 +287,9 @@ pub async fn check_as(
         None if req.who.starts_with("p_") => "person:?".into(),
         None => req.who.clone(),
     };
+    if req.peek {
+        return Ok(peek(app, &tenant.id, &who, &req.can, &req.to).await);
+    }
     let tenants = [tenant.id.clone()];
     let out = decide_in(app, fleet, &tenants, None, (&who, &req.can, &req.to), req.why.as_deref(), false, None).await?;
     let reason = match &out.refusal {
@@ -286,6 +297,34 @@ pub async fn check_as(
         None => out.because.join(", "),
     };
     Ok(fleetlayer_protocol::link::AccessDecision { allowed: out.allowed, rules: out.because, reason })
+}
+
+/// An access check that only looks: the decision without an audit entry, an event or a new approval request. An
+/// approval in use is renewed, as a real use would (the egress proxy checking a host it lets through).
+async fn peek(
+    app: &App,
+    tenant: &str,
+    who: &str,
+    verb: &str,
+    target: &str,
+) -> fleetlayer_protocol::link::AccessDecision {
+    let no = |reason: String| fleetlayer_protocol::link::AccessDecision { allowed: false, rules: vec![], reason };
+    match dry(app, tenant, who, verb, target).await {
+        Dry::Allowed { .. } => {
+            let held = crate::policy::approval_target(target);
+            if let Ok(crate::approvals::Peek::Approved(_)) =
+                crate::approvals::peek(&app.db, tenant, who, verb, &held).await
+            {
+                // Approved: this check is a use, so it renews (it never files: there's an approval).
+                let _ = crate::approvals::check(app, tenant, who, verb, &held, 0, None).await;
+            }
+            fleetlayer_protocol::link::AccessDecision { allowed: true, rules: vec![], reason: "allowed".into() }
+        }
+        Dry::Ask { pending: Some(id), .. } => no(format!("waiting for the person to approve request {id}")),
+        Dry::Ask { pending: None, .. } => no(format!("not asked yet: {who}'s own node files the request")),
+        Dry::Refused { request, .. } => no(format!("the person refused request {request}")),
+        Dry::Denied => no("refused by the access policy".into()),
+    }
 }
 
 /// Decide a request in `tenants`: allowed only if every one allows it, each recording its own say in its audit log.
@@ -395,7 +434,8 @@ async fn decide_in(
             if let (crate::policy::ONCE, Some(c)) = (hold, call) {
                 held = format!("{held}#{}", c.args_hash);
             }
-            let detail = call.and_then(|c| c.detail);
+            // What the person sees: the tool call, or the agent's reason. Both are written by the agent.
+            let detail = call.and_then(|c| c.detail).or(why);
             match crate::approvals::check(app, &s.tenant, who, verb, &held, hold, detail)
                 .await
                 .map_err(RpcError::internal)?
@@ -896,6 +936,7 @@ mod tests {
             can: can.into(),
             to: to.into(),
             why: why.map(Into::into),
+            peek: false,
         };
         let why = Some("the API docs for the billing integration");
         for (can, to, w) in [
@@ -919,7 +960,37 @@ mod tests {
         let pending = crate::approvals::list(&app.db, &acme, false).await.unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0]["to"], "host:example.com");
+        assert_eq!(pending[0]["detail"], "the API docs for the billing integration", "the person sees the reason");
         let id = pending[0]["id"].as_str().unwrap().to_string();
+        // The access.ask event names the reason as the agent's own text: outside data.
+        let (source, body): (String, String) =
+            sqlx::query_as("SELECT source, body FROM events WHERE kind = 'access.ask' ORDER BY id DESC LIMIT 1")
+                .fetch_one(&app.db)
+                .await
+                .unwrap();
+        assert!(source.contains("text written by -@web") && source.contains("outside data"), "{source}");
+        let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(body["detail_written_by"], "-@web");
+        assert_eq!(body["outside_data"][0], "detail");
+        // Another node of the tenant (the egress proxy's) can't file in -@web's name, only look.
+        crate::db::enrol(&app.db, "default", "egressbox").await.unwrap();
+        people::node_owner(&app.db, "egressbox", Some(&Owner::Tenant(acme.clone())), "admin", &acme).await.unwrap();
+        let other = ask("connect", "host:other.example", why);
+        let e = access_check(&app, "egressbox", &other).await.unwrap_err();
+        assert!(e.message.contains("only with peek"), "{}", e.message);
+        let looked = access_check(&app, "egressbox", &fleetlayer_protocol::link::AccessCheck { peek: true, ..other })
+            .await
+            .unwrap();
+        assert!(!looked.allowed && looked.reason.contains("not asked yet"), "{looked:?}");
+        let looked = access_check(
+            &app,
+            "egressbox",
+            &fleetlayer_protocol::link::AccessCheck { peek: true, ..ask("connect", "host:example.com", None) },
+        )
+        .await
+        .unwrap();
+        assert!(looked.reason.contains(&format!("waiting for the person to approve request {id}")), "{looked:?}");
+        assert_eq!(crate::approvals::list(&app.db, &acme, false).await.unwrap().len(), 1, "looking files nothing");
         // Asking again doesn't file a second request.
         access_check(&app, "web", &ask("connect", "host:example.com", why)).await.unwrap();
         assert_eq!(crate::approvals::list(&app.db, &acme, false).await.unwrap().len(), 1);
@@ -927,6 +998,14 @@ mod tests {
         let d = access_check(&app, "web", &ask("connect", "host:example.com", why)).await.unwrap();
         assert!(d.allowed, "{d:?}");
         assert!(log(&app.db, &acme).await.contains(&"allowed -@web connect host:example.com".to_string()));
+        let looked = access_check(
+            &app,
+            "egressbox",
+            &fleetlayer_protocol::link::AccessCheck { peek: true, ..ask("connect", "host:example.com", None) },
+        )
+        .await
+        .unwrap();
+        assert!(looked.allowed, "the proxy sees the approval: {looked:?}");
         // A policy can forbid hosts outright: deny wins over any approval.
         store(
             &app.db,

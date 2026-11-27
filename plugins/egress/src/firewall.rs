@@ -6,12 +6,43 @@ use crate::settings::{Mode, Settings};
 
 pub const TABLE: &str = "fleetlayer_egress";
 
-fn users(list: &[String]) -> String {
-    let quoted: Vec<String> = list.iter().map(|u| format!("\"{u}\"")).collect();
-    format!("{{ {} }}", quoted.join(", "))
+/// A Unix user's uid and subordinate uid ranges (first, count) from /etc/subuid.
+pub type Ids = std::collections::BTreeMap<String, (u32, Vec<(u32, u32)>)>;
+
+/// The uids a role's rules match: each user's own, and every subordinate uid it may map into a user namespace
+/// (rootless podman, `podman unshare`), whose sockets the kernel counts as those uids, not the user's.
+fn users(list: &[String], ids: &Ids) -> String {
+    let mut parts = vec![];
+    for u in list {
+        let (uid, ranges) = &ids[u];
+        parts.push(uid.to_string());
+        for (first, n) in ranges.iter().filter(|(_, n)| *n > 0) {
+            parts.push(if *n == 1 { first.to_string() } else { format!("{first}-{}", first + n - 1) });
+        }
+    }
+    format!("{{ {} }}", parts.join(", "))
 }
 
-pub fn script(s: &Settings, source: &str) -> String {
+/// Each role user's ids, from the contents of /etc/passwd and /etc/subuid. Err names users with no account here.
+pub fn ids(s: &Settings, passwd: &str, subuid: &str) -> Result<Ids, String> {
+    let mut out = Ids::new();
+    let mut missing = vec![];
+    for u in s.roles.iter().flat_map(|r| &r.users) {
+        match crate::procnet::Users::ids(passwd, subuid, u) {
+            Some(x) => {
+                out.insert(u.clone(), x);
+            }
+            None => missing.push(u.clone()),
+        }
+    }
+    if missing.is_empty() {
+        Ok(out)
+    } else {
+        Err(format!("there's no Unix user {} on this machine", missing.join(", ")))
+    }
+}
+
+pub fn script(s: &Settings, source: &str, ids: &Ids) -> String {
     let p = &s.ports;
     let mut out = String::new();
     out.push_str(&format!(
@@ -28,7 +59,7 @@ pub fn script(s: &Settings, source: &str) -> String {
     out.push_str(&format!("table inet {TABLE} {{\n"));
     out.push_str("  chain to_proxy {\n    type nat hook output priority -100; policy accept;\n");
     for r in &s.roles {
-        let u = users(&r.users);
+        let u = users(&r.users, ids);
         out.push_str(&format!("    # role {}\n", r.name));
         out.push_str(&format!("    meta skuid {u} tcp dport 443 redirect to :{}\n", p.tls));
         out.push_str(&format!("    meta skuid {u} tcp dport 80 redirect to :{}\n", p.http));
@@ -37,7 +68,7 @@ pub fn script(s: &Settings, source: &str) -> String {
     out.push_str("  }\n");
     out.push_str("  chain outbound {\n    type filter hook output priority 0; policy accept;\n");
     for r in &s.roles {
-        let u = users(&r.users);
+        let u = users(&r.users, ids);
         out.push_str(&format!("    # role {} ({})\n", r.name, r.mode.word()));
         out.push_str(&format!(
             "    meta skuid {u} fib daddr type local tcp dport {{ {}, {}, {}, {} }} accept\n",

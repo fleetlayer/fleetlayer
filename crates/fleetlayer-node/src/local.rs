@@ -12,6 +12,8 @@
 //!   `SessionActed`: close a session, or answer the prompt it's blocked on, here or on another node (`crate::act`).
 //! - `node/role_activate` `{role, for, why?, caller?}`, `node/role_deactivate` `{role, caller?}` → `RoleActivated`;
 //!   `node/role_list` `{caller?}` → `RoleWindows`: role windows, through the control plane (`crate::window`).
+//! - `node/host_ask` `{to, why}` → `AccessDecision`: ask the control plane whether this node (`-@<node>`) may connect
+//!   to `host:<name>[:<port>]`, filing an approval request in its own name (`fleetlayer-egress ask`, `docs/egress.md`).
 //! - `_fleetlayer.dev/message/send` `{to, text, caller?: {sessionId?, address?}}` → `{via}`.
 //!
 //! Only the node's own Unix user can open the socket, so the caller's claim about which session it runs in
@@ -285,6 +287,25 @@ impl Handler for Local {
                         .await
                         .map_err(older),
                 }
+            }
+            "node/host_ask" => {
+                // Always in this node's own name: the control plane files requests only for the node that asks.
+                let to = p["to"].as_str().unwrap_or_default().to_string();
+                if !to.starts_with("host:") {
+                    return Err(RpcError::invalid_params("to: host:<name>[:<port>]"));
+                }
+                let req = l::AccessCheck {
+                    tenant: String::new(),
+                    who: format!("-@{}", node.name),
+                    can: "connect".into(),
+                    to,
+                    why: p["why"].as_str().map(str::to_string),
+                    peek: false,
+                };
+                let peer = node.link.peer().await.ok_or_else(|| {
+                    RpcError::not_here(format!("{} isn't linked to a control plane now, so it can't ask", node.name))
+                })?;
+                peer.request_within::<_, Value>(l::method::ACCESS_CHECK, &req, std::time::Duration::from_secs(15)).await
             }
             "node/sessions" => answer(&json!({"node": node.name, "sessions": node.registry.all().await})),
             ext::method::MESSAGE_SEND => {

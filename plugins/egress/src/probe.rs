@@ -146,5 +146,48 @@ pub async fn run_once(c: &ProbeConfig) -> Report {
         },
         Err(_) => r.add("firewall", false, format!("direct: {:?} isn't an address:port", c.direct)),
     }
+    if let Some((ok, detail)) = subordinate_check(&c.direct).await {
+        r.add("subordinate uids", ok, detail);
+    }
     r
+}
+
+fn on_path(name: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(name).is_file()))
+}
+
+/// A process under one of the role's subordinate uids (what rootless podman runs containers as) must be refused too.
+/// Checked through `podman unshare` when podman is installed and the user has a range in /etc/subuid; None otherwise.
+async fn subordinate_check(direct: &str) -> Option<(bool, String)> {
+    let user = std::env::var("USER").ok()?;
+    let subuid = std::fs::read_to_string("/etc/subuid").ok()?;
+    if !subuid.lines().any(|l| l.split(':').next() == Some(user.as_str()))
+        || !["podman", "setpriv", "timeout"].iter().all(|b| on_path(b))
+    {
+        return None;
+    }
+    let a: SocketAddr = direct.parse().ok()?;
+    let script = format!("exec 3<>/dev/tcp/{}/{}", a.ip(), a.port());
+    let out = tokio::process::Command::new("timeout")
+        .args([
+            "10",
+            "podman",
+            "unshare",
+            "setpriv",
+            "--reuid=1",
+            "--regid=1",
+            "--clear-groups",
+            "--",
+            "bash",
+            "-c",
+            &script,
+        ])
+        .output()
+        .await
+        .ok()?;
+    Some(if out.status.success() {
+        (false, format!("a process under a subordinate uid reached {a} directly: the firewall doesn't cover them"))
+    } else {
+        (true, format!("a process under a subordinate uid can't reach {a}"))
+    })
 }

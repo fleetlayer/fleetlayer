@@ -29,14 +29,17 @@ const HEAD_MAX: usize = 16 * 1024;
 const READ_TIMEOUT: Duration = Duration::from_secs(15);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Who a local connection comes from: (user name, the address it first asked for). None when it can't be told.
-pub type Who = Arc<dyn Fn(SocketAddr) -> Option<(String, SocketAddr)> + Send + Sync>;
+/// Who a local connection from `peer` comes from: (user name, the address it first asked for). The second argument
+/// is the address the client must be connected to, for a connection made to a listener directly (not redirected).
+/// None when it can't be told, which is refused.
+pub type Who = Arc<dyn Fn(SocketAddr, Option<SocketAddr>) -> Option<(String, SocketAddr)> + Send + Sync>;
 
 /// The real lookup: /proc/net and /etc/passwd.
 pub fn proc_who(engine: Arc<Engine>) -> Who {
-    Arc::new(move |peer| {
-        let owner = crate::procnet::tcp(peer)?;
-        let name = engine.users.lock().ok().and_then(|mut u| u.name(owner.uid)).unwrap_or(format!("uid {}", owner.uid));
+    Arc::new(move |peer, to| {
+        let owner = crate::procnet::tcp(peer, to)?;
+        // A uid nobody owns (no user, no user's subordinate range) is nobody: refused.
+        let name = engine.users.lock().ok()?.name(owner.uid)?;
         Some((name, owner.remote))
     })
 }
@@ -78,15 +81,16 @@ impl Server {
         }
     }
 
-    fn who(&self, peer: SocketAddr) -> (Option<String>, Option<SocketAddr>) {
-        match (self.who)(peer) {
+    fn who(&self, peer: SocketAddr, to: Option<SocketAddr>) -> (Option<String>, Option<SocketAddr>) {
+        match (self.who)(peer, to) {
             Some((u, r)) => (Some(u), Some(r)),
             None => (None, None),
         }
     }
 
     async fn proxy_conn(&self, mut client: TcpStream, peer: SocketAddr) -> anyhow::Result<()> {
-        let (user, _) = self.who(peer);
+        // Clients connect to this port directly: their socket must point at it.
+        let (user, _) = self.who(peer, client.local_addr().ok());
         let (buf, head_len) = read_head(&mut client).await?;
         let mut headers = [httparse::EMPTY_HEADER; 64];
         let mut req = httparse::Request::new(&mut headers);
@@ -102,7 +106,7 @@ impl Server {
                 self.log(&user, &d, "connect", &t, 0, 0, 0).await;
                 return respond(&mut client, 403, "text/plain", &refusal_text(&t, &d)).await;
             }
-            return self.tunnel(client, user, d, "connect", t, &buf[head_len..], true).await;
+            return self.tunnel(client, user, d, "connect", t, &buf[head_len..], true, None).await;
         }
         // A request to the proxy itself (origin form, or to the API's host name): the local API.
         let api_path = if path.starts_with('/') {
@@ -143,12 +147,11 @@ impl Server {
             self.log(&user, &d, "http", &t, 0, 0, 0).await;
             return respond(&mut client, 403, "text/plain", &refusal_text(&t, &d)).await;
         }
-        // Everything on this connection goes to this host (servers take absolute-form requests).
-        self.tunnel(client, user, d, "http", t, &buf, false).await
+        self.one_request(client, user, d, t, &buf, head_len).await
     }
 
     async fn tls_conn(&self, mut client: TcpStream, peer: SocketAddr) -> anyhow::Result<()> {
-        let (user, remote) = self.who(peer);
+        let (user, remote) = self.who(peer, None);
         let mut buf = Vec::with_capacity(4096);
         let sni = loop {
             match sni::parse(&buf) {
@@ -193,7 +196,7 @@ impl Server {
             // A user outside every role isn't redirected here; if one is, pass it to the address it dialled.
             let Some(r) = remote else { return Ok(()) };
             let t = Target { host: r.ip().to_string(), port };
-            return self.tunnel(client, user, d, "tls", t, &buf, false).await;
+            return self.tunnel(client, user, d, "tls", t, &buf, false, None).await;
         };
         let d = self.engine.decide(user.as_deref(), &t).await;
         if !d.go {
@@ -201,11 +204,11 @@ impl Server {
             let _ = client.write_all(&sni::ACCESS_DENIED_ALERT).await;
             return Ok(());
         }
-        self.tunnel(client, user, d, "tls", t, &buf, false).await
+        self.tunnel(client, user, d, "tls", t, &buf, false, None).await
     }
 
     async fn http_conn(&self, mut client: TcpStream, peer: SocketAddr) -> anyhow::Result<()> {
-        let (user, remote) = self.who(peer);
+        let (user, remote) = self.who(peer, None);
         let (buf, head_len) = read_head(&mut client).await?;
         let mut headers = [httparse::EMPTY_HEADER; 64];
         let mut req = httparse::Request::new(&mut headers);
@@ -229,7 +232,30 @@ impl Server {
             self.log(&user, &d, "http", &t, 0, 0, 0).await;
             return respond(&mut client, 403, "text/plain", &refusal_text(&t, &d)).await;
         }
-        self.tunnel(client, user, d, "http", t, &buf, false).await
+        self.one_request(client, user, d, t, &buf, head_len).await
+    }
+
+    /// Pass one plain HTTP request to its host, and only that one: a later request on the same connection could name
+    /// another host and still reach this one's address (a shared CDN). The request goes up with `Connection: close`
+    /// and its body bounded by `Content-Length`; a chunked body can't be bounded without parsing it, so it's refused.
+    async fn one_request(
+        &self,
+        mut client: TcpStream,
+        user: Option<String>,
+        d: Decision,
+        t: Target,
+        buf: &[u8],
+        head_len: usize,
+    ) -> anyhow::Result<()> {
+        let (head, body_len) = match one_request_head(&buf[..head_len]) {
+            Ok(x) => x,
+            Err((code, why)) => return respond(&mut client, code, "text/plain", why).await,
+        };
+        let rest = &buf[head_len..];
+        let now = rest.len().min(body_len as usize);
+        let mut first = head;
+        first.extend_from_slice(&rest[..now]);
+        self.tunnel(client, user, d, "http", t, &first, false, Some(body_len - now as u64)).await
     }
 
     /// Connect to the host by name, send what the client already sent, and copy both ways until either side closes.
@@ -243,6 +269,7 @@ impl Server {
         t: Target,
         first: &[u8],
         connect_reply: bool,
+        client_limit: Option<u64>,
     ) -> anyhow::Result<()> {
         let started = Instant::now();
         let upstream = match self.dial(&t, &d).await {
@@ -273,7 +300,22 @@ impl Server {
         if !first.is_empty() {
             upstream.write_all(first).await?;
         }
-        let (up, down) = tokio::io::copy_bidirectional(&mut client, &mut upstream).await.unwrap_or((0, 0));
+        let (up, down) = match client_limit {
+            None => tokio::io::copy_bidirectional(&mut client, &mut upstream).await.unwrap_or((0, 0)),
+            // Plain HTTP: the rest of this one request's body goes up, and nothing after it; the answer comes back
+            // until the server closes (it was asked to, with `Connection: close`).
+            Some(n) => {
+                let (mut cr, mut cw) = client.split();
+                let (mut ur, mut uw) = upstream.split();
+                let upward = async { tokio::io::copy(&mut (&mut cr).take(n), &mut uw).await.unwrap_or(0) };
+                let downward = async {
+                    let got = tokio::io::copy(&mut ur, &mut cw).await.unwrap_or(0);
+                    let _ = cw.shutdown().await;
+                    got
+                };
+                tokio::join!(upward, downward)
+            }
+        };
         let ms = started.elapsed().as_millis() as u64;
         self.log(&user, &d, via, &t, up + first.len() as u64, down, ms).await;
         Ok(())
@@ -385,19 +427,23 @@ impl Server {
                 #[derive(Deserialize)]
                 struct Ask {
                     host: String,
-                    why: String,
+                    #[serde(default)]
+                    why: Option<String>,
                 }
+                // The role's node files the request (`fleetlayer-egress ask`); this only looks the answer up.
                 let Ok(a) = serde_json::from_slice::<Ask>(body) else {
-                    return respond(client, 400, "text/plain", "send {\"host\": \"…\", \"why\": \"…\"}\n").await;
+                    return respond(client, 400, "text/plain", "send {\"host\": \"…\"}\n").await;
                 };
                 let Some(t) = parse_authority(&a.host, 443) else {
                     return respond(client, 400, "text/plain", "host isn't a host name, name:port or IP address\n")
                         .await;
                 };
-                if let Err(e) = crate::check_why(&a.why) {
+                if let Some(w) = &a.why
+                    && let Err(e) = crate::check_why(w)
+                {
                     return respond(client, 400, "text/plain", &format!("{e}\n")).await;
                 }
-                let r = self.engine.ask(&user, &t, a.why.trim()).await;
+                let r = self.engine.ask(&user, &t, a.why.as_deref().unwrap_or("").trim()).await;
                 respond(client, 200, "application/json", &format!("{}\n", serde_json::to_string(&r)?)).await
             }
             _ => {
@@ -428,6 +474,7 @@ async fn respond(s: &mut TcpStream, status: u16, kind: &str, body: &str) -> anyh
         400 => "Bad Request",
         403 => "Forbidden",
         404 => "Not Found",
+        411 => "Length Required",
         413 => "Payload Too Large",
         _ => "Bad Gateway",
     };
@@ -440,6 +487,45 @@ async fn respond(s: &mut TcpStream, status: u16, kind: &str, body: &str) -> anyh
     s.write_all(body.as_bytes()).await?;
     let _ = s.shutdown().await;
     Ok(())
+}
+
+/// A plain HTTP request head rebuilt to be the connection's only request: `Connection: close` in place of any
+/// connection headers, and the body's length. Err: the status and words to refuse it with.
+pub fn one_request_head(head: &[u8]) -> Result<(Vec<u8>, u64), (u16, &'static str)> {
+    let mut headers = [httparse::EMPTY_HEADER; 64];
+    let mut req = httparse::Request::new(&mut headers);
+    if !matches!(req.parse(head), Ok(httparse::Status::Complete(_))) {
+        return Err((400, "a request head the proxy couldn't read\n"));
+    }
+    let mut out = format!("{} {} HTTP/1.1\r\n", req.method.unwrap_or("GET"), req.path.unwrap_or("/")).into_bytes();
+    let mut body_len: Option<u64> = None;
+    for h in req.headers.iter() {
+        let name = h.name.to_ascii_lowercase();
+        match name.as_str() {
+            "transfer-encoding" => {
+                return Err((
+                    411,
+                    "plain HTTP through Fleetlayer egress needs a Content-Length (no chunked bodies): use HTTPS\n",
+                ));
+            }
+            "content-length" => {
+                let n = std::str::from_utf8(h.value).ok().and_then(|v| v.trim().parse::<u64>().ok());
+                match (n, body_len) {
+                    (Some(n), None) => body_len = Some(n),
+                    (Some(n), Some(m)) if n == m => {}
+                    _ => return Err((400, "a bad or repeated Content-Length\n")),
+                }
+            }
+            "connection" | "proxy-connection" | "keep-alive" | "upgrade" => continue,
+            _ => {}
+        }
+        out.extend_from_slice(h.name.as_bytes());
+        out.extend_from_slice(b": ");
+        out.extend_from_slice(h.value);
+        out.extend_from_slice(b"\r\n");
+    }
+    out.extend_from_slice(b"Connection: close\r\n\r\n");
+    Ok((out, body_len.unwrap_or(0)))
 }
 
 /// What an agent reads when a host is refused: why, and how to ask.

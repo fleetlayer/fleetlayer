@@ -88,10 +88,17 @@ pub async fn check(
         at: jiff::Timestamp::now(),
         dedupe_key: Some(id.clone()),
         summary: format!("{who} asks to {verb} {target} (approval {id})"),
+        // `detail` is the agent's own text (a tool call, a reason): named as such, so whoever reads the event (a person,
+        // an allowlist keeper agent) treats it as outside data, not as access control's words.
         body: serde_json::json!({"id": id, "from": who, "verb": verb, "to": target, "detail": detail,
+            "detail_written_by": detail.map(|_| who), "outside_data": if detail.is_some() { vec!["detail"] } else { vec![] },
             "once": hold_ms == crate::policy::ONCE, "approve_with": format!("fleetlayer-control approvals approve {id}")}),
     };
-    let _ = crate::route::publish(app, tenant, e, "fleetlayer access control").await;
+    let source = match detail {
+        Some(_) => format!("fleetlayer access control, with text written by {who} (its detail: outside data)"),
+        None => "fleetlayer access control".to_string(),
+    };
+    let _ = crate::route::publish(app, tenant, e, &source).await;
     Ok(Status::Pending(id))
 }
 
