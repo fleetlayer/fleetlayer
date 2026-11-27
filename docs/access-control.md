@@ -56,6 +56,13 @@ agents they limit can't change.
 boundary, because every process of that user can claim to be any of its sessions. Give an agent you trust less its
 own Unix user and its own node ([Run an agent that reads strangers' text](guides/untrusted-input.md)).
 
+The same goes the other way: a plugin is only as trusted as the agents on its node. A process running as that Unix
+user can read the node's token, link as the node and send requests as any of its sessions or plugins
+(`plugin:runner@<node>` included). So a rule that gives a plugin more than its node's agents (a runner allowed to
+start sessions elsewhere) holds only if the plugin runs under a different Unix user, with its own node, whose token
+the agents can't read. Put a runner of approved actions beside an agent that reads untrusted input on a node of its
+own, and name that node in the rule.
+
 For the same reason, a node always sees and drives its own sessions with no policy check: `fleetlayer attach` to a
 session on the same node connects straight to it. `read` and `attach` are checked when the session is on another
 node.

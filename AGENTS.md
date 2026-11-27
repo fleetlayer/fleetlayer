@@ -28,6 +28,11 @@ tokens, private repo names, customer data or anything from Nathan's private note
   shares a machine with another component, and has a documented, tested move (stop, copy the state, start elsewhere,
   repoint the address) that keeps identities and keys (a node keeps its key; tokens sealed to it stay readable).
   Secrets move only sealed or through the secrets manager.
+- **The node is the trust boundary, so trust needs its own Unix user.** Every process of a node's Unix user can read
+  its token and claim to be any of its sessions or plugins: the control plane can't tell them apart. Anything the
+  policy trusts more than the agents beside it (a runner of approved actions, a service with wider grants) runs under a
+  different Unix user, with its own node, whose token and key the agents can't read. Never give a plugin on an
+  untrusted agent's node rights its agent mustn't have.
 - **Everything in the background is monitored.** Every daemon, sync or scheduled job gets a health check or heartbeat
   that catches real failure (it stopped doing its job, not only that it stopped running), in the same change.
 

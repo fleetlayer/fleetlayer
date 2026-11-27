@@ -406,3 +406,8 @@ managers, machines that sleep.
   lasting an hour fails the heartbeat. Also: a skills folder full of symlinks into a repo syncs nothing for those
   skills, since links that point outside the folder are never followed (the `files.set` reading lists them). Where it
   lives: `docs/protocol.md` section 8, `plugins/files/src/main.rs`. To write into: `docs/guides/sync.md`.
+- **A plugin is only as trusted as the agents on its node.** Anything running as the node's Unix user can read its
+  token and act as any of its sessions or plugins, so a rule letting `plugin:runner@<untrusted node>` start sessions
+  elsewhere lets a prompt injection in that agent's input do it too. Run anything trusted more than its node's agents
+  under its own Unix user and node. Found by homeserver and Quietdeck reviewing the triage setup before the
+  session-start release. Where it lives: AGENTS.md, docs/access-control.md.
