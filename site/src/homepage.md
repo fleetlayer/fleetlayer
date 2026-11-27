@@ -2,9 +2,9 @@
 
 Every agent on every machine, in one fleet.
 
-Fleetlayer connects the agent sessions you already run, on your laptop, a home server or a VPS. See every session in
-one list, send messages between them, and route a CI failure to the agent that wrote the branch. It runs on machines
-you control. Open source under Apache 2.0, early, built in public: https://github.com/fleetlayer/fleetlayer
+Fleetlayer connects and controls the agent sessions you already run, on your laptop, a home server or a VPS. See every
+session in one list, send messages between them, and route a CI failure to the agent that wrote the branch. It runs on
+machines you control. Open source under Apache 2.0, early, built in public: https://github.com/fleetlayer/fleetlayer
 
 ## How it fits
 

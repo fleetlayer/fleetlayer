@@ -2,9 +2,9 @@
 
 Every agent on every machine, in one fleet.
 
-Fleetlayer connects the agent sessions you already run, on your laptop, a home server or a VPS. See every session in
-one list, send messages between them, and route a CI failure to the agent that wrote the branch. It attaches to your
-session manager ([herdr](https://herdr.dev) first) without taking it over, and runs on machines you control.
+Fleetlayer connects and controls the agent sessions you already run, on your laptop, a home server or a VPS. See every
+session in one list, send messages between them, and route a CI failure to the agent that wrote the branch. It attaches
+to your session manager ([herdr](https://herdr.dev) first) without taking it over, and runs on machines you control.
 
 **Start small, replace any component as you go.** Begin with everything on your laptop, and move a piece to a home
 server or a VPS when you outgrow it, or swap it for the tool you'd rather use.

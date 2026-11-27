@@ -45,9 +45,11 @@ const description = site.summary;
       <section class="hero" aria-labelledby="hero-title">
         <div class="hero__copy">
           <p class="status-line"><span class="dot" aria-hidden="true"></span> Open source · early · built in public</p>
+          <!-- An uptime check looks for "Every agent on every machine" on this page: tell the homeserver session before
+               changing the headline. -->
           <h1 id="hero-title">Every agent on every machine, in one fleet.</h1>
           <p class="lede">
-            Fleetlayer connects the agent sessions you already run, on your laptop, a home server or a VPS. See every
+            Fleetlayer connects and controls the agent sessions you already run, on your laptop, a home server or a VPS. See every
             session in one list, send messages between them, and route a CI failure to the agent that wrote the branch.
             It runs on machines you control.
           </p>

@@ -6,7 +6,7 @@ export const site = {
   url: "https://fleetlayer.ai",
   title: "Fleetlayer",
   summary:
-    "Fleetlayer connects the AI agent sessions you already run, on every machine you use, into one fleet you control: one view of every session, messages between them, webhooks routed to the agent that owns the work, shared Claude accounts, and access rules. Open source (Apache 2.0), self-hosted, no vendor lock-in.",
+    "Fleetlayer connects and controls the AI agent sessions you already run, on every machine you use, into one fleet you control: one view of every session, messages between them, webhooks routed to the agent that owns the work, shared Claude accounts, and access rules. Open source (Apache 2.0), self-hosted, no vendor lock-in.",
   // Working files that stay in the repo only.
   unpublished: ["guides-to-write", "problems"],
 };
