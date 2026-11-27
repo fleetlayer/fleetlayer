@@ -2,8 +2,21 @@
 
 Agents need credentials to do real work: a Claude sign-in, a GitHub token, cookies for a site, a cloud API key. Each
 one is a risk wherever it sits, because anything that can read it can use it. This page says how Fleetlayer handles
-them. The first part covers what works today, checked against the code. The second covers what's being built, and is
-marked as coming.
+them: what works today, checked against the code, then what's still coming, and last what none of it covers.
+
+Sections that start *In the next release* are on the main branch and ship in the release after v0.3.12.
+
+## The principles
+
+- **Off by default.** Most people start with a token in their shell, and Fleetlayer never forces more. It says what's
+  at risk in plain words, and one request to an agent sets the rest up: the skills carry the steps, so nobody has to
+  learn a secrets system first.
+- **Roles, not sessions.** Sessions start, end and get renamed all day, so nothing is configured per session. Access
+  belongs to a **role**: a Unix user with its own node, because that's the boundary the machine enforces. A handful of
+  roles covers most fleets (everyday work, untrusted input, a trusted runner, infrastructure), and a new session in a
+  role has that role's secrets with no setup. Which session used a secret is still recorded in the audit log.
+- **The control plane holds no credentials.** Secrets live on machines you control and travel only sealed to the key
+  of the machine that needs them.
 
 ## How it works today
 
@@ -27,6 +40,24 @@ for each GitHub webhook you give one, which it needs to check GitHub's signature
 forge a webhook delivery to your fleet, and nothing more. The mechanism is in
 [sync and sealed secrets](protocol.md#8-sync-and-sealed-secrets).
 
+### One shape for every secret
+
+Claude setup tokens, browser cookies and 1Password items go the same way:
+
+1. **A source** holds the secret: the Claude hub, the browser on your laptop, a password manager.
+2. **A grant** says which role gets it, never which session (see the principles above).
+3. **Sealed delivery**, as above. Your [access policy](access-control.md) decides which nodes may receive which
+   bundles (`sync`).
+4. **A writer** on the target puts it where tools look: an env file, a file, a keychain item. Each file is mode 0600,
+   replaced in one rename, and never written over a file a person made.
+5. **Readings** say when each secret last arrived and when it expires, never its value. The control plane's audit log
+   records every delivery, never the value.
+
+From the next release, every plugin that writes secrets on a node also lists them in the node's **registry**
+(`~/.local/state/fleetlayer/secrets/`, readable only by the node's user), by reference: `op://vault/item/field`,
+`cookie://x/ct0`, `claude://account/2`. That's how the node knows what to scrub, and what `fleetlayer secrets run` may
+fill in.
+
 ### Claude sign-ins: year-long setup tokens, delivered sealed
 
 A normal Claude sign-in can't be shared: each refresh revokes the copy on every other machine. So the Claude accounts
@@ -39,43 +70,24 @@ works. Sessions everywhere use the same accounts without anyone copying a sign-i
 ### Signed-in browser cookies, only where you send them
 
 Some tools act as you on a website with your browser's cookies. `fleetlayer-cookies` reads the cookies of the sites
-you list (and only the cookie names you list, if you list them) on the machine with your browser. It sends them sealed to the machines
-you name, which write them where the tool looks. When an agent only needs to look at a page or click through it,
-[your shared browser](guides/browser.md) is better: the cookies never leave your laptop.
+you list (and only the cookie names you list, if you list them) on the machine with your browser. It sends them sealed
+to the machines you name, which write them where the tool looks. When an agent only needs to look at a page or click
+through it, [your shared browser](guides/browser.md) is better: the cookies never leave your laptop.
 [fleetlayer-cookies](plugins/cookies.md) has the details.
 
 ### Secrets from 1Password, granted per role
 
-`fleetlayer-1password` delivers 1Password items to the roles you grant them to. It runs under a Unix user of its own
-and holds the 1Password service-account token there, so no agent holds a token that opens a whole vault. A grant names
-items (`op://github/deploy-bot/token`) and the nodes of a role, so vaults become a way to organise items, not a way to
-control access, and nobody makes a vault or a token per agent. Each node gets exactly its items, sealed to its key,
-again within minutes whenever one changes in 1Password, and loses them (files included) when a grant is taken away.
-[fleetlayer-1password](plugins/1password.md) covers the setup.
-
-### One shape for every secret
-
-Claude setup tokens, browser cookies and 1Password items go the same way:
-
-1. **A source** holds the secret: the Claude hub, the browser on your laptop, a password manager.
-2. **A grant** says which role gets it. A role is a Unix user with its own node, because that's the boundary the
-   machine enforces. Grants never name a session: sessions start, end and get renamed all day, and a new session in a
-   role has the role's secrets with no setup.
-3. **Sealed delivery**, as above. Your [access policy](access-control.md) decides which nodes may receive which
-   bundles (`sync`), and the first delivery to each node waits for your approval.
-4. **A writer** on the target puts it where tools look: an env file, a file, a keychain item. Each file is mode 0600,
-   replaced in one rename, and never written over a file a person made.
-5. **Readings** say when each secret last arrived and when it expires, never its value. The control plane's audit log
-   records every delivery, never the value.
-
-Every plugin that writes secrets on a node also lists them in the node's **registry**
-(`~/.local/state/fleetlayer/secrets/`, readable only by the node's user), by reference: `op://vault/item/field`,
-`cookie://x/ct0`, `claude://account/2`. That's how the node knows what to scrub, and what `fleetlayer secrets run` may
-fill in.
+*In the next release.* `fleetlayer-1password` delivers 1Password items to the roles you grant them to. It runs under a
+Unix user of its own and holds the 1Password service-account token there, so no agent holds a token that opens a whole
+vault. A grant names items (`op://github/deploy-bot/token`) and the nodes of a role, so vaults become a way to
+organise items, not a way to control access, and nobody makes a vault or a token per agent. Each node gets exactly its
+items, sealed to its key, again within minutes whenever one changes in 1Password, and loses them (files included) when
+a grant is taken away. [fleetlayer-1password](plugins/1password.md) covers the setup.
 
 ### Using a secret without seeing it
 
-Agents use a delivered secret by its reference, so the value never appears in their commands or their context:
+*In the next release.* Agents use a delivered secret by its reference, so the value never appears in their commands or
+their context:
 
 ```sh
 fleetlayer secrets list                     # what this role has, by reference
@@ -92,10 +104,10 @@ puts it back.
 
 ### Scrubbing what leaves a node
 
-The node knows exactly which secrets it delivered, so it removes exact matches, with no guessing, from everything it
-sends the control plane: messages, events, readings, session titles, summaries and catch-ups. A match is replaced by
-`[REDACTED <reference>]`, such as `[REDACTED op://github/deploy-bot/token]`. It matches the forms a value takes once
-something has encoded it:
+*In the next release.* The node knows exactly which secrets it delivered, so it removes exact matches, with no
+guessing, from everything it sends the control plane: messages, events, readings, session titles, summaries and
+catch-ups. A match is replaced by `[REDACTED <reference>]`, such as `[REDACTED op://github/deploy-bot/token]`. It
+matches the forms a value takes once something has encoded it:
 
 - the value itself, and without a trailing newline;
 - JSON-escaped, once and twice (a value in a JSON string, and in JSON carried inside a JSON string, as transcripts
@@ -127,7 +139,7 @@ to loses its lines. [gitleaks](https://github.com/gitleaks/gitleaks) (MIT) catch
 a key pasted into a chat; it's optional, and has to be on `PATH`.
 
 Not scrubbed yet: what goes over a stream of its own rather than the node's link. A shared MCP server's calls and
-results will be, by the node's MCP gate (being built). Terminal attach (`fleetlayer attach`) isn't: it carries the
+results will be, by the node's MCP gate (coming, below). Terminal attach (`fleetlayer attach`) isn't: it carries the
 terminal's raw bytes, where a value can be split between chunks, and it shows a person their own session. Pages and
 apps aren't either.
 
@@ -147,6 +159,15 @@ logged with its caller ([tools at the level of their own tools](access-control.m
 An MCP gateway that holds sign-ins for many services (Executor, for example) works the same way: agents call tools
 and never hold the services' tokens.
 
+### Network access per role
+
+*In the next release.* A role's agents reach only the hosts on its list, through a proxy that reads the host name and
+never decrypts the traffic. A host that isn't on the list is refused with a message that tells the agent how to ask.
+The request goes to a person through the same approvals as everything else, and once approved it stays allowed. It
+starts in a mode that only logs, so a week of real traffic builds the list before anything is blocked, and it keeps
+restricted roles off your local network and tailnet by default. Linux only for now. [Network access per
+role](egress.md) has the details, and [the guide](guides/egress.md) sets it up.
+
 ### Trust is per Unix user
 
 A machine can only enforce boundaries between Unix users. Every process of one user can read that user's files and
@@ -161,6 +182,16 @@ act as any of its sessions, so Fleetlayer draws the line there too:
   they may call, what needs a person's approval. Every decision is written to a tamper-evident audit log before the
   action happens ([Access control](access-control.md)).
 
+### An admin role that's off until you open it
+
+*In the next release.* An agent that can change everything sits in a role that's switched off: every request by it or
+to it is refused, and nothing is delivered to it. It asks for a window (`fleetlayer role activate admin --for 1h`),
+you approve, and its rules apply until the time is up. Then its sessions are closed, what was delivered to it is
+removed, a hook takes away its sudo rule, and its node confirms; a window that didn't close cleanly shows as a health
+problem. Every action in the window is audited with the window's ID. The rules are in [the admin
+window](access-control.md#the-admin-window-a-role-thats-off-until-you-open-it), and [the
+guide](guides/admin-window.md) sets one up.
+
 ### Webhooks don't leak their own secret
 
 A webhook address carries a secret in its path, so anyone who has it can send events. The control plane stores only
@@ -168,28 +199,9 @@ its hash, and removes the secret from everything it delivers, even when the send
 ping does). With a GitHub signing secret set, a delivery without a valid signature is refused. A leaked address can
 be replaced without changing anything else ([CI results to the agent that pushed](guides/ci-results.md)).
 
-### An admin role that's off until you open it
-
-An agent that can change everything sits in a role that's switched off: every request by it or to it is refused, and
-nothing is delivered to it. It asks for a window (`fleetlayer role activate admin --for 1h`), you approve, and its
-rules apply until the time is up. Then its sessions are closed, what was delivered to it is removed, a hook takes away
-its sudo rule, and its node confirms; a window that didn't close cleanly shows as a health problem. Every action in
-the window is audited with the window's ID. [The admin window](access-control.md#the-admin-window-a-role-thats-off-until-you-open-it),
-and [the guide](guides/admin-window.md).
-
 ## What's coming
 
 These are being designed or built now. Until each one ships, treat it as a plan, not a promise.
-
-The principles they share:
-
-- **Off by default.** Most people start with a token in their shell, and Fleetlayer never forces more. It says what's
-  at risk in plain words, and one request to an agent sets the rest up.
-- **An agent sets it up.** The skills carry the steps, so nobody has to learn a secrets system first.
-- **Roles, not sessions.** Sessions start, end and get renamed all day, so nothing is configured per session. Access
-  belongs to a **role**: a Unix user with its own node, because that's the boundary the machine enforces. A handful
-  of roles covers most fleets (everyday work, untrusted input, a trusted runner, infrastructure). A new session in a
-  role gets that role's secrets with no setup. Which session used a secret is still recorded in the audit log.
 
 ### Short-lived credentials minted per use
 
@@ -197,14 +209,10 @@ Where a service can mint short-lived credentials (a GitHub App's installation to
 holding the root credential will mint one per use instead of delivering a long-lived token. Storing a secret from an
 agent (`fleetlayer secrets put`, by grant and approval) is planned too.
 
-### Network access per role
+### Scrubbing a shared tool's calls
 
-Built, and new: [Network access per role](egress.md), with [a guide](guides/egress.md). A role's agents reach only
-the hosts on its list, through a proxy that reads the host name and never decrypts the traffic. A host that isn't on
-the list is refused with a message that tells the agent how to ask. The request goes to a person through the same
-approvals as everything else, and once approved it stays allowed. It starts in a mode that only logs, so a week of
-real traffic builds the list before anything is blocked, and it keeps restricted roles off your local network and
-tailnet by default. Linux only for now.
+The node's MCP gate will scrub delivered secrets from the calls and results of shared MCP servers, which travel on a
+stream of their own and aren't scrubbed yet.
 
 ## What none of this covers
 
