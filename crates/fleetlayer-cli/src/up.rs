@@ -38,6 +38,9 @@ pub struct UpArgs {
     /// The gateway's port.
     #[arg(long, default_value_t = 7680)]
     pub port: u16,
+    /// The control plane's port, when it runs here; its hooks listen on the next one.
+    #[arg(long, default_value_t = 7600)]
+    pub control_port: u16,
 }
 
 fn home() -> PathBuf {
@@ -135,15 +138,36 @@ pub struct Unit {
 }
 
 impl Unit {
+    /// `dev.fleetlayer.control`, or `dev.fleetlayer.<instance>.control` for a second instance.
     fn label(&self) -> String {
-        format!("dev.fleetlayer.{}", self.name)
+        match fleetlayer_protocol::local::instance() {
+            Some(i) => format!("dev.fleetlayer.{i}.{}", self.name),
+            None => format!("dev.fleetlayer.{}", self.name),
+        }
+    }
+
+    /// `fleetlayer-control.service`, or `fleetlayer-<instance>-control.service`.
+    fn unit(&self) -> String {
+        match fleetlayer_protocol::local::instance() {
+            Some(i) => format!("fleetlayer-{i}-{}.service", self.name),
+            None => format!("fleetlayer-{}.service", self.name),
+        }
+    }
+
+    /// What a second instance adds to the environment: its own HOME (the service manager would set the account's)
+    /// and its name.
+    fn extra_env() -> Vec<(String, String)> {
+        match fleetlayer_protocol::local::instance() {
+            Some(i) => vec![("HOME".into(), home().display().to_string()), ("FLEETLAYER_INSTANCE".into(), i)],
+            None => vec![],
+        }
     }
 
     fn file(&self) -> PathBuf {
         if macos() {
             home().join("Library/LaunchAgents").join(format!("{}.plist", self.label()))
         } else {
-            home().join(format!(".config/systemd/user/fleetlayer-{}.service", self.name))
+            home().join(".config/systemd/user").join(self.unit())
         }
     }
 
@@ -155,6 +179,10 @@ impl Unit {
         if macos() {
             let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
             let args: String = self.args.iter().map(|a| format!("    <string>{}</string>\n", esc(a))).collect();
+            let env: String = Self::extra_env()
+                .iter()
+                .map(|(k, v)| format!("    <key>{k}</key>\n    <string>{}</string>\n", esc(v)))
+                .collect();
             format!(
                 r#"<?xml version="1.0" encoding="UTF-8"?>
 <!-- {desc}, written by `fleetlayer up`. `fleetlayer down` removes it. -->
@@ -168,7 +196,7 @@ impl Unit {
 {args}  </array>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>PATH</key>
+{env}    <key>PATH</key>
     <string>{path}</string>
   </dict>
   <key>RunAtLoad</key>
@@ -192,8 +220,12 @@ impl Unit {
         } else {
             let quote = |s: &str| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"").replace('%', "%%"));
             let exec: Vec<String> = self.args.iter().map(|a| quote(a)).collect();
+            let env: String = Self::extra_env()
+                .iter()
+                .map(|(k, v)| format!("Environment={}\n", quote(&format!("{k}={v}"))))
+                .collect();
             format!(
-                "# {desc}, written by `fleetlayer up`. `fleetlayer down` removes it.\n[Unit]\nDescription={desc}\n\n[Service]\nExecStart={exec}\nEnvironment={path}\nRestart=always\nRestartSec=10\n\n[Install]\nWantedBy=default.target\n",
+                "# {desc}, written by `fleetlayer up`. `fleetlayer down` removes it.\n[Unit]\nDescription={desc}\n\n[Service]\nExecStart={exec}\n{env}Environment={path}\nRestart=always\nRestartSec=10\n\n[Install]\nWantedBy=default.target\n",
                 desc = self.description,
                 exec = exec.join(" "),
                 path = quote(&format!("PATH={path_env}")),
@@ -223,7 +255,12 @@ impl Unit {
                 run(Command::new("launchctl").args(["bootstrap", &domain]).arg(&file))?;
             }
         } else {
-            let unit = format!("fleetlayer-{}.service", self.name);
+            let unit = self.unit();
+            // systemd reads user units only from the account's own folders, so a second instance's file, under its
+            // own HOME, is linked in.
+            if fleetlayer_protocol::local::instance().is_some() {
+                run(Command::new("systemctl").args(["--user", "link", "--force"]).arg(&file))?;
+            }
             run(Command::new("systemctl").args(["--user", "daemon-reload"]))?;
             run(Command::new("systemctl").args(["--user", "enable", &unit]))?;
             run(Command::new("systemctl").args(["--user", "restart", &unit]))?;
@@ -236,7 +273,7 @@ impl Unit {
         if macos() {
             let _ = Command::new("launchctl").args(["bootout", &format!("gui/{}/{}", uid(), self.label())]).output();
         } else {
-            let unit = format!("fleetlayer-{}.service", self.name);
+            let unit = self.unit();
             let _ = Command::new("systemctl").args(["--user", "disable", "--now", &unit]).output();
         }
         match std::fs::remove_file(self.file()) {
@@ -247,11 +284,7 @@ impl Unit {
     }
 
     fn where_logs(&self) -> String {
-        if macos() {
-            self.log().display().to_string()
-        } else {
-            format!("journalctl --user -u fleetlayer-{}", self.name)
-        }
+        if macos() { self.log().display().to_string() } else { format!("journalctl --user -u {}", self.unit()) }
     }
 }
 
@@ -338,13 +371,14 @@ pub fn node_yaml_text(
     y
 }
 
-pub fn gateway_yaml_text(port: u16, local_control: bool, alerts_to: Option<&str>) -> String {
+/// `local_control`: the port of a control plane running here, if one does.
+pub fn gateway_yaml_text(port: u16, local_control: Option<u16>, alerts_to: Option<&str>) -> String {
     let mut y = format!(
         "# Written by `fleetlayer up`. Yours to edit: `fleetlayer up` never overwrites it.\n# Services are http://<name>.localhost:{port}; the status page is http://fleetlayer.localhost:{port}.\nlisten: 127.0.0.1:{port}\n"
     );
     y.push_str("services:\n");
-    if local_control {
-        y.push_str("  control: { url: \"http://127.0.0.1:7600\", health: /healthz }\n");
+    if let Some(c) = local_control {
+        y.push_str(&format!("  control: {{ url: \"http://127.0.0.1:{c}\", health: /healthz }}\n"));
     } else {
         y.push_str("  {}\n");
     }
@@ -368,8 +402,12 @@ fn existing_control_url(node_yaml: &Path) -> Option<String> {
     v["control"]["url"].as_str().map(String::from)
 }
 
+/// A control plane on this machine: a `ws://` address on loopback.
 fn is_local_control(url: &str) -> bool {
-    url.starts_with("ws://127.0.0.1:7600/") || url.starts_with("ws://localhost:7600/")
+    let Some(rest) = url.strip_prefix("ws://") else { return false };
+    let host = rest.split(['/', '?']).next().unwrap_or("");
+    let host = host.rsplit_once(':').map_or(host, |(h, _)| h);
+    matches!(host, "127.0.0.1" | "localhost" | "[::1]")
 }
 
 /// The machine's name, as the node works it out (it may have a name in node.yaml already).
@@ -418,7 +456,7 @@ pub async fn up(a: UpArgs) -> anyhow::Result<()> {
     // The node's file first: its name decides the control plane's enrolment.
     let node_yaml = l.node_yaml();
     let fresh_node_yaml = !node_yaml.exists();
-    let control_url = a.join.clone().unwrap_or_else(|| "ws://127.0.0.1:7600/v1/link".into());
+    let control_url = a.join.clone().unwrap_or_else(|| format!("ws://127.0.0.1:{}/v1/link", a.control_port));
     let token_file = match &a.token_file {
         Some(t) => {
             let dest = l.node_token();
@@ -514,9 +552,9 @@ pub async fn up(a: UpArgs) -> anyhow::Result<()> {
                 db.display().to_string(),
                 "serve".into(),
                 "--listen".into(),
-                "127.0.0.1:7600".into(),
+                format!("127.0.0.1:{}", a.control_port),
                 "--hooks-listen".into(),
-                "127.0.0.1:7601".into(),
+                format!("127.0.0.1:{}", a.control_port.saturating_add(1)),
                 "--admin-token-file".into(),
                 dir.join("admin-token").display().to_string(),
                 "--audit-key-file".into(),
@@ -531,7 +569,11 @@ pub async fn up(a: UpArgs) -> anyhow::Result<()> {
 
     // The gateway.
     let gateway_yaml = l.gateway_yaml();
-    if create(&gateway_yaml, &gateway_yaml_text(a.port, control_bin.is_some(), a.alerts_to.as_deref()), 0o600)? {
+    if create(
+        &gateway_yaml,
+        &gateway_yaml_text(a.port, control_bin.is_some().then_some(a.control_port), a.alerts_to.as_deref()),
+        0o600,
+    )? {
         println!("Wrote {}.", gateway_yaml.display());
     } else if a.alerts_to.is_some() {
         notes.push(format!(
@@ -685,11 +727,11 @@ mod tests {
         assert_eq!(v["plugins"][0]["config"]["hub"]["listen"], "127.0.0.1:0");
         assert_eq!(v["plugins"][1]["config"]["base_url"], "http://pages.localhost:7680");
         assert_eq!(v["plugins"][1]["config"]["spaces"]["personal"]["dir"], "/h/Fleetlayer/personal/pages");
-        let g: serde_json::Value = yaml_serde_from(&gateway_yaml_text(7680, true, Some("planning")));
+        let g: serde_json::Value = yaml_serde_from(&gateway_yaml_text(7680, Some(7600), Some("planning")));
         assert_eq!(g["listen"], "127.0.0.1:7680");
         assert_eq!(g["services"]["control"]["url"], "http://127.0.0.1:7600");
         assert_eq!(g["alerts"]["session"], "planning");
-        let g: serde_json::Value = yaml_serde_from(&gateway_yaml_text(7680, false, None));
+        let g: serde_json::Value = yaml_serde_from(&gateway_yaml_text(7680, None, None));
         assert!(g["services"].as_object().unwrap().is_empty());
     }
 
@@ -706,6 +748,8 @@ mod tests {
         assert_eq!(existing_control_url(&f).as_deref(), Some("wss://control.example/v1/link"));
         assert!(!is_local_control("wss://control.example/v1/link"));
         assert!(is_local_control("ws://127.0.0.1:7600/v1/link"));
+        assert!(is_local_control("ws://localhost:7700/v1/link"));
+        assert!(!is_local_control("ws://10.0.0.5:7600/v1/link"));
         std::fs::write(&f, "name: laptop\n").unwrap();
         assert_eq!(existing_control_url(&f), None);
         std::fs::remove_dir_all(&d).unwrap();

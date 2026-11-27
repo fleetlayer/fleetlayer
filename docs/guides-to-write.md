@@ -316,6 +316,14 @@ managers, machines that sleep.
   to bus" unless `XDG_RUNTIME_DIR=/run/user/$(id -u)` is set, and the user's services stop at logout unless
   `loginctl enable-linger <user>`. Found testing `fleetlayer up` on a Linux build server, 27 Nov 2026.
   Written: `docs/guides/node-services.md`.
+- **A second copy of a user service under the same account.** A test copy with only its own `HOME` still replaces the
+  real one: launchd labels and systemd unit names are per account, and the service manager starts the job with the
+  account's real `HOME`, so it reads the real config. And systemd reads user units only from the account's own
+  `~/.config/systemd/user`, so a unit file under another `HOME` isn't found ("Unit file … does not exist"). Solved
+  with `FLEETLAYER_INSTANCE`: its own labels and unit names, `HOME` written into the unit, `systemctl --user link`
+  for the file, its own node socket under `$XDG_RUNTIME_DIR`, and `--port`/`--control-port`. It also means testing
+  `fleetlayer up` on a Mac needs no throwaway macOS user. Where it lives: `crates/fleetlayer-protocol/src/local.rs`,
+  `docs/guides/laptop.md` (Advanced).
 - **`fleetlayer-control` admin commands used `./fleetlayer-control.db` unless told otherwise** (fixed in v0.3.8). Run
   from the wrong folder, `node add` or `acl apply` quietly made a new, empty database. Since v0.3.8, with no `--db` it
   uses `./fleetlayer-control.db` if that exists, else the one `fleetlayer up` makes

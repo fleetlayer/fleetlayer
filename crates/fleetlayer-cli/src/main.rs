@@ -375,10 +375,7 @@ fn default_socket() -> PathBuf {
     if let Some(p) = std::env::var_os("FLEETLAYER_SOCKET") {
         return PathBuf::from(p);
     }
-    match std::env::var_os("XDG_RUNTIME_DIR") {
-        Some(d) => PathBuf::from(d).join("fleetlayer/node.sock"),
-        None => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state/fleetlayer/node.sock"),
-    }
+    fleetlayer_protocol::local::default_node_socket()
 }
 
 struct NoRequests;

@@ -126,10 +126,7 @@ pub fn default_path() -> PathBuf {
 
 /// The node's default socket, as the node works it out.
 pub fn default_node_socket() -> PathBuf {
-    match std::env::var_os("XDG_RUNTIME_DIR") {
-        Some(d) => PathBuf::from(d).join("fleetlayer/node.sock"),
-        None => home().join(".local/state/fleetlayer/node.sock"),
-    }
+    fleetlayer_protocol::local::default_node_socket()
 }
 
 impl Config {

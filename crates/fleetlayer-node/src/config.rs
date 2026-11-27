@@ -118,10 +118,7 @@ pub fn config_dir() -> PathBuf {
 
 /// The local socket's default path: under `$XDG_RUNTIME_DIR` when there is one, else `~/.local/state`.
 pub fn default_socket() -> PathBuf {
-    match std::env::var_os("XDG_RUNTIME_DIR") {
-        Some(d) => PathBuf::from(d).join("fleetlayer/node.sock"),
-        None => home().join(".local/state/fleetlayer/node.sock"),
-    }
+    fleetlayer_protocol::local::default_node_socket()
 }
 
 impl NodeConfig {

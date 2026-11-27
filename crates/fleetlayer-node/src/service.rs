@@ -9,6 +9,22 @@ const PLIST: &str = include_str!("../../../deploy/dev.fleetlayer.node.plist");
 const UNIT: &str = include_str!("../../../deploy/fleetlayer-node.service");
 const LABEL: &str = "dev.fleetlayer.node";
 
+/// The launchd label and systemd unit: `dev.fleetlayer.node` and `fleetlayer-node.service`, or with
+/// `$FLEETLAYER_INSTANCE` set, `dev.fleetlayer.<instance>.node` and `fleetlayer-<instance>-node.service`.
+fn label() -> String {
+    match fleetlayer_protocol::local::instance() {
+        Some(i) => format!("dev.fleetlayer.{i}.node"),
+        None => LABEL.into(),
+    }
+}
+
+fn unit_name() -> String {
+    match fleetlayer_protocol::local::instance() {
+        Some(i) => format!("fleetlayer-{i}-node.service"),
+        None => "fleetlayer-node.service".into(),
+    }
+}
+
 pub struct Values {
     pub bin: PathBuf,
     pub path: String,
@@ -16,17 +32,41 @@ pub struct Values {
 }
 
 pub fn render(template: &str, v: &Values) -> String {
-    template
+    let mut out = template
         .replace("{{BIN}}", &v.bin.display().to_string())
         .replace("{{PATH}}", &v.path)
-        .replace("{{LOG}}", &v.log.display().to_string())
+        .replace("{{LOG}}", &v.log.display().to_string());
+    // A second instance names itself and carries its own HOME, which the service manager would otherwise set to the
+    // account's.
+    if let Some(i) = fleetlayer_protocol::local::instance() {
+        let home = std::env::var("HOME").unwrap_or_default();
+        out = out.replace(LABEL, &label());
+        if out.contains("<key>PATH</key>") {
+            let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+            out = out.replacen(
+                "    <key>PATH</key>",
+                &format!(
+                    "    <key>HOME</key>\n    <string>{}</string>\n    <key>FLEETLAYER_INSTANCE</key>\n    <string>{i}</string>\n    <key>PATH</key>",
+                    esc(&home)
+                ),
+                1,
+            );
+        } else {
+            out = out.replacen(
+                "Environment=PATH=",
+                &format!("Environment=\"HOME={home}\"\nEnvironment=FLEETLAYER_INSTANCE={i}\nEnvironment=PATH="),
+                1,
+            );
+        }
+    }
+    out
 }
 
 fn service_file(home: &Path) -> PathBuf {
     if cfg!(target_os = "macos") {
-        home.join("Library/LaunchAgents").join(format!("{LABEL}.plist"))
+        home.join("Library/LaunchAgents").join(format!("{}.plist", label()))
     } else {
-        home.join(".config/systemd/user/fleetlayer-node.service")
+        home.join(".config/systemd/user").join(unit_name())
     }
 }
 
@@ -75,7 +115,7 @@ pub fn install(home: &Path, config: &Path, start: bool) -> anyhow::Result<()> {
     }
     if cfg!(target_os = "macos") {
         let domain = format!("gui/{}", uid());
-        let service = format!("{domain}/{LABEL}");
+        let service = format!("{domain}/{}", label());
         // Replace a loaded copy, so a reinstall picks up a new binary or PATH. bootout returns before launchd has
         // finished unloading, and bootstrapping too soon fails with "5: Input/output error": wait until it's gone
         // (up to 10 s), and retry the bootstrap once.
@@ -93,10 +133,15 @@ pub fn install(home: &Path, config: &Path, start: bool) -> anyhow::Result<()> {
         }
         println!("Started. Logs: {}", values.log.display());
     } else {
+        // systemd reads user units only from the account's own folders, so a second instance's file, under its own
+        // HOME, is linked in.
+        if fleetlayer_protocol::local::instance().is_some() {
+            run(Command::new("systemctl").args(["--user", "link", "--force"]).arg(&file))?;
+        }
         run(Command::new("systemctl").args(["--user", "daemon-reload"]))?;
-        run(Command::new("systemctl").args(["--user", "enable", "--now", "fleetlayer-node.service"]))?;
-        run(Command::new("systemctl").args(["--user", "restart", "fleetlayer-node.service"]))?;
-        println!("Started. Logs: journalctl --user -u fleetlayer-node");
+        run(Command::new("systemctl").args(["--user", "enable", "--now", &unit_name()]))?;
+        run(Command::new("systemctl").args(["--user", "restart", &unit_name()]))?;
+        println!("Started. Logs: journalctl --user -u {}", unit_name());
         println!("To keep it running while you're logged out: loginctl enable-linger \"$USER\"");
     }
     Ok(())
@@ -105,9 +150,9 @@ pub fn install(home: &Path, config: &Path, start: bool) -> anyhow::Result<()> {
 pub fn uninstall(home: &Path) -> anyhow::Result<()> {
     let file = service_file(home);
     if cfg!(target_os = "macos") {
-        let _ = Command::new("launchctl").args(["bootout", &format!("gui/{}/{LABEL}", uid())]).output();
+        let _ = Command::new("launchctl").args(["bootout", &format!("gui/{}/{}", uid(), label())]).output();
     } else {
-        let _ = Command::new("systemctl").args(["--user", "disable", "--now", "fleetlayer-node.service"]).output();
+        let _ = Command::new("systemctl").args(["--user", "disable", "--now", &unit_name()]).output();
     }
     match std::fs::remove_file(&file) {
         Ok(()) => println!("Stopped and removed {}.", file.display()),

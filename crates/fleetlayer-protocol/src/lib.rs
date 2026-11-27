@@ -5,10 +5,12 @@
 //! - [`ext`]: Fleetlayer's extensions: method names, `_meta` keys and their payloads.
 //! - [`link`]: the node's link to the control plane.
 //! - [`summary`]: session summaries.
+//! - [`local`]: where a machine's own pieces find each other.
 
 pub mod acp;
 pub mod ext;
 pub mod link;
+pub mod local;
 pub mod rpc;
 pub mod summary;
 
