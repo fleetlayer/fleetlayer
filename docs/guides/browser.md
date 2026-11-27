@@ -92,7 +92,7 @@ The node's `allow:` list is one half. The control plane's access policy is the o
 
 From v0.3.8, a fleet with no policy of its own uses a built-in default: each session's first use of the browser is
 refused until you approve it once (`fleetlayer-control approvals list`, then `approvals approve <id>`), and the
-approval holds for 30 days. `fleetlayer-control acl show` prints that default. A policy you apply that leaves `ask:`
+approval holds for 30 days, renewed each time the browser is used. `fleetlayer-control acl show` prints that default. A policy you apply that leaves `ask:`
 out asks the same way. To decide up front which agents have it, say so in your policy file:
 
 ```yaml

@@ -445,10 +445,10 @@ async fn publish_loop(peer: Peer, file: PathBuf, targets: Vec<String>) {
                                 version,
                                 secret: true,
                                 targets: targets.iter().map(|n| SyncTarget { node: n.clone() }).collect(),
-                                items: vec![SyncItem {
-                                    name: "accounts.json".into(),
-                                    content: serde_json::to_string(&accounts).unwrap_or_default(),
-                                }],
+                                items: vec![SyncItem::text(
+                                    "accounts.json",
+                                    serde_json::to_string(&accounts).unwrap_or_default(),
+                                )],
                             };
                             match peer
                                 .request_within::<_, Value>(ext::method::SYNC_PUBLISH, &p, Duration::from_secs(90))

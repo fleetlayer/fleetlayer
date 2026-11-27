@@ -170,6 +170,65 @@ impl FromNode {
     }
 }
 
+/// Sync deliveries still owed where `node` is the source or the target: `(bundle, source, target)`.
+pub async fn owed(app: &App, tenant: &str, node: &str) -> Vec<(String, String, String)> {
+    use sqlx::Row;
+    sqlx::query("SELECT bundle, source, target FROM sync_pending WHERE tenant = ? AND (target = ? OR source = ?)")
+        .bind(tenant)
+        .bind(node)
+        .bind(node)
+        .fetch_all(&app.db)
+        .await
+        .unwrap_or_default()
+        .iter()
+        .map(|r| (r.get(0), r.get(1), r.get(2)))
+        .collect()
+}
+
+/// When the person approves a `sync` request (from the hub, the API or `fleetlayer-control approvals approve`, which
+/// may run as another process), tell the source node at once, so the refused version goes out without waiting for its
+/// next retry. Checked every 15 seconds.
+pub async fn sync_approved(app: Arc<App>) {
+    use sqlx::Row;
+    let mut since = db::now_ms();
+    loop {
+        tokio::time::sleep(Duration::from_secs(15)).await;
+        let now = db::now_ms();
+        let rows = sqlx::query(
+            "SELECT tenant, subject, target FROM approvals WHERE verb = 'sync' AND status = 'approved'
+             AND decided_at > ? AND decided_at <= ?",
+        )
+        .bind(since)
+        .bind(now)
+        .fetch_all(&app.db)
+        .await;
+        let rows = match rows {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("checking new sync approvals: {e}");
+                continue;
+            }
+        };
+        since = now;
+        for r in rows {
+            let (tenant, subject, target): (String, String, String) = (r.get(0), r.get(1), r.get(2));
+            if let Some((source, bundle, node)) = approved_sync(&subject, &target)
+                && let Some(peer) = app.links.peer(&tenant, source).await
+            {
+                tracing::info!(bundle, source, target = node, "a sync was approved: asking the source to send it");
+                peer.notify(l::method::SYNC_WANTED, &json!({"bundle": bundle, "node": node}));
+            }
+        }
+    }
+}
+
+/// `-@<source>` and `sync:<bundle>@<target>` → (source, bundle, target).
+fn approved_sync<'a>(subject: &'a str, target: &'a str) -> Option<(&'a str, &'a str, &'a str)> {
+    let source = subject.strip_prefix("-@")?;
+    let (bundle, node) = target.strip_prefix("sync:")?.rsplit_once('@')?;
+    Some((source, bundle, node))
+}
+
 #[async_trait]
 impl Handler for FromNode {
     async fn request(&self, _peer: &Peer, method: &str, p: Value) -> Result<Value, RpcError> {
@@ -198,21 +257,17 @@ impl Handler for FromNode {
                 db::node_seen(&app.db, tenant, &self.node, &h.machine, &h.user, &h.version)
                     .await
                     .map_err(RpcError::internal)?;
-                // Bundles this node missed while offline: ask each source to seal a fresh copy.
+                // Bundles owed to or by this node while one side was offline: ask each source that's online to seal
+                // a fresh copy for each target that's online.
                 let (app2, tenant2, me) = (app.clone(), tenant.to_string(), self.node.clone());
                 tokio::spawn(async move {
                     tokio::time::sleep(Duration::from_secs(2)).await;
-                    let rows = sqlx::query("SELECT bundle, source FROM sync_pending WHERE tenant = ? AND target = ?")
-                        .bind(&tenant2)
-                        .bind(&me)
-                        .fetch_all(&app2.db)
-                        .await
-                        .unwrap_or_default();
-                    for r in rows {
-                        use sqlx::Row;
-                        let (bundle, source): (String, String) = (r.get(0), r.get(1));
+                    for (bundle, source, target) in owed(&app2, &tenant2, &me).await {
+                        if app2.links.peer(&tenant2, &target).await.is_none() {
+                            continue;
+                        }
                         if let Some(peer) = app2.links.peer(&tenant2, &source).await {
-                            peer.notify(l::method::SYNC_WANTED, &json!({"bundle": bundle, "node": me}));
+                            peer.notify(l::method::SYNC_WANTED, &json!({"bundle": bundle, "node": target}));
                         }
                     }
                 });
@@ -495,5 +550,55 @@ impl Handler for FromNode {
         if let Err(e) = r {
             tracing::warn!(node, method, "{e}");
         }
+    }
+}
+
+#[cfg(test)]
+mod sync_tests {
+    use super::*;
+
+    #[test]
+    fn an_approved_sync_names_its_source_bundle_and_target() {
+        assert_eq!(approved_sync("-@laptop", "sync:files/skills@server"), Some(("laptop", "files/skills", "server")));
+        assert_eq!(approved_sync("ci@laptop", "sync:files/skills@server"), None);
+        assert_eq!(approved_sync("-@laptop", "tool:browser@server"), None);
+    }
+
+    #[tokio::test]
+    async fn deliveries_owed_by_a_source_are_found_when_it_links() {
+        let db = crate::db::open_memory().await.unwrap();
+        let t = crate::db::DEFAULT_TENANT;
+        for (b, src, tgt) in
+            [("files/a", "laptop", "server"), ("files/b", "server", "laptop"), ("files/c", "pi", "vps")]
+        {
+            sqlx::query(
+                "INSERT INTO sync_pending (tenant, bundle, source, target, version, since) VALUES (?, ?, ?, ?, 1, 0)",
+            )
+            .bind(t)
+            .bind(b)
+            .bind(src)
+            .bind(tgt)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+        let app = App {
+            db,
+            links: Default::default(),
+            hook_limits: Default::default(),
+            admin_token_hash: None,
+            streams: Default::default(),
+            authz: Default::default(),
+            audit: crate::audit::Audit::new(None),
+        };
+        let mut owed = owed(&app, t, "laptop").await;
+        owed.sort();
+        assert_eq!(
+            owed,
+            [
+                ("files/a".to_string(), "laptop".to_string(), "server".to_string()),
+                ("files/b".to_string(), "server".to_string(), "laptop".to_string())
+            ]
+        );
     }
 }

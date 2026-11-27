@@ -272,8 +272,9 @@ ask:                    # replaces the default, which also asks before each firs
 ```
 
 Keep `sync` out of your `ask:` rules, or write an `ask:` of your own as above. Fleetlayer's default `ask:`, used when no
-policy is applied or a policy leaves it out, holds each target's first bundle for your approval, and the approval lasts 30 days. A hub that
-publishes after that waits for you again. `fleetlayer-control acl explain --from=-@server-claudehub --can sync --to
+policy is applied or a policy leaves it out, holds each target's first bundle for your approval, and the approval lasts 30 days from the last bundle sent, so it
+lapses only if the hub stops publishing for a month. While a bundle waits, the hub's node reports it (a `sync.status`
+reading with the command that approves it) and tries again once you approve, without a restart. `fleetlayer-control acl explain --from=-@server-claudehub --can sync --to
 sync:claude-auth-manager/tokens@laptop` shows the decision.
 
 ## When it doesn't work

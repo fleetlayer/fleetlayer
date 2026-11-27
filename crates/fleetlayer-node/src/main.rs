@@ -184,6 +184,7 @@ async fn run(cfg: NodeConfig) -> anyhow::Result<()> {
     if let Some(h) = cfg.heartbeat.clone() {
         tokio::spawn(heartbeat::run(node.clone(), h, cfg.control.is_some()));
     }
+    tokio::spawn(sync::retry(node.clone()));
     let update = cfg.update.clone().unwrap_or(update::UpdateConfig { mode: None, every_hours: 6 });
     tokio::spawn(update::run(node.clone(), update));
     let socket = cfg.socket();

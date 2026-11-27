@@ -398,3 +398,11 @@ managers, machines that sleep.
   resumes a session, never to a new one. Pass the flags after `--`: `herdr tab create --label "<tab>" --agent claude --
   --dangerously-skip-permissions --name "<tab>" "<first prompt>"`, and put that in the agents' global instructions so
   an agent that starts a session for you uses it. Found 27 Nov 2026, when a new tab came up in the wrong mode.
+- **A sync that stops quietly.** Three ways a one-way sync looked fine while it wasn't: an approval that expired after a
+  month of daily use, a version refused once and never sent again, and a target that came back while the source was
+  asleep and waited for the next change. Fixed in the node: approvals for `sync` and `use_tool` renew while used, the
+  source's node retries targets with backoff and right after an approval, and the control plane asks the source to
+  resend when either side links. Each target's state is a `sync.status` reading saying what to do, and a refusal
+  lasting an hour fails the heartbeat. Also: a skills folder full of symlinks into a repo syncs nothing for those
+  skills, since links that point outside the folder are never followed (the `files.set` reading lists them). Where it
+  lives: `docs/protocol.md` section 8, `plugins/files/src/main.rs`. To write into: `docs/guides/sync.md`.

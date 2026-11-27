@@ -384,12 +384,21 @@ A `sync_source` plugin publishes through its node:
 
 - `bundle` is namespaced by the publishing plugin; only that plugin may publish to it.
 - `version` only goes up; a target ignores anything older than what it applied.
-- For a **secret** bundle, the publishing node seals the items to each target node's public key (one age file per
-  target) before anything leaves the machine. The control plane relays ciphertext it can't read and **never stores
-  it**: a target that's offline gets it when the source republishes, and the source's node republishes the latest
-  version when the control plane says a target came back.
-- A bundle that isn't secret (skills, AGENTS.md files) may be kept by the control plane, so a target that comes online
-  gets the latest version even when the source machine is asleep.
+- Every bundle is **secret** for now (`secret: true`; the node refuses anything else): the publishing node seals the
+  items to each target node's public key (one age file per target) before anything leaves the machine. The control
+  plane relays ciphertext it can't read and **never stores it**. It keeps only who owes whom which version, so a target
+  that was offline gets the latest version when it's back and its source is online: whichever of the two links last,
+  the control plane asks the source's node to seal a fresh copy (`link/sync_wanted`). While the source is offline, the
+  target waits. (Bundles the control plane may keep, so a target catches up while the source sleeps, are an open
+  question, section 13.)
+- **The source's node delivers.** It keeps the latest version of each bundle and how it went for each target. A target
+  waiting for the person's approval, whose key changed or that failed gets it again with backoff (a minute, doubling to an hour), at once when the person approves the request and when the node's
+  link comes back. Each change is a `sync.status` reading (key `<bundle>@<target>`: `{version, ok, state, error,
+  action, since}`, where `action` says what a person should do, such as the command that approves the request), and a
+  refusal lasting over an hour fails the node's heartbeat. The plugin publishes once per version and leaves the rest to
+  the node.
+- An approval for `sync` (Fleetlayer's default `ask:` holds each source's first bundle to each target) renews while
+  it's used: each bundle sent pushes it a full hold on, so it lapses only after that long unused.
 
 On the target node, the node opens the bundle with its private key and hands the plaintext to the local plugin that
 registered as `sync_target` for that bundle name, with `_fleetlayer.dev/sync/apply` `{bundle, version, items}`. The
@@ -405,7 +414,9 @@ never does.**
 - **`applied` means the write worked**, not that the content is good. Whether it works (a token is accepted, a skill
   loads) is a separate check the plugin runs on its own schedule and reports as a reading (section 9).
 - What the items hold is the plugin's own business; each plugin documents its bundle's format (for example
-  `docs/plugins/claude-auth-manager.md`).
+  `docs/plugins/claude-auth-manager.md`). An item is `{name, content}`, with two optional fields for plugins that copy
+  files: `mode` (Unix permission bits) and `link` (a symbolic link's relative target). A node older than those fields
+  ignores them, so a plugin that sends a link also puts the linked file's text in `content`.
 
 ### Trusting keys
 
@@ -525,3 +536,6 @@ Not part of the plugin protocol, summarised here for context; `docs/link.md` wil
   hands out a short-lived pass.
 - **The chat view.** Reading a session's turns live (for the phone app) could use ACP's message and tool-call updates
   from a harness plugin. Not in draft 1.
+- **Bundles the control plane may keep.** A bundle that isn't secret (skills, AGENTS.md files) could be kept by the
+  control plane, so a target that comes online gets the latest version even while the source machine is asleep. Not
+  built: every bundle is sealed today (section 8), and the files plugin seals too.

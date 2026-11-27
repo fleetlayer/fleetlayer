@@ -226,7 +226,7 @@ async fn run_once(node: &Arc<Node>, plugin: &Arc<PluginHandle>) -> Result<String
         return Ok("its pipes didn't open".into());
     };
 
-    // Its stderr is its log: keep the last lines for `fleetlayer plugins`, and pass them to the node's log.
+    // Its stderr is its log: keep the last lines for `fleetlayer status`, and pass them to the node's log.
     let log_plugin = plugin.clone();
     tokio::spawn(async move {
         let mut lines = BufReader::new(stderr).lines();

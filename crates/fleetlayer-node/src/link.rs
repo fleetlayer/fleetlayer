@@ -159,6 +159,7 @@ async fn connect_once(node: &Arc<Node>, cfg: &ControlConfig) -> anyhow::Result<(
     push_all(node, &peer).await;
     node.link.flush(&peer).await;
     crate::readings::resubscribe(node, &peer).await;
+    crate::sync::relinked(node).await;
     crate::pages::announce_to(node, &peer).await;
     let pusher = {
         let (node, peer) = (node.clone(), peer.clone());

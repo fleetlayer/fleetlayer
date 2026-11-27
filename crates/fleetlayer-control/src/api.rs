@@ -195,10 +195,10 @@ pub async fn post_approval(
         .transpose()
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     let done = crate::approvals::decide(&app.db, DEFAULT_TENANT, &id, body.approve, hold).await.map_err(internal)?;
-    if !done {
+    let Some(d) = done else {
         return Err((StatusCode::NOT_FOUND, format!("no pending request {id}")));
-    }
-    Ok(Json(json!({"id": id, "approved": body.approve})))
+    };
+    Ok(Json(json!({"id": id, "approved": body.approve, "from": d.subject, "verb": d.verb, "to": d.target})))
 }
 
 /// `/healthz`: ok when the database answers, with the number of linked nodes.

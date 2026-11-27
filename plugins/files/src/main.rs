@@ -16,7 +16,12 @@
 //! Bundles are named `files/<set>`. A version is published when the directory's contents change (checked every
 //! `every_minutes`). Applying makes the target directory match: every file written, and files this plugin wrote for an
 //! earlier version but missing now removed. A file it didn't write (listed in `.fleetlayer-files.json`, its record
-//! of what it wrote) is never touched. Files are text, at most 1 MB each and 20 MB a set.
+//! of what it wrote) is never touched. Files are text, at most 1 MB each and 20 MB a set, and keep their executable bit.
+//! A symbolic link pointing inside the directory is made as the same link on the target (a node too old for links
+//! writes a copy of the file instead); one pointing outside, to nothing or to a hidden file is never followed. Anything
+//! left out (not text, such a link, a socket) is a warning in the log and listed in the `files.set` reading
+//! (`{set, files, skipped, version, publishedAt}`, every check). A target that doesn't get a version is retried and
+//! reported by the node (`sync.status` readings), so set it up with the targets upgraded first.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -78,9 +83,20 @@ fn expand(home: &Path, p: &Path) -> PathBuf {
     }
 }
 
-/// Every regular text file under `dir`, by relative path (`/`-separated), skipping dot-files and the record.
-fn read_set(dir: &Path) -> anyhow::Result<BTreeMap<String, String>> {
-    let mut out = BTreeMap::new();
+/// A set read from its folder: the items to send, and what was left out and why.
+#[derive(Debug, Default)]
+struct Read {
+    items: BTreeMap<String, SyncItem>,
+    skipped: Vec<String>,
+}
+
+/// Every text file and symbolic link under `dir`, by relative path (`/`-separated), skipping dot-files and the record.
+/// A file keeps its executable bit. A link is carried as a link when it points inside `dir`, with the content of the
+/// file it points to as well (so a node too old to make links writes a working copy); one pointing outside `dir`, to
+/// nothing, or to a hidden file is skipped, never followed. Anything skipped is listed with the reason.
+fn read_set(dir: &Path) -> anyhow::Result<Read> {
+    let mut out = Read::default();
+    let root = std::fs::canonicalize(dir)?;
     let mut total = 0u64;
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
@@ -90,33 +106,76 @@ fn read_set(dir: &Path) -> anyhow::Result<BTreeMap<String, String>> {
             if name.starts_with('.') {
                 continue;
             }
+            let rel = e.path().strip_prefix(dir)?.to_string_lossy().replace('\\', "/");
             let ft = e.file_type()?;
             if ft.is_dir() {
                 stack.push(e.path());
+            } else if ft.is_symlink() {
+                match link_inside(&root, &e.path(), &rel) {
+                    Err(why) => out.skipped.push(format!("{rel} ({why})")),
+                    Ok((link, resolved)) => {
+                        let content = match std::fs::metadata(&resolved) {
+                            Ok(m) if m.is_file() && m.len() <= MAX_FILE => {
+                                total += m.len();
+                                std::fs::read_to_string(&resolved).unwrap_or_default()
+                            }
+                            _ => String::new(),
+                        };
+                        out.items.insert(rel.clone(), SyncItem { name: rel, content, mode: None, link: Some(link) });
+                    }
+                }
             } else if ft.is_file() {
-                let len = e.metadata()?.len();
+                let meta = e.metadata()?;
+                let len = meta.len();
                 anyhow::ensure!(len <= MAX_FILE, "{} is over 1 MB", e.path().display());
                 total += len;
-                anyhow::ensure!(total <= MAX_SET, "{} is over 20 MB in all", dir.display());
-                let rel = e.path().strip_prefix(dir)?.to_string_lossy().replace('\\', "/");
                 match std::fs::read_to_string(e.path()) {
                     Ok(text) => {
-                        out.insert(rel, text);
+                        let mode = executable_mode(&meta);
+                        out.items.insert(rel.clone(), SyncItem { name: rel, content: text, mode, link: None });
                     }
-                    Err(_) => tracing::warn!("skipping {} (not text)", e.path().display()),
+                    Err(_) => out.skipped.push(format!("{rel} (not text)")),
                 }
+            } else {
+                out.skipped.push(format!("{rel} (not a file, folder or link)"));
             }
+            anyhow::ensure!(total <= MAX_SET, "{} is over 20 MB in all", dir.display());
         }
     }
+    out.skipped.sort();
     Ok(out)
 }
 
-fn digest(set: &BTreeMap<String, String>) -> String {
+/// The permission bits of an executable file; None for one that isn't (the target's default).
+fn executable_mode(meta: &std::fs::Metadata) -> Option<u32> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = meta.permissions().mode() & 0o777;
+    (mode & 0o111 != 0).then_some(mode)
+}
+
+/// The link at `path` (`rel` inside the set), as a relative link to where it really points, and that place, when it's
+/// inside `root` (canonical) and not hidden; else why not.
+fn link_inside(root: &Path, path: &Path, rel: &str) -> Result<(String, PathBuf), &'static str> {
+    let resolved = std::fs::canonicalize(path).map_err(|_| "a link to nothing")?;
+    let inside = resolved.strip_prefix(root).map_err(|_| "a link outside the folder")?;
+    let inside = inside.to_string_lossy().replace('\\', "/");
+    if !safe(&inside) {
+        return Err("a link to a hidden file or the folder itself");
+    }
+    let depth = rel.matches('/').count();
+    Ok((format!("{}{inside}", "../".repeat(depth)), resolved))
+}
+
+fn digest(set: &BTreeMap<String, SyncItem>) -> String {
     let mut h = Sha256::new();
     for (k, v) in set {
         h.update(k.as_bytes());
         h.update([0]);
-        h.update(v.as_bytes());
+        h.update(v.content.as_bytes());
+        h.update([0]);
+        h.update(v.mode.map(|m| m.to_string()).unwrap_or_default().as_bytes());
+        h.update([0]);
+        h.update(v.link.as_deref().unwrap_or_default().as_bytes());
         h.update([0]);
     }
     hex::encode(h.finalize())
@@ -129,8 +188,46 @@ fn safe(rel: &str) -> bool {
         && rel.split('/').all(|c| !c.is_empty() && c != "." && c != ".." && !c.starts_with('.'))
 }
 
-/// Make `dir` match `items`: write each file, remove the ones this plugin wrote before that `items` no longer has.
+/// A link at `name` pointing to `link` stays inside the directory (worked out from the names alone, so a link can't
+/// be made to lead out, even through another link this plugin made, since those are checked the same way).
+fn link_stays_inside(name: &str, link: &str) -> bool {
+    if link.is_empty() || link.starts_with('/') {
+        return false;
+    }
+    let mut at: Vec<&str> = name.split('/').collect();
+    at.pop();
+    for c in link.split('/') {
+        match c {
+            ".." => {
+                if at.pop().is_none() {
+                    return false;
+                }
+            }
+            "" | "." => return false,
+            c if c.starts_with('.') => return false,
+            c => at.push(c),
+        }
+    }
+    !at.is_empty()
+}
+
+/// No folder on the way to `name` under `dir` is a link (one made by hand could lead out of the directory).
+fn no_link_on_the_way(dir: &Path, name: &str) -> bool {
+    let mut p = dir.to_path_buf();
+    let parts: Vec<&str> = name.split('/').collect();
+    for c in &parts[..parts.len().saturating_sub(1)] {
+        p.push(c);
+        if std::fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_symlink()) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Make `dir` match `items`: write each file and make each link, remove the ones this plugin wrote before that `items`
+/// no longer has.
 fn apply_set(dir: &Path, items: &[SyncItem]) -> anyhow::Result<(usize, usize)> {
+    use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(dir)?;
     let record_path = dir.join(RECORD);
     let before: BTreeSet<String> =
@@ -138,8 +235,15 @@ fn apply_set(dir: &Path, items: &[SyncItem]) -> anyhow::Result<(usize, usize)> {
     let mut now = BTreeSet::new();
     for item in items {
         anyhow::ensure!(safe(&item.name), "refusing the path {:?}", item.name);
+        if let Some(link) = &item.link {
+            anyhow::ensure!(link_stays_inside(&item.name, link), "refusing the link {:?} -> {link:?}", item.name);
+        }
         let path = dir.join(&item.name);
-        if path.exists() && !before.contains(&item.name) {
+        if !no_link_on_the_way(dir, &item.name) {
+            tracing::warn!("leaving {} alone: a folder on its way is a link", path.display());
+            continue;
+        }
+        if std::fs::symlink_metadata(&path).is_ok() && !before.contains(&item.name) {
             tracing::warn!("leaving {} alone: it wasn't written by fleetlayer-files", path.display());
             continue;
         }
@@ -147,7 +251,16 @@ fn apply_set(dir: &Path, items: &[SyncItem]) -> anyhow::Result<(usize, usize)> {
             std::fs::create_dir_all(parent)?;
         }
         let tmp = path.with_extension("fleetlayer-tmp");
-        std::fs::write(&tmp, &item.content)?;
+        let _ = std::fs::remove_file(&tmp);
+        match &item.link {
+            Some(link) => std::os::unix::fs::symlink(link, &tmp)?,
+            None => {
+                std::fs::write(&tmp, &item.content)?;
+                if let Some(mode) = item.mode {
+                    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode & 0o777))?;
+                }
+            }
+        }
         std::fs::rename(&tmp, &path)?;
         now.insert(item.name.clone());
     }
@@ -232,14 +345,25 @@ impl Handler for Shared {
     }
 }
 
-/// Publish a version whenever the directory's contents change.
+/// Publish a version whenever the directory's contents change. Each check is a `files.set` reading (what was sent,
+/// what was skipped and why). A target that doesn't get a version is the node's to retry (and report, as a
+/// `sync.status` reading), so a version counts as published once the node has it.
 async fn watch(p: Publish, peer: Peer) {
     let mut last = String::new();
+    let mut last_skipped: Vec<String> = vec![];
+    let mut published: Option<(u64, String)> = None;
     tokio::time::sleep(Duration::from_secs(3)).await;
     while !peer.is_closed() {
         match read_set(&p.dir) {
-            Ok(set) => {
-                let d = digest(&set);
+            Ok(read) => {
+                if read.skipped != last_skipped {
+                    for s in read.skipped.iter().filter(|s| !last_skipped.contains(s)) {
+                        tracing::warn!(set = %p.set, "not syncing {s}");
+                    }
+                    last_skipped = read.skipped.clone();
+                }
+                let d = digest(&read.items);
+                let files = read.items.len();
                 if d != last {
                     let version = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -250,19 +374,35 @@ async fn watch(p: Publish, peer: Peer) {
                         version,
                         secret: true,
                         targets: p.to.iter().map(|n| SyncTarget { node: n.clone() }).collect(),
-                        items: set.into_iter().map(|(name, content)| SyncItem { name, content }).collect(),
+                        items: read.items.into_values().collect(),
                     };
                     match peer
                         .request_within::<_, Value>(ext::method::SYNC_PUBLISH, &publish, Duration::from_secs(90))
                         .await
                     {
                         Ok(r) => {
-                            tracing::info!(set = %p.set, version, results = %r["results"], "published");
+                            let failed: Vec<&Value> =
+                                r["results"].as_array().into_iter().flatten().filter(|x| x["ok"] != true).collect();
+                            for f in &failed {
+                                tracing::warn!(set = %p.set, version, target = %f["target"], error = %f["error"],
+                                    "a target didn't get this version; the node tries it again");
+                            }
+                            tracing::info!(set = %p.set, version, failed = failed.len(), "published");
                             last = d;
+                            published = Some((version, jiff::Timestamp::now().to_string()));
                         }
                         Err(e) => tracing::warn!(set = %p.set, "publishing: {e}"),
                     }
                 }
+                let reading = ext::Reading {
+                    kind: "files.set".into(),
+                    key: p.set.clone(),
+                    at: jiff::Timestamp::now(),
+                    node: None,
+                    data: json!({"set": p.set, "files": files, "skipped": last_skipped,
+                        "version": published.as_ref().map(|x| x.0), "publishedAt": published.as_ref().map(|x| &x.1)}),
+                };
+                peer.notify(ext::method::READING_PUBLISH, &ext::Readings { readings: vec![reading] });
             }
             Err(e) => tracing::warn!(set = %p.set, "reading {}: {e}", p.dir.display()),
         }
@@ -288,7 +428,7 @@ mod tests {
     use super::*;
 
     fn item(name: &str, content: &str) -> SyncItem {
-        SyncItem { name: name.into(), content: content.into() }
+        SyncItem::text(name, content)
     }
 
     #[test]
@@ -311,9 +451,70 @@ mod tests {
         std::fs::create_dir_all(d.path().join("s")).unwrap();
         std::fs::write(d.path().join("s/SKILL.md"), "x").unwrap();
         std::fs::write(d.path().join(".hidden"), "y").unwrap();
-        let a = read_set(d.path()).unwrap();
+        let a = read_set(d.path()).unwrap().items;
         assert_eq!(a.keys().collect::<Vec<_>>(), ["s/SKILL.md"]);
         std::fs::write(d.path().join("s/SKILL.md"), "z").unwrap();
-        assert_ne!(digest(&a), digest(&read_set(d.path()).unwrap()));
+        assert_ne!(digest(&a), digest(&read_set(d.path()).unwrap().items));
+    }
+
+    #[test]
+    fn links_inside_and_executable_bits_travel_and_the_rest_is_listed_as_skipped() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret"), "s").unwrap();
+        let src = tempfile::tempdir().unwrap();
+        let s = src.path();
+        std::fs::create_dir_all(s.join("tool/bin")).unwrap();
+        std::fs::write(s.join("tool/SKILL.md"), "skill").unwrap();
+        std::fs::write(s.join("tool/bin/run"), "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(s.join("tool/bin/run"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        symlink("tool/SKILL.md", s.join("alias.md")).unwrap();
+        symlink("..", s.join("tool/bin/up")).unwrap();
+        symlink(s.join("tool/SKILL.md"), s.join("abs.md")).unwrap();
+        symlink(outside.path().join("secret"), s.join("leak")).unwrap();
+        symlink("nowhere", s.join("dangling")).unwrap();
+        std::fs::write(s.join("blob"), [0xff, 0xfe, 0x00]).unwrap();
+        let read = read_set(s).unwrap();
+        assert_eq!(
+            read.skipped,
+            ["blob (not text)", "dangling (a link to nothing)", "leak (a link outside the folder)"]
+        );
+        let alias = &read.items["alias.md"];
+        assert_eq!((alias.link.as_deref(), alias.content.as_str()), (Some("tool/SKILL.md"), "skill"));
+        assert_eq!(read.items["abs.md"].link.as_deref(), Some("tool/SKILL.md"), "absolute links become relative");
+        assert_eq!(read.items["tool/bin/up"].link.as_deref(), Some("../../tool"));
+        assert_eq!(read.items["tool/bin/run"].mode, Some(0o755));
+        assert_eq!(read.items["tool/SKILL.md"].mode, None);
+
+        let dst = tempfile::tempdir().unwrap();
+        let t = dst.path();
+        apply_set(t, &read.items.values().cloned().collect::<Vec<_>>()).unwrap();
+        assert_eq!(std::fs::read_link(t.join("alias.md")).unwrap(), Path::new("tool/SKILL.md"));
+        assert_eq!(std::fs::read_to_string(t.join("alias.md")).unwrap(), "skill");
+        assert_eq!(std::fs::read_to_string(t.join("tool/bin/up/SKILL.md")).unwrap(), "skill");
+        let mode = std::fs::metadata(t.join("tool/bin/run")).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755);
+        // A link the source removed goes; a version without links replaces them with files.
+        apply_set(t, &[item("alias.md", "now a file")]).unwrap();
+        assert!(!std::fs::symlink_metadata(t.join("alias.md")).unwrap().file_type().is_symlink());
+        assert!(std::fs::symlink_metadata(t.join("tool/bin/up")).is_err());
+    }
+
+    #[test]
+    fn a_link_that_would_lead_out_is_refused() {
+        assert!(link_stays_inside("a/b", "../c"));
+        assert!(link_stays_inside("a/b", "c/d"));
+        assert!(!link_stays_inside("a/b", "../../c"));
+        assert!(!link_stays_inside("a", "/etc/passwd"));
+        assert!(!link_stays_inside("a", ".."));
+        assert!(!link_stays_inside("a", "../.ssh/id"));
+        let d = tempfile::tempdir().unwrap();
+        let bad = SyncItem { name: "x".into(), content: String::new(), mode: None, link: Some("../../etc".into()) };
+        assert!(apply_set(d.path(), &[bad]).is_err());
+        // A folder on the way that's a link made by hand isn't written through.
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), d.path().join("out")).unwrap();
+        apply_set(d.path(), &[item("out/x.md", "x")]).unwrap();
+        assert!(!outside.path().join("x.md").exists());
     }
 }

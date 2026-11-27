@@ -513,6 +513,7 @@ async fn main() -> anyhow::Result<()> {
                 tracing::warn!("no --audit-key-file: the audit log is chained with plain SHA-256, not an HMAC");
             }
             tokio::spawn(audit::run(app.clone(), audit_anchor_dir));
+            tokio::spawn(link::sync_approved(app.clone()));
             serve(app, listen, hooks_listen).await
         }
         Command::Node { command: NodeCommand::Add { name, owner, no_admit } } => {
@@ -748,13 +749,17 @@ async fn main() -> anyhow::Result<()> {
                 }
                 ApprovalsCommand::Approve { id, hold } => {
                     let hold = hold.map(|h| policy::parse_duration_ms(&h)).transpose()?;
-                    anyhow::ensure!(approvals::decide(&db, &pt, &id, true, hold).await?, "no pending request {id}");
-                    println!("Approved {id}.");
+                    let d = approvals::decide(&db, &pt, &id, true, hold)
+                        .await?
+                        .ok_or_else(|| anyhow::anyhow!("no pending request {id}"))?;
+                    println!("Approved {id}: {} may {} {}.", d.subject, d.verb, d.target);
                     Ok(())
                 }
                 ApprovalsCommand::Deny { id } => {
-                    anyhow::ensure!(approvals::decide(&db, &pt, &id, false, None).await?, "no pending request {id}");
-                    println!("Refused {id}.");
+                    let d = approvals::decide(&db, &pt, &id, false, None)
+                        .await?
+                        .ok_or_else(|| anyhow::anyhow!("no pending request {id}"))?;
+                    println!("Refused {id}: {} may not {} {}.", d.subject, d.verb, d.target);
                     Ok(())
                 }
             }

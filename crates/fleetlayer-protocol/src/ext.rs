@@ -513,6 +513,21 @@ pub struct Readings {
 pub struct SyncItem {
     pub name: String,
     pub content: String,
+    /// Unix permission bits, for a plugin that keeps them (the files plugin keeps the executable bit). Absent: the
+    /// target's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<u32>,
+    /// A symbolic link's target (relative, inside the bundle's folder), for a plugin that carries links; `content` is
+    /// then empty. A node older than this field ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
+}
+
+impl SyncItem {
+    /// An item of text with no mode or link.
+    pub fn text(name: impl Into<String>, content: impl Into<String>) -> Self {
+        Self { name: name.into(), content: content.into(), mode: None, link: None }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

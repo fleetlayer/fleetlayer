@@ -54,7 +54,7 @@ sign-ins and passkeys work without certificates. TLS belongs on a server, in fro
 
 A new fleet asks you before an agent does something sensitive: starting or attaching to a session on another machine
 (an approval holds 10 minutes), and each agent's first use of a shared tool, a sync, an admin action or a write to a
-target (it holds 30 days). Sessions on the same machine aren't checked. The agent's request is refused with a request
+target (it holds 30 days; for a tool or a sync, 30 days from its last use). Sessions on the same machine aren't checked. The agent's request is refused with a request
 ID until you answer:
 
 ```sh

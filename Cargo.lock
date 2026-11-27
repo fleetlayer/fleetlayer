@@ -1279,6 +1279,7 @@ dependencies = [
  "fleetlayer-plugin",
  "fleetlayer-protocol",
  "hex",
+ "jiff 1.0.3",
  "serde",
  "serde_json",
  "sha2 0.11.2",
