@@ -1706,6 +1706,31 @@ mod tests {
         assert!(status.is_redirection(), "the session is gone");
     }
 
+    #[tokio::test]
+    async fn with_only_the_login_key_the_hub_works_as_before() {
+        use tower::ServiceExt;
+        let d = tempfile::tempdir().unwrap();
+        let hub = test_hub(d.path(), PathBuf::from("/bin/false"));
+        let (_, _, _, page) = get(&hub, "/login", None).await;
+        assert!(page.contains("Login key") && page.contains("autofocus"), "{page}");
+        assert!(!page.contains("Sign in with Fleetlayer"));
+        let (_, _, to, _) = get(&hub, "/_/auth/start", None).await;
+        assert_eq!(to.as_deref(), Some("/login"), "no Fleetlayer sign-in without signin");
+        let mut req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/login")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(axum::body::Body::from(format!("login={}", "z".repeat(40))))
+            .unwrap();
+        req.extensions_mut().insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 9))));
+        let res = router(hub.clone()).oneshot(req).await.unwrap();
+        assert!(res.status().is_redirection());
+        let session =
+            res.headers().get(header::SET_COOKIE).unwrap().to_str().unwrap().split(';').next().unwrap().to_string();
+        let (status, _, _, _) = get(&hub, "/", Some(&session)).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
     fn test_hub(d: &Path, claude: PathBuf) -> Arc<Hub> {
         std::fs::write(d.join("login"), "z".repeat(40)).unwrap();
         Hub::open(HubConfig {
