@@ -393,3 +393,8 @@ managers, machines that sleep.
   as commands. Fleetlayer types only on "no channel" (the harness sees a live process without a usable socket), never
   on "gone". Found by Quietdeck's delivery (9f31dd5); Fleetlayer: crates/fleetlayer-node/src/deliver.rs and the
   claude-code plugin.
+- **herdr starts a new agent without your usual flags.** `herdr tab create --agent claude` runs plain `claude`, and
+  herdr's `[session.resume_extra_args]` (e.g. `claude = ["--dangerously-skip-permissions"]`) applies only when it
+  resumes a session, never to a new one. Pass the flags after `--`: `herdr tab create --label "<tab>" --agent claude --
+  --dangerously-skip-permissions --name "<tab>" "<first prompt>"`, and put that in the agents' global instructions so
+  an agent that starts a session for you uses it. Found 27 Nov 2026, when a new tab came up in the wrong mode.
