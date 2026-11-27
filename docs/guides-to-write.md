@@ -182,3 +182,21 @@ managers, machines that sleep.
   touches an existing file or link there. A node installed some other way (a package, Ansible, `/opt`) does nothing:
   whatever installed it puts its binaries on PATH, and lists each binary by name, so a new binary has to be added
   there too. Where it lives now: crates/fleetlayer-node/src/update.rs (`link_missing`).
+  - **claude-swap vs the original Claude account rotator vs our fork (and claude-auth-manager).** Four ways to run
+    several Claude subscriptions:
+    - claude-swap (realiti4/claude-swap, MIT, ~5k stars): a command line that keeps several accounts and switches the
+      active one (`--switch-to`), with a JSON account list that CodexBar reads. It reads usage for setup-token
+      accounts from the rate-limit headers of a one-token request (`usage.headerProbe`, `usage.fableProbe` for the
+      Fable week). One active account at a time; verify how it handles many sessions at once when writing.
+    - claude-account-rotator (ivokund, the original Claude Code mod): shows each account's usage under the prompt and
+      moves a session to another account before the one it's on runs out. Each session polls on its own: fine for a
+      few sessions.
+    - The fork (ndbroadbent/claude-account-rotator): one coordinator per machine polls every account for all sessions
+      (no polling storm at 40-60 sessions), handles Claude in Chrome's one-account limit, and had a menu bar app, now
+      retired in favour of CodexBar.
+    - Fleetlayer's claude-auth-manager: the sign-ins live on one always-on hub; every machine gets year-long setup
+      tokens sealed; usage is shared fleet-wide as readings; the fork's coordinator runs on each node in borrow mode;
+      CodexBar shows every account through `fleetlayer-claude-accounts`, which speaks claude-swap's list format.
+    The pick depends on scale: one machine and a few sessions, claude-swap or the original; many sessions on one
+    machine, the fork; many machines, claude-auth-manager. Where it lives now: docs/plugins/claude-auth-manager.md,
+    the fork's README, the codexbar brief.
