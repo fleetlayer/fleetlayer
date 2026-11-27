@@ -55,6 +55,9 @@ outside Fleetlayer while running his fleet (Claude Code permissions and hooks, a
 guides cover the whole journey. When another agent fixes such a problem, add the entry here even if the fix lives
 elsewhere, without private names or hostnames.
 
+The docs in `docs/` are the source of fleetlayer.ai (`site/`). A new doc starts with a `# Title` line (no
+frontmatter) and gets an entry in `site/site.config.mjs`; links between docs stay relative `.md` paths.
+
 ## Releases
 
 Deployers get one release per set of features: a version tag (`v0.2.0`) with release notes, not every build. Each
