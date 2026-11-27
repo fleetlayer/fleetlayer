@@ -44,6 +44,7 @@ pub const LINK_METHODS: &[(&str, Option<&str>)] = &[
     (m::ACCESS_CHECK, None),
     (m::PAGES_SPACES, None),
     (m::PAGES_OPEN, Some("write")),
+    (m::SESSION_START, Some("start")),
 ];
 
 #[derive(Default)]
@@ -688,6 +689,7 @@ mod tests {
             m::ACCESS_CHECK,
             m::PAGES_SPACES,
             m::PAGES_OPEN,
+            m::SESSION_START,
         ];
         for method in node_to_control {
             assert!(listed.contains(&method), "{method} isn't in LINK_METHODS");

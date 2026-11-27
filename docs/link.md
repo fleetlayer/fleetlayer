@@ -25,6 +25,7 @@ up to a minute.
 | `link/access_check` | request | `{tenant, who, can, to}` → `{allowed, rules, reason}`, for a plugin's `_fleetlayer.dev/access/check`. Refused unless the node's `-@<node>` is a member of `tenant`; decided and audited in that tenant ([`sso.md`](sso.md)). |
 | `link/pages_spaces` | notification | `{spaces: [name]}`: the pages spaces this node's plugins host, replacing its earlier list; sent on linking and on every change. A space another linked node already hosts stays with that node, and the control plane logs an error. |
 | `link/pages_open` | request | `{space, name, caller, new?, date?, justification?}` → `{streamId}`: push a page (`fleetlayer pages push`). Checked as `write` on `page:<space>/<name>` (agents are asked by default, approved per space); then the space's node gets `link/pages_serve`. |
+| `link/session_start` | request | `{node, tab?, cwd?, harness?, prompt?, resume?, caller, justification?}` → `{node, tab, address, sessionId, promptError}`: start or resume a session on `node` (`fleetlayer session start\|resume --on`). Checked as `start` on `<tab>@<node>` (`<sessionId>@<node>` for a resume without a tab; asked by default for 10 minutes). The prompt arrives rendered by the calling node; the control plane adds the outside-data notice when the caller reads untrusted input, then `node` gets `link/session_serve`. |
 
 A session is the node's registry entry: `{sessionId, manager, harnessPlugin, cwd, title, updatedAt, meta, ended}`,
 where `meta` is the `fleetlayer.dev/session` object from protocol section 4.
@@ -35,6 +36,7 @@ where `meta` is the `fleetlayer.dev/session` object from protocol section 4.
 |---|---|
 | `link/deliver` | `{name, deliveryId, kind, subkind?, untrusted, from, text}` → `{via}`. The node resolves `name` (a tab or a session ID) among its own sessions and delivers as protocol section 5 says. |
 | `link/pages_serve` | `{streamId, space, name, new?, date?, caller}` → `{}`. The node runs its pages plugin's `receive` command on stream `streamId` (`docs/plugins/pages.md`, "From another machine"). |
+| `link/session_serve` | `{tab?, cwd?, harness?, prompt?, resume?, caller}` → `{node, tab, address, sessionId, promptError}`. The node starts the session as [protocol.md](protocol.md#starting-sessions) describes, within two and a half minutes. |
 
 ## Access control
 

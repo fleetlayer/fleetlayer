@@ -28,6 +28,12 @@ pub mod method {
     /// Node → summaries plugin: import claude-summarizer's history. `{dir}` → `{records}`.
     pub const SUMMARY_IMPORT: &str = "_fleetlayer.dev/summary/import";
     pub const HARNESS_TRANSCRIPT: &str = "_fleetlayer.dev/harness/transcript";
+    /// Node → harness plugin, before a session of its harness starts in `cwd`: get the folder ready (Claude Code: mark
+    /// it trusted). `HarnessPrepare` → `{}`.
+    pub const HARNESS_PREPARE: &str = "_fleetlayer.dev/harness/prepare";
+    /// Node → harness plugin: where a stored session worked, for resuming it by its ID alone. `{sessionId}` →
+    /// `Located`; `-32002` when it doesn't know the session.
+    pub const HARNESS_LOCATE: &str = "_fleetlayer.dev/harness/locate";
     /// Node → session manager: the command that streams one of its sessions' terminals in the terminal stream format
     /// (`docs/protocol.md`, "Terminals"). `TerminalCommandRequest` → `TerminalCommand`.
     pub const TERMINAL_COMMAND: &str = "_fleetlayer.dev/terminal/command";
@@ -193,6 +199,29 @@ pub struct HarnessRole {
     pub deliver: bool,
     #[serde(default)]
     pub transcripts: bool,
+    /// It answers `_fleetlayer.dev/harness/prepare`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub prepare: bool,
+    /// It answers `_fleetlayer.dev/harness/locate`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub locate: bool,
+}
+
+/// `_fleetlayer.dev/harness/prepare`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HarnessPrepare {
+    pub harness: String,
+    /// Absolute.
+    pub cwd: String,
+}
+
+/// `_fleetlayer.dev/harness/locate`'s answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Located {
+    pub cwd: String,
+    pub harness: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -390,6 +419,9 @@ pub struct OpenedSession {
     pub address: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// The session started, but its first prompt couldn't be typed in: why.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_error: Option<String>,
 }
 
 // ------------------------------------------------------------ delivery

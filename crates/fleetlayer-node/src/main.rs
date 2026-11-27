@@ -13,6 +13,7 @@ mod plugins;
 mod readings;
 mod service;
 mod sessions;
+mod start;
 mod sync;
 mod terminals;
 mod tools;
@@ -64,6 +65,8 @@ pub struct Node {
     pub deliveries: deliver::Deliveries,
     pub link: link::Link,
     pub typing_fallback: bool,
+    /// Each harness's arguments for sessions started here (`harnesses:` in node.yaml).
+    pub harnesses: std::collections::BTreeMap<String, config::HarnessConfig>,
     pub has_control: bool,
     /// The gateway's address, checked as part of the node's health.
     pub gateway: Option<String>,
@@ -152,6 +155,7 @@ async fn run(cfg: NodeConfig) -> anyhow::Result<()> {
         deliveries: deliver::Deliveries::default(),
         link: link::Link::default(),
         typing_fallback: cfg.typing_fallback,
+        harnesses: cfg.harnesses.clone(),
         has_control: cfg.control.is_some(),
         gateway: cfg.gateway.clone(),
         control: cfg.control.clone().map(|mut c| {

@@ -13,6 +13,8 @@ the same from any machine in the fleet:
   work, or stepping in to answer a prompt.
 - **`fleetlayer msg send`** puts a message in front of a session. Agents use it to report to each other and hand work
   on; you use it to give an agent its next job without opening its tab.
+- **`fleetlayer session start`** opens a new agent session on any machine, with its first prompt, and **`fleetlayer
+  session resume`** brings a stored one back. An agent hands a side job to a fresh session this way.
 - **`fleetlayer summaries`** searches what every session has done, hour by hour. Ask your agent "what happened with the
   login bug yesterday" and this is what it runs.
 - **`fleetlayer subscribe`** routes webhooks (CI results, alerts) to the session that owns the work. The agent working
@@ -156,7 +158,51 @@ decision in the audit log. There are no `justify:` rules by default.
 A message from an agent that reads strangers' text (email, issue trackers) arrives marked as outside data. Setting
 that up is in [Run an agent that reads strangers' text](untrusted-input.md).
 
-## 4. Search what your agents did
+## 4. Start or resume a session anywhere
+
+Start an agent in a new tab on any machine, with its first prompt:
+
+```sh
+fleetlayer session start --on server --tab review --cwd /srv/app --prompt "review the open pull request"
+```
+
+The tab opens in the background: nobody's focus moves, and nothing is typed into a session already running. The
+command answers once the agent takes input and the session is listed, so a message sent straight after reaches it.
+`--harness codex` starts Codex instead of Claude Code. Leave out `--on` to start it on this machine.
+
+**Resume** a stored session by its ID, in the folder it worked in:
+
+```sh
+fleetlayer session resume 45be65c7-…
+```
+
+Fleetlayer finds the machine from the fleet's lists (or the summaries, for a session long gone); `--on` says it
+yourself. The tab gets the session's old name unless you give `--tab`.
+
+**What it won't do.** It refuses a tab name a running session already has, a session that's already running, and the
+home folder. Claude Code asks "Do you trust this folder?" every time in the home folder, and the session would wait
+there with nobody to answer, so start sessions in a project or scratch folder. In any other folder Fleetlayer marks
+that exact folder trusted for Claude Code first.
+
+**The agent's flags come from the machine it runs on.** A session starts with what that node's `node.yaml` says, never
+with anything the caller sends:
+
+```yaml
+harnesses:
+  claude: { args: [--permission-mode, auto] }
+```
+
+**The first prompt names who sent it**, as a message does ("Message from planning (laptop) via Fleetlayer: …", with
+the reply line), unless you typed it in a shell on that same machine. From an agent that reads strangers' text, it
+arrives marked as outside data.
+
+**Across machines it's under the access policy**: the verb is `start`, on `<tab>@<node>` (a resume without `--tab`
+shows the session ID in place of the tab, so write rules on `*@<node>`). By default an agent asks you first, and your
+approval lasts 10 minutes; `fleetlayer-control approvals approve <id>` approves, and a policy with `ask: []` turns
+asking off. `--json` prints `{node, tab, address, sessionId, promptError}` for other programs: `sessionId` is null
+until the agent reports one, and `promptError` says why when the session started but its prompt didn't go in.
+
+## 5. Search what your agents did
 
 The summaries plugin writes a one-liner, a paragraph and a page for each hour of each session's activity, on the node
 where the transcripts are, and publishes them to the control plane. Setup and costs are in
@@ -198,7 +244,7 @@ Summaries a node published before that check (or from a tool without it) can be 
 fleetlayer-control summaries-delete --node <node> --session <session id>
 ```
 
-## 5. Webhooks into the session that owns the work
+## 6. Webhooks into the session that owns the work
 
 A CI result is most useful to the agent working on that branch. Your agent sets this up once, on the control plane's
 machine. First an endpoint for the channel:

@@ -233,10 +233,14 @@ impl Handler for Shared {
                     return Err(RpcError::refused(format!("{} isn't an absolute directory", open.cwd)));
                 }
                 let (pane, session_id) = herdr::create_tab(&s.program, &open).await.map_err(RpcError::refused)?;
-                if let Some(text) = &open.prompt {
-                    herdr::prompt(&s.program, &pane, text).await.map_err(failure)?;
+                // The session is up either way: a prompt that doesn't go in is reported, not a failed open.
+                let mut prompt_error = None;
+                if let Some(text) = &open.prompt
+                    && let Err(e) = herdr::prompt(&s.program, &pane, text).await
+                {
+                    prompt_error = Some(failure(e).message);
                 }
-                answer(&OpenedSession { address: pane, session_id })
+                answer(&OpenedSession { address: pane, session_id, prompt_error })
             }
             ext::method::SESSION_DELIVER => {
                 let d: Deliver = params(p)?;

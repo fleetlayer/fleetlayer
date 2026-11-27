@@ -6,6 +6,8 @@
 //! control:
 //!   url: wss://control.example.com/v1/link
 //!   token_file: ~/.config/fleetlayer/node-token
+//! harnesses:             # what sessions started here run with (`fleetlayer session start`)
+//!   claude: { args: [--permission-mode, acceptEdits] }
 //! plugins:
 //!   - name: herdr
 //!     command: fleetlayer-herdr
@@ -36,6 +38,10 @@ pub struct NodeConfig {
     /// machine where people work in the agents' tabs may turn it off; such messages then fail at once instead.
     #[serde(default = "yes")]
     pub typing_fallback: bool,
+    /// The agent programs sessions started here run, by harness name (`claude`, `codex`): the arguments every session
+    /// started or resumed on this node gets, such as its permission mode. Only this file sets them; a caller can't.
+    #[serde(default)]
+    pub harnesses: std::collections::BTreeMap<String, HarnessConfig>,
     /// Report the node's health to a monitor (a Gatus external endpoint, say).
     pub heartbeat: Option<HeartbeatConfig>,
     /// Tools this node shares with sessions on other nodes (`crate::tools`).
@@ -46,6 +52,14 @@ pub struct NodeConfig {
     pub gateway: Option<String>,
     /// Self-update from Fleetlayer's releases (`crate::update`).
     pub update: Option<crate::update::UpdateConfig>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HarnessConfig {
+    /// Put before Fleetlayer's own arguments (`--name <tab>`, `--resume <id>`).
+    #[serde(default)]
+    pub args: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

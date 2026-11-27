@@ -360,6 +360,9 @@ impl Handler for FromNode {
                 }
                 answer(&l::ToolOpened { stream_id: id })
             }
+            l::method::SESSION_START => {
+                answer(&crate::route::start_session(app, tenant, &self.node, params(p)?).await?)
+            }
             l::method::TERMINAL_OPEN => {
                 let t: l::TerminalOpen = params(p)?;
                 let caller = format!("{}@{}", t.caller, self.node);

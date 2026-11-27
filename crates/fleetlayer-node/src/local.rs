@@ -6,6 +6,8 @@
 //! - `node/sessions` → every session the node knows.
 //! - `node/services` → `{services: [{plugin, name, url, health?, hosts}]}`: the HTTP services its plugins announced.
 //! - `node/readings` `{kinds}` → `{readings}`: the newest of each kind from every node this one may read.
+//! - `node/session_open` `{tab?, cwd?, harness?, prompt?, resume?, on?, why?, caller?}` → `SessionStarted`: start or
+//!   resume a session here or on node `on` (`crate::start`).
 //! - `_fleetlayer.dev/message/send` `{to, text, caller?: {sessionId?, address?}}` → `{via}`.
 //!
 //! Only the node's own Unix user can open the socket, so the caller's claim about which session it runs in
@@ -70,6 +72,15 @@ struct Send {
     untrusted: bool,
     #[serde(default)]
     subkind: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SessionOpen {
+    #[serde(flatten)]
+    spec: l::StartSpec,
+    on: Option<String>,
+    why: Option<String>,
+    caller: Option<Caller>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -180,6 +191,11 @@ impl Handler for Local {
                     }
                 }
                 answer(&json!({"services": services}))
+            }
+            "node/session_open" => {
+                let o: SessionOpen = params(p)?;
+                let caller = self.caller(o.caller.as_ref()).await;
+                answer(&crate::start::open(node, o.spec, o.on.as_deref(), o.why, caller.as_ref()).await?)
             }
             "node/sessions" => answer(&json!({"node": node.name, "sessions": node.registry.all().await})),
             ext::method::MESSAGE_SEND => {

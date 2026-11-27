@@ -67,6 +67,11 @@ pub mod method {
     pub const PAGES_OPEN: &str = "link/pages_open";
     /// Control plane → node: receive a page push into one of its spaces on stream `streamId`. `PagesServe` → `{}`.
     pub const PAGES_SERVE: &str = "link/pages_serve";
+    /// Node → control plane: start or resume a session on another node, after `start` on `<tab>@<node>`.
+    /// `SessionStart` → `SessionStarted`.
+    pub const SESSION_START: &str = "link/session_start";
+    /// Control plane → node: start or resume one of its sessions for a caller. `SessionServe` → `SessionStarted`.
+    pub const SESSION_SERVE: &str = "link/session_serve";
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -289,4 +294,61 @@ pub struct PagesServe {
     pub date: Option<String>,
     /// `<tab>@<node>` of the caller.
     pub caller: String,
+}
+
+/// What a session start or resume asks for, wherever it runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct StartSpec {
+    /// The tab's name. Required to start; a resume defaults to the session's old tab, else `resumed <id>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab: Option<String>,
+    /// Absolute. Required to start; a resume defaults to where the session worked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// `claude` (default) or `codex`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+    /// The first prompt, typed in once the agent takes input. From another node it arrives rendered as a message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    /// Resume this session ID instead of starting a new one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume: Option<String>,
+}
+
+/// `link/session_start`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionStart {
+    pub node: String,
+    #[serde(flatten)]
+    pub spec: StartSpec,
+    /// The calling session's name (its tab), or `-` for a shell.
+    pub caller: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub justification: Option<String>,
+}
+
+/// `link/session_serve`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionServe {
+    #[serde(flatten)]
+    pub spec: StartSpec,
+    /// `<tab>@<node>` of the caller.
+    pub caller: String,
+}
+
+/// A session that started (or resumed) and takes input.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionStarted {
+    pub node: String,
+    pub tab: String,
+    pub address: String,
+    /// The harness's session ID; null until the agent reports one.
+    pub session_id: Option<String>,
+    /// The session started, but its first prompt couldn't be typed in: why.
+    pub prompt_error: Option<String>,
 }

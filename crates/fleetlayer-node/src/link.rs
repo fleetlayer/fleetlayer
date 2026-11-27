@@ -207,6 +207,7 @@ impl Handler for FromControl {
             l::method::TOOL_SERVE => crate::tools::serve(self.node.clone(), params(p)?).await,
             l::method::TERMINAL_SERVE => crate::terminals::serve(self.node.clone(), params(p)?).await,
             l::method::PAGES_SERVE => crate::pages::serve(self.node.clone(), params(p)?).await,
+            l::method::SESSION_SERVE => crate::start::serve(&self.node, params(p)?).await,
             l::method::CATCHUP => {
                 self.node.ask_observer(ext::method::SUMMARY_CATCHUP, &p, Duration::from_secs(480)).await
             }

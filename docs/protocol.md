@@ -192,13 +192,35 @@ A plugin that can't stream (`"events": false`) is polled with `session/list` eve
 
 | Request | Params | Result |
 |---|---|---|
-| `_fleetlayer.dev/session/open` | `{label, cwd, harness, args[], prompt?}` | `{address, sessionId?}`, answered once the agent takes input |
+| `_fleetlayer.dev/session/open` | `{label, cwd, harness, args[], prompt?}` | `{address, sessionId?, promptError?}`, answered once the agent takes input |
 | `session/close` (ACP) | `{sessionId}` | `{}`; closes the tab or pane the session runs in |
 | `session/cancel` (ACP, notification) | `{sessionId}` | none; interrupts the running turn, as Esc does |
 | `_fleetlayer.dev/session/deliver` | see [section 5](#5-delivering-messages-the-harness-role) | |
 
 - `open` never takes focus from the person. `args` are the agent's own arguments after its program; the node, not the
-  caller, adds permission flags from its own config. A failure is `-32011` with a sentence saying why.
+  caller, adds permission flags from its own config. A failure is `-32011` with a sentence saying why. A session that
+  started but whose `prompt` couldn't be typed in is still an answer, with `promptError` saying why.
+
+### Starting sessions
+
+`fleetlayer session start|resume` asks its node on the local socket: `node/session_open` `{tab?, cwd?, harness?,
+prompt?, resume?, on?, why?, caller?}` → `{node, tab, address, sessionId, promptError}`. For another node it goes
+through the control plane (`link/session_start` → `link/session_serve`, [link.md](link.md)), checked as `start` on
+`<tab>@<node>`. The node that runs the session then:
+
+1. refuses a tab name a running session has, and a `resume` of a session that's running;
+2. for a resume, finds the folder and harness in its registry, else asks the harness plugins
+   (`_fleetlayer.dev/harness/locate`);
+3. refuses a folder that isn't absolute, doesn't exist, or is the home folder;
+4. asks the harness plugins for that harness to get the folder ready (`_fleetlayer.dev/harness/prepare`);
+5. builds the agent's arguments: its own `harnesses.<harness>.args` from `node.yaml`, then Fleetlayer's
+   (`--name <tab>`, `--resume <id>` for Claude Code; `resume <id>` for Codex). A caller can't send arguments;
+6. asks the session manager to `open`, and answers once the session is listed (up to 15 seconds after it opened).
+
+A `prompt` from a session, or from another node, arrives rendered as a message from the caller (section 5's header and
+reply line, plus the outside-data notice when the caller reads untrusted input); one typed in a shell on the same node
+goes in as it is.
+
 - `close` and `cancel` on a session that isn't there answer `-32010`.
 
 ### Terminals
@@ -286,6 +308,15 @@ time. Plugins don't need to deduplicate.
 
 A harness plugin can also answer `_fleetlayer.dev/harness/transcript` `{sessionId}` → `{path, format}`, pointing the
 node's summaries at the session's transcript (`format`: `claude-jsonl`, `codex-jsonl`).
+
+Two more help start sessions, each announced in the harness role (`"prepare": true`, `"locate": true`):
+
+- `_fleetlayer.dev/harness/prepare` `{harness, cwd}` → `{}`: get the folder ready before a session starts there with
+  nobody watching. Claude Code's plugin marks that exact folder trusted (`projects.<path>.hasTrustDialogAccepted` in
+  `~/.claude.json`, replaced in one rename with every other key kept), since Claude Code asks about each folder, even
+  inside a trusted one. A failure stops the start.
+- `_fleetlayer.dev/harness/locate` `{sessionId}` → `{cwd, harness}`: where a stored session worked, for resuming it
+  by its ID alone; `-32002` when the plugin doesn't know it.
 
 ## 6. Events: the event-source role
 

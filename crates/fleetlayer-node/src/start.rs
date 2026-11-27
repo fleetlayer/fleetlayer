@@ -1,0 +1,394 @@
+//! Starting and resuming sessions, here or on another node (`fleetlayer session start|resume`, `docs/protocol.md`,
+//! "Starting sessions"). The session manager plugin opens a tab without taking focus from anyone; the harness plugin
+//! gets the folder ready first (Claude Code: marks it trusted, or the session would wait at the trust prompt). The
+//! agent's arguments come from this node's own config (`harnesses:`) and Fleetlayer's few (`--name`, `--resume`),
+//! never from the caller. The answer comes once the agent takes input and the session is listed, so a message sent
+//! right after reaches it.
+
+use std::time::Duration;
+
+use fleetlayer_protocol::ext::{self, From, HarnessPrepare, Located, OpenSession, OpenedSession};
+use fleetlayer_protocol::link::{self as l, SessionServe, SessionStart, SessionStarted, StartSpec};
+use fleetlayer_protocol::rpc::{RpcError, code};
+use serde_json::{Value, json};
+
+use crate::Node;
+use crate::sessions::Session;
+
+/// How long a start may take on the node that runs it: herdr waits up to two minutes for the agent to take input,
+/// then the session has to be listed.
+pub const SERVE_TIMEOUT: Duration = Duration::from_secs(150);
+/// A start on another node, through the control plane: a little more than the serving node's own limit.
+pub const REMOTE_TIMEOUT: Duration = Duration::from_secs(170);
+/// How long to wait for a started session to show up in the node's list.
+const LISTED_WITHIN: Duration = Duration::from_secs(15);
+
+/// `node/session_open` from the CLI: start or resume here, or on `on` through the control plane.
+pub async fn open(
+    node: &Node,
+    mut spec: StartSpec,
+    on: Option<&str>,
+    why: Option<String>,
+    caller: Option<&Session>,
+) -> Result<SessionStarted, RpcError> {
+    let target = match on {
+        Some(n) if n != node.name => Some(n.to_string()),
+        Some(_) => None,
+        // A resume by ID alone: here if this node knows the session, else wherever the fleet lists it.
+        None => match &spec.resume {
+            Some(id) if !knows(node, id).await => find_node(node, id).await?,
+            _ => None,
+        },
+    };
+    // A prompt from a session, or from another node, is a message from the caller: the agent sees who it's from and
+    // where to answer. A person's own shell on this node types it as it is.
+    if (caller.is_some() || target.is_some())
+        && let Some(text) = spec.prompt.take()
+    {
+        let (from, reply_to) = sender(node, caller);
+        spec.prompt = Some(crate::deliver::render_message(&from, &text, reply_to.as_deref()));
+    }
+    let Some(target) = target else { return here(node, spec).await };
+    let peer = node.link.peer().await.ok_or_else(|| {
+        RpcError::not_here(format!("{target} is another node, and {} isn't linked to a control plane now", node.name))
+    })?;
+    let req = SessionStart {
+        node: target.clone(),
+        spec,
+        caller: caller.and_then(Session::tab).unwrap_or("-").to_string(),
+        justification: why,
+    };
+    peer.request_within(l::method::SESSION_START, &req, REMOTE_TIMEOUT).await.map_err(|e| {
+        if e.code == code::METHOD_NOT_FOUND {
+            RpcError::refused(format!(
+                "the control plane is older than this node and can't start sessions on other nodes: update it to \
+                 Fleetlayer {} or later",
+                env!("CARGO_PKG_VERSION")
+            ))
+        } else {
+            e
+        }
+    })
+}
+
+/// Who a prompt from this node is from, and where its answer goes.
+fn sender(node: &Node, caller: Option<&Session>) -> (From, Option<String>) {
+    match caller {
+        Some(c) => {
+            let name = c.tab().unwrap_or(&c.session_id);
+            let from = From {
+                label: format!("{name} ({})", node.name),
+                name: c.tab().map(str::to_string),
+                node: Some(node.name.clone()),
+                session_id: Some(c.session_id.clone()),
+            };
+            (from, c.tab().map(|t| format!("{t}@{}", node.name)))
+        }
+        None => (From { label: format!("a shell on {}", node.name), ..Default::default() }, None),
+    }
+}
+
+/// Control plane → node: a start for a caller on another node, already allowed there.
+pub async fn serve(node: &Node, req: SessionServe) -> Result<Value, RpcError> {
+    tracing::info!(caller = %req.caller, tab = ?req.spec.tab, resume = ?req.spec.resume, "session start asked");
+    let started = tokio::time::timeout(SERVE_TIMEOUT, here(node, req.spec))
+        .await
+        .map_err(|_| RpcError::refused("the session didn't start within two and a half minutes"))??;
+    tracing::info!(caller = %req.caller, tab = %started.tab, address = %started.address, "session started");
+    serde_json::to_value(started).map_err(|e| RpcError::internal(e.to_string()))
+}
+
+/// Whether this node can resume `id` itself.
+async fn knows(node: &Node, id: &str) -> bool {
+    node.registry.get(id).await.is_some() || locate(node, id).await.is_ok()
+}
+
+/// The node the fleet lists session `id` on.
+async fn find_node(node: &Node, id: &str) -> Result<Option<String>, RpcError> {
+    let unknown = || {
+        RpcError::new(
+            code::UNKNOWN_SESSION,
+            format!("{} doesn't know session {id}, and no other node lists it: say where with --on", node.name),
+        )
+    };
+    let Some(peer) = node.link.peer().await else { return Err(unknown()) };
+    let fleet: Value = peer.request(l::method::FLEET, &json!({})).await?;
+    let found = fleet["sessions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|s| s["sessionId"].as_str() == Some(id))
+        .and_then(|s| s["node"].as_str())
+        .map(str::to_string);
+    if found.is_some() {
+        return Ok(found);
+    }
+    // Long gone from every list: the summaries remember where it ran.
+    let hits: Value = peer.request(l::method::SUMMARIES_SEARCH, &json!({"session": id, "limit": 1})).await?;
+    let list = hits["summaries"].as_array().or(hits.as_array()).cloned().unwrap_or_default();
+    match list.iter().find_map(|h| h["node"].as_str()) {
+        Some(n) => Ok(Some(n.to_string())),
+        None => Err(unknown()),
+    }
+}
+
+/// Where a stored session worked, from the harness plugins that can say.
+async fn locate(node: &Node, id: &str) -> Result<Located, RpcError> {
+    for p in &node.plugins {
+        if !p.roles().await.harness.is_some_and(|h| h.locate) {
+            continue;
+        }
+        let Some(peer) = p.peer().await else { continue };
+        if let Ok(found) =
+            peer.request_within::<_, Located>(ext::method::HARNESS_LOCATE, &json!({"sessionId": id}), secs(10)).await
+        {
+            return Ok(found);
+        }
+    }
+    Err(RpcError::new(code::UNKNOWN_SESSION, format!("{} doesn't know session {id}", node.name)))
+}
+
+fn secs(n: u64) -> Duration {
+    Duration::from_secs(n)
+}
+
+/// Start or resume a session on this node.
+pub async fn here(node: &Node, spec: StartSpec) -> Result<SessionStarted, RpcError> {
+    let plan = plan(node, &spec).await?;
+    prepare(node, &plan.harness, &plan.cwd).await?;
+    let manager = manager(node).await?;
+    let peer = manager.peer().await.ok_or_else(|| RpcError::refused(format!("{} isn't running", manager.name())))?;
+    let open = OpenSession {
+        label: plan.tab.clone(),
+        cwd: plan.cwd.clone(),
+        harness: plan.harness.clone(),
+        args: plan.args.clone(),
+        prompt: spec.prompt.clone(),
+    };
+    // Watch for the session before opening it, so its first listing isn't missed.
+    let changes = node.registry.subscribe();
+    let opened: OpenedSession =
+        peer.request_within(ext::method::SESSION_OPEN, &open, secs(140)).await.map_err(|e| {
+            if e.code == code::METHOD_NOT_FOUND {
+                RpcError::refused(format!("{} can't open sessions", manager.name()))
+            } else {
+                e
+            }
+        })?;
+    let session_id =
+        listed(node, &opened, changes).await.or(opened.session_id.clone()).filter(|id| !id.starts_with('@'));
+    if let Some(e) = &opened.prompt_error {
+        tracing::warn!(tab = %plan.tab, "the session started but its first prompt didn't go in: {e}");
+    }
+    Ok(SessionStarted {
+        node: node.name.clone(),
+        tab: plan.tab,
+        address: opened.address,
+        session_id,
+        prompt_error: opened.prompt_error,
+    })
+}
+
+/// What will run: the tab, folder, harness and the agent's arguments.
+#[derive(Debug, PartialEq)]
+struct Plan {
+    tab: String,
+    cwd: String,
+    harness: String,
+    args: Vec<String>,
+}
+
+async fn plan(node: &Node, spec: &StartSpec) -> Result<Plan, RpcError> {
+    let running = node.registry.all().await.into_iter().filter(Session::running).collect::<Vec<_>>();
+    let (tab, cwd, harness) = match &spec.resume {
+        None => {
+            let tab = spec.tab.clone().ok_or_else(|| RpcError::invalid_params("name the tab with --tab"))?;
+            let cwd = spec.cwd.clone().ok_or_else(|| RpcError::invalid_params("say where with --cwd"))?;
+            (tab, cwd, spec.harness.clone().unwrap_or_else(|| "claude".into()))
+        }
+        Some(id) => {
+            if let Some(s) = running.iter().find(|s| &s.session_id == id) {
+                return Err(RpcError::refused(format!(
+                    "that session is already running, in a tab named {}",
+                    s.tab().unwrap_or("(no name)")
+                )));
+            }
+            let known = node.registry.get(id).await;
+            let located = match known.as_ref().and_then(|s| s.cwd.clone()) {
+                Some(cwd) => Some(Located {
+                    cwd,
+                    harness: known.as_ref().and_then(|s| s.meta.harness.clone()).unwrap_or_else(|| "claude".into()),
+                }),
+                None => locate(node, id).await.ok(),
+            };
+            let cwd = spec.cwd.clone().or(located.as_ref().map(|l| l.cwd.clone())).ok_or_else(|| {
+                RpcError::new(code::UNKNOWN_SESSION, format!("{} doesn't know where session {id} worked", node.name))
+            })?;
+            let harness = spec.harness.clone().or(located.map(|l| l.harness)).unwrap_or_else(|| "claude".into());
+            let tab = spec
+                .tab
+                .clone()
+                .or(known.as_ref().and_then(|s| s.tab().map(str::to_string)))
+                .unwrap_or_else(|| format!("resumed {}", id.chars().take(8).collect::<String>()));
+            (tab, cwd, harness)
+        }
+    };
+    check_tab(&tab)?;
+    if running.iter().any(|s| s.tab() == Some(&tab)) {
+        return Err(RpcError::refused(format!("a session is already running in a tab named {tab} on {}", node.name)));
+    }
+    let cwd = check_dir(&cwd, &node.home)?;
+    let own = node.harnesses.get(&harness).map(|h| h.args.clone()).unwrap_or_default();
+    let args = agent_args(&harness, &own, &tab, spec.resume.as_deref())?;
+    Ok(Plan { tab, cwd, harness, args })
+}
+
+fn check_tab(tab: &str) -> Result<(), RpcError> {
+    if tab.trim().is_empty() || tab.contains('@') || tab.chars().any(char::is_control) || tab.chars().count() > 64 {
+        return Err(RpcError::invalid_params(format!(
+            "{tab:?} can't be a tab's name: up to 64 characters, no '@' or control characters"
+        )));
+    }
+    Ok(())
+}
+
+/// The folder, absolute and existing, and never the home folder (Claude Code asks about trusting it every time).
+fn check_dir(cwd: &str, home: &std::path::Path) -> Result<String, RpcError> {
+    if !cwd.starts_with('/') {
+        return Err(RpcError::invalid_params(format!("{cwd} isn't an absolute folder")));
+    }
+    let real = std::fs::canonicalize(cwd).map_err(|_| RpcError::refused(format!("there's no folder {cwd}")))?;
+    if !real.is_dir() {
+        return Err(RpcError::refused(format!("{cwd} isn't a folder")));
+    }
+    if std::fs::canonicalize(home).is_ok_and(|h| h == real) {
+        return Err(RpcError::refused(
+            "sessions don't start in the home folder (Claude Code asks whether to trust it every time): use a \
+             project or scratch folder",
+        ));
+    }
+    Ok(real.to_string_lossy().into_owned())
+}
+
+/// The agent's arguments: this node's own for the harness, then Fleetlayer's.
+fn agent_args(harness: &str, own: &[String], tab: &str, resume: Option<&str>) -> Result<Vec<String>, RpcError> {
+    let mut a = own.to_vec();
+    match (harness, resume) {
+        ("claude", None) => a.extend(["--name".into(), tab.into()]),
+        ("claude", Some(id)) => a.extend(["--name".into(), tab.into(), "--resume".into(), id.into()]),
+        ("codex", Some(id)) => a.extend(["resume".into(), id.into()]),
+        (_, None) => {}
+        (h, Some(_)) => return Err(RpcError::refused(format!("Fleetlayer doesn't know how to resume a {h} session"))),
+    }
+    if let Some(id) = resume
+        && (id.starts_with('-') || id.chars().any(|c| c.is_whitespace() || c.is_control()))
+    {
+        return Err(RpcError::invalid_params(format!("{id:?} isn't a session ID")));
+    }
+    Ok(a)
+}
+
+/// Ask the harness plugins for this harness to get the folder ready. None for it: nothing to do.
+async fn prepare(node: &Node, harness: &str, cwd: &str) -> Result<(), RpcError> {
+    for p in &node.plugins {
+        let Some(role) = p.roles().await.harness else { continue };
+        if !role.prepare || !role.harnesses.iter().any(|h| h == harness) {
+            continue;
+        }
+        let Some(peer) = p.peer().await else {
+            return Err(RpcError::refused(format!("{} isn't running, so the folder can't be got ready", p.name())));
+        };
+        let req = HarnessPrepare { harness: harness.into(), cwd: cwd.into() };
+        peer.request_within::<_, Value>(ext::method::HARNESS_PREPARE, &req, secs(10))
+            .await
+            .map_err(|e| RpcError::refused(format!("getting {cwd} ready for {harness}: {}", e.message)))?;
+    }
+    Ok(())
+}
+
+/// The session manager that opens sessions here.
+async fn manager(node: &Node) -> Result<std::sync::Arc<crate::plugins::PluginHandle>, RpcError> {
+    for p in &node.plugins {
+        if p.roles().await.session_manager.is_some_and(|r| r.open) {
+            return Ok(p.clone());
+        }
+    }
+    Err(RpcError::refused(format!("no session manager on {} can open sessions", node.name)))
+}
+
+/// The started session's ID, once the node lists it at the address it opened at.
+async fn listed(
+    node: &Node,
+    opened: &OpenedSession,
+    mut changes: tokio::sync::broadcast::Receiver<crate::sessions::Change>,
+) -> Option<String> {
+    let find = || async {
+        if let Some(id) = &opened.session_id
+            && node.registry.get(id).await.is_some()
+        {
+            return Some(id.clone());
+        }
+        node.registry.by_address(&opened.address).await.map(|s| s.session_id)
+    };
+    let wait = async {
+        loop {
+            if let Some(id) = find().await {
+                // An unnamed session gets its harness's ID soon after; give it a moment.
+                if !id.starts_with('@') {
+                    return Some(id);
+                }
+            }
+            if let Err(tokio::sync::broadcast::error::RecvError::Closed) = changes.recv().await {
+                return None;
+            }
+        }
+    };
+    match tokio::time::timeout(LISTED_WITHIN, wait).await {
+        Ok(id) => id,
+        Err(_) => find().await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arguments_come_from_the_node_then_fleetlayer() {
+        let own = vec!["--permission-mode".to_string(), "acceptEdits".to_string()];
+        assert_eq!(agent_args("claude", &own, "t", None).unwrap().join(" "), "--permission-mode acceptEdits --name t");
+        assert_eq!(agent_args("claude", &[], "t", Some("s1")).unwrap().join(" "), "--name t --resume s1");
+        assert_eq!(agent_args("codex", &["--x".into()], "t", Some("s1")).unwrap().join(" "), "--x resume s1");
+        assert!(agent_args("codex", &[], "t", None).unwrap().is_empty());
+        assert!(agent_args("other", &[], "t", Some("s1")).is_err());
+        // A session ID can't smuggle in a flag.
+        assert!(agent_args("claude", &[], "t", Some("--dangerously-skip-permissions")).is_err());
+        assert!(agent_args("claude", &[], "t", Some("a b")).is_err());
+    }
+
+    #[test]
+    fn the_folder_is_real_and_never_home() {
+        let home = tempfile::tempdir().unwrap();
+        let work = home.path().join("work");
+        std::fs::create_dir(&work).unwrap();
+        assert_eq!(
+            check_dir(work.to_str().unwrap(), home.path()).unwrap(),
+            work.canonicalize().unwrap().to_str().unwrap()
+        );
+        let e = check_dir(home.path().to_str().unwrap(), home.path()).unwrap_err();
+        assert!(e.message.contains("home folder"), "{e:?}");
+        // The home folder by another path is still home.
+        let again = format!("{}/work/..", home.path().display());
+        assert!(check_dir(&again, home.path()).is_err());
+        assert!(check_dir("relative", home.path()).unwrap_err().message.contains("absolute"));
+        assert!(check_dir("/no/such/folder", home.path()).unwrap_err().message.contains("no folder"));
+    }
+
+    #[test]
+    fn tab_names_are_plain() {
+        assert!(check_tab("fleetlayer docs").is_ok());
+        assert!(check_tab("a@b").is_err());
+        assert!(check_tab(" ").is_err());
+        assert!(check_tab("a\nb").is_err());
+    }
+}

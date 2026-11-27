@@ -3,12 +3,17 @@
 //! it (so the agent sees who a message is from, and nothing is typed into the person's terminal), and points the node
 //! at each session's transcript.
 //!
-//! Config (all optional): `claude_dir`, Claude Code's directory (default `~/.claude`).
+//! Before a session starts for an agent, it marks the session's folder trusted (`trust.rs`), and it finds where a
+//! stored session worked so it can be resumed by its ID alone.
+//!
+//! Config (all optional): `claude_dir`, Claude Code's directory (default `~/.claude`); `claude_json`, its settings
+//! file (default `~/.claude.json`, or `.claude.json` inside a configured `claude_dir`).
 //!
 //! A machine whose sessions run in bypass-permissions mode needs `"crossSessionInbound": "accept"` in
 //! `~/.claude/settings.json`, or Claude Code holds every message for the person's approval in the tab.
 
 mod socket;
+mod trust;
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -31,11 +36,13 @@ use tokio::sync::Mutex;
 #[derive(Debug, Default, Deserialize)]
 struct Config {
     claude_dir: Option<PathBuf>,
+    claude_json: Option<PathBuf>,
 }
 
 #[derive(Default)]
 struct Plugin {
     claude_dir: Mutex<Option<PathBuf>>,
+    claude_json: Mutex<Option<PathBuf>>,
     watching: Mutex<bool>,
 }
 
@@ -67,6 +74,11 @@ impl Handler for Shared {
                     .map_err(RpcError::invalid_params)?
                     .ok_or_else(|| RpcError::refused("fleetlayer-claude-code runs under a Fleetlayer node"))?;
                 let config: Config = serde_json::from_value(node.config).unwrap_or_default();
+                let claude_json = config.claude_json.clone().unwrap_or_else(|| match &config.claude_dir {
+                    Some(d) => d.join(".claude.json"),
+                    None => PathBuf::from(&node.home).join(".claude.json"),
+                });
+                *plugin.claude_json.lock().await = Some(claude_json);
                 *plugin.claude_dir.lock().await =
                     Some(config.claude_dir.unwrap_or_else(|| PathBuf::from(&node.home).join(".claude")));
                 let meta = PluginMeta {
@@ -76,6 +88,8 @@ impl Handler for Shared {
                             harnesses: vec!["claude".into()],
                             deliver: true,
                             transcripts: true,
+                            prepare: true,
+                            locate: true,
                         }),
                         ..Default::default()
                     },
@@ -148,6 +162,25 @@ impl Handler for Shared {
                 let path = socket::transcript(&plugin.dir().await?, id)
                     .ok_or_else(|| RpcError::new(code::UNKNOWN_SESSION, format!("no transcript for session {id}")))?;
                 answer(&json!({"path": path, "format": "claude-jsonl"}))
+            }
+            ext::method::HARNESS_PREPARE => {
+                let r: ext::HarnessPrepare = params(p)?;
+                if r.harness != "claude" {
+                    return Ok(json!({}));
+                }
+                let path =
+                    plugin.claude_json.lock().await.clone().ok_or_else(|| RpcError::refused("initialize first"))?;
+                trust::mark_trusted(&path, &r.cwd).map_err(RpcError::refused)?;
+                tracing::info!(cwd = %r.cwd, "marked the folder trusted for Claude Code");
+                Ok(json!({}))
+            }
+            ext::method::HARNESS_LOCATE => {
+                let id =
+                    p.get("sessionId").and_then(Value::as_str).ok_or_else(|| RpcError::invalid_params("sessionId"))?;
+                let unknown = || RpcError::new(code::UNKNOWN_SESSION, format!("no Claude Code session {id} here"));
+                let path = socket::transcript(&plugin.dir().await?, id).ok_or_else(unknown)?;
+                let cwd = trust::transcript_cwd(&path).ok_or_else(unknown)?;
+                answer(&ext::Located { cwd, harness: "claude".into() })
             }
             _ => Err(RpcError::method_not_found(method)),
         }

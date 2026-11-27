@@ -115,6 +115,56 @@ enum Command {
         #[command(subcommand)]
         command: Msg,
     },
+    /// Start or resume agent sessions, here or on another node.
+    Session {
+        #[command(subcommand)]
+        command: SessionCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum SessionCommand {
+    /// Start a session in a new tab, without taking focus from anyone: `fleetlayer session start --on server --tab
+    /// review --cwd /srv/app --prompt "…"`. Answers once the agent takes input. With --json:
+    /// `{node, tab, address, sessionId, promptError}`.
+    Start {
+        /// The new tab's name; refused if a session is already running in a tab of that name.
+        #[arg(long)]
+        tab: String,
+        /// The folder it works in (absolute, on that node; not the home folder).
+        #[arg(long)]
+        cwd: String,
+        /// The node to start it on. Default: this one.
+        #[arg(long)]
+        on: Option<String>,
+        /// The agent: claude (default) or codex. Its arguments (permission mode...) come from that node's config.
+        #[arg(long)]
+        harness: Option<String>,
+        /// The first prompt, typed in once the agent takes input.
+        #[arg(long)]
+        prompt: Option<String>,
+        /// Why, in one line, when the access rules ask for a reason. Default: $FLEETLAYER_WHY.
+        #[arg(long, env = "FLEETLAYER_WHY")]
+        why: Option<String>,
+    },
+    /// Resume a stored session in a new tab, in the folder it worked in. Finds the node from the session ID when
+    /// --on is left out.
+    Resume {
+        session_id: String,
+        #[arg(long)]
+        on: Option<String>,
+        /// The tab's name. Default: the session's old tab, else "resumed <id>".
+        #[arg(long)]
+        tab: Option<String>,
+        /// A different folder than the one it worked in.
+        #[arg(long)]
+        cwd: Option<String>,
+        /// A prompt to type in once it takes input.
+        #[arg(long)]
+        prompt: Option<String>,
+        #[arg(long, env = "FLEETLAYER_WHY")]
+        why: Option<String>,
+    },
 }
 
 #[derive(clap::Args)]
@@ -387,6 +437,14 @@ impl Handler for NoRequests {
     }
 }
 
+/// A folder on this machine made absolute; one on another node is passed as it is (that node checks it).
+fn absolute(dir: &str, elsewhere: bool) -> String {
+    if elsewhere || dir.starts_with('/') {
+        return dir.to_string();
+    }
+    std::path::absolute(dir).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| dir.to_string())
+}
+
 /// The session this command runs in, from the environment its harness and session manager set.
 fn caller() -> Value {
     let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
@@ -635,6 +693,28 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 );
             } else {
                 println!("{} is offered only on its listed networks again.", v["tool"].as_str().unwrap_or("?"));
+            }
+        }
+        Command::Session { command } => {
+            let req = match command {
+                SessionCommand::Start { tab, cwd, on, harness, prompt, why } => json!({
+                    "tab": tab, "cwd": absolute(&cwd, on.is_some()), "on": on, "harness": harness, "prompt": prompt,
+                    "why": why, "caller": caller(),
+                }),
+                SessionCommand::Resume { session_id, on, tab, cwd, prompt, why } => json!({
+                    "resume": session_id, "tab": tab, "cwd": cwd.map(|c| absolute(&c, on.is_some())), "on": on,
+                    "prompt": prompt, "why": why, "caller": caller(),
+                }),
+            };
+            let v: Value = peer.request_within("node/session_open", &req, std::time::Duration::from_secs(180)).await?;
+            if cli.json {
+                println!("{v}");
+            } else {
+                let id = v["sessionId"].as_str().map(|id| format!(", session {id}")).unwrap_or_default();
+                println!("Started {}@{}{id}.", v["tab"].as_str().unwrap_or("?"), v["node"].as_str().unwrap_or("?"));
+                if let Some(e) = v["promptError"].as_str() {
+                    println!("  The first prompt didn't go in: {e}");
+                }
             }
         }
         Command::Msg { command: Msg::Send { to, text, why } } => {
