@@ -22,7 +22,7 @@ called `screenshots` and `downloads` inside. The `folders` tool (and the server'
 | Tool | Use it for |
 |---|---|
 | `folders` | Which folders you can read, each with its file count and newest file, or why it can't be read |
-| `latest` | The newest file(s): `n` (default 1), `kind` (`image`, `text`, `pdf`, `video`, `archive`, `other`), `read: true` for their contents (at most 5) |
+| `latest` | The newest file(s): `n` (default 1), `kind` (`any`, the default, `image`, `text`, `pdf`, `video`, `archive`), `read: true` for their contents (at most 5) |
 | `find` | By `pattern` and/or `since`, newest first |
 | `list` | A folder's files, newest first: `limit` (default 50, at most 200), `offset` |
 | `read` | One file by `name`: an image you can see, text as text, anything else as base64 |
@@ -35,7 +35,7 @@ called `screenshots` and `downloads` inside. The `folders` tool (and the server'
   again with `max_px` of 2000 to 2500. Avoid `max_px: 0` on retina screenshots: the original can be over the model's
   image size limit, and that fails on the model's side, not in the tool.
 - **Big files:** text is cut at 1 MB, with a note saying so: treat it as partial. A non-image file over the size cap
-  (8 MB by default) can't be read.
+  (8 MB by default) can't be read, nor an image over 50 MB (too big to downscale).
 - **Only files directly in each folder** are visible: no subfolders, hidden files or symbolic links. If you can't see
   a file the person mentions, say it may be in a subfolder rather than guessing.
 
@@ -66,7 +66,10 @@ for another way, such as another entry they didn't give you.
 Say what's needed once, then wait. Don't retry in a loop.
 
 - **"macOS refused access to the … folder"**: they allow the Fleetlayer node in System Settings › Privacy & Security ›
-  Files and Folders, once.
+  Files and Folders, once. Expect it again once after each Fleetlayer upgrade on that machine: macOS remembers the
+  answer per program.
+- **A first read of Downloads, Desktop or Documents that hangs**: macOS is showing a prompt on that machine, and the
+  call waits for someone to answer it. Tell your person to click Allow there.
 - **`not_downloaded`, "kept in the cloud and isn't downloaded"**: they download it on that machine (open it in
   Finder) once.
 - **The machine is asleep, or off the networks the tool is offered on**: it's refused until it's awake, or until they
