@@ -60,7 +60,7 @@ messages, webhooks and channels, access rules, approvals, an audit log, plugins 
 and pages and apps.
 
 Built on Fleetlayer: [Quietdeck](https://quietdeck.ai/). An agent triages your email and proposes what to do, and you
-approve. Quietdeck runs on Fleetlayer and uses its features to:
+approve. Quietdeck is designed to run on Fleetlayer and uses its features to:
 
 - forward emails and notifications to the agent that owns the work through Fleetlayer’s messaging
 - know what all your agents are doing from Fleetlayer’s session summaries, and route each message to the right agent
@@ -71,15 +71,18 @@ approve. Quietdeck runs on Fleetlayer and uses its features to:
 
 Fleetlayer is the layer between your agents and the tools around them. Each part does one job and can be replaced.
 
-- **Agents:** Claude Code, Codex
+- **Agents:** Claude Code, Codex, Gemini
 - **Sessions:** herdr (https://herdr.dev)
-- **Fleetlayer:** cross-agent messaging, webhooks, single sign-on, access rules, approvals, audit log, AI account management, session summaries, remote terminals, shared MCP tools, file sync, pages and apps
+- **Fleetlayer:** cross-agent messaging, webhooks, single sign-on, access rules, approvals, audit log, remote terminals
+- **Fleetlayer Plugins:** herdr, Claude Code, AI account management, session summaries, file sync, shared folders, pages and apps (all optional)
+- **Tools:** Executor (https://executor.sh) for MCP servers and sign-ins to your services
+- **Secrets:** 1Password
 - **Browser:** Playwright MCP
 - **Files:** Syncthing, Obsidian Sync, Obsidian LiveSync, or any file syncing solution
 - **Network:** Tailscale, Cloudflare Tunnel
 - **Services:** Gatus for health checks, Traefik for addresses
 - **Backups:** restic (https://fleetlayer.ai/guides/backups.md)
-- **Mobile:** herdr relay
+- **Mobile:** herdr-mobile-relay (https://github.com/0cv/herdr-mobile-relay)
 
 ## Start small, replace any component as you go
 

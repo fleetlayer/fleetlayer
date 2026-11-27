@@ -260,7 +260,7 @@ const description = site.summary;
         <div class="found__case">
           <p class="found__built">Built on Fleetlayer</p>
           <h3><a href="https://quietdeck.ai/">Quietdeck</a></h3>
-          <p>An agent triages your email and proposes what to do, and you approve. Quietdeck runs on Fleetlayer and uses its features to:</p>
+          <p>An agent triages your email and proposes what to do, and you approve. Quietdeck is designed to run on Fleetlayer and uses its features to:</p>
           <ul>
             <li>forward emails and notifications to the agent that owns the work through Fleetlayer’s messaging</li>
             <li>know what all your agents are doing from Fleetlayer’s session summaries, and route each message to the right agent</li>
@@ -279,7 +279,7 @@ const description = site.summary;
         <ol class="stack" aria-label="The parts of a fleet">
           <li class="stack__row">
             <span class="stack__role">Agents</span>
-            <span class="stack__parts"><a href="https://github.com/anthropics/claude-code">Claude Code</a>, <a href="https://github.com/openai/codex">Codex</a></span>
+            <span class="stack__parts"><a href="https://github.com/anthropics/claude-code">Claude Code</a>, <a href="https://github.com/openai/codex">Codex</a>, <a href="https://github.com/google-gemini/gemini-cli">Gemini</a></span>
           </li>
           <li class="stack__row">
             <span class="stack__role">Sessions</span>
@@ -287,7 +287,19 @@ const description = site.summary;
           </li>
           <li class="stack__row stack__row--core">
             <span class="stack__role">Fleetlayer</span>
-            <span class="stack__parts">cross-agent messaging, webhooks, single sign-on, access rules, approvals, audit log, AI account management, session summaries, remote terminals, shared MCP tools, file sync, pages and apps</span>
+            <span class="stack__parts">cross-agent messaging, webhooks, single sign-on, access rules, approvals, audit log, remote terminals</span>
+          </li>
+          <li class="stack__row stack__row--core">
+            <span class="stack__role">Fleetlayer Plugins</span>
+            <span class="stack__parts">herdr, Claude Code, AI account management, session summaries, file sync, shared folders, pages and apps <span class="stack__note">(all optional)</span></span>
+          </li>
+          <li class="stack__row">
+            <span class="stack__role">Tools</span>
+            <span class="stack__parts"><a href="https://executor.sh">Executor</a> for MCP servers and sign-ins to your services</span>
+          </li>
+          <li class="stack__row">
+            <span class="stack__role">Secrets</span>
+            <span class="stack__parts"><a href="https://1password.com">1Password</a></span>
           </li>
           <li class="stack__row">
             <span class="stack__role">Browser</span>
@@ -311,7 +323,7 @@ const description = site.summary;
           </li>
           <li class="stack__row">
             <span class="stack__role">Mobile</span>
-            <span class="stack__parts">herdr relay</span>
+            <span class="stack__parts"><a href="https://github.com/0cv/herdr-mobile-relay">herdr-mobile-relay</a></span>
           </li>
         </ol>
       </section>
