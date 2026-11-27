@@ -20,6 +20,7 @@ export const pages = [
   { file: "guides/node-services", group: "Guides", label: "Add a machine" },
   { file: "guides/agents-vm", group: "Guides", label: "A server VM for your agents" },
   { file: "guides/day-to-day", group: "Guides", label: "Watch, steer and message" },
+  { file: "guides/ci-results", group: "Guides", label: "CI results to the right agent" },
   { file: "guides/agent-instructions", group: "Guides", label: "Instructions on every machine" },
   { file: "guides/sync", group: "Guides", label: "Sync notes and skills" },
   { file: "guides/claude-accounts", group: "Guides", label: "Many Claude accounts" },
