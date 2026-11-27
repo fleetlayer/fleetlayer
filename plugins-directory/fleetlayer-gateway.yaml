@@ -1,0 +1,26 @@
+name: fleetlayer-gateway
+summary: One address per service, a status page that alerts, and the same routes as Traefik and Gatus config.
+kind: service
+roles: []
+ships_with_fleetlayer: true
+status: beta
+licence: Apache-2.0
+maintainer: Fleetlayer
+source: https://github.com/fleetlayer/fleetlayer/tree/main/crates/fleetlayer-gateway
+install: bundled
+command: fleetlayer-gateway
+platforms: [linux, macos]
+min_fleetlayer: 0.3.8
+needs: []
+grants: []
+config: |
+  # Started by `fleetlayer up` on a laptop; its settings are in ~/.config/fleetlayer/gateway.yaml.
+  # On a server: fleetlayer-gateway emit traefik … and fleetlayer-gateway emit gatus …
+security: >-
+  Listens on 127.0.0.1 and [::1] only by default, in plain HTTP for *.localhost addresses. Exposing it to a network
+  (listen 0.0.0.0) exposes every service it routes, without TLS.
+docs: guides/laptop
+description: |
+  On a laptop it gives each service an address (`http://pages.localhost:7680`), checks each one's health every 30
+  seconds, takes Gatus-style heartbeats, and tells you and an agent when something stops. On a server it writes
+  Traefik and Gatus config from the same list.

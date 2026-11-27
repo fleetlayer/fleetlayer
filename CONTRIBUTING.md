@@ -16,6 +16,15 @@ both.
 - **No GPL or AGPL code,** not even a snippet. Apache 2.0 and MIT code can be borrowed with its notice kept and an
   entry in [NOTICE](NOTICE).
 
+## Add your plugin to the directory
+
+A plugin of your own needs no fork of Fleetlayer and no change here: it's a separate program the node starts. To list
+it in the [plugin directory](https://fleetlayer.ai/directory/), open a pull request that adds one file,
+`plugins-directory/<name>.yaml`. [plugins-directory/README.md](plugins-directory/README.md) lists the fields, and CI
+checks them. Any open-source licence is listed; copyleft and proprietary ones are marked on the page.
+
+## Licence
+
 Fleetlayer is licensed under [Apache 2.0](LICENSE), and contributions are accepted under the same licence.
 
 To run your own build of Fleetlayer while a change is in review (or forever), see [Make it

@@ -1,0 +1,27 @@
+name: claude-code
+summary: Delivers messages into Claude Code sessions through Claude Code's own messaging channel.
+kind: plugin
+roles: [harness]
+ships_with_fleetlayer: true
+status: beta
+licence: Apache-2.0
+maintainer: Fleetlayer
+source: https://github.com/fleetlayer/fleetlayer/tree/main/plugins/claude-code
+install: bundled
+command: fleetlayer-claude-code
+platforms: [linux, macos]
+min_fleetlayer: 0.1.0
+protocol: 1
+needs: [Claude Code]
+grants: []
+config: |
+  plugins:
+    - name: claude-code
+      command: fleetlayer-claude-code
+security: >-
+  Writes to the messaging socket of each Claude Code session of its Unix user. Claude Code sessions in bypass mode
+  hold such messages for approval unless crossSessionInbound is set to accept (see the unattended agents guide).
+description: |
+  The harness plugin for Claude Code. A message arrives in the session as a turn of its own, labelled with who sent
+  it and how to reply, with nothing typed into the terminal. It also points the node at each session's transcript.
+  Use it beside a session manager plugin such as herdr.

@@ -1,0 +1,33 @@
+name: files
+summary: Keeps a folder (skills, AGENTS.md files) the same on other machines, encrypted in transit.
+kind: plugin
+roles: [sync_source, sync_target]
+ships_with_fleetlayer: true
+status: beta
+licence: Apache-2.0
+maintainer: Fleetlayer
+source: https://github.com/fleetlayer/fleetlayer/tree/main/plugins/files
+install: bundled
+command: fleetlayer-files
+platforms: [linux, macos]
+min_fleetlayer: 0.2.0
+protocol: 1
+needs: []
+grants: [sync.publish]
+config: |
+  plugins:
+    - name: files
+      command: fleetlayer-files
+      grants: [sync.publish]          # on the source node
+      config:
+        publish:                      # on the source node
+          - { set: skills, dir: ~/.claude/skills, to: [server, laptop], every_minutes: 5 }
+        apply:                        # on each target node
+          - { set: skills, dir: ~/.claude/skills }
+security: >-
+  A target writes whatever the source publishes into the folder you name, so only the source node should be allowed
+  to send its bundles (your access policy). It never touches files it didn't write. Text files only, at most 1 MB
+  each and 20 MB a set.
+description: |
+  The source publishes a new version whenever the folder changes. Each target makes its folder match: files written,
+  and files this plugin wrote for an earlier version removed. Bundles are named `files/<set>`.

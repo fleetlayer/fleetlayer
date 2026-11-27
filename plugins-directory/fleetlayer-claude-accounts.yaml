@@ -1,0 +1,24 @@
+name: fleetlayer-claude-accounts
+summary: Shows every Claude account the hub manages, with its usage, in menu bar apps such as CodexBar.
+kind: tool
+roles: []
+ships_with_fleetlayer: true
+status: beta
+licence: Apache-2.0
+maintainer: Fleetlayer
+source: https://github.com/fleetlayer/fleetlayer/tree/main/crates/fleetlayer-accounts
+install: bundled
+command: fleetlayer-claude-accounts
+platforms: [linux, macos]
+min_fleetlayer: 0.3.4
+needs: [claude-auth-manager's hub, a running node allowed to read the hub's readings]
+grants: []
+config: |
+  # In CodexBar: Settings › Providers › Claude › "Read accounts from claude-swap",
+  # with the full path to fleetlayer-claude-accounts as the claude-swap executable.
+security: >-
+  Prints account names and usage figures that the node already receives as readings. It holds no tokens.
+docs: guides/claude-accounts
+description: |
+  Prints the hub's accounts in claude-swap's account-list format (`--list --json`), with the newest usage from any
+  node, so every account shows on every Mac whether or not that Mac holds a sign-in.

@@ -12,6 +12,7 @@ import { readFile, writeFile, mkdir, rm, readdir } from "node:fs/promises";
 import { dirname, join, relative, resolve, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import { site as SITE, pages as PAGES, repo as REPO } from "../site.config.mjs";
+import { directoryPages } from "./directory-pages.mjs";
 
 const siteDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoDir = resolve(siteDir, "..");
@@ -87,7 +88,9 @@ async function main() {
 
   const files = await walk(docsDir);
   const known = new Set(files.map(slugOf));
-  for (const p of PAGES) if (!known.has(p.file)) throw new Error(`site.config.mjs lists docs/${p.file}.md, which doesn't exist`);
+  for (const p of PAGES) {
+    if (!p.generated && !known.has(p.file)) throw new Error(`site.config.mjs lists docs/${p.file}.md, which doesn't exist`);
+  }
 
   const unlisted = [...known].filter((s) => !published.has(s) && !SITE.unpublished.includes(s));
   if (unlisted.length) {
@@ -128,6 +131,33 @@ async function main() {
     docs.push({ slug, title: page.title ?? title, description, group: page.group, markdown });
   }
 
+  // The plugin directory, generated from ../plugins-directory/*.yaml.
+  const children = [];
+  for (const d of await directoryPages({ siteUrl: SITE.url, repo: REPO })) {
+    const page = published.get(d.slug);
+    const front = [
+      "---",
+      `title: ${JSON.stringify(d.title)}`,
+      `description: ${JSON.stringify(d.description)}`,
+      `editUrl: ${JSON.stringify(`${REPO}/edit/main/plugins-directory/${d.child ? `${d.slug.slice(10)}.yaml` : "README.md"}`)}`,
+      page?.label ? `sidebar:\n  label: ${JSON.stringify(page.label)}` : null,
+      "---",
+      "",
+    ]
+      .filter((l) => l !== null)
+      .join("\n");
+    const out = join(contentDir, `${d.slug}.md`);
+    await mkdir(dirname(out), { recursive: true });
+    await writeFile(out, front + d.site);
+    const markdown = `# ${d.title}\n\n${d.md}`;
+    const mdOut = join(publicDir, `${d.slug}.md`);
+    await mkdir(dirname(mdOut), { recursive: true });
+    await writeFile(mdOut, markdown);
+    const doc = { slug: d.slug, title: d.title, description: d.description, markdown };
+    if (d.child) children.push(doc);
+    else docs.push(doc);
+  }
+
   // llms.txt: the order and groups of the sidebar.
   const groups = [];
   for (const p of PAGES) {
@@ -136,6 +166,7 @@ async function main() {
     if (!g) groups.push((g = { name: p.group, docs: [] }));
     g.docs.push(doc);
   }
+  groups.push({ name: "Plugin directory entries", docs: children });
   const homepage = await readFile(join(siteDir, "src/homepage.md"), "utf8");
   const index = [
     `# ${SITE.title}`,
@@ -156,13 +187,13 @@ async function main() {
   await writeFile(join(publicDir, "llms.txt"), index);
   await writeFile(join(publicDir, "index.md"), homepage);
 
-  const ordered = PAGES.map((p) => docs.find((d) => d.slug === p.file));
+  const ordered = [...PAGES.map((p) => docs.find((d) => d.slug === p.file)), ...children];
   const full = [homepage.trim(), ...ordered.map((d) => `<!-- ${SITE.url}/${d.slug}/ -->\n\n${d.markdown.trim()}`)].join(
     "\n\n---\n\n",
   );
   await writeFile(join(publicDir, "llms-full.txt"), full + "\n");
 
-  console.log(`sync-docs: ${docs.length} pages`);
+  console.log(`sync-docs: ${docs.length + children.length} pages`);
 }
 
 main().catch((err) => {

@@ -1,0 +1,31 @@
+name: summaries
+summary: Writes a short summary of each agent session as it works, as Markdown files, and publishes them for search.
+kind: plugin
+roles: [observer]
+ships_with_fleetlayer: true
+status: beta
+licence: Apache-2.0
+maintainer: Fleetlayer
+source: https://github.com/fleetlayer/fleetlayer/tree/main/plugins/summaries
+install: bundled
+command: fleetlayer-summaries
+platforms: [linux, macos]
+min_fleetlayer: 0.1.0
+protocol: 1
+needs: [Claude Code (it runs claude -p for each summary)]
+grants: [sessions.watch, summary.publish]
+config: |
+  plugins:
+    - name: summaries
+      command: fleetlayer-summaries
+      grants: [sessions.watch, summary.publish]
+      config:
+        publish: full        # full | sentence | none
+security: >-
+  Reads the Claude Code transcripts of its own Unix user's sessions (never sessions whose working directory is
+  outside its home), and sends summaries to the control plane, where whoever may read this node can search them.
+  Spends Claude tokens: at most one summary per session per 30 minutes by default.
+docs: plugins/summaries
+description: |
+  The one-line summaries in `fleetlayer fleet` and the results of `fleetlayer summaries` come from this plugin. Each
+  summary is also a plain Markdown file on the machine, for your own notes or search.

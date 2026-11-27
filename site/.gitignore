@@ -6,5 +6,6 @@ src/content/docs/
 public/*.md
 public/plugins/
 public/guides/
+public/directory/
 public/llms.txt
 public/llms-full.txt

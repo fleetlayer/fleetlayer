@@ -78,8 +78,8 @@ fleetlayer status       # "linked to the control plane"
 
 ## 3. The rules, before it reads anything
 
-A new control plane allows everything, which is right for a fleet of agents you trust. Add the rules before the triage
-agent starts. `policy.yaml`, kept in git where the agents it limits can't change it:
+A new control plane allows every message, and asks you before each agent's first use of a shared tool or sync, which
+suits a fleet of agents you trust. Add the rules before the triage agent starts. `policy.yaml`, kept in git where the agents it limits can't change it:
 
 ```yaml
 version: 2

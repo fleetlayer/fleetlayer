@@ -7,9 +7,9 @@ name: Site
 on:
   push:
     branches: [main]
-    paths: ["docs/**", "site/**", "README.md", ".github/workflows/site.yml"]
+    paths: ["docs/**", "site/**", "plugins-directory/**", "README.md", ".github/workflows/site.yml"]
   pull_request:
-    paths: ["docs/**", "site/**", "README.md", ".github/workflows/site.yml"]
+    paths: ["docs/**", "site/**", "plugins-directory/**", "README.md", ".github/workflows/site.yml"]
   workflow_dispatch:
 
 permissions:
@@ -34,6 +34,7 @@ jobs:
           cache: npm
           cache-dependency-path: site/package-lock.json
       - run: npm ci
+      - run: npm run check-directory -- --network
       - run: npm run build
       - run: npm run check
       - name: Deploy to Cloudflare

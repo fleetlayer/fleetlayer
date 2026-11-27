@@ -28,6 +28,7 @@ export const pages = [
   { file: "guides/backups", group: "Guides", label: "Backups" },
   { file: "guides/agents-building-software", group: "Guides", label: "Agents that build software" },
   { file: "guides/make-it-yours", group: "Guides", label: "Make it yours" },
+  { file: "directory", group: "Plugins", label: "Plugin directory", generated: true },
   { file: "plugins/summaries", group: "Plugins", label: "Summaries" },
   { file: "plugins/pages", group: "Plugins", label: "Pages" },
   { file: "plugins/apps", group: "Plugins", label: "Apps" },

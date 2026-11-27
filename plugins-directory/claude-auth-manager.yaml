@@ -1,0 +1,34 @@
+name: claude-auth-manager
+summary: Year-long Claude setup tokens on every machine, usage shared across the fleet, sign-ins kept on one hub you run.
+kind: plugin
+roles: [sync_source, sync_target]
+ships_with_fleetlayer: true
+status: experimental
+licence: Apache-2.0
+maintainer: Fleetlayer
+source: https://github.com/fleetlayer/fleetlayer/tree/main/plugins/claude-auth-manager
+install: bundled
+command: fleetlayer-claude-auth-manager
+platforms: [linux, macos]
+min_fleetlayer: 0.2.0
+protocol: 1
+needs: [Claude Code, an always-on machine for the hub]
+grants: [sync.publish, reading.publish, reading.subscribe]
+config: |
+  # On every machine that runs agents (the node half):
+  plugins:
+    - name: claude-auth-manager
+      command: fleetlayer-claude-auth-manager
+      grants: [reading.publish, reading.subscribe]
+  # The hub, on an always-on machine under its own Unix user: see the guide.
+security: >-
+  The hub holds every account's claude.ai sign-in and setup token, so it runs under a Unix user of its own on a
+  machine you administer. Tokens reach other nodes encrypted to each node's key; the control plane can't read them.
+  On each node it writes tokens into Claude Code's account slots (the login keychain on macOS, a 0600 file on Linux).
+  Limit who may send its bundle in your access policy.
+docs: guides/claude-accounts
+description: |
+  One plugin with two roles. The hub signs each account in once (from your browser, headless), makes a setup token
+  per account, polls usage, and sends the tokens to the machines you list. On every machine, the node half writes the
+  tokens into account slots, checks each one works, and serves the Claude account rotator's coordinator. Early: it
+  works, and it will be redesigned.
