@@ -1,5 +1,5 @@
 // Checks every entry in ../plugins-directory: required fields, allowed values, an SPDX licence, unique names, and
-// (with --network) that each source URL answers. Exits non-zero on any problem. Run in CI by .github/workflows/site.yml.
+// (with --network) that each source URL answers. Exits non-zero on a broken entry; an unreachable source only warns. Run in CI by .github/workflows/site.yml.
 import { readFile, readdir } from "node:fs/promises";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -69,13 +69,16 @@ async function main() {
   for (const e of entries) {
     const p = problems(e, names);
     if (e.name) names.add(e.name);
+    // An unreachable source is a warning, not a failure: a flaky host mustn't block a docs deploy.
     if (network && e.source) {
+      let trouble = null;
       try {
-        const r = await fetch(e.source, { method: "HEAD", redirect: "follow" });
-        if (!r.ok) p.push(`source answered ${r.status}`);
+        const r = await fetch(e.source, { method: "HEAD", redirect: "follow", signal: AbortSignal.timeout(15000) });
+        if (!r.ok) trouble = `source answered ${r.status}`;
       } catch (err) {
-        p.push(`source unreachable: ${err.message}`);
+        trouble = `source unreachable: ${err.message}`;
       }
+      if (trouble) console.log(`::warning file=plugins-directory/${e.file}::${trouble}`);
     }
     if (p.length) {
       failed++;
