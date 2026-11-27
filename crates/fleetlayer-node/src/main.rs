@@ -91,6 +91,8 @@ pub struct Node {
     pub opt_ins: tools::OptIns,
     /// The latest checks of the remote MCP servers this node shares.
     pub gate: gate::Health,
+    /// Live connections to the tools this node shares: closed cleanly when the node stops.
+    pub tool_connections: Arc<tools::Connections>,
     pub readings: readings::Readings,
     /// Every secret delivered to this node, redacted from what leaves it (`secrets.rs`).
     pub secrets: secrets::Secrets,
@@ -98,6 +100,41 @@ pub struct Node {
     pub skills: skills::Report,
     /// Role windows: hooks from `windows:` in node.yaml, and the open windows (`crate::window`).
     pub windows: window::Windows,
+}
+
+#[cfg(test)]
+impl Node {
+    /// A node for tests: no plugins and no control plane, its files under `home`.
+    pub fn for_test(home: &std::path::Path) -> Arc<Node> {
+        let key = age::x25519::Identity::generate();
+        Arc::new(Node {
+            name: "n".into(),
+            machine: "m".into(),
+            user: "u".into(),
+            home: home.into(),
+            config_path: home.join("node.yaml"),
+            plugins: vec![],
+            registry: Default::default(),
+            deliveries: Default::default(),
+            link: Default::default(),
+            typing_fallback: false,
+            harnesses: Default::default(),
+            has_control: false,
+            gateway: None,
+            control: None,
+            tools: vec![],
+            public_key: key.to_public().to_string(),
+            identity: key,
+            sync: Default::default(),
+            opt_ins: Default::default(),
+            gate: Default::default(),
+            tool_connections: Arc::default(),
+            readings: Default::default(),
+            secrets: secrets::Secrets::new(home.into()),
+            skills: Default::default(),
+            windows: window::Windows::new(vec![]),
+        })
+    }
 }
 
 impl Node {
@@ -195,6 +232,7 @@ async fn run(cfg: NodeConfig, config_path: PathBuf) -> anyhow::Result<()> {
         sync: sync::Sync::default(),
         opt_ins: tools::OptIns::default(),
         gate: gate::Health::default(),
+        tool_connections: Arc::default(),
         readings: readings::Readings::default(),
         secrets: secrets::Secrets::new(config::home()),
         skills: skills::at_start(cfg.skills, &config::home(), env!("CARGO_PKG_VERSION")),
@@ -214,6 +252,7 @@ async fn run(cfg: NodeConfig, config_path: PathBuf) -> anyhow::Result<()> {
         tokio::spawn(heartbeat::run(node.clone(), h, cfg.control.is_some()));
     }
     tokio::spawn(sync::retry(node.clone()));
+    tokio::spawn(tools::report(node.clone()));
     tokio::spawn(secrets::run(node.clone()));
     // Windows saved as open: closed now if they ended while the node was stopped, otherwise timed to close.
     tokio::spawn(window::at_start(node.clone()));
@@ -234,6 +273,12 @@ async fn run(cfg: NodeConfig, config_path: PathBuf) -> anyhow::Result<()> {
         r = local::serve(node.clone(), local_listener, &socket) => r,
         _ = shutdown() => {
             tracing::info!("stopping");
+            // Let each tool connection clean up (close a session's browser tabs) before its server is killed with the
+            // node: a server killed mid-session leaves what it opened behind.
+            let left = node.tool_connections.close_all(tools::STOP_CLEANUP).await;
+            if left > 0 {
+                tracing::warn!(connections = left, "stopped before every tool connection had cleaned up");
+            }
             Ok(())
         }
     }

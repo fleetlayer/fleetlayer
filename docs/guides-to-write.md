@@ -142,6 +142,17 @@ managers, machines that sleep.
   launchd service's cwd is `/`); `browser_close` only disconnects in extension mode and leaves tabs in a grey group, so
   clean up with `browser_tabs {action: close, index: 0}` repeated one at a time (pipelined calls race and leave tabs).
   Where it lives: docs/getting-started.md, docs/access-control.md. Written: `docs/guides/browser.md`.
+- **Shared-browser sessions left an `about:blank` tab each, even ones that never used the browser.** Found 28 Nov
+  2026 with 34 orphaned tabs in one Chrome. Playwright MCP connects to its extension at its first tool call of any kind,
+  and with a token the extension turns its connect page into the session's `about:blank` tab; when the connection ends
+  the extension only greys the group. The node's disconnect cleanup sent `browser_tabs close` to every session, so for
+  an unused one that call opened the tab, took longer than the 5-second cleanup limit, and the server was killed with
+  the tab open. Also, a node that stopped (upgrade, restart) killed every server without cleaning up. Fixed in the node
+  (v0.3.13): cleanup only after a tool call, the first cleanup call waits 35 s, a stopping node cleans up every
+  connection first, and a `tool.connections` reading counts unfinished cleanups. The extension can't reach another
+  client's tabs, so old grey groups are closed by hand. Groups named "session" came from sessions herdr resumed after a
+  reboot: they start their MCP servers before the node has listed them, so the caller had no tab name; the node now
+  waits up to 10 s for it. Written: `docs/guides/browser.md` ("Leftover tabs").
 - **A LaunchAgent can't find `claude`.** launchd gives agents a PATH without `~/.local/bin`, where Claude Code's
   installer puts it, so anything a node runs that calls `claude` fails with "No such file or directory". The
   claude-auth-manager plugin looks on PATH and then in the installers' places (`~/.local/bin`, `~/.claude/local`,

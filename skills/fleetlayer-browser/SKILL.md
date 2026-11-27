@@ -29,8 +29,10 @@ renews while you use it.
 
 - **You get your own tab group** in their Chrome, named after your session. Stay in it: don't touch the person's own
   tabs, and expect them to be watching.
-- **When you're done, call `browser_close`.** On v0.3.9 and later it closes your tabs; on older nodes the tabs close
-  when your MCP connection ends.
+- **When you're done, call `browser_close`.** It closes your tabs (on v0.3.9 and later). If you don't, they close when
+  your MCP connection ends: when your session exits, or within about 90 seconds of its being killed. Having the browser
+  configured costs nothing until your first call: no tab opens until then. If the sharing machine's node restarts while
+  you're connected, it closes your tabs first, and your next call starts a fresh tab group.
 - **Some tools may be missing.** The sharing machine can take tools away (`browser_run_code_unsafe` always is); a
   refused call names the rule. Don't look for a way around it.
 - **It's the person's identity.** You act as them on every site. Ask before anything that sends, buys, pays, deletes,

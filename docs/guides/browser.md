@@ -82,7 +82,10 @@ What each line is for:
 - **`deny: [browser_run_code_unsafe]`:** that tool runs any code in the server's process, and Playwright MCP can't
   turn it off. The node refuses it and leaves it out of the tool list.
 - **`on_close`:** in extension mode, closing the browser only disconnects and leaves the tabs open in a grey group.
-  This closes the session's tabs one at a time when it disconnects.
+  This closes the session's tabs one at a time when it disconnects, and when the node itself stops (an upgrade, a
+  restart), before it stops the server. From v0.3.13 it runs only for a session that made a tool call: Playwright MCP
+  connects to Chrome, and opens a tab, at its first call of any kind, so a cleanup call for a session that never used
+  the browser would open the very tab it meant to close.
 - **`networks`:** away from home, the browser is refused unless you opt in on purpose with
   `fleetlayer tools enable browser --for 2h` (at most a day; `fleetlayer tools disable browser` ends it early).
 
@@ -140,6 +143,19 @@ machine may be asleep, or its node restarting)"), and the next call works as usu
 `fleetlayer-control tools` on the control plane lists every connection: who used which tool, and when.
 
 The same mechanism shares other things on the laptop: [your screenshots and downloads](shared-folders.md), for example.
+
+## Leftover tabs
+
+Each session's tabs live in a tab group named after it, and close when the session calls `browser_close`, when its
+connection ends, or when the laptop's node stops. A grey group is one whose session left without closing it: the
+extension greys a group when its connection ends and never closes tabs itself. Before v0.3.13 every session that had
+the browser configured left one, holding an `about:blank` tab, even if it never used it. You can close grey groups by
+hand (right-click the group, **Close group**); no session can reach them any more.
+
+The laptop's node publishes a `tool.connections` reading for each shared tool: open connections, how many have used
+the tool, and `unfinishedCleanups`, the connections whose cleanup didn't finish (the server didn't answer in time) and
+may have left a tab behind. `fleetlayer readings tool.connections` shows it from any machine allowed to read it; alert
+on `unfinishedCleanups` going up.
 
 ## What you give up
 

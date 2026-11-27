@@ -91,8 +91,9 @@ pub struct ToolConfig {
     #[serde(default)]
     pub networks: Vec<String>,
     /// For an MCP server: tool calls made when a connection ends, before the server is stopped, so it cleans up after
-    /// the session. Sent one at a time, each waiting for its reply; `repeat` makes a call again until it errors.
-    /// Playwright MCP in extension mode: `[{name: browser_tabs, arguments: {action: close, index: 0}, repeat: 50}]`.
+    /// the session, and when the node stops. Only after the caller made a tool call: a server may start what the
+    /// cleanup means to close at its first call (Playwright MCP connects to Chrome and opens a tab). Sent one at a time,
+    /// each waiting for its reply; `repeat` makes a call again until it errors. Playwright MCP in extension mode: `[{name: browser_tabs, arguments: {action: close, index: 0}, repeat: 50}]`.
     #[serde(default)]
     pub on_close: Vec<OnClose>,
     /// Tool calls that run the `on_close` cleanup instead of reaching the server, answered as done. Playwright MCP in
@@ -200,6 +201,173 @@ pub fn upstream(node: &Node, tool: &ToolConfig) -> Result<crate::mcp_http::Upstr
 
 /// How long to wait for each cleanup call's reply.
 const CLOSE_CALL_TIMEOUT: Duration = Duration::from_secs(5);
+/// The first cleanup call can wait behind the server's own start: Playwright MCP connects to the browser at its first
+/// tool call, and its extension has 30 seconds to answer.
+const FIRST_CLOSE_CALL_TIMEOUT: Duration = Duration::from_secs(35);
+/// How long a stopping node waits for its tool connections to clean up. launchd kills a service 20 seconds after
+/// asking it to stop.
+pub const STOP_CLEANUP: Duration = Duration::from_secs(15);
+
+/// The node's live tool connections. Each one cleans up (`on_close`) when the node stops, not only when its caller
+/// leaves, and the `tool.connections` reading counts them, so a leak shows.
+pub struct Connections {
+    closing: tokio::sync::watch::Sender<bool>,
+    changed: tokio::sync::Notify,
+    state: std::sync::Mutex<ConnState>,
+}
+
+#[derive(Default)]
+struct ConnState {
+    next: u64,
+    live: std::collections::BTreeMap<u64, Live>,
+    /// Per tool: connections whose cleanup didn't finish (no reply in time, or the server had gone), since the node
+    /// started. Each may have left something open (a browser tab).
+    unfinished: std::collections::BTreeMap<String, u64>,
+}
+
+struct Live {
+    tool: String,
+    caller: String,
+    since: jiff::Timestamp,
+    /// The caller made tool calls the server ran: there may be something to clean up.
+    used: bool,
+}
+
+impl Default for Connections {
+    fn default() -> Self {
+        Self {
+            closing: tokio::sync::watch::channel(false).0,
+            changed: tokio::sync::Notify::new(),
+            state: Default::default(),
+        }
+    }
+}
+
+/// One connection's entry in `Connections`, removed when dropped.
+pub struct Conn {
+    conns: Arc<Connections>,
+    id: u64,
+    closing: tokio::sync::watch::Receiver<bool>,
+    /// Whether the server has run a tool call since it started or last cleaned up.
+    used: Used,
+}
+
+/// A connection's "used" flag, shared with the tasks that forward checked calls.
+#[derive(Clone)]
+struct Used {
+    conns: Arc<Connections>,
+    id: u64,
+    flag: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Used {
+    fn get(&self) -> bool {
+        self.flag.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn set(&self, used: bool) {
+        if self.flag.swap(used, std::sync::atomic::Ordering::SeqCst) != used {
+            self.conns.update(self.id, |s, id| {
+                if let Some(l) = s.live.get_mut(&id) {
+                    l.used = used;
+                }
+            });
+        }
+    }
+}
+
+impl Connections {
+    pub fn open(self: &Arc<Self>, tool: &str, caller: &str) -> Conn {
+        let id = {
+            let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            s.next += 1;
+            let id = s.next;
+            let live = Live { tool: tool.into(), caller: caller.into(), since: jiff::Timestamp::now(), used: false };
+            s.live.insert(id, live);
+            id
+        };
+        self.changed.notify_one();
+        let used = Used { conns: self.clone(), id, flag: Arc::default() };
+        Conn { conns: self.clone(), id, closing: self.closing.subscribe(), used }
+    }
+
+    /// Tell every connection to clean up and close, and wait up to `within` for them; answers how many were left.
+    pub async fn close_all(&self, within: Duration) -> usize {
+        self.closing.send_replace(true);
+        let deadline = tokio::time::Instant::now() + within;
+        loop {
+            let left = self.state.lock().unwrap_or_else(|e| e.into_inner()).live.len();
+            if left == 0 || tokio::time::Instant::now() >= deadline {
+                return left;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// The `tool.connections` reading of each tool that has had a connection.
+    pub fn readings(&self, tools: &[ToolConfig]) -> Vec<Value> {
+        let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let at = jiff::Timestamp::now();
+        tools
+            .iter()
+            .map(|t| {
+                let live: Vec<&Live> = s.live.values().filter(|l| l.tool == t.name).collect();
+                let sessions: Vec<Value> = live
+                    .iter()
+                    .map(|l| serde_json::json!({"caller": l.caller, "since": l.since, "used": l.used}))
+                    .collect();
+                serde_json::json!({"kind": "tool.connections", "key": t.name, "at": at, "data": {
+                    "open": live.len(),
+                    "used": live.iter().filter(|l| l.used).count(),
+                    "unfinishedCleanups": s.unfinished.get(&t.name).copied().unwrap_or(0),
+                    "sessions": sessions,
+                }})
+            })
+            .collect()
+    }
+
+    fn update(&self, id: u64, f: impl FnOnce(&mut ConnState, u64)) {
+        f(&mut self.state.lock().unwrap_or_else(|e| e.into_inner()), id);
+        self.changed.notify_one();
+    }
+}
+
+impl Conn {
+    fn unfinished(&self) {
+        self.conns.update(self.id, |s, id| {
+            if let Some(tool) = s.live.get(&id).map(|l| l.tool.clone()) {
+                *s.unfinished.entry(tool).or_default() += 1;
+            }
+        });
+    }
+
+    /// Resolves when the node is stopping.
+    async fn stopping(&mut self) {
+        let _ = self.closing.wait_for(|c| *c).await;
+    }
+}
+
+impl Drop for Conn {
+    fn drop(&mut self) {
+        self.conns.update(self.id, |s, id| {
+            s.live.remove(&id);
+        });
+    }
+}
+
+/// Publish each tool's `tool.connections` reading when its connections change (at most every 2 seconds), and every
+/// 10 minutes so a reader can tell the figure is fresh.
+pub async fn report(node: Arc<Node>) {
+    if node.tools.is_empty() {
+        return;
+    }
+    loop {
+        let _ = tokio::time::timeout(Duration::from_secs(600), node.tool_connections.changed.notified()).await;
+        let readings = node.tool_connections.readings(&node.tools);
+        crate::readings::publish(&node, &serde_json::json!({"readings": readings})).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
 
 /// Whether `ip` is inside `cidr` (`10.5.0.0/16`, `fd7a::/48`, or a bare address).
 pub fn in_cidr(ip: std::net::IpAddr, cidr: &str) -> bool {
@@ -472,6 +640,7 @@ where
 /// here and never reach the tool, `tools/list` results lose refused tools, and every tool call is logged. With
 /// `check_calls`, each call is checked with the control plane first (`crate::gate`), in a task of its own, so one call
 /// waiting for the person doesn't hold up the others.
+#[allow(clippy::too_many_arguments)]
 async fn mcp_pipe<R, W, S>(
     stdout: R,
     stdin: W,
@@ -480,6 +649,7 @@ async fn mcp_pipe<R, W, S>(
     node: Arc<Node>,
     caller: String,
     stream_id: String,
+    mut conn: Conn,
 ) where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
@@ -539,7 +709,21 @@ async fn mcp_pipe<R, W, S>(
     // Caller to tool, line by line.
     let mut buf: Vec<u8> = Vec::new();
     let mut seq = 0u32;
-    'read: while let Ok(Some(Ok(m))) = tokio::time::timeout(IDLE, ws_rx.next()).await {
+    // Whether the server has run a tool call since it started or last cleaned up. Until then there's nothing to clean
+    // up, and a cleanup call would itself start what it means to close: Playwright MCP opens its browser connection,
+    // and with it a tab, at its first tool call of any kind.
+    let used = conn.used.clone();
+    'read: loop {
+        let m = tokio::select! {
+            r = tokio::time::timeout(IDLE, ws_rx.next()) => match r {
+                Ok(Some(Ok(m))) => m,
+                _ => break,
+            },
+            () = conn.stopping() => {
+                tracing::info!(tool = %tool, caller = %caller, "the node is stopping: closing the connection");
+                break;
+            }
+        };
         let bytes = match m {
             Message::Binary(b) if b.is_empty() => break,
             Message::Binary(b) => b.to_vec(),
@@ -557,10 +741,17 @@ async fn mcp_pipe<R, W, S>(
             match inbound(filter.as_ref(), &text, &node_name, &tool) {
                 Inbound::Forward(Some(n)) if config.close_with.contains(&n) => {
                     // The caller is done: close what it opened, the same way as when it disconnects.
-                    let made = {
+                    let made = if used.get() {
                         let mut w = stdin.lock().await;
-                        cleanup(&mut *w, &mut close_rx, &config.on_close, &mut seq).await
+                        let (made, finished) = cleanup(&mut *w, &mut close_rx, &config.on_close, &mut seq).await;
+                        if !finished {
+                            conn.unfinished();
+                        }
+                        made
+                    } else {
+                        0
                     };
+                    used.set(false);
                     tracing::info!(tool = %tool, caller = %caller, call = %n, calls = made, "closed on the caller's request");
                     let id = serde_json::from_str::<Value>(&text).map(|v| v["id"].clone()).unwrap_or_default();
                     let reply = serde_json::json!({"jsonrpc": "2.0", "id": id, "result": {"content": [{"type": "text",
@@ -570,7 +761,7 @@ async fn mcp_pipe<R, W, S>(
                 Inbound::Forward(Some(n)) if config.check_calls => {
                     let v: Value = serde_json::from_str(&text).unwrap_or_default();
                     let args = v["params"]["arguments"].clone();
-                    let (node, out_tx, stdin) = (node.clone(), out_tx.clone(), stdin.clone());
+                    let (node, out_tx, stdin, used) = (node.clone(), out_tx.clone(), stdin.clone(), used.clone());
                     let (config, caller, stream_id, tool) =
                         (config.clone(), caller.clone(), stream_id.clone(), tool.clone());
                     checks.spawn(async move {
@@ -595,6 +786,7 @@ async fn mcp_pipe<R, W, S>(
                         match verdict {
                             crate::gate::Verdict::Allowed => {
                                 tracing::info!(tool = %tool, caller = %caller, call = %n, "tool call (checked)");
+                                used.set(true);
                                 let mut w = stdin.lock().await;
                                 let _ = w.write_all(line.as_bytes()).await;
                                 let _ = w.flush().await;
@@ -610,6 +802,7 @@ async fn mcp_pipe<R, W, S>(
                 Inbound::Forward(name) => {
                     if let Some(n) = name {
                         tracing::info!(tool = %tool, caller = %caller, call = %n, "tool call");
+                        used.set(true);
                     }
                     let mut w = stdin.lock().await;
                     if w.write_all(line.as_bytes()).await.is_err() {
@@ -630,10 +823,17 @@ async fn mcp_pipe<R, W, S>(
     // One call at a time, each waiting for its reply: an MCP server may run calls concurrently, and cleanup calls that
     // race each other leave things behind.
     let mut w = stdin.lock().await;
-    let made = cleanup(&mut *w, &mut close_rx, &config.on_close, &mut seq).await;
-    if made > 0 {
-        tracing::info!(tool = %tool, caller = %caller, calls = made, "cleaned up after the session");
+    if used.get() && !config.on_close.is_empty() {
+        let (made, finished) = cleanup(&mut *w, &mut close_rx, &config.on_close, &mut seq).await;
+        if finished {
+            tracing::info!(tool = %tool, caller = %caller, calls = made, "cleaned up after the session");
+        } else {
+            conn.unfinished();
+            tracing::warn!(tool = %tool, caller = %caller, calls = made,
+                "the cleanup after the session didn't finish: it may have left something open");
+        }
     }
+    drop(conn);
     let _ = w.shutdown().await;
     drop(w);
     drop(stdin);
@@ -642,16 +842,20 @@ async fn mcp_pipe<R, W, S>(
     let _ = tokio::time::timeout(Duration::from_secs(2), sender).await;
 }
 
-/// Run the `on_close` calls one at a time, each waiting for its reply; answers how many were made.
+/// Run the `on_close` calls one at a time, each waiting for its reply. Answers how many were made, and whether the
+/// cleanup finished: every call answered, and each repeated call stopped by an error (nothing left to close) rather
+/// than by running out of repeats.
 async fn cleanup<W: AsyncWrite + Unpin>(
     stdin: &mut W,
     close_rx: &mut tokio::sync::mpsc::Receiver<Value>,
     on_close: &[OnClose],
     seq: &mut u32,
-) -> u32 {
+) -> (u32, bool) {
     let mut made = 0u32;
+    let mut finished = true;
     'calls: for c in on_close {
         let (name, arguments, times) = c.call();
+        let mut stopped = times == 1;
         for _ in 0..times {
             *seq += 1;
             let id = format!("fleetlayer-close-{seq}");
@@ -661,15 +865,23 @@ async fn cleanup<W: AsyncWrite + Unpin>(
                 break 'calls;
             }
             made += 1;
-            match tokio::time::timeout(CLOSE_CALL_TIMEOUT, close_rx.recv()).await {
+            let wait = if made == 1 { FIRST_CLOSE_CALL_TIMEOUT } else { CLOSE_CALL_TIMEOUT };
+            match tokio::time::timeout(wait, close_rx.recv()).await {
                 Ok(Some(reply)) if reply["error"].is_null() && reply["result"]["isError"] != true => {}
                 // An error (no more tabs) ends this call's repeats; a timeout or a closed stream ends cleanup.
-                Ok(Some(_)) => break,
-                _ => break 'calls,
+                Ok(Some(_)) => {
+                    stopped = true;
+                    break;
+                }
+                _ => {
+                    finished = false;
+                    break 'calls;
+                }
             }
         }
+        finished &= stopped;
     }
-    made
+    (made, finished)
 }
 
 // ---------------------------------------------------------------- serving a tool this node shares
@@ -697,8 +909,9 @@ pub async fn serve(node: Arc<Node>, req: ToolServe) -> Result<Value, RpcError> {
         tracing::info!(tool = %tool.name, caller = %req.caller, stream = %&req.stream_id[..8], "tool connection opened (remote server)");
         let (r, w) = tokio::io::split(crate::mcp_http::start(up));
         let (caller, stream_id) = (req.caller.clone(), req.stream_id.clone());
+        let conn = node.tool_connections.open(&tool.name, &caller);
         tokio::spawn(async move {
-            mcp_pipe(r, w, ws, tool.clone(), node.clone(), caller.clone(), stream_id).await;
+            mcp_pipe(r, w, ws, tool.clone(), node.clone(), caller.clone(), stream_id, conn).await;
             tracing::info!(tool = %tool.name, caller = %caller, "tool connection closed");
         });
         return Ok(serde_json::json!({}));
@@ -742,8 +955,9 @@ pub async fn serve(node: Arc<Node>, req: ToolServe) -> Result<Value, RpcError> {
         });
     }
     let (caller, stream_id) = (req.caller.clone(), req.stream_id.clone());
+    let conn = node.tool_connections.open(&tool.name, &caller);
     tokio::spawn(async move {
-        mcp_pipe(stdout, stdin, ws, tool.clone(), node.clone(), caller.clone(), stream_id).await;
+        mcp_pipe(stdout, stdin, ws, tool.clone(), node.clone(), caller.clone(), stream_id, conn).await;
         let _ = child.kill().await;
         tracing::info!(tool = %tool.name, caller = %caller, "tool connection closed");
     });
@@ -803,11 +1017,11 @@ pub async fn listen(node: Arc<Node>, listener: std::os::unix::net::UnixListener)
     }
 }
 
-async fn open(
-    node: &Node,
-    line: &str,
-) -> Result<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, String> {
-    let req: OpenRequest = serde_json::from_str(line).map_err(|e| format!("unreadable request: {e}"))?;
+/// How long a tool connection waits for this node to know the calling session's tab.
+const CALLER_WAIT: Duration = Duration::from_secs(10);
+
+/// The calling session's tab, if this node knows the session by its ID or its address.
+async fn caller_tab(node: &Node, req: &OpenRequest) -> Option<String> {
     let caller = match &req.session_id {
         Some(id) => node.registry.get(id).await,
         None => None,
@@ -817,7 +1031,25 @@ async fn open(
         (None, Some(a)) => node.registry.by_address(a).await,
         (None, None) => None,
     };
-    let caller_name = caller.as_ref().and_then(|c| c.tab().map(str::to_string)).unwrap_or_else(|| "-".into());
+    caller.as_ref().and_then(|c| c.tab().map(str::to_string))
+}
+
+async fn open(
+    node: &Node,
+    line: &str,
+) -> Result<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, String> {
+    let req: OpenRequest = serde_json::from_str(line).map_err(|e| format!("unreadable request: {e}"))?;
+    // A session starts its MCP servers at launch, often before this node's plugins have listed it (a session herdr
+    // resumes after a restart): wait a little for its tab name, which names its tab group on the other machine.
+    let deadline = tokio::time::Instant::now() + CALLER_WAIT;
+    let caller_name = loop {
+        let tab = caller_tab(node, &req).await;
+        let named = req.session_id.is_some() || req.address.is_some();
+        if tab.is_some() || !named || tokio::time::Instant::now() >= deadline {
+            break tab.unwrap_or_else(|| "-".into());
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
     let peer = node.link.peer().await.ok_or_else(|| format!("{} isn't linked to a control plane now", node.name))?;
     let opened: ToolOpened = peer
         .request_within(
@@ -989,5 +1221,148 @@ mod liveness_tests {
         let r = tokio::time::timeout(Duration::from_secs(300), local.read(&mut buf)).await;
         assert!(r.is_err(), "still open after five quiet minutes: {r:?}");
         keep.abort();
+    }
+
+    /// A stand-in MCP server: logs every line it gets, answers cleanup calls with an error (nothing left to close)
+    /// and other tool calls with a result.
+    const FAKE_SERVER: &str = r#"while IFS= read -r l; do
+        printf '%s\n' "$l" >> "$LOG"
+        id=$(printf '%s' "$l" | sed -nE 's/.*"id":("[^"]*"|[0-9]+).*/\1/p')
+        case "$l" in
+          *fleetlayer-close-*) printf '{"jsonrpc":"2.0","id":%s,"result":{"isError":true,"content":[]}}\n' "$id" ;;
+          *tools/call*) printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[]}}\n' "$id" ;;
+        esac
+      done"#;
+
+    struct Fake {
+        caller: WebSocketStream<tokio::io::DuplexStream>,
+        task: tokio::task::JoinHandle<()>,
+        child: tokio::process::Child,
+        conns: Arc<Connections>,
+        log: std::path::PathBuf,
+        _dir: tempfile::TempDir,
+    }
+
+    impl Fake {
+        async fn start() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let log = dir.path().join("server.log");
+            std::fs::write(&log, "").unwrap();
+            let mut child = tokio::process::Command::new("sh")
+                .args(["-c", FAKE_SERVER])
+                .env("LOG", &log)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            let (stdin, stdout) = (child.stdin.take().unwrap(), child.stdout.take().unwrap());
+            let (near, far) = duplex(1 << 16);
+            let ws_near = WebSocketStream::from_raw_socket(near, Role::Server, None).await;
+            let caller = WebSocketStream::from_raw_socket(far, Role::Client, None).await;
+            let config: ToolConfig = serde_json::from_value(serde_json::json!({
+                "name": "browser", "command": "x",
+                "on_close": [{"name": "browser_tabs", "arguments": {"action": "close", "index": 0}, "repeat": 50}],
+                "close_with": ["browser_close"],
+            }))
+            .unwrap();
+            let node = Node::for_test(dir.path());
+            let conns = node.tool_connections.clone();
+            let conn = conns.open("browser", "ci@agents");
+            let task =
+                tokio::spawn(mcp_pipe(stdout, stdin, ws_near, config, node, "ci@agents".into(), "s".repeat(8), conn));
+            Fake { caller, task, child, conns, log, _dir: dir }
+        }
+
+        async fn send(&mut self, line: &str) {
+            self.caller.send(Message::Binary(format!("{line}\n").into_bytes().into())).await.unwrap();
+        }
+
+        /// The next JSON-RPC message the caller gets.
+        async fn reply(&mut self) -> Value {
+            loop {
+                let m =
+                    tokio::time::timeout(Duration::from_secs(10), self.caller.next()).await.unwrap().unwrap().unwrap();
+                if let Message::Binary(b) = m
+                    && !b.is_empty()
+                {
+                    return serde_json::from_slice(&b).unwrap();
+                }
+            }
+        }
+
+        /// The caller leaves; answers every line the server got.
+        async fn leave(mut self) -> String {
+            self.caller.send(Message::Binary(Vec::new().into())).await.unwrap();
+            self.finish().await
+        }
+
+        async fn finish(mut self) -> String {
+            tokio::time::timeout(Duration::from_secs(30), &mut self.task).await.unwrap().unwrap();
+            let _ = tokio::time::timeout(Duration::from_secs(5), self.child.wait()).await;
+            std::fs::read_to_string(&self.log).unwrap()
+        }
+    }
+
+    const LIST: &str = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#;
+    const NAVIGATE: &str = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"browser_navigate","arguments":{"url":"about:blank"}}}"#;
+    const CLOSE: &str =
+        r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"browser_close","arguments":{}}}"#;
+
+    #[tokio::test]
+    async fn a_connection_that_never_called_a_tool_leaves_without_cleanup_calls() {
+        // Playwright MCP opens its browser connection (and a tab) at its first tool call, the cleanup's included: a
+        // session that only listed the tools must leave the server untouched.
+        let mut f = Fake::start().await;
+        f.send(LIST).await;
+        let log = f.leave().await;
+        assert!(log.contains("tools/list"), "{log}");
+        assert!(!log.contains("fleetlayer-close-"), "no cleanup call for an unused connection: {log}");
+    }
+
+    #[tokio::test]
+    async fn a_connection_that_used_the_tool_cleans_up_when_it_leaves() {
+        let mut f = Fake::start().await;
+        f.send(NAVIGATE).await;
+        assert_eq!(f.reply().await["id"], 2);
+        let conns = f.conns.clone();
+        let log = f.leave().await;
+        // One call, stopped by the error that says nothing is left.
+        assert_eq!(log.matches("fleetlayer-close-").count(), 1, "{log}");
+        let tools: Vec<ToolConfig> = vec![serde_json::from_str(r#"{"name":"browser","command":"x"}"#).unwrap()];
+        let r = &conns.readings(&tools)[0];
+        assert_eq!(r["data"]["open"], 0);
+        assert_eq!(r["data"]["unfinishedCleanups"], 0);
+    }
+
+    #[tokio::test]
+    async fn close_with_cleans_up_only_what_was_used() {
+        let mut f = Fake::start().await;
+        f.send(CLOSE).await;
+        let r = f.reply().await;
+        assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("0 cleanup calls"), "{r}");
+        f.send(NAVIGATE).await;
+        assert_eq!(f.reply().await["id"], 2);
+        f.send(CLOSE).await;
+        let r = f.reply().await;
+        assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("1 cleanup calls"), "{r}");
+        // Already cleaned up, and nothing used since: leaving makes no more calls.
+        let log = f.leave().await;
+        assert_eq!(log.matches("fleetlayer-close-").count(), 1, "{log}");
+        assert!(!log.contains("browser_close"), "browser_close never reaches the server: {log}");
+    }
+
+    #[tokio::test]
+    async fn a_stopping_node_cleans_up_live_connections_first() {
+        let mut f = Fake::start().await;
+        f.send(NAVIGATE).await;
+        assert_eq!(f.reply().await["id"], 2);
+        let conns = f.conns.clone();
+        let tools: Vec<ToolConfig> = vec![serde_json::from_str(r#"{"name":"browser","command":"x"}"#).unwrap()];
+        assert_eq!(conns.readings(&tools)[0]["data"]["used"], 1);
+        assert_eq!(conns.close_all(Duration::from_secs(10)).await, 0, "every connection closed in time");
+        let log = f.finish().await;
+        assert_eq!(log.matches("fleetlayer-close-").count(), 1, "{log}");
+        assert_eq!(conns.readings(&tools)[0]["data"]["open"], 0);
     }
 }
