@@ -33,14 +33,14 @@ jobs:
         run: >
           cargo build --release --locked --target ${{ matrix.target }}
           -p fleetlayer-cli -p fleetlayer-node -p fleetlayer-control
-          -p fleetlayer-herdr -p fleetlayer-claude-code -p fleetlayer-summaries -p fleetlayer-files -p fleetlayer-claude-auth-manager -p fleetlayer-accounts -p fleetlayer-pages
+          -p fleetlayer-herdr -p fleetlayer-claude-code -p fleetlayer-summaries -p fleetlayer-files -p fleetlayer-claude-auth-manager -p fleetlayer-accounts -p fleetlayer-pages -p fleetlayer-gateway
       - name: Package
         shell: bash
         run: |
           set -euo pipefail
           name=fleetlayer-${GITHUB_REF_NAME}-${{ matrix.target }}
           mkdir -p "dist/$name"
-          for b in fleetlayer fleetlayer-node fleetlayer-control fleetlayer-herdr fleetlayer-claude-code fleetlayer-summaries fleetlayer-files fleetlayer-claude-auth-manager fleetlayer-claude-accounts fleetlayer-pages; do
+          for b in fleetlayer fleetlayer-node fleetlayer-control fleetlayer-herdr fleetlayer-claude-code fleetlayer-summaries fleetlayer-files fleetlayer-claude-auth-manager fleetlayer-claude-accounts fleetlayer-pages fleetlayer-gateway; do
             cp "target/${{ matrix.target }}/release/$b" "dist/$name/"
           done
           cp LICENSE NOTICE README.md "dist/$name/"

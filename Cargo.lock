@@ -1285,6 +1285,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "fleetlayer-gateway"
+version = "0.3.7"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "clap",
+ "fleetlayer-plugin",
+ "fleetlayer-protocol",
+ "futures",
+ "hyper",
+ "hyper-util",
+ "jiff 1.0.3",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "yaml_serde",
+]
+
+[[package]]
 name = "fleetlayer-herdr"
 version = "0.3.7"
 dependencies = [

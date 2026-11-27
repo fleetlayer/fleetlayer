@@ -28,7 +28,23 @@ pub async fn health(node: &Node, has_control: bool) -> Option<String> {
     if has_control && node.link.peer().await.is_none() {
         problems.push("not linked to the control plane".into());
     }
+    if let Some(g) = &node.gateway
+        && let Err(e) = gateway_ok(g).await
+    {
+        problems.push(format!("the gateway at {g} isn't answering ({e})"));
+    }
     (!problems.is_empty()).then(|| problems.join("; "))
+}
+
+/// The gateway's own `/healthz`: the check on the gateway that doesn't depend on the gateway.
+async fn gateway_ok(base: &str) -> Result<(), String> {
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(3)).build().map_err(|e| e.to_string())?;
+    let url = format!("{}/healthz", base.trim_end_matches('/'));
+    match client.get(&url).send().await {
+        Ok(r) if r.status().is_success() => Ok(()),
+        Ok(r) => Err(format!("{url} answered {}", r.status())),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 pub async fn run(node: Arc<Node>, cfg: HeartbeatConfig, has_control: bool) {

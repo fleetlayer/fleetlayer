@@ -1,0 +1,33 @@
+[package]
+name = "fleetlayer-gateway"
+description = "fleetlayer-gateway: one address per service (<name>.localhost on a laptop), a status page that alerts, and the same routes as Traefik and Gatus config for a server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+fleetlayer-plugin.workspace = true
+fleetlayer-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+jiff.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+async-trait = "0.1.92"
+yaml_serde = "0.10.7"
+axum = "0.8.9"
+hyper = { version = "1.13.0", features = ["client", "http1"] }
+hyper-util = { version = "0.1.21", features = ["client-legacy", "http1", "tokio"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+futures = "0.3.34"
+
+[lints]
+workspace = true

@@ -64,6 +64,8 @@ struct Inner {
     restarts: u32,
     stderr: VecDeque<String>,
     relist_pending: bool,
+    /// HTTP services it announced (`_fleetlayer.dev/service/listening`), by name; cleared when it exits.
+    services: std::collections::BTreeMap<String, ext::ServiceListening>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -77,6 +79,8 @@ pub struct PluginStatus {
     pub roles: Vec<&'static str>,
     pub restarts: u32,
     pub stderr: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub services: Vec<ext::ServiceListening>,
 }
 
 impl PluginHandle {
@@ -91,6 +95,7 @@ impl PluginHandle {
                 restarts: 0,
                 stderr: VecDeque::new(),
                 relist_pending: false,
+                services: Default::default(),
             }),
         })
     }
@@ -132,7 +137,13 @@ impl PluginHandle {
             roles,
             restarts: i.restarts,
             stderr: i.stderr.iter().cloned().collect(),
+            services: i.services.values().cloned().collect(),
         }
+    }
+
+    /// The HTTP services it announced.
+    pub async fn services(&self) -> Vec<ext::ServiceListening> {
+        self.inner.lock().await.services.values().cloned().collect()
     }
 
     async fn set_state(&self, state: State) {
@@ -154,6 +165,7 @@ pub async fn supervise(node: Arc<Node>, plugin: Arc<PluginHandle>) {
             Err(Fatal(reason)) => {
                 tracing::error!(plugin = plugin.name(), "{reason}; not restarting it");
                 plugin.set_state(State::Broken { reason }).await;
+                plugin.inner.lock().await.services.clear();
                 node.registry.plugin_gone(plugin.name()).await;
                 return;
             }
@@ -162,6 +174,7 @@ pub async fn supervise(node: Arc<Node>, plugin: Arc<PluginHandle>) {
             let mut i = plugin.inner.lock().await;
             i.peer = None;
             i.restarts += 1;
+            i.services.clear();
         }
         node.registry.plugin_gone(plugin.name()).await;
         if started.elapsed() >= HEALTHY_RUN {
@@ -437,6 +450,16 @@ impl Handler for FromPlugin {
                 }
             }
             ext::method::SESSIONS_CHANGED => relist_soon(node, plugin).await,
+            ext::method::SERVICE_LISTENING => match serde_json::from_value::<ext::ServiceListening>(p) {
+                Ok(s) => match s.problem() {
+                    Some(why) => tracing::warn!(plugin = plugin.name(), "ignoring its service: {why}"),
+                    None => {
+                        tracing::info!(plugin = plugin.name(), service = s.name, url = s.url, "service listening");
+                        plugin.inner.lock().await.services.insert(s.name.clone(), s);
+                    }
+                },
+                Err(e) => tracing::warn!(plugin = plugin.name(), "bad {method}: {e}"),
+            },
             ext::method::READING_PUBLISH => {
                 if !plugin.config.granted("reading.publish") {
                     tracing::warn!(plugin = plugin.name(), "reading.publish isn't granted in node.yaml; dropping");

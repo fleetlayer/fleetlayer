@@ -1156,9 +1156,12 @@ async fn security_headers(mut res: Response) -> Response {
     res
 }
 
-pub async fn serve(hub: Arc<Hub>) -> anyhow::Result<()> {
+/// Serve the web page; `listening` is called with the bound address (the real port when `listen` asked for port 0).
+pub async fn serve(hub: Arc<Hub>, listening: impl FnOnce(SocketAddr)) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(hub.cfg.listen).await?;
-    tracing::info!(listen = %hub.cfg.listen, "hub web UI listening");
+    let bound = listener.local_addr()?;
+    tracing::info!(listen = %bound, "hub web UI listening");
+    listening(bound);
     axum::serve(listener, router(hub).into_make_service_with_connect_info::<SocketAddr>()).await?;
     Ok(())
 }

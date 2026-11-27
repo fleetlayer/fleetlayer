@@ -41,6 +41,9 @@ pub mod method {
     pub const READING_PUBLISH: &str = "_fleetlayer.dev/reading/publish";
     pub const READING_SUBSCRIBE: &str = "_fleetlayer.dev/reading/subscribe";
     pub const READING_UPDATE: &str = "_fleetlayer.dev/reading/update";
+    /// Plugin → node (notification): this plugin serves HTTP here (`ServiceListening`), sent after it has bound.
+    /// Idempotent: resending replaces the entry of that name; the node drops a plugin's entries when it exits.
+    pub const SERVICE_LISTENING: &str = "_fleetlayer.dev/service/listening";
 }
 
 pub mod meta_key {
@@ -310,6 +313,49 @@ pub enum How {
     AgentExited { final_status: Option<Status>, terminal_closed: bool },
 }
 
+/// `_fleetlayer.dev/service/listening`: a plugin's HTTP service, for the gateway (`<name>.<domain>`) and for config
+/// emitted for a server's proxy and monitor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServiceListening {
+    /// One DNS label: lower-case letters, digits and hyphens (`pages`).
+    pub name: String,
+    /// Where it really listens, after binding: `http://127.0.0.1:43117`.
+    pub url: String,
+    /// A path that answers 2xx while the service does its job (`/healthz`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health: Option<String>,
+    /// More host patterns it serves, relative to the gateway's domain, `*` standing for part of one label:
+    /// `*--*.apps` for pages' apps (`recipes--personal.apps.localhost`). The Host header reaches the service intact.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hosts: Vec<String>,
+}
+
+impl ServiceListening {
+    /// Why this announcement can't be used, if it can't.
+    pub fn problem(&self) -> Option<String> {
+        let label = |s: &str, star: bool| {
+            !s.is_empty()
+                && s.len() <= 63
+                && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || (star && b == b'*'))
+        };
+        if !label(&self.name, false) || self.name.starts_with('-') || self.name.ends_with('-') {
+            return Some(format!("service name {:?} isn't one DNS label", self.name));
+        }
+        if !self.url.starts_with("http://") {
+            return Some(format!("service {} url {:?} isn't http://", self.name, self.url));
+        }
+        if let Some(h) = &self.health
+            && !h.starts_with('/')
+        {
+            return Some(format!("service {} health {h:?} isn't a path", self.name));
+        }
+        if let Some(h) = self.hosts.iter().find(|h| !h.split('.').all(|l| label(l, true))) {
+            return Some(format!("service {} host pattern {h:?} is malformed", self.name));
+        }
+        None
+    }
+}
+
 /// `_fleetlayer.dev/session/renamed`: an unnamed session (`@<address>`) got its harness's ID.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionRenamed {
@@ -464,6 +510,27 @@ pub struct MessageSend {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn service_announcements_are_checked() {
+        let ok: ServiceListening = serde_json::from_str(
+            r#"{"name":"pages","url":"http://127.0.0.1:4000","health":"/healthz","hosts":["*--*.apps"]}"#,
+        )
+        .unwrap();
+        assert_eq!(ok.problem(), None);
+        let minimal: ServiceListening = serde_json::from_str(r#"{"name":"hub","url":"http://127.0.0.1:1"}"#).unwrap();
+        assert_eq!(minimal.problem(), None);
+        assert_eq!(serde_json::to_string(&minimal).unwrap(), r#"{"name":"hub","url":"http://127.0.0.1:1"}"#);
+        for bad in [
+            ServiceListening { name: "Pages".into(), ..ok.clone() },
+            ServiceListening { name: "a.b".into(), ..ok.clone() },
+            ServiceListening { url: "https://x".into(), ..ok.clone() },
+            ServiceListening { health: Some("healthz".into()), ..ok.clone() },
+            ServiceListening { hosts: vec!["a..b".into()], ..ok.clone() },
+        ] {
+            assert!(bad.problem().is_some(), "{bad:?}");
+        }
+    }
     use super::*;
 
     #[test]

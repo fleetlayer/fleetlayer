@@ -64,6 +64,8 @@ pub struct Node {
     pub link: link::Link,
     pub typing_fallback: bool,
     pub has_control: bool,
+    /// The gateway's address, checked as part of the node's health.
+    pub gateway: Option<String>,
     /// The control plane link's settings (token path expanded), for tool streams.
     pub control: Option<config::ControlConfig>,
     pub tools: Vec<tools::ToolConfig>,
@@ -150,6 +152,7 @@ async fn run(cfg: NodeConfig) -> anyhow::Result<()> {
         link: link::Link::default(),
         typing_fallback: cfg.typing_fallback,
         has_control: cfg.control.is_some(),
+        gateway: cfg.gateway.clone(),
         control: cfg.control.clone().map(|mut c| {
             if let Ok(rest) = c.token_file.strip_prefix("~") {
                 c.token_file = config::home().join(rest);

@@ -4,6 +4,7 @@
 //! Methods:
 //! - `node/status` → the node's name, machine, version and plugins.
 //! - `node/sessions` → every session the node knows.
+//! - `node/services` → `{services: [{plugin, name, url, health?, hosts}]}`: the HTTP services its plugins announced.
 //! - `node/readings` `{kinds}` → `{readings}`: the newest of each kind from every node this one may read.
 //! - `_fleetlayer.dev/message/send` `{to, text, caller?: {sessionId?, address?}}` → `{via}`.
 //!
@@ -159,6 +160,18 @@ impl Handler for Local {
                 peer.request::<_, Value>(m, &p).await
             }
             "node/readings" => crate::readings::latest(node, &p).await,
+            "node/services" => {
+                let mut services = vec![];
+                for p in &node.plugins {
+                    for s in p.services().await {
+                        let mut v = serde_json::to_value(&s).map_err(|e| RpcError::internal(e.to_string()))?;
+                        v["plugin"] = json!(p.name());
+                        v["hosts"] = json!(s.hosts);
+                        services.push(v);
+                    }
+                }
+                answer(&json!({"services": services}))
+            }
             "node/sessions" => answer(&json!({"node": node.name, "sessions": node.registry.all().await})),
             ext::method::MESSAGE_SEND => {
                 let s: Send = params(p)?;

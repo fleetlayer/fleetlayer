@@ -41,6 +41,9 @@ pub struct NodeConfig {
     /// Tools this node shares with sessions on other nodes (`crate::tools`).
     #[serde(default)]
     pub tools: Vec<crate::tools::ToolConfig>,
+    /// The gateway's address (`http://127.0.0.1:7680`): the node's health includes the gateway's `/healthz`, so a
+    /// gateway that keeps dying turns the node's heartbeat red (`fleetlayer up` sets it).
+    pub gateway: Option<String>,
     /// Self-update from Fleetlayer's releases (`crate::update`).
     pub update: Option<crate::update::UpdateConfig>,
 }

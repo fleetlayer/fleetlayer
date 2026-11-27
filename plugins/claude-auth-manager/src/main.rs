@@ -86,6 +86,8 @@ struct HubSection {
     heartbeat: Option<hub::Heartbeat>,
     /// Shown under the login box: where this deployment keeps the login key ("1Password: vault/item"). Never the key.
     login_hint: Option<String>,
+    /// The name it announces to the node's gateway (`claude-hub.localhost`). Default `claude-hub`.
+    service: Option<String>,
 }
 
 struct Plugin {
@@ -112,6 +114,11 @@ impl Default for Plugin {
             kept: Mutex::default(),
         }
     }
+}
+
+/// An address to reach a listener on: `0.0.0.0:p` and `[::]:p` are reached on loopback.
+fn loopback_if_any(a: std::net::SocketAddr) -> std::net::SocketAddr {
+    if a.ip().is_unspecified() { std::net::SocketAddr::new(std::net::Ipv4Addr::LOCALHOST.into(), a.port()) } else { a }
 }
 
 fn yes() -> bool {
@@ -246,8 +253,20 @@ impl Handler for Shared {
                     tokens_file.get_or_insert_with(|| hub.tokens_file());
                     {
                         let hub = hub.clone();
+                        let (peer, name) = (peer.clone(), h.service.clone().unwrap_or_else(|| "claude-hub".into()));
                         tokio::spawn(async move {
-                            if let Err(e) = hub::serve(hub).await {
+                            let announce = move |bound: std::net::SocketAddr| {
+                                peer.notify(
+                                    ext::method::SERVICE_LISTENING,
+                                    &ext::ServiceListening {
+                                        name,
+                                        url: format!("http://{}", loopback_if_any(bound)),
+                                        health: Some("/healthz".into()),
+                                        hosts: vec![],
+                                    },
+                                );
+                            };
+                            if let Err(e) = hub::serve(hub, announce).await {
                                 tracing::error!("the hub's web page: {e}");
                             }
                         });

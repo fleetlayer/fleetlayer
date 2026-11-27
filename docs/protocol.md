@@ -415,9 +415,32 @@ Numbers, never secrets, flow with readings: account usage and reset times, healt
 | `_fleetlayer.dev/reading/publish`, `/reading/subscribe` | [Section 9](#9-readings) |
 | `_fleetlayer.dev/sessions/query` `{node?, name?, harness?}` | The fleet's sessions, as the control plane sees them |
 | `_fleetlayer.dev/log` `{level, message}` | A structured log line (stderr works too) |
+| `_fleetlayer.dev/service/listening` `{name, url, health?, hosts?}` | A notification: this plugin serves HTTP (below) |
 
 Each is allowed only if the node's config grants it to that plugin (`grants:` in its plugin section), and the control
-plane's ACLs decide who may message whom.
+plane's ACLs decide who may message whom. `service/listening` needs no grant: it only says where the plugin listens.
+
+### Announcing an HTTP service: `_fleetlayer.dev/service/listening`
+
+A plugin that serves web pages (the Claude sign-in hub, pages) tells the node where, once it has bound its port:
+
+```json
+{"jsonrpc":"2.0","method":"_fleetlayer.dev/service/listening","params":{
+  "name":"pages", "url":"http://127.0.0.1:43117", "health":"/healthz", "hosts":["*--*.apps"]}}
+```
+
+- `name` is one DNS label: the gateway serves it at `<name>.<domain>` (`pages.localhost:7680` on a laptop).
+- `url` is the address it really bound, so a plugin can listen on port 0 and nobody picks ports. `http://` only: TLS
+  belongs to the proxy in front.
+- `health` is a path that answers 2xx while the service does its job, for the gateway's checks and emitted Gatus
+  config.
+- `hosts` are more host patterns it serves, relative to the domain, with `*` standing for part of one label:
+  `*--*.apps` routes `recipes--personal.apps.localhost` to pages with the Host header intact. A plugin carries the
+  pattern its config gives it rather than assuming one.
+
+It's idempotent: sending it again (after the plugin restarts its listener, say) replaces the entry of that name. The
+node drops a plugin's entries when the plugin exits, and lists them in `node/status` (each plugin's `services`) and
+`node/services` on its local socket, which `fleetlayer-gateway` reads.
 
 ## 11. Installing and running plugins
 
@@ -438,6 +461,8 @@ roles = ["session_manager"]
   misses three pings is restarted, with backoff up to 5 minutes. Its state (running, restarting, broken, and its last
   stderr lines) is part of the node's health, which the control plane alerts on.
 - Plugins are separate executables, so a plugin's crash never takes down the node or another plugin.
+- A plugin with a web page announces it with `_fleetlayer.dev/service/listening` ([section 10](#10-what-plugins-can-ask-the-node))
+  after binding, and the node forgets it when the plugin stops, so the gateway's routes follow restarts and new ports.
 
 ## 12. The node's link to the control plane
 
