@@ -107,12 +107,19 @@ async fn run(app: Arc<App>, (tenant, name): (String, String), socket: WebSocket)
 
     let pinger = {
         let peer = peer.clone();
+        let (db, tenant, name) = (app.db.clone(), tenant.clone(), name.clone());
         tokio::spawn(async move {
             let mut missed = 0;
             loop {
                 tokio::time::sleep(PING_EVERY).await;
                 match peer.request_within::<_, Value>(ext::method::PING, &json!({}), Duration::from_secs(10)).await {
-                    Ok(_) => missed = 0,
+                    Ok(_) => {
+                        missed = 0;
+                        // "Last seen" follows a linked node, not only the moment it linked.
+                        if let Err(e) = db::node_alive(&db, &tenant, &name).await {
+                            tracing::warn!(node = %name, "recording that a node answered: {e}");
+                        }
+                    }
                     Err(_) => {
                         missed += 1;
                         if missed >= MISSED_PINGS {

@@ -106,6 +106,17 @@ pub async fn check_key(db: &Db, tenant: &str, name: &str, key: &str) -> anyhow::
     }
 }
 
+/// A linked node answered: it's still here.
+pub async fn node_alive(db: &Db, tenant: &str, name: &str) -> anyhow::Result<()> {
+    sqlx::query("UPDATE nodes SET last_seen_at = ? WHERE tenant = ? AND name = ?")
+        .bind(now_ms())
+        .bind(tenant)
+        .bind(name)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
 pub async fn node_seen(
     db: &Db,
     tenant: &str,
