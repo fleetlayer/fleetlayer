@@ -50,4 +50,6 @@ jobs:
       - run: cargo test --locked -p fleetlayer-claude-auth-manager
       - run: cargo test --locked -p fleetlayer-claude-auth-manager -- --ignored real_keychain
       - run: cargo test --locked -p fleetlayer-cookies
+      # A Keychain prompt would wait forever on a runner: fail in minutes instead
       - run: cargo test --locked -p fleetlayer-cookies -- --ignored real_keychain
+        timeout-minutes: 5

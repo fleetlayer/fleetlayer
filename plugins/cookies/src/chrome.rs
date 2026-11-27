@@ -467,28 +467,15 @@ mod tests {
         assert!(!in_domains(".com", &d));
     }
 
-    /// The Keychain path, against CI's throwaway default keychain (the item is made readable by any program, so no
-    /// prompt shows): `cargo test -p fleetlayer-cookies -- --ignored real_keychain`.
+    /// The Keychain path, against CI's throwaway default keychain: `cargo test -p fleetlayer-cookies -- --ignored
+    /// real_keychain`. The test writes the item itself, so it's the item's owner and macOS shows no prompt (an item
+    /// made with `/usr/bin/security` belongs to Apple's tools, and reading it from another program asks, even with
+    /// `-A`).
     #[cfg(target_os = "macos")]
     #[test]
     #[ignore = "writes to the default keychain: run it only where that's a throwaway one"]
     fn real_keychain_gives_the_v10_key() {
-        let ok = std::process::Command::new("security")
-            .args([
-                "add-generic-password",
-                "-U",
-                "-A",
-                "-s",
-                "Chrome Safe Storage",
-                "-a",
-                "Chrome",
-                "-w",
-                "ci-password",
-            ])
-            .status()
-            .unwrap()
-            .success();
-        assert!(ok);
+        security_framework::passwords::set_generic_password("Chrome Safe Storage", "Chrome", b"ci-password").unwrap();
         let keys = keys(Browser::Chrome).unwrap();
         assert_eq!(keys.v10, vec![derive(b"ci-password", 1003)]);
         let d = tempfile::tempdir().unwrap();

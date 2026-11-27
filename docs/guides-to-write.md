@@ -406,7 +406,9 @@ managers, machines that sleep.
   locally built or unsigned binary is asked again after every rebuild. Calling `/usr/bin/security` instead would mean
   allowing `security` itself, which every program can run: so the plugin reads the item through the Security
   framework. A Deny isn't asked again until the plugin restarts (it would otherwise nag every few minutes). The node
-  must run as a LaunchAgent in the person's session for the prompt to show at all. Where it lives:
+  must run as a LaunchAgent in the person's session for the prompt to show at all. Testing it: an item made with
+  `security add-generic-password -A` belongs to Apple's tools' partition, so reading it from your own binary still
+  prompts (and hangs a CI runner); make the test item from the test binary itself. Where it lives:
   `docs/plugins/cookies.md`, `plugins/cookies/src/chrome.rs`.
 - **Reading Chrome's cookies: the format's traps.** Values are AES-128-CBC under a PBKDF2-SHA1 key (salt `saltysalt`,
   1003 iterations from the Keychain on macOS; one iteration and the fixed password `peanuts`, or the keyring's, on
