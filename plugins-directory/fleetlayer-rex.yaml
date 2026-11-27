@@ -6,21 +6,28 @@ ships_with_fleetlayer: true
 status: in progress
 licence: Apache-2.0
 maintainer: Fleetlayer
-source: https://github.com/fleetlayer/fleetlayer/tree/main/plugins-directory/fleetlayer-rex.yaml
+source: https://github.com/fleetlayer/fleetlayer/tree/main/plugins/rex
 install: bundled
 command: fleetlayer-rex
 platforms: [linux, macos]
-min_fleetlayer: 0.4.0
+min_fleetlayer: 0.3.9
 protocol: 1
 needs: [Rex (https://www.superlogical.com/rex/docs)]
 grants: []
-docs: rex
+docs: plugins/rex
+config: |
+  plugins:
+    - name: rex
+      command: fleetlayer-rex
+      config:
+        program: rex
 security: >-
-  Will see every Rex session of its Unix user's server (names, status, the program in each) and type into a
-  terminal only when a message can't reach the agent through its own channel.
+  Sees every session on its user's Rex server (labels, the program and folder in each terminal) and types into a
+  terminal only to deliver a message to an agent with no channel of its own, a first prompt, or for `fleetlayer
+  attach` under the access policy. It never starts a Rex server.
 description: |
-  In progress. The session manager plugin for [Rex](https://www.superlogical.com/rex/docs): it lists Rex's sessions
-  with each agent's status from program status reports (OSC 7501), streams changes from `rex events`, opens and closes
-  sessions, delivers messages with `rex send` when nothing better is available, and lets `fleetlayer attach` watch Rex
-  terminals. It uses only Rex's public command line and API. More in [Fleetlayer and
+  The session manager plugin for [Rex](https://www.superlogical.com/rex/docs). It lists the agents in Rex terminals
+  with their status from program status reports (OSC 7501), streams changes from `rex events`, opens and closes
+  sessions, delivers messages by pasting them in when nothing better is available, and lets `fleetlayer attach` watch
+  and drive Rex terminals. It uses only Rex's public command line and API. More in [Fleetlayer and
   Rex](https://fleetlayer.ai/rex/).

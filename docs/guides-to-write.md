@@ -548,3 +548,15 @@ managers, machines that sleep.
   (`fleetlayer mcp shared-folders@laptop`), and the macOS signing identifier (`dev.fleetlayer.shared-folders`, so a
   privacy permission is asked for again). What must not change silently: files a plugin left on disk to recognise its
   own work (the sync record now `.fleetlayer-file-sync.json`, reading the old `.fleetlayer-files.json` once).
+- **Fleetlayer with Rex.** Rex (Superlogical) is a terminal and session manager with a self-describing server API, so
+  it gets a session-manager plugin like herdr's. What took finding out, all from Rex's public docs and a real server:
+  the Linux server installs without a beta login (`curl -fsSL https://pkgs.superlogical.com/rex/install.sh | sh`, or
+  the release tarball from `https://blob.superlogical.com/api/releases/rex/preview`); `rex events --all --json` is the
+  only stream with every session's block events (`program_status_changed`, `process_changed`), while plain `rex
+  events` has only session lifecycle; a terminal's program status is a set of records, so "blocked" anywhere wins;
+  Claude Code reports `app=claude-code`, and Rex's process `name` for a native Claude Code is its version (`2.1.332`),
+  so match on argv0; Rex keeps a session whose last block closed, so closing an agent alone in its session destroys the
+  session; Rex's terminal data stream has an unpublished wire format, so `fleetlayer attach` polls the documented
+  `format` method; a Unix socket path over 108 bytes fails, so a test server needs a short `REX_RUNTIME_DIR`; pass
+  `--autostart=false` or `rex` starts a server of its own. Written: `docs/rex.md`, `docs/plugins/rex.md`,
+  `plugins/rex/`.

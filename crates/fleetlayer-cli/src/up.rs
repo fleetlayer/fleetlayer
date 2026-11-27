@@ -317,12 +317,13 @@ impl Layout {
 }
 
 /// The node.yaml `up` writes for a machine that has none.
-/// The session plugins `up` adds: herdr's when herdr is installed, Claude Code's when Claude Code is, summaries when
-/// asked for. herdr and summaries carry the absolute path of the program they run (herdr, claude), so a service PATH
+/// The session plugins `up` adds: herdr's when herdr is installed, Rex's when Rex is, Claude Code's when Claude Code
+/// is, summaries when asked for. herdr, Rex and summaries carry the absolute path of the program they run (herdr, claude), so a service PATH
 /// that differs from the shell's can't hide it.
 #[derive(Debug, Clone, Default)]
 pub struct SessionPlugins {
     pub herdr: Option<PathBuf>,
+    pub rex: Option<PathBuf>,
     pub claude_code: bool,
     pub summaries: Option<PathBuf>,
 }
@@ -387,6 +388,12 @@ pub fn node_yaml_text(
             yaml_str(&herdr.display().to_string())
         ));
     }
+    if let Some(rex) = &sessions.rex {
+        y.push_str(&format!(
+            "  # Your Rex sessions, so the fleet sees and reaches the agents in them.\n  - name: rex\n    command: fleetlayer-rex\n    config:\n      program: {}\n",
+            yaml_str(&rex.display().to_string())
+        ));
+    }
     if sessions.claude_code {
         y.push_str("  # Claude Code's own view of each session (status, transcript), and starting sessions.\n  - name: claude-code\n    command: fleetlayer-claude-code\n");
     }
@@ -436,6 +443,12 @@ fn detect_sessions(want_summaries: bool) -> (SessionPlugins, Vec<String>) {
             "herdr: not installed (https://herdr.dev), so the fleet sees no herdr tabs".to_string()
         });
     }
+    // Rex (https://www.superlogical.com/rex/docs): most machines don't have it, so its absence isn't reported.
+    let rex_bin = on_path("rex").filter(|p| is_superlogical_rex(p));
+    let rex = rex_bin.clone().filter(|_| find_bin("fleetlayer-rex").is_ok());
+    if rex_bin.is_some() && rex.is_none() {
+        skipped.push("rex: fleetlayer-rex isn't installed next to fleetlayer".to_string());
+    }
     let claude_bin = on_path("claude").or_else(|| {
         let local = account_home().join(".claude/local/claude");
         local.is_file().then_some(local)
@@ -453,7 +466,15 @@ fn detect_sessions(want_summaries: bool) -> (SessionPlugins, Vec<String>) {
     if want_summaries && summaries.is_none() {
         skipped.push("summaries: needs Claude Code and fleetlayer-summaries".into());
     }
-    (SessionPlugins { herdr, claude_code, summaries }, skipped)
+    (SessionPlugins { herdr, rex, claude_code, summaries }, skipped)
+}
+
+/// Whether a `rex` on PATH is Superlogical's: Debian, Ubuntu and Fedora have an unrelated Perl tool named rex.
+fn is_superlogical_rex(p: &Path) -> bool {
+    std::process::Command::new(p)
+        .arg("version")
+        .output()
+        .is_ok_and(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).contains("api: revision"))
 }
 
 /// `local_control`: the port of a control plane running here, if one does.
@@ -589,6 +610,7 @@ pub async fn up(mut a: UpArgs) -> anyhow::Result<()> {
         println!("Wrote {}.", node_yaml.display());
         let added: Vec<&str> = [
             ("herdr", sessions.herdr.is_some()),
+            ("rex", sessions.rex.is_some()),
             ("claude-code", sessions.claude_code),
             ("summaries", sessions.summaries.is_some()),
         ]
@@ -630,6 +652,7 @@ pub async fn up(mut a: UpArgs) -> anyhow::Result<()> {
             ("claude-auth-manager", a.no_hub),
             ("pages", a.no_pages),
             ("herdr", sessions.herdr.is_none()),
+            ("rex", sessions.rex.is_none()),
             ("claude-code", !sessions.claude_code),
             ("summaries", sessions.summaries.is_none()),
         ] {
@@ -835,7 +858,12 @@ mod tests {
             "http://127.0.0.1:7680",
             Some(Path::new("/h/.local/state/fleetlayer/claude-hub-login")),
             Some((Path::new("/h/.local/state/fleetlayer/pages/login"), Path::new("/h/Fleetlayer/personal"), 7680)),
-            &SessionPlugins { herdr: Some("/h/.local/bin/herdr".into()), claude_code: true, summaries: None },
+            &SessionPlugins {
+                herdr: Some("/h/.local/bin/herdr".into()),
+                rex: Some("/h/.local/bin/rex".into()),
+                claude_code: true,
+                summaries: None,
+            },
         );
         let v: serde_json::Value = yaml_serde_from(&y);
         assert_eq!(v["gateway"], "http://127.0.0.1:7680");
@@ -844,8 +872,10 @@ mod tests {
         assert_eq!(v["plugins"][1]["config"]["spaces"]["personal"]["dir"], "/h/Fleetlayer/personal/pages");
         assert_eq!(v["plugins"][2]["name"], "herdr");
         assert_eq!(v["plugins"][2]["config"]["program"], "/h/.local/bin/herdr");
-        assert_eq!(v["plugins"][3]["command"], "fleetlayer-claude-code");
-        assert!(v["plugins"].get(4).is_none(), "summaries only when asked for");
+        assert_eq!(v["plugins"][3]["name"], "rex");
+        assert_eq!(v["plugins"][3]["config"]["program"], "/h/.local/bin/rex");
+        assert_eq!(v["plugins"][4]["command"], "fleetlayer-claude-code");
+        assert!(v["plugins"].get(5).is_none(), "summaries only when asked for");
         assert!(y.contains("# harnesses:") && v.get("harnesses").is_none(), "a commented hint only");
         let y = node_yaml_text(
             "ws://x/v1/link",

@@ -12,9 +12,9 @@ command, which talks to this machine's node.
 ## Names
 
 - **A node** is one machine, or one Unix user on a shared machine. `fleetlayer status` names yours.
-- **A session** is one agent in one tab of a session manager (herdr). Its address is `<tab>@<node>`:
-  `planning@laptop`. The tab name survives restarts; the harness's own session ID doesn't. When a tab name is unique
-  in the fleet, the `@<node>` can be left out.
+- **A session** is one agent in one tab of a session manager (a herdr tab, or a session in Rex). Its address is
+  `<tab>@<node>`: `planning@laptop`. The tab name survives restarts; the harness's own session ID doesn't. When a tab
+  name is unique in the fleet, the `@<node>` can be left out.
 - **A shared tool** is `<tool>@<node>`: `browser@laptop`, `shared-folders@laptop`.
 
 ## What you may use from here

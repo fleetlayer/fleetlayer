@@ -70,31 +70,26 @@ start or on a server later.
 
 Fleetlayer never replaces or hides a session manager. It attaches to the one you use through a **session-manager
 plugin**, a separate program the node starts ([the plugin protocol](protocol.md#4-sessions-the-session-manager-role)).
-herdr has one today. The Rex plugin, `fleetlayer-rex`, is being built now and uses only Rex's public command line and
-API:
+herdr has one, and Rex has [`fleetlayer-rex`](plugins/rex.md), which uses only Rex's public command line and API:
 
 | Fleetlayer needs | From Rex |
 |---|---|
-| The list of sessions and where each runs | `rex ls --json` and the server API |
+| The list of sessions and where each runs | `session.list`, `session.view` and each terminal's `process` |
 | Each agent's status (idle, working, blocked, done) | Program status reports (OSC 7501), which Claude Code sends |
 | Status changes as they happen | `rex events` |
-| Messages typed into an agent that has no channel of its own | `rex send` |
-| Starting and closing sessions | `rex new`, `rex run`, and the server API |
-| Watching or stepping into a terminal from anywhere in the fleet | The server API, for `fleetlayer attach` |
+| Messages to an agent that has no channel of its own | A paste into its terminal (`block.event`) |
+| Starting and closing sessions | `rex new`, `block.close` and `session.destroy` |
+| Watching or stepping into a terminal from anywhere in the fleet | The terminal's `format`, `write` and `resize` methods, for `fleetlayer attach` |
 
 Your Rex apps keep working alongside it. You watch and type into sessions from Rex on your Mac or phone, and
 Fleetlayer routes messages and events to the agents in them, under your rules.
 
-Fleetlayer will also read program status reports (OSC 7501) in its own session status, whatever the session manager,
-since Claude Code already sends them.
+## What works today
 
-## What works today and what's coming
-
-- **Today**, Fleetlayer finds sessions through herdr. Rex and herdr can run side by side on the same machine, and the
-  agents you run in herdr are in the fleet while you use Rex for everything else.
-- **Coming with `fleetlayer-rex`:** the Claude Code, Codex and other agents in your Rex terminals join the fleet by
-  their Rex names, with their status, messages and webhooks, starting and closing sessions from anywhere in the
-  fleet, and `fleetlayer attach` on Rex terminals. Its entry in the [plugin
-  directory](https://fleetlayer.ai/directory/fleetlayer-rex/) says when it's ready.
+`fleetlayer-rex` is in Fleetlayer's code now and ships in the next release; its entry in the [plugin
+directory](https://fleetlayer.ai/directory/fleetlayer-rex/) says which. With it, the Claude Code, Codex and other
+agents in your Rex terminals join the fleet by their Rex session names, with their status, messages and webhooks,
+starting and closing sessions from anywhere in the fleet, and `fleetlayer attach` on Rex terminals. Rex and herdr can
+also run side by side on one machine, each with its plugin. [The plugin's page](plugins/rex.md) has the setup.
 
 To start with Fleetlayer, see [Getting started](getting-started.md).

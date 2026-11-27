@@ -43,6 +43,7 @@ export const pages = [
   { file: "guides/continuous-deployment", group: "Guides", label: "Continuous deployment" },
   { file: "guides/make-it-yours", group: "Guides", label: "Make it yours" },
   { file: "directory", group: "Plugins", label: "Plugin directory", generated: true },
+  { file: "plugins/rex", group: "Plugins", label: "Rex" },
   { file: "plugins/summaries", group: "Plugins", label: "Summaries" },
   { file: "plugins/pages", group: "Plugins", label: "Pages" },
   { file: "plugins/apps", group: "Plugins", label: "Apps" },
