@@ -145,8 +145,10 @@ plugins:
   signed in as, and nothing in the token says which. The hub keeps the organization from the account's profile at
   sign-in, and after the usual check makes one tiny request with the new token for its `anthropic-organization-id`
   header. A token for another organization is refused ("That token is for a different Claude account…"). A token
-  whose organization couldn't be read is kept but shown as "Account not checked", and the poll tries again; one found
-  to be another account's later is left out of the bundle, shown as "Wrong account", and fails the heartbeat.
+  whose organization couldn't be read is kept but shown as "Account not checked", and the poll tries again (it also
+  reads the organization of accounts signed in before the hub kept it, from their stored sign-in). Only two known,
+  different organizations count as a mismatch: such a token is left out of the bundle, shown as "Wrong account", and
+  fails the heartbeat. An unknown side never drops a token.
 - **The JSON API** (every route behind the login): `GET /api/state` (accounts with `tier`, `signInExpiresAt`,
   `tokenExpiresAt`, `tokenWrongAccount`, `tokenUnchecked`, the last poll's `usage` and `signInNeeded`, and the running
   `flows`), `POST /api/accounts`, `DELETE

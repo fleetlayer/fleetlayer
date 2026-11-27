@@ -829,8 +829,8 @@ impl Hub {
                     "signInExpiresAt": signin_expires, "tokenExpiresAt": token_expires,
                     "signInNeeded": p.sign_in_needed, "usage": p.usage,
                     "tokenWrongAccount": a.token.is_some() && wrong_account(a.org_id.as_deref(), a.token_org_id.as_deref(), None).is_some(),
-                    // A token whose account couldn't be read (or made before the hub checked): not known to match.
-                    "tokenUnchecked": a.token.is_some() && a.token_org_id.is_none(),
+                    // Not known to match: either organization unknown (never a reason to drop the token).
+                    "tokenUnchecked": a.token.is_some() && (a.token_org_id.is_none() || a.org_id.is_none()),
                     "signedInAt": a.signed_in_at, "signInDaysLeft": signin_left,
                     "signInWarn": signin_days.is_some_and(|d| d >= SIGNIN_WARN_DAYS) || signin_left.is_some_and(|l| l <= SIGNIN_LIFETIME_DAYS - SIGNIN_WARN_DAYS),
                     "hasToken": a.token.is_some(), "tokenAt": a.token_at, "tokenDaysLeft": token_left,
@@ -975,6 +975,31 @@ impl Hub {
                     problems.push(format!("account {slot}: the usage endpoint answered {status}"))
                 }
             }
+        }
+        // Accounts signed in before the hub kept their organization: from the stored sign-in's profile, once.
+        let unknown: Vec<u32> = self
+            .store
+            .lock()
+            .await
+            .accounts
+            .iter()
+            .filter(|(_, a)| a.org_id.is_none() && a.signed_in_at.is_some())
+            .map(|(slot, _)| *slot)
+            .collect();
+        for slot in unknown {
+            let Some(who) = self.identify(slot).await else { continue };
+            let mut store = self.store.lock().await;
+            let Some(a) = store.accounts.get_mut(&slot) else { continue };
+            if a.org_id.is_some() || who.org.is_none() {
+                continue;
+            }
+            a.org_id = who.org;
+            if a.tier.is_none() {
+                a.tier = who.tier;
+            }
+            let snapshot = store.clone();
+            drop(store);
+            let _ = self.save(&snapshot).await;
         }
         // Tokens made before the hub checked whose they are (or whose check couldn't be read): once each.
         let unchecked: Vec<(u32, String)> = self
@@ -1422,6 +1447,17 @@ mod tests {
         assert_eq!(readings.len(), 2, "sign-in age and token age for the account with a UUID");
         let signin = readings.iter().find(|r| r["kind"] == "claude.signin_age").unwrap();
         assert!(signin["data"]["number"].as_u64().is_some(), "the account's number, for account lists");
+        // A token whose account's organization isn't known stays in the bundle, shown as unchecked.
+        {
+            let mut st = hub.store.lock().await;
+            st.accounts.get_mut(&2).unwrap().token_org_id = Some("org-b".into());
+            let snap = st.clone();
+            drop(st);
+            hub.save(&snap).await.unwrap();
+        }
+        let tokens: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(hub.tokens_file()).unwrap()).unwrap();
+        assert_eq!(tokens.len(), 1, "one side unknown: never dropped");
+        assert_eq!(hub.state_json().await["accounts"][0]["tokenUnchecked"], true);
         // A token found to be another account's leaves the bundle.
         {
             let mut st = hub.store.lock().await;
@@ -1434,6 +1470,7 @@ mod tests {
         }
         let tokens: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(hub.tokens_file()).unwrap()).unwrap();
         assert!(tokens.is_empty(), "a token for the wrong account is never sent");
+        assert_eq!(hub.state_json().await["accounts"][0]["tokenUnchecked"], false);
         assert_eq!(hub.state_json().await["accounts"][0]["tokenWrongAccount"], true);
         // Deleting account 2 drops it from the tokens file.
         assert!(hub.delete(2).await.unwrap());
