@@ -99,6 +99,8 @@ impl Pending {
 
 pub struct App {
     pub settings: Settings,
+    /// Invites each admin made in the last hour, for the rate limit.
+    pub(crate) invites_made: Mutex<HashMap<String, Vec<i64>>>,
     pub store: Store,
     pub keys: Keys,
     pub control: Control,
@@ -119,7 +121,15 @@ impl App {
     pub fn new(settings: Settings, store: Store, keys: Keys, control: Control) -> anyhow::Result<App> {
         let webauthn =
             WebauthnBuilder::new(&settings.passkey_domain, &settings.origin)?.rp_name("Fleetlayer").build()?;
-        Ok(App { settings, store, keys, control, webauthn, pending: Mutex::new(Pending::default()) })
+        Ok(App {
+            settings,
+            invites_made: Mutex::new(HashMap::new()),
+            store,
+            keys,
+            control,
+            webauthn,
+            pending: Mutex::new(Pending::default()),
+        })
     }
 
     fn client(&self, id: &str) -> Option<&Client> {
@@ -140,11 +150,16 @@ impl App {
     }
 
     /// The person signed in on this browser, if any.
-    async fn signed_in(&self, headers: &HeaderMap) -> Option<String> {
+    pub(crate) async fn signed_in(&self, headers: &HeaderMap) -> Option<String> {
+        self.session(headers).await.map(|(s, _)| s.person)
+    }
+
+    /// This browser's session, and its cookie's value (for the CSRF token).
+    pub(crate) async fn session(&self, headers: &HeaderMap) -> Option<(Session, String)> {
         let value = cookie(headers, self.cookie_name())?;
         let sessions = self.store.sessions.lock().await;
         let s = sessions.sessions.get(&sha256_hex(&value))?;
-        (s.expires_at > now_ms()).then(|| s.person.clone())
+        (s.expires_at > now_ms()).then(|| (s.clone(), value.clone()))
     }
 
     async fn start_session(&self, person: &str) -> anyhow::Result<HeaderValue> {
@@ -154,7 +169,7 @@ impl App {
         sessions.sessions.retain(|_, s| s.expires_at > now);
         sessions.sessions.insert(
             sha256_hex(&value),
-            Session { person: person.into(), created_at: now, expires_at: now + SESSION_MS },
+            Session { person: person.into(), created_at: now, expires_at: now + SESSION_MS, verified_at: now },
         );
         self.store.save_sessions(&sessions)?;
         Ok(self.session_cookie(&value, SESSION_MS / 1000))
@@ -227,6 +242,8 @@ pub fn router(app: Arc<App>) -> axum::Router {
         .route("/passkey/register/start", post(register_start))
         .route("/passkey/register/finish", post(register_finish))
         .route("/api/check", post(api_check))
+        .route("/admin", get(crate::admin::index))
+        .route("/admin/{tenant}", get(crate::admin::show).post(crate::admin::change))
         .route("/healthz", get(healthz))
         .route("/", get(home))
         .with_state(app)
@@ -866,11 +883,11 @@ async fn home(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     }
 }
 
-fn esc(s: &str) -> String {
+pub(crate) fn esc(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
 }
 
-fn page(status: StatusCode, title: &str, body: &str) -> Response {
+pub(crate) fn page(status: StatusCode, title: &str, body: &str) -> Response {
     let html = format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
          <title>{title} · Fleetlayer</title><style>{CSS}</style></head><body><main><h1>{title}</h1>{body}</main></body></html>",
@@ -890,13 +907,13 @@ fn page(status: StatusCode, title: &str, body: &str) -> Response {
 const CSS: &str = ":root{--bg:#fafaf9;--fg:#1c1917;--muted:#78716c;--accent:#2563eb;--warn:#b45309}\
 @media (prefers-color-scheme:dark){:root{--bg:#1c1917;--fg:#f5f5f4;--muted:#a8a29e;--accent:#60a5fa;--warn:#fbbf24}}\
 body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,sans-serif}\
-main{max-width:26rem;margin:12vh auto;padding:0 16px}h1{font-size:1.5rem}\
+main{max-width:40rem;margin:12vh auto;padding:0 16px}h1{font-size:1.5rem}\
 button{font:inherit;padding:.6rem 1rem;border:0;border-radius:.5rem;background:var(--accent);color:#fff;cursor:pointer}\
 input{font:inherit;display:block;width:100%;box-sizing:border-box;margin:.3rem 0 1rem;padding:.5rem;border-radius:.4rem;border:1px solid var(--muted);background:transparent;color:inherit}\
-.why,.hint{color:var(--muted)}.warn{color:var(--warn)}.choices{list-style:none;padding:0}.choice{display:block;padding:.6rem 0}";
+.why,.hint{color:var(--muted)}table{border-collapse:collapse;width:100%}td,th{text-align:left;padding:.3rem .4rem;border-bottom:1px solid var(--muted)}td form{display:inline}select{font:inherit}details{margin-top:2rem}summary{cursor:pointer;color:var(--muted)}.ok{color:var(--accent)}.warn{color:var(--warn)}.choices{list-style:none;padding:0}.choice{display:block;padding:.6rem 0}";
 
 /// The browser half of the passkey ceremonies: options from the server, base64url to bytes and back.
-const PASSKEY_JS: &str = r#"
+pub(crate) const PASSKEY_JS: &str = r#"
 const b2u = b => btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 const u2b = s => Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/') + '==='.slice((s.length+3)%4)), c => c.charCodeAt(0));
 const msg = t => { document.getElementById('msg').textContent = t; };

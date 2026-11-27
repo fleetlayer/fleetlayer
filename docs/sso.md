@@ -2,8 +2,8 @@
 
 Status: design (27 November 2026). Steps 1a (people, tenants, teams, memberships, invites, node owners on the control
 plane), 1b (decisions in the owning tenant, people in the policy, the check call), 1c (the sign-in token and its
-routes) and 2a (the sign-in service: OpenID Connect provider, passkeys, invites, the move test) are built; the rest
-follows the steps at the end, each one shippable.
+routes), 2a (the sign-in service: OpenID Connect provider, passkeys, invites, the move test) and 2b (the admin pages)
+are built; the rest follows the steps at the end, each one shippable.
 
 People sign in once, with Fleetlayer, to every web service the fleet runs: the Claude sign-in hub, pages, and any
 other service someone chooses to run. Who may use what comes from the same access policy that decides what agents may
@@ -331,6 +331,11 @@ tenant per request. No dynamic registration.
   - `/v1/signin/event {tenant, person, kind, client?, detail?}`: `kind` is `signed_in`, `signed_out`, `refused`,
     `passkey_added`, `passkey_removed` or `upstream_linked`, `detail` one line (how, or why refused, never a
     credential). Recorded in the tenant's audit log as `signin.<kind>`, with the token's name.
+  - `/v1/signin/admin/view {tenant, as}` and `/v1/signin/admin/<action> {tenant, as, …}` (`invite`,
+    `invite_revoke`, `member_role`, `member_remove`, `team_add`, `team_remove`, `team_member`), for the admin pages.
+    The control plane checks `as` may manage the tenant (an admin, or `admin` on `service:signin`) on every request,
+    and records each change as that person (`person:<handle> (signin:<token>)`). The sign-in service adds a passkey
+    step-up (ten minutes) before removals and role changes, a CSRF token, and 20 invites an hour per admin.
   - `fleetlayer-control signin token [--name signin]` makes (or replaces) the token and prints it once; `signin
     tokens` lists them; `signin revoke <name>` stops the service using it at once.
 

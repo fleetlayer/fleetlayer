@@ -8,8 +8,8 @@ away, happens in one place.
 Everything a company needs is built on the same service: single sign-on, teams, separate organisations, audit. How it
 fits together, and why, is in [Sign-in and SSO](../sso.md).
 
-Status: experimental. Passkeys, invites and signing in to services work. Admin pages, signing out of every service at
-once, and Google Workspace as a way to sign in come next.
+Status: experimental. Passkeys, invites, signing in to services and the admin pages work. Signing out of every service
+at once, and Google Workspace as a way to sign in, come next.
 
 ## Set it up
 
@@ -57,6 +57,20 @@ once, and Google Workspace as a way to sign in come next.
        can: [sign_in]
        to: ["service:*"]
    ```
+
+## Managing people
+
+Admins open `https://signin.example.com/admin`: the people, with their role and a button to remove them, and **Invite
+someone**, which gives a link to send (it works once, for a week). Teams, and the services that sign in here, are
+under **Advanced**.
+
+- Who can manage: the admins (`role: admin`), and anyone the policy gives `admin` on `service:signin`.
+- Every change is made by the control plane, which checks again that it's that person's to make, and is recorded in
+  the audit log as them.
+- Removing someone, changing a role or taking someone off a team asks for the passkey again when it was last used
+  more than ten minutes ago, so a browser left signed in can't do it.
+- The last admin can't be removed or made a member: make someone else an admin first.
+- An admin can make 20 invites an hour.
 
 ## Settings
 

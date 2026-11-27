@@ -1096,6 +1096,8 @@ async fn serve(app: Arc<App>, listen: SocketAddr, hooks_listen: SocketAddr) -> a
         .route("/v1/signin/invite_redeem", axum::routing::post(signin::post_invite_redeem))
         .route("/v1/signin/check", axum::routing::post(signin::post_check))
         .route("/v1/signin/event", axum::routing::post(signin::post_event))
+        .route("/v1/signin/admin/view", axum::routing::post(signin::post_admin_view))
+        .route("/v1/signin/admin/{action}", axum::routing::post(signin::post_admin_action))
         .with_state(app.clone());
     let hooks = hooks::router(app);
     let api_listener = tokio::net::TcpListener::bind(listen).await?;

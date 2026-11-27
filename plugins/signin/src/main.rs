@@ -20,6 +20,7 @@
 //!
 //! `fleetlayer-signin serve <config.json>` runs the same service on its own (the plugin config as JSON).
 
+mod admin;
 mod control;
 mod domain;
 mod keys;
@@ -42,6 +43,9 @@ use fleetlayer_protocol::rpc::RpcError;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
+
+/// The team every member is in; pages leave it out until there's a second.
+pub const EVERYONE: &str = "everyone";
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]

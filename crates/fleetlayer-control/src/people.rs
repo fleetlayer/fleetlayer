@@ -230,6 +230,27 @@ async fn handle_taken(db: &Db, tenant: &str, handle: &str) -> anyhow::Result<boo
 
 pub async fn member_role(db: &Db, tenant: &str, handle: &str, role: &str, by: &str) -> anyhow::Result<()> {
     ensure_role(role)?;
+    if role != "admin" {
+        let others = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM members WHERE tenant = ? AND role = 'admin' AND removed_at IS NULL AND handle != ?",
+        )
+        .bind(tenant)
+        .bind(handle)
+        .fetch_one(db)
+        .await?;
+        let is_admin = sqlx::query(
+            "SELECT 1 FROM members WHERE tenant = ? AND handle = ? AND role = 'admin' AND removed_at IS NULL",
+        )
+        .bind(tenant)
+        .bind(handle)
+        .fetch_optional(db)
+        .await?
+        .is_some();
+        anyhow::ensure!(
+            !is_admin || others > 0,
+            "{handle} is the tenant's last admin: make someone else an admin first"
+        );
+    }
     let n = sqlx::query("UPDATE members SET role = ? WHERE tenant = ? AND handle = ? AND removed_at IS NULL")
         .bind(role)
         .bind(tenant)

@@ -43,6 +43,9 @@ pub struct Session {
     pub person: String,
     pub created_at: i64,
     pub expires_at: i64,
+    /// When they last proved it with a passkey: changes that can't be undone easily ask again after ten minutes.
+    #[serde(default)]
+    pub verified_at: i64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
