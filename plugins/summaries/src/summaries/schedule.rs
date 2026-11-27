@@ -188,6 +188,17 @@ impl Scheduler {
         }
     }
 
+    /// A summary that couldn't run (no account had room): try it again at `at`, if the session is still idle and
+    /// nothing earlier is pending.
+    pub fn retry(&mut self, session: &str, at: Instant) {
+        if let Some(e) = self.sessions.get_mut(session)
+            && !e.running
+            && e.status.is_some_and(Status::is_idle)
+        {
+            e.due = Some(e.due.map_or(at, |d| d.min(at)));
+        }
+    }
+
     /// Sessions herdr reports as running: the sweep leaves these to the idle trigger.
     pub fn running_sessions(&self) -> Vec<String> {
         self.sessions

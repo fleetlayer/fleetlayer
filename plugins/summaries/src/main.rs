@@ -190,7 +190,18 @@ async fn start(plugin: Arc<Plugin>, peer: Peer) {
     let (sig_tx, sig_rx) = mpsc::channel(1024);
     let (ev_tx, mut ev_rx) = mpsc::channel(1024);
     *plugin.signals.lock().await = Some(sig_tx.clone());
-    *plugin.handle.lock().await = Some(summaries::spawn(engine, env, sig_rx, ev_tx));
+    let handle = summaries::spawn(engine, env, sig_rx, ev_tx);
+    // Whether summaries get written, for the node's health and the `plugin.status` reading: sent on every change and
+    // at least once a minute (the driver refreshes it).
+    let mut status = handle.status();
+    let status_peer = peer.clone();
+    tokio::spawn(async move {
+        while status.changed().await.is_ok() {
+            let report = status.borrow_and_update().clone();
+            status_peer.notify(ext::method::PLUGIN_STATUS, &report);
+        }
+    });
+    *plugin.handle.lock().await = Some(handle);
 
     let out = (settings.clone(), peer.clone());
     tokio::spawn(async move {

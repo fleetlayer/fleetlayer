@@ -60,7 +60,21 @@ It runs headless Claude Code (`claude -p`) for each summary, so it spends tokens
 session per 30 minutes, only after a session has been idle for a minute, and only when there's enough new activity to
 be worth a call. With the Claude account rotator installed it uses the account with the soonest weekly reset, and
 skips accounts that are 98% through their week or have a full 5-hour window. An account that answers with a usage
-limit is left alone until its 5-hour window resets (an hour when the reading doesn't say).
+limit is left alone until its 5-hour window resets (an hour when the reading doesn't say). A summary that stops for want of an
+account waits and is tried again by itself: a minute after a usage limit (on another account), or when the soonest
+limited account has room again (every 15 minutes when nothing says when).
+
+**Watching it.** The plugin reports to its node with `_fleetlayer.dev/plugin/status` (the protocol's section 10),
+published as the reading `plugin.status`, key `summaries`:
+
+```json
+{"plugin":"summaries","problem":null,"detail":{"lastSummaryAt":"2026-11-27T08:12:40Z","waiting":1,
+  "oldestWaiting":{"session":"45be65c7-…","tab":"billing tests","since":"2026-11-27T09:30:02Z",
+  "why":"You've hit your 5-hour limit · resets 10:30pm","nextTryAt":"2026-11-27T09:31:02Z"}}}
+```
+
+`problem` is set once a summary has waited more than an hour past the soonest reset it waits for (an hour after it
+began, when no account says when it frees up), and the node's health and heartbeat turn red with it.
 
 ## How it decides (the engine)
 

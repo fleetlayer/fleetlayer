@@ -69,6 +69,8 @@ struct Inner {
     /// Why its sessions can't be read now (`session/list` failed): it runs but can't do its job. Cleared by the next
     /// list that works, and when it restarts.
     failing: Option<String>,
+    /// What it says is wrong (`_fleetlayer.dev/plugin/status`); cleared when it restarts.
+    reported: Option<String>,
     /// HTTP services it announced (`_fleetlayer.dev/service/listening`), by name; cleared when it exits.
     services: std::collections::BTreeMap<String, ext::ServiceListening>,
     /// Pages spaces it hosts (`_fleetlayer.dev/pages/spaces`); cleared when it exits.
@@ -106,6 +108,7 @@ impl PluginHandle {
                 stderr: VecDeque::new(),
                 relist_pending: false,
                 failing: None,
+                reported: None,
                 services: Default::default(),
                 pages_spaces: vec![],
             }),
@@ -148,7 +151,7 @@ impl PluginHandle {
             version: i.info.as_ref().map(|v| v.version.clone()),
             roles,
             restarts: i.restarts,
-            problem: i.failing.clone(),
+            problem: i.failing.clone().or_else(|| i.reported.clone()),
             stderr: i.stderr.iter().cloned().collect(),
             services: i.services.values().cloned().collect(),
         }
@@ -298,6 +301,7 @@ async fn run_once(node: &Arc<Node>, plugin: &Arc<PluginHandle>) -> Result<String
         i.info = resp.agent_info.clone();
         i.peer = Some(peer.clone());
         i.failing = None;
+        i.reported = None;
         i.state = State::Running { since: Timestamp::now() };
     }
     tracing::info!(plugin = plugin.name(), version = ?resp.agent_info.map(|i| i.version), "plugin running");
@@ -380,6 +384,21 @@ async fn relist_soon(node: Arc<Node>, plugin: Arc<PluginHandle>) {
     tokio::time::sleep(Duration::from_millis(300)).await;
     plugin.inner.lock().await.relist_pending = false;
     relist(&node, &plugin).await;
+}
+
+/// The `plugin.status` reading for a plugin's report: keyed by the plugin's own name, so a plugin can only report
+/// itself, with `detail` capped.
+fn status_reading(plugin: &str, r: ext::PluginStatusReport) -> Value {
+    let detail = match serde_json::to_vec(&r.detail) {
+        Ok(b) if b.len() <= ext::PLUGIN_STATUS_DETAIL_MAX => r.detail,
+        _ => json!({"truncated": true}),
+    };
+    json!({"readings": [{
+        "kind": "plugin.status",
+        "key": plugin,
+        "at": Timestamp::now(),
+        "data": {"plugin": plugin, "problem": r.problem, "detail": detail},
+    }]})
 }
 
 /// What a plugin sends the node.
@@ -524,6 +543,24 @@ impl Handler for FromPlugin {
                 }
                 Err(e) => tracing::warn!(plugin = plugin.name(), "bad {method}: {e}"),
             },
+            ext::method::PLUGIN_STATUS => match serde_json::from_value::<ext::PluginStatusReport>(p) {
+                Ok(r) => {
+                    let changed = {
+                        let mut i = plugin.inner.lock().await;
+                        let changed = i.reported != r.problem;
+                        i.reported = r.problem.clone();
+                        changed
+                    };
+                    if changed {
+                        match &r.problem {
+                            Some(why) => tracing::warn!(plugin = plugin.name(), "it reports a problem: {why}"),
+                            None => tracing::info!(plugin = plugin.name(), "its problem cleared"),
+                        }
+                    }
+                    crate::readings::publish(&node, &status_reading(plugin.name(), r)).await;
+                }
+                Err(e) => tracing::warn!(plugin = plugin.name(), "bad {method}: {e}"),
+            },
             ext::method::READING_PUBLISH => {
                 if !plugin.config.granted("reading.publish") {
                     tracing::warn!(plugin = plugin.name(), "reading.publish isn't granted in node.yaml; dropping");
@@ -550,5 +587,27 @@ impl Handler for FromPlugin {
             // Events, readings and sync go to the control plane, which this node doesn't link to yet.
             _ => tracing::debug!(plugin = plugin.name(), method, "notification not handled yet"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_status_report_becomes_a_reading_keyed_by_the_plugin_with_its_detail_capped() {
+        let r = ext::PluginStatusReport { problem: Some("stuck".into()), detail: json!({"waiting": 2}) };
+        let v = status_reading("summaries", r);
+        let reading = &v["readings"][0];
+        assert_eq!(reading["kind"], "plugin.status");
+        assert_eq!(reading["key"], "summaries");
+        assert_eq!(reading["data"], json!({"plugin": "summaries", "problem": "stuck", "detail": {"waiting": 2}}));
+        // A report can't name another plugin, and a big detail is cut.
+        let big =
+            ext::PluginStatusReport { problem: None, detail: json!({"key": "x".repeat(5000), "plugin": "other"}) };
+        let v = status_reading("summaries", big);
+        assert_eq!(v["readings"][0]["key"], "summaries");
+        assert_eq!(v["readings"][0]["data"]["detail"], json!({"truncated": true}));
+        assert!(v["readings"][0]["data"]["problem"].is_null());
     }
 }

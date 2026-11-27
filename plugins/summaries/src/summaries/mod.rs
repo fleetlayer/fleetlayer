@@ -48,7 +48,7 @@ use std::time::{Duration, SystemTime};
 use fleetlayer_protocol::ext::Status as AgentStatus;
 use fleetlayer_protocol::summary::{Catchup, SessionFacts, SessionSignal, SummariesConfig, SummaryEvent};
 use jiff::tz::TimeZone;
-use tokio::sync::{Semaphore, mpsc, oneshot};
+use tokio::sync::{Semaphore, mpsc, oneshot, watch};
 use tokio::time::Instant;
 
 use call::{ClaudeCli, Model};
@@ -98,9 +98,16 @@ pub enum SummariesError {
 pub struct SummariesHandle {
     tx: mpsc::UnboundedSender<Command>,
     engine: Arc<Engine>,
+    status: watch::Receiver<fleetlayer_protocol::ext::PluginStatusReport>,
 }
 
 impl SummariesHandle {
+    /// Whether summaries are getting written: a problem once a session has waited too long, and the waiting list.
+    /// Changes as it does; the plugin sends it to the node as `_fleetlayer.dev/plugin/status`.
+    pub fn status(&self) -> watch::Receiver<fleetlayer_protocol::ext::PluginStatusReport> {
+        self.status.clone()
+    }
+
     /// The session's catch-up. Answers at once from the cache, with `stale: true` and a regeneration started when
     /// the transcript has grown since; the regenerated one also arrives as [`SummaryEvent::Catchup`]. Writes one and
     /// waits for it only when nothing is cached.
@@ -198,9 +205,10 @@ pub fn start(
         }
     }
     let (tx, rx) = mpsc::unbounded_channel();
-    let driver = Driver::new(engine.clone(), tx.clone(), enabled);
+    let (status_tx, status) = watch::channel(Default::default());
+    let driver = Driver::new(engine.clone(), tx.clone(), enabled, status_tx);
     tokio::spawn(driver.run(rx, signals));
-    SummariesHandle { tx, engine }
+    SummariesHandle { tx, engine, status }
 }
 
 enum Command {
@@ -212,9 +220,12 @@ enum Command {
     Finished {
         key: String,
         called: bool,
+        /// Why it stopped before finishing (no account had room, a usage limit): it waits and is tried again.
+        stop: Option<Stop>,
+        tab: Option<String>,
+        /// A sweep's transcript, to queue again when its retry comes.
+        source: Option<Source>,
     },
-    /// Every account is spent: wait for the next idle event or sweep.
-    Paused,
     /// Sweep now (after the import).
     Sweep,
 }
@@ -237,8 +248,35 @@ struct Driver {
     /// Requests with nothing cached, waiting for the catch-up being written.
     catchup_waiters: HashMap<String, Vec<oneshot::Sender<Result<Catchup, SummariesError>>>>,
     catchup_slots: Arc<Semaphore>,
-    paused: bool,
+    /// No account has room: nothing starts until then (an idle event or a sweep tries sooner).
+    paused_until: Option<Instant>,
+    /// Summaries that stopped before they finished, by session (or transcript), until one works.
+    waiting: HashMap<String, Waiting>,
+    last_summary_at: Option<jiff::Timestamp>,
+    status: watch::Sender<fleetlayer_protocol::ext::PluginStatusReport>,
 }
+
+/// A summary waiting for an account with room.
+#[derive(Debug, Clone)]
+struct Waiting {
+    since: Instant,
+    since_at: jiff::Timestamp,
+    why: String,
+    retry_at: Instant,
+    /// After this, waiting is a problem: an hour past the soonest reset it waits for (or since it began).
+    overdue_at: Instant,
+    tab: Option<String>,
+    source: Option<Source>,
+}
+
+/// How long a stopped summary may wait past the reset it waits for before the plugin reports a problem.
+const OVERDUE_AFTER: Duration = Duration::from_secs(3600);
+/// A usage limit: the next pick goes to another account, so try again soon.
+const RETRY_AFTER_LIMIT: Duration = Duration::from_secs(60);
+/// No account has room and none says when: look again this often.
+const RETRY_NO_ACCOUNT: Duration = Duration::from_secs(15 * 60);
+/// The status goes to the node at least this often, so a monitor sees it's alive.
+const STATUS_EVERY: Duration = Duration::from_secs(60);
 
 fn status_of(s: AgentStatus) -> Status {
     match s {
@@ -251,7 +289,12 @@ fn status_of(s: AgentStatus) -> Status {
 }
 
 impl Driver {
-    fn new(engine: Arc<Engine>, tx: mpsc::UnboundedSender<Command>, enabled: bool) -> Self {
+    fn new(
+        engine: Arc<Engine>,
+        tx: mpsc::UnboundedSender<Command>,
+        enabled: bool,
+        status: watch::Sender<fleetlayer_protocol::ext::PluginStatusReport>,
+    ) -> Self {
         let c = &engine.config;
         let sched =
             Scheduler::new(Limits { idle_delay: c.idle_delay, min_gap: c.min_gap, max_concurrent: c.max_concurrent });
@@ -265,7 +308,10 @@ impl Driver {
             catchups_writing: HashSet::new(),
             catchup_waiters: HashMap::new(),
             catchup_slots: Arc::new(Semaphore::new(1)),
-            paused: false,
+            paused_until: None,
+            waiting: HashMap::new(),
+            last_summary_at: None,
+            status,
         }
     }
 
@@ -273,10 +319,17 @@ impl Driver {
         let c = self.engine.config.clone();
         // The start-up sweep waits for herdr's snapshot to arrive, so it knows which sessions are running.
         let mut next_sweep = (self.enabled && c.sweep).then(|| Instant::now() + c.start_sweep_after);
+        let mut next_status = Instant::now();
         loop {
             let far = Instant::now() + Duration::from_secs(3600);
             let due = self.sched.next_due().map(Instant::from_std).unwrap_or(far);
-            let wake = next_sweep.map_or(due, |s| s.min(due));
+            let mut wake = next_sweep.map_or(due, |s| s.min(due)).min(next_status);
+            if let Some(p) = self.paused_until {
+                wake = wake.min(p);
+            }
+            for w in self.waiting.values().filter(|w| w.source.is_some()) {
+                wake = wake.min(w.retry_at);
+            }
             tokio::select! {
                 sig = signals.recv() => match sig {
                     Some(sig) => self.signal(sig),
@@ -293,10 +346,109 @@ impl Driver {
                     }
                 }
             }
+            let now = Instant::now();
+            if self.paused_until.is_some_and(|p| p <= now) {
+                self.paused_until = None;
+            }
+            self.requeue_waiting_transcripts(now);
             if self.enabled {
                 self.dispatch();
             }
+            let report = self.report(now);
+            if now >= next_status || *self.status.borrow() != report {
+                next_status = now + STATUS_EVERY;
+                self.status.send_replace(report);
+            }
         }
+    }
+
+    /// Sweep transcripts whose retry has come go back to the front of the queue.
+    fn requeue_waiting_transcripts(&mut self, now: Instant) {
+        let queued: HashSet<PathBuf> = self.sweep_queue.iter().map(|s| s.path.clone()).collect();
+        for w in self.waiting.values_mut() {
+            if w.retry_at > now {
+                continue;
+            }
+            if let Some(source) = &w.source
+                && !queued.contains(&source.path)
+            {
+                self.sweep_queue.push_front(source.clone());
+            }
+            // Asked again when this one finishes; until then, don't queue it twice.
+            w.retry_at = now + Duration::from_secs(3600);
+        }
+    }
+
+    /// A summary stopped (`stop`): it waits, and is tried again by itself.
+    fn wait(&mut self, key: &str, stop: &Stop, tab: Option<String>, source: Option<Source>) {
+        let now = Instant::now();
+        let free = self.engine.soonest_free().map(|t| {
+            let ahead = t.duration_since(jiff::Timestamp::now()).as_secs().max(0);
+            now + Duration::from_secs(ahead as u64)
+        });
+        let delay = match stop {
+            Stop::Limit(_) => RETRY_AFTER_LIMIT,
+            Stop::NoAccount | Stop::Accounts(_) => free
+                .map(|f| f.saturating_duration_since(now))
+                .unwrap_or(RETRY_NO_ACCOUNT)
+                .clamp(RETRY_AFTER_LIMIT, RETRY_NO_ACCOUNT),
+        };
+        let retry_at = now + delay;
+        let w = self.waiting.entry(key.to_owned()).or_insert_with(|| Waiting {
+            since: now,
+            since_at: jiff::Timestamp::now(),
+            why: String::new(),
+            retry_at,
+            overdue_at: now + OVERDUE_AFTER,
+            tab: None,
+            source: None,
+        });
+        w.why = stop.to_string();
+        w.retry_at = retry_at;
+        // An hour past the soonest reset it waits for, never sooner than an hour after it began.
+        w.overdue_at = (w.since + OVERDUE_AFTER).max(free.unwrap_or(w.since) + OVERDUE_AFTER);
+        if tab.is_some() {
+            w.tab = tab;
+        }
+        if source.is_some() {
+            w.source = source;
+        }
+        if !matches!(stop, Stop::Limit(_)) {
+            self.paused_until = Some(retry_at);
+        }
+        self.sched.retry(key, retry_at.into_std());
+        tracing::info!("summaries: {key} waits ({stop}); trying again in {}s", delay.as_secs());
+    }
+
+    /// The plugin's status: a problem once a summary has waited past its time, and the waiting list in brief.
+    fn report(&self, now: Instant) -> fleetlayer_protocol::ext::PluginStatusReport {
+        let wall = jiff::Timestamp::now();
+        let at = |i: Instant| {
+            let ahead = i.saturating_duration_since(now);
+            wall + jiff::SignedDuration::try_from(ahead).unwrap_or_default()
+        };
+        let oldest = self.waiting.iter().min_by_key(|(_, w)| w.since);
+        let overdue = self.waiting.iter().filter(|(_, w)| now >= w.overdue_at).min_by_key(|(_, w)| w.since);
+        let problem = overdue.map(|(k, w)| {
+            format!(
+                "summaries for {} have waited since {}: {}",
+                w.tab.as_deref().unwrap_or(k),
+                w.since_at.strftime("%Y-%m-%d %H:%M UTC"),
+                w.why
+            )
+        });
+        let detail = serde_json::json!({
+            "lastSummaryAt": self.last_summary_at,
+            "waiting": self.waiting.len(),
+            "oldestWaiting": oldest.map(|(k, w)| serde_json::json!({
+                "session": k,
+                "tab": w.tab,
+                "since": w.since_at,
+                "why": w.why,
+                "nextTryAt": at(w.retry_at).round(jiff::Unit::Second).unwrap_or(wall),
+            })),
+        });
+        fleetlayer_protocol::ext::PluginStatusReport { problem, detail }
     }
 
     fn signal(&mut self, sig: SessionSignal) {
@@ -305,13 +457,16 @@ impl Driver {
             SessionSignal::Status { session, status, .. } => {
                 let status = status_of(status);
                 if matches!(status, Status::Idle | Status::Done) {
-                    self.paused = false;
+                    self.paused_until = None;
+                } else if self.waiting.get(&session.session_id).is_some_and(|w| w.source.is_none()) {
+                    // Working again: its summary comes at its next idle, with whatever it adds.
+                    self.waiting.remove(&session.session_id);
                 }
                 self.sched.on_status(&session.session_id, status, now);
                 self.facts.insert(session.session_id.clone(), session);
             }
             SessionSignal::Closed { session_id, .. } => {
-                self.paused = false;
+                self.paused_until = None;
                 self.sched.on_status(&session_id, Status::Gone, now);
             }
         }
@@ -320,8 +475,22 @@ impl Driver {
     fn command(&mut self, cmd: Command) {
         let now = Instant::now().into_std();
         match cmd {
-            Command::Finished { key, called } => self.sched.on_finished(&key, called, now),
-            Command::Paused => self.paused = true,
+            Command::Finished { key, called, stop, tab, source } => {
+                self.sched.on_finished(&key, called, now);
+                match stop {
+                    Some(stop @ (Stop::NoAccount | Stop::Limit(_) | Stop::Accounts(_))) => {
+                        self.wait(&key, &stop, tab, source)
+                    }
+                    None => {
+                        if self.waiting.remove(&key).is_some() {
+                            tracing::info!("summaries: {key} no longer waits");
+                        }
+                        if called {
+                            self.last_summary_at = Some(jiff::Timestamp::now());
+                        }
+                    }
+                }
+            }
             Command::Sweep => {
                 if self.enabled && self.engine.config.sweep {
                     self.queue_sweep();
@@ -389,7 +558,7 @@ impl Driver {
 
     /// Transcripts with unread content whose session isn't running.
     fn queue_sweep(&mut self) {
-        self.paused = false;
+        self.paused_until = None;
         let cutoff = SystemTime::now() - Duration::from_secs(self.engine.config.max_age_days as u64 * 86400);
         let running: HashSet<String> = self.sched.running_sessions().into_iter().collect();
         let mut sources = transcript::discover(&self.engine.config.roots, cutoff);
@@ -411,7 +580,7 @@ impl Driver {
     }
 
     fn dispatch(&mut self) {
-        if self.paused {
+        if self.paused_until.is_some() {
             return;
         }
         let now = Instant::now().into_std();
@@ -438,6 +607,11 @@ impl Driver {
     fn spawn_job(&mut self, key: String, job: Job) {
         let (engine, tx) = (self.engine.clone(), self.tx.clone());
         let facts = session_key_facts(&job, &self.facts);
+        let tab = facts.as_ref().and_then(|f| f.tab.clone());
+        let source = match &job {
+            Job::Transcript(s) => Some(s.clone()),
+            Job::Session(_) => None,
+        };
         tokio::spawn(async move {
             let result = match job {
                 Job::Session(f) => {
@@ -456,17 +630,11 @@ impl Driver {
                     engine.process(&source, info).await
                 }
             };
-            let called = match &result {
-                Ok(pass) => pass.calls > 0,
-                Err(stop) => {
-                    tracing::info!("summaries: {key} waits: {stop}");
-                    false
-                }
+            let (called, stop) = match result {
+                Ok(pass) => (pass.calls > 0, None),
+                Err(stop) => (false, Some(stop)),
             };
-            if matches!(result, Err(Stop::NoAccount | Stop::Limit(_))) {
-                let _ = tx.send(Command::Paused);
-            }
-            let _ = tx.send(Command::Finished { key, called });
+            let _ = tx.send(Command::Finished { key, called, stop, tab, source });
         });
     }
 }

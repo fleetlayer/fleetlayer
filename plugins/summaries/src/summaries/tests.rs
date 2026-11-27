@@ -91,6 +91,8 @@ fn reads_the_fixtures_as_claude_summarizer_does() {
 struct Fake {
     answers: Mutex<VecDeque<Result<Value, CallError>>>,
     prompts: Mutex<Vec<String>>,
+    /// The account each call used.
+    accounts: Mutex<Vec<String>>,
     delay: Duration,
     running: Arc<AtomicUsize>,
     max_running: AtomicUsize,
@@ -117,6 +119,7 @@ fn update(sentence: &str) -> Result<Value, CallError> {
 impl Model for Fake {
     fn call(&self, req: CallRequest) -> CallFuture {
         self.prompts.lock().unwrap().push(req.prompt.clone());
+        self.accounts.lock().unwrap().push(req.account.id.clone());
         let answer = self.answers.lock().unwrap().pop_front();
         let is_catchup = req.schema.contains("catchup");
         let n = self.running.fetch_add(1, Ordering::SeqCst) + 1;
@@ -388,12 +391,22 @@ struct Running {
 }
 
 fn run(h: &Home, fake: &Arc<Fake>, sweep: bool) -> Running {
+    run_with(h, fake, sweep, Accounts::Fixed(Some(account())))
+}
+
+fn run_with(h: &Home, fake: &Arc<Fake>, sweep: bool, accounts: Accounts) -> Running {
     let (signals, srx) = mpsc::channel(100);
     let (etx, events) = mpsc::channel(1000);
     let mut c = config(h);
     c.sweep = sweep;
-    let handle = start(c, fake.clone(), Accounts::Fixed(Some(account())), srx, etx, true);
+    let handle = start(c, fake.clone(), accounts, srx, etx, true);
     Running { signals, events, handle }
+}
+
+fn two_accounts() -> Accounts {
+    let mut four = account();
+    four.id = "4".into();
+    Accounts::List(vec![account(), four])
 }
 
 async fn advance(secs: u64) {
@@ -495,6 +508,63 @@ async fn the_start_up_sweep_takes_sessions_that_ended_and_leaves_running_ones() 
     r.signals.send(SessionSignal::Closed { session_id: "live".into(), at: Timestamp::now() }).await.unwrap();
     advance(61).await;
     assert_eq!(fake.prompts().len(), 2);
+}
+
+/// The VM's case on 27 Nov 2026: a session that hit a usage limit waited until something else happened. Now it's tried
+/// again by itself, on another account, and stops waiting once it's written.
+#[tokio::test(start_paused = true)]
+async fn a_session_that_hit_a_limit_is_retried_by_itself_on_another_account() {
+    let h = home();
+    append(&h, "s1", &[human("s1", "Go", 5)]);
+    let fake = Fake::new(vec![Err(CallError::Limit("You've hit your 5-hour limit".into()))]);
+    let r = run_with(&h, &fake, false, two_accounts());
+    r.signals.send(status("s1", AgentStatus::Idle)).await.unwrap();
+    advance(62).await;
+    assert_eq!(*fake.accounts.lock().unwrap(), ["3"]);
+    let report = r.handle.status().borrow().clone();
+    assert_eq!(report.detail["waiting"], 1);
+    assert_eq!(report.detail["oldestWaiting"]["tab"], "tab s1");
+    assert!(report.detail["oldestWaiting"]["why"].as_str().unwrap().contains("5-hour limit"));
+    assert!(report.problem.is_none(), "not a problem yet");
+    // No other event: the retry comes a minute later, on account 4.
+    advance(62).await;
+    assert_eq!(*fake.accounts.lock().unwrap(), ["3", "4"]);
+    let report = r.handle.status().borrow().clone();
+    assert_eq!(report.detail["waiting"], 0);
+    assert!(report.detail["lastSummaryAt"].is_string());
+}
+
+/// A transcript the sweep found is put back in the queue too.
+#[tokio::test(start_paused = true)]
+async fn a_swept_transcript_that_hit_a_limit_is_queued_again() {
+    let h = home();
+    append(&h, "ended", &[human("ended", "Crashed mid-turn", 50)]);
+    let fake = Fake::new(vec![Err(CallError::Limit("usage limit reached".into()))]);
+    let r = run_with(&h, &fake, true, two_accounts());
+    advance(35).await;
+    assert_eq!(*fake.accounts.lock().unwrap(), ["3"]);
+    advance(62).await;
+    assert_eq!(*fake.accounts.lock().unwrap(), ["3", "4"]);
+    assert_eq!(r.handle.status().borrow().detail["waiting"], 0);
+}
+
+/// Waiting more than an hour (no account has room, none says when) is a problem the node's health shows.
+#[tokio::test(start_paused = true)]
+async fn waiting_over_an_hour_is_reported_as_a_problem() {
+    let h = home();
+    append(&h, "s1", &[human("s1", "Go", 5)]);
+    let fake = Fake::new(vec![]);
+    let r = run_with(&h, &fake, false, Accounts::Fixed(None));
+    r.signals.send(status("s1", AgentStatus::Idle)).await.unwrap();
+    advance(62).await;
+    assert!(r.handle.status().borrow().problem.is_none());
+    assert_eq!(r.handle.status().borrow().detail["waiting"], 1);
+    advance(3600).await;
+    let report = r.handle.status().borrow().clone();
+    let problem = report.problem.expect("a problem after an hour");
+    assert!(problem.starts_with("summaries for tab s1 have waited since "), "{problem}");
+    assert!(problem.ends_with("no account has room left this week"), "{problem}");
+    assert!(fake.prompts().is_empty());
 }
 
 // ---------------------------------------------------------------- catch-up and import

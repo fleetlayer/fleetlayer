@@ -560,3 +560,11 @@ managers, machines that sleep.
   `format` method; a Unix socket path over 108 bytes fails, so a test server needs a short `REX_RUNTIME_DIR`; pass
   `--autostart=false` or `rex` starts a server of its own. Written: `docs/rex.md`, `docs/plugins/rex.md`,
   `plugins/rex/`.
+- **Watch what a background plugin does, not only that it runs: `plugin.status`.** The summaries plugin waited
+  forever after a usage limit (nothing retried it, and status stayed healthy), so an idle session's last stretch was
+  never summarised. A plugin now reports whether it does its job (`_fleetlayer.dev/plugin/status`): its problem turns
+  the node's health and heartbeat red, and the report is the reading `plugin.status` (key: the plugin's name), so a
+  monitor can check it anywhere in the fleet (`fleetlayer readings plugin.status`): the problem, the waiting count,
+  the time of the last summary. Summaries also retry a waiting session by themselves now. The guide on monitoring a
+  fleet should show a check on that reading. Where it lives: `docs/protocol.md` (section 10),
+  `docs/plugins/summaries.md` ("Watching it").

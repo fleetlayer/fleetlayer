@@ -72,6 +72,8 @@ pub enum Accounts {
     Coordinator(PathBuf),
     /// A fixed answer, for tests: None means every account is spent.
     Fixed(Option<Account>),
+    /// Several accounts, for tests: the first that isn't limited.
+    List(Vec<Account>),
 }
 
 impl Accounts {
@@ -81,6 +83,9 @@ impl Accounts {
                 accounts::pick(socket, Timestamp::now(), limited).await.map_err(|e| e.to_string())
             }
             Accounts::Fixed(a) => Ok(a.clone().filter(|a| !limited.get(&a.id).is_some_and(|t| *t > Timestamp::now()))),
+            Accounts::List(list) => {
+                Ok(list.iter().find(|a| !limited.get(&a.id).is_some_and(|t| *t > Timestamp::now())).cloned())
+            }
         }
     }
 }
@@ -172,6 +177,12 @@ impl Engine {
     pub(crate) async fn accounts_pick(&self) -> Result<Option<Account>, Stop> {
         let limited = self.limited.lock().expect("limited lock").clone();
         self.accounts.pick(&limited).await.map_err(Stop::Accounts)
+    }
+
+    /// The soonest time an account left alone after a usage limit has room again, if any is.
+    pub(crate) fn soonest_free(&self) -> Option<Timestamp> {
+        let now = Timestamp::now();
+        self.limited.lock().expect("limited lock").values().filter(|t| **t > now).min().copied()
     }
 
     /// `account` answered with a usage limit: the next calls use another until it has room again.

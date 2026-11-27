@@ -462,9 +462,36 @@ Numbers, never secrets, flow with readings: account usage and reset times, healt
 | `_fleetlayer.dev/log` `{level, message}` | A structured log line (stderr works too) |
 | `_fleetlayer.dev/service/listening` `{name, url, health?, hosts?}` | A notification: this plugin serves HTTP (below) |
 | `_fleetlayer.dev/pages/spaces` `{spaces}` | A notification: the pages spaces this plugin hosts, so `fleetlayer pages push` from other machines reaches them. The node runs the plugin's command as `<command> receive …` for each push ([`plugins/pages.md`](plugins/pages.md)) |
+| `_fleetlayer.dev/plugin/status` `{problem, detail}` | A notification: whether this plugin does its job (below) |
 
 Each is allowed only if the node's config grants it to that plugin (`grants:` in its plugin section), and the control
-plane's ACLs decide who may message whom. `service/listening` and `pages/spaces` need no grant: they only say what the plugin serves.
+plane's ACLs decide who may message whom. `service/listening`, `pages/spaces` and `plugin/status` need no grant: they
+only say what the plugin serves or how it's doing.
+
+### Saying whether it does its job: `_fleetlayer.dev/plugin/status`
+
+A plugin that works in the background (summaries, sync, a watcher) can be running and still not doing its job: out
+of accounts, cut off from what it reads. It says so with a notification, on every change and at least once a minute:
+
+```json
+{"jsonrpc":"2.0","method":"_fleetlayer.dev/plugin/status","params":{
+  "problem":"summaries for billing tests have waited since 2026-11-27 09:30 UTC: no account has room left this week",
+  "detail":{"lastSummaryAt":"2026-11-27T08:12:40Z","waiting":3,"oldestWaiting":{"session":"45be65c7-…",
+    "tab":"billing tests","since":"2026-11-27T09:30:02Z","why":"no account has room left this week",
+    "nextTryAt":"2026-11-27T10:45:00Z"}}
+}}
+```
+
+- `problem` is one line for a person, or null when all is well. While it's set, `fleetlayer status` shows the plugin
+  as `failing` with it, and the node's health (and its heartbeat) is unhealthy. It's cleared by a report with `problem:
+  null` and when the plugin restarts.
+- The node publishes each report as a reading (section 9): kind `plugin.status`, key the plugin's name from
+  `node.yaml` (never anything in the report, so a plugin can only speak for itself), data `{plugin, problem,
+  detail}`. A monitor reads it with `fleetlayer readings plugin.status`, or anywhere in the fleet.
+- `detail` is the plugin's own small object of numbers and times, at most 4 KB as JSON (more becomes
+  `{"truncated": true}`).
+- The node also marks a session manager or harness plugin `failing` by itself when its `session/list` fails, until
+  a list works again.
 
 ### Announcing an HTTP service: `_fleetlayer.dev/service/listening`
 

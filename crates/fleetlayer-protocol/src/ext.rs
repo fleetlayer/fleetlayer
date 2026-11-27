@@ -45,6 +45,9 @@ pub mod method {
     pub const SYNC_PUBLISH: &str = "_fleetlayer.dev/sync/publish";
     pub const SYNC_APPLY: &str = "_fleetlayer.dev/sync/apply";
     pub const READING_PUBLISH: &str = "_fleetlayer.dev/reading/publish";
+    /// Plugin → node (notification): whether it's doing its job. `PluginStatusReport`; the node shows `problem` in its
+    /// status and health and publishes the report as a `plugin.status` reading keyed by the plugin's name.
+    pub const PLUGIN_STATUS: &str = "_fleetlayer.dev/plugin/status";
     pub const READING_SUBSCRIBE: &str = "_fleetlayer.dev/reading/subscribe";
     pub const READING_UPDATE: &str = "_fleetlayer.dev/reading/update";
     /// Plugin → node: may this person or agent do this? `link::AccessCheck` → `link::AccessDecision`, decided by the
@@ -503,6 +506,20 @@ pub struct Reading {
     pub node: Option<String>,
     pub data: Value,
 }
+
+/// `_fleetlayer.dev/plugin/status`: a running plugin's own word on whether it does its job.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct PluginStatusReport {
+    /// One line for a person, when it can't do its job now; null when it can.
+    #[serde(default)]
+    pub problem: Option<String>,
+    /// A small object of numbers and times for monitors (at most [`PLUGIN_STATUS_DETAIL_MAX`] bytes as JSON).
+    #[serde(default)]
+    pub detail: Value,
+}
+
+/// The most `PluginStatusReport::detail` a node passes on, as JSON bytes; more is replaced by `{"truncated": true}`.
+pub const PLUGIN_STATUS_DETAIL_MAX: usize = 4096;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Readings {
