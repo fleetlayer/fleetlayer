@@ -56,6 +56,9 @@ pub mod method {
     pub const READING_UPDATE: &str = "link/reading_update";
     /// Control plane → node: deliver to one of its sessions. `DeliverRequest` → `Delivered`.
     pub const DELIVER: &str = "link/deliver";
+    /// Node → control plane: may this person or agent do this to something a tenant owns (a service's data, a page, an
+    /// app)? Answered only if the node's `-@<node>` is a member of that tenant. `AccessCheck` → `AccessDecision`.
+    pub const ACCESS_CHECK: &str = "link/access_check";
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -215,4 +218,27 @@ pub struct PublishResult {
     /// The event's dedupe key was seen before, so it went nowhere.
     pub duplicate: bool,
     pub deliveries: Vec<TargetResult>,
+}
+
+/// `link/access_check` and `_fleetlayer.dev/access/check`: a service asking whether someone may do something
+/// (`docs/sso.md`, "How a service asks").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccessCheck {
+    /// The tenant that owns what's asked about: its ID or its slug (the sign-in's `fleetlayer.dev/tenant`).
+    pub tenant: String,
+    /// `person:<handle>`, a person's ID (the sign-in's `sub`), or an agent (`<tab>@<node>`).
+    pub who: String,
+    /// A verb (`read`, `write`, `sign_in`, `admin`...).
+    pub can: String,
+    /// `service:<name>[/<owner>/…]`, `page:<space>/<path>` or `app:<space>/<name>`.
+    pub to: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccessDecision {
+    pub allowed: bool,
+    /// The rules behind it.
+    pub rules: Vec<String>,
+    /// One line for a person to read.
+    pub reason: String,
 }

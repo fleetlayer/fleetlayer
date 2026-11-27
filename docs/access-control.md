@@ -46,10 +46,22 @@ agents they limit can't change.
 | A sync bundle | `sync:<bundle>@<node>` | `sync:files/skills@laptop` |
 | A channel | `channel:<name>` | `channel:ci` |
 | A group | `group:<name>` | `group:untrusted-input` |
+| A person, a team, the admins | `person:<handle>`, `team:<name>`, `role:admin` | `person:sam` |
+| A web service, or someone's data in it | `service:<name>[/<owner>/<path>]` | `service:quietdeck/sam/inbox` |
+| A page, or an app, in a space | `page:<space>/<path>`, `app:<space>/<name>` | `page:handbook/*` |
+| What someone owns | `owned-by:person:<handle>`, `owned-by:team:<name>`; `owner` in `to` | `owned-by:team:support` |
+| An agent from outside this tenant | `outside` | |
 
 `*` matches any run of characters. A node is one machine, or one Unix user on a shared machine: the node is the trust
 boundary, because every process of that user can claim to be any of its sessions. Give an agent you trust less its
 own Unix user and its own node.
+
+A pattern matches people only if it says so (`person:…`, `team:…`, `role:…`, or a group that names them): a bare `*`
+in `who` is every agent. People have their own default, `default_people: own`: anything to what they own, read what
+their teams own, nothing else until a rule shares it. Each request is decided in the tenant that owns what it
+touches, membership first; between agents, in every tenant either one is a member of. The verbs `sign_in`, `admin`
+and `write` are for services and pages, and `admin` and `write` ask first by default. All of it, with
+`owners:` and `agents_elsewhere`: [`docs/sso.md`](sso.md).
 
 ## The policy file
 
@@ -173,8 +185,8 @@ default. Rate limits apply to whatever is allowed.
 | Command | What it does |
 |---|---|
 | `acl apply <file> [--check]` | Make the stored policy match the file; `--check` prints the difference without applying |
-| `acl explain --from <who> --can <verb> --to <what>` | The decision, and the rules that made it |
-| `acl test <tests.yaml>` | Check expected decisions (`{from, can, to, expect: allow\|deny}`) against a policy file, offline; exits non-zero on a mismatch |
+| `acl explain --from <who> --can <verb> --to <what>` | The decision in a tenant (`--tenant`), and the rules that made it |
+| `acl test <tests.yaml>` | Check expected decisions (`{from, can, to, expect: allow\|deny}`, with `role` and `teams` for a person) against a policy file, offline; exits non-zero on a mismatch |
 | `acl suggest [--days 7]` | The smallest `only` rules that allow what each agent actually did, from the message log |
 | `acl log [--limit 30]` | Recent refusals, and what audit rules would have refused |
 

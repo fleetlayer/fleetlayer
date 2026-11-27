@@ -421,7 +421,6 @@ impl Handler for FromNode {
             l::method::FLEET => {
                 let mut fleet = crate::api::fleet(app, tenant).await.map_err(RpcError::internal)?;
                 let me = self.me();
-                let policy = app.authz.policy(&app.db, tenant).await.map_err(RpcError::internal)?;
                 if let Some(list) = fleet["sessions"].as_array_mut() {
                     let all = std::mem::take(list);
                     for s in all {
@@ -429,28 +428,26 @@ impl Handler for FromNode {
                         let name =
                             s["meta"]["tab"].as_str().or(s["sessionId"].as_str()).unwrap_or_default().to_string();
                         let target = format!("{name}@{node}");
-                        let visible = node == self.node
-                            || match &policy {
-                                // Version 2: read rules.
-                                Some(p) => p.decide(&me, "read", &target, false).is_ok_and(|d| d.allowed),
-                                // Version 1: the sessions it may message.
-                                None => crate::acl::allowed(&app.db, tenant, &me, &target).await.unwrap_or(false),
-                            };
-                        if visible {
+                        if node == self.node || crate::authz::may_see(app, tenant, &me, &target).await {
                             list.push(s);
                         }
                     }
                 }
                 // Nodes too: one this node may read nothing of (not even `-@<node>`) isn't shown at all.
-                if let Some(p) = &policy
-                    && let Some(nodes) = fleet["nodes"].as_array_mut()
-                {
-                    nodes.retain(|n| {
-                        let name = n["name"].as_str().unwrap_or_default();
-                        name == self.node || p.decide(&me, "read", &format!("-@{name}"), false).is_ok_and(|d| d.allowed)
-                    });
+                if let Some(nodes) = fleet["nodes"].as_array_mut() {
+                    let all = std::mem::take(nodes);
+                    for n in all {
+                        let name = n["name"].as_str().unwrap_or_default().to_string();
+                        if name == self.node || crate::authz::may_read(app, tenant, &me, &format!("-@{name}")).await {
+                            nodes.push(n);
+                        }
+                    }
                 }
                 answer(&fleet)
+            }
+            l::method::ACCESS_CHECK => {
+                let req: l::AccessCheck = params(p)?;
+                answer(&crate::authz::access_check(app, &self.node, &req).await?)
             }
             _ => Err(RpcError::method_not_found(method)),
         }

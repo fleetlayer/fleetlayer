@@ -22,6 +22,7 @@ up to a minute.
 | `link/subscribe`, `link/unsubscribe` | request | `{channel, subject?, target: "<name>@<node>"}` |
 | `link/subscriptions` | request | `{}` → `{subscriptions}` |
 | `link/fleet` | request | `{}` → `{nodes: [{name, machine, online, ...}], sessions: [{node, ...}]}` |
+| `link/access_check` | request | `{tenant, who, can, to}` → `{allowed, rules, reason}`, for a plugin's `_fleetlayer.dev/access/check`. Refused unless the node's `-@<node>` is a member of `tenant`; decided and audited in that tenant ([`sso.md`](sso.md)). |
 
 A session is the node's registry entry: `{sessionId, manager, harnessPlugin, cwd, title, updatedAt, meta, ended}`,
 where `meta` is the `fleetlayer.dev/session` object from protocol section 4.

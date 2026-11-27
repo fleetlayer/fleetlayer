@@ -12,6 +12,7 @@ mod approvals;
 mod audit;
 mod authz;
 mod db;
+mod directory;
 mod hooks;
 mod link;
 mod people;
@@ -241,7 +242,8 @@ enum AclCommand {
         #[arg(long)]
         check: bool,
     },
-    /// The decision for one request, and the rules behind it. Uses the stored policy, or --policy <file>.
+    /// The decision for one request in a tenant (--tenant), and the rules behind it: membership first, then the
+    /// tenant's stored policy, or --policy <file>. People (`person:<handle>`) are decided with their teams and role.
     Explain {
         #[arg(long)]
         from: String,
@@ -256,6 +258,7 @@ enum AclCommand {
         policy: Option<PathBuf>,
     },
     /// Check a file of expected decisions (`[{from, can, to, expect: allow|deny}]`) against a policy file, offline.
+    /// A case about a person gives their `role` (admin or member) and `teams`.
     /// Exits non-zero on any mismatch: run it in CI.
     Test {
         cases: PathBuf,
@@ -704,32 +707,35 @@ async fn main() -> anyhow::Result<()> {
             println!("Deleted {n} records of {session} published by {node}.");
             Ok(())
         }
-        Command::Approvals { command } => match command {
-            ApprovalsCommand::List { all } => {
-                for a in approvals::list(&db, t, all).await? {
-                    println!(
-                        "{}  {:<9} {} {} {}",
-                        a["id"].as_str().unwrap_or("?"),
-                        a["status"].as_str().unwrap_or("?"),
-                        a["from"].as_str().unwrap_or("?"),
-                        a["verb"].as_str().unwrap_or("?"),
-                        a["to"].as_str().unwrap_or("?")
-                    );
+        Command::Approvals { command } => {
+            let pt = people::tenant_or_first(&db, cli.tenant.as_deref()).await?.id;
+            match command {
+                ApprovalsCommand::List { all } => {
+                    for a in approvals::list(&db, &pt, all).await? {
+                        println!(
+                            "{}  {:<9} {} {} {}",
+                            a["id"].as_str().unwrap_or("?"),
+                            a["status"].as_str().unwrap_or("?"),
+                            a["from"].as_str().unwrap_or("?"),
+                            a["verb"].as_str().unwrap_or("?"),
+                            a["to"].as_str().unwrap_or("?")
+                        );
+                    }
+                    Ok(())
                 }
-                Ok(())
+                ApprovalsCommand::Approve { id, hold } => {
+                    let hold = hold.map(|h| policy::parse_duration_ms(&h)).transpose()?;
+                    anyhow::ensure!(approvals::decide(&db, &pt, &id, true, hold).await?, "no pending request {id}");
+                    println!("Approved {id}.");
+                    Ok(())
+                }
+                ApprovalsCommand::Deny { id } => {
+                    anyhow::ensure!(approvals::decide(&db, &pt, &id, false, None).await?, "no pending request {id}");
+                    println!("Refused {id}.");
+                    Ok(())
+                }
             }
-            ApprovalsCommand::Approve { id, hold } => {
-                let hold = hold.map(|h| policy::parse_duration_ms(&h)).transpose()?;
-                anyhow::ensure!(approvals::decide(&db, t, &id, true, hold).await?, "no pending request {id}");
-                println!("Approved {id}.");
-                Ok(())
-            }
-            ApprovalsCommand::Deny { id } => {
-                anyhow::ensure!(approvals::decide(&db, t, &id, false, None).await?, "no pending request {id}");
-                println!("Refused {id}.");
-                Ok(())
-            }
-        },
+        }
         Command::Audit { command: AuditCommand::Verify { key_file, anchors } } => {
             let a = audit::Audit::new(read_key(key_file.as_deref())?);
             let (report, ok) = audit::verify(&a, &db, anchors.as_deref()).await?;
@@ -801,130 +807,138 @@ async fn main() -> anyhow::Result<()> {
                 Ok(())
             }
         },
-        Command::Acl { command } => match command {
-            AclCommand::List => {
-                for r in acl::rules(&db, t).await? {
-                    println!(
-                        "{:>4}  #{:<4} {:<5}  {} -> {}",
-                        r.position,
-                        r.id,
-                        format!("{:?}", r.action).to_lowercase(),
-                        r.from,
-                        r.to
-                    );
-                }
-                println!("default: {:?}", acl::default(&db, t).await?);
-                Ok(())
-            }
-            AclCommand::Add { from, to, action, position } => {
-                let id = acl::add(&db, t, &from, &to, acl::Action::parse(&action)?, position).await?;
-                println!("Rule #{id} added.");
-                Ok(())
-            }
-            AclCommand::Remove { id } => {
-                anyhow::ensure!(acl::remove(&db, t, id).await?, "no rule #{id}");
-                Ok(())
-            }
-            AclCommand::Apply { file, check } if is_v2(&file) => {
-                let text = std::fs::read_to_string(&file)?;
-                policy::Compiled::parse(&text).map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?;
-                let old = authz::stored(&db, t).await?.unwrap_or_default();
-                if old == text {
-                    println!("The access policy already matches {}.", file.display());
-                    return Ok(());
-                }
-                let (old_lines, new_lines): (Vec<&str>, Vec<&str>) = (old.lines().collect(), text.lines().collect());
-                for l in old_lines.iter().filter(|l| !new_lines.contains(l)) {
-                    println!("- {l}");
-                }
-                for l in new_lines.iter().filter(|l| !old_lines.contains(l)) {
-                    println!("+ {l}");
-                }
-                if check {
-                    println!("Would apply {} (version 2).", file.display());
-                } else {
-                    authz::store(&db, t, &text).await?;
-                    println!("Applied {} (version 2). Version 1 rules no longer decide anything.", file.display());
-                }
-                Ok(())
-            }
-            AclCommand::Apply { file, check } => {
-                let text = std::fs::read_to_string(&file)?;
-                let f: acl::File =
-                    yaml_serde::from_str(&text).map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?;
-                let changes = acl::apply(&db, t, &f, check).await?;
-                if changes.is_empty() {
-                    println!("The access rules already match {}.", file.display());
-                } else {
-                    for c in &changes {
-                        println!("{c}");
+        Command::Acl { command } => {
+            let pt = people::tenant_or_first(&db, cli.tenant.as_deref()).await?.id;
+            match command {
+                AclCommand::List => {
+                    for r in acl::rules(&db, &pt).await? {
+                        println!(
+                            "{:>4}  #{:<4} {:<5}  {} -> {}",
+                            r.position,
+                            r.id,
+                            format!("{:?}", r.action).to_lowercase(),
+                            r.from,
+                            r.to
+                        );
                     }
-                    println!("{} {} change(s).", if check { "Would make" } else { "Made" }, changes.len());
+                    println!("default: {:?}", acl::default(&db, &pt).await?);
+                    Ok(())
                 }
-                Ok(())
-            }
-            AclCommand::Explain { from, can, to, reply, policy } => {
-                let text = match policy {
-                    Some(f) => std::fs::read_to_string(f)?,
-                    None => authz::stored(&db, t)
-                        .await?
-                        .ok_or_else(|| anyhow::anyhow!("no version 2 policy is applied; pass --policy"))?,
-                };
-                let p = policy::Compiled::parse(&text)?;
-                let d = p.decide(&from, &can, &to, reply)?;
-                println!("{}: {from} {can} {to}", if d.allowed { "ALLOW" } else { "DENY" });
-                for b in &d.because {
-                    println!("  because {b}");
+                AclCommand::Add { from, to, action, position } => {
+                    let id = acl::add(&db, &pt, &from, &to, acl::Action::parse(&action)?, position).await?;
+                    println!("Rule #{id} added.");
+                    Ok(())
                 }
-                for a in &d.audit_would_deny {
-                    println!("  an audit rule would refuse it: {a}");
+                AclCommand::Remove { id } => {
+                    anyhow::ensure!(acl::remove(&db, &pt, id).await?, "no rule #{id}");
+                    Ok(())
                 }
-                if d.allowed
-                    && let Some(hold) = p.ask_for(&from, &can, &to)
-                {
-                    println!(
-                        "  but it needs its person's approval first (an approval holds {} minutes)",
-                        hold / 60_000
-                    );
-                }
-                if can == "message" {
-                    let (per_hour, distinct) = p.limits_for(&from);
-                    if per_hour.is_some() || distinct.is_some() {
-                        let n = |v: Option<u32>| v.map_or("no limit".to_string(), |n| n.to_string());
-                        println!("  limits: {} messages an hour, {} recipients an hour", n(per_hour), n(distinct));
+                AclCommand::Apply { file, check } if is_v2(&file) => {
+                    let text = std::fs::read_to_string(&file)?;
+                    policy::Compiled::parse(&text).map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?;
+                    let old = authz::stored(&db, &pt).await?.unwrap_or_default();
+                    if old == text {
+                        println!("The access policy already matches {}.", file.display());
+                        return Ok(());
                     }
-                    if p.untrusted(&from) {
-                        println!("  delivered as outside data (untrusted)");
+                    let (old_lines, new_lines): (Vec<&str>, Vec<&str>) =
+                        (old.lines().collect(), text.lines().collect());
+                    for l in old_lines.iter().filter(|l| !new_lines.contains(l)) {
+                        println!("- {l}");
                     }
+                    for l in new_lines.iter().filter(|l| !old_lines.contains(l)) {
+                        println!("+ {l}");
+                    }
+                    if check {
+                        println!("Would apply {} (version 2).", file.display());
+                    } else {
+                        authz::store(&db, &pt, &text).await?;
+                        println!("Applied {} (version 2). Version 1 rules no longer decide anything.", file.display());
+                    }
+                    Ok(())
                 }
-                Ok(())
-            }
-            AclCommand::Test { cases, policy } => {
-                let p = policy::Compiled::parse(&std::fs::read_to_string(&policy)?)
-                    .map_err(|e| anyhow::anyhow!("{}: {e}", policy.display()))?;
-                let list: Vec<policy::Case> = yaml_serde::from_str(&std::fs::read_to_string(&cases)?)
-                    .map_err(|e| anyhow::anyhow!("{}: {e}", cases.display()))?;
-                let failures = policy::run_cases(&p, &list)?;
-                for f in &failures {
-                    println!("FAIL {f}");
+                AclCommand::Apply { file, check } => {
+                    let text = std::fs::read_to_string(&file)?;
+                    let f: acl::File =
+                        yaml_serde::from_str(&text).map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?;
+                    let changes = acl::apply(&db, &pt, &f, check).await?;
+                    if changes.is_empty() {
+                        println!("The access rules already match {}.", file.display());
+                    } else {
+                        for c in &changes {
+                            println!("{c}");
+                        }
+                        println!("{} {} change(s).", if check { "Would make" } else { "Made" }, changes.len());
+                    }
+                    Ok(())
                 }
-                println!("{} of {} cases pass.", list.len() - failures.len(), list.len());
-                anyhow::ensure!(failures.is_empty(), "{} case(s) failed", failures.len());
-                Ok(())
-            }
-            AclCommand::Suggest { days, per_session } => {
-                use sqlx::Row;
-                let since = db::now_ms() - days * 86_400_000;
-                let mut seen: Vec<(String, String, String)> = vec![];
-                for r in sqlx::query("SELECT from_subject, to_subject FROM message_log WHERE tenant = ? AND at >= ?")
-                    .bind(t)
-                    .bind(since)
-                    .fetch_all(&db)
-                    .await?
-                {
-                    seen.push((r.get(0), "message".into(), r.get(1)));
+                AclCommand::Explain { from, can, to, reply, policy } => {
+                    let text = match policy {
+                        Some(f) => std::fs::read_to_string(f)?,
+                        None => authz::stored(&db, &pt)
+                            .await?
+                            .ok_or_else(|| anyhow::anyhow!("no version 2 policy is applied; pass --policy"))?,
+                    };
+                    let p = policy::Compiled::parse(&text)?;
+                    // Decided in the chosen tenant, with who belongs to it (membership first, people's teams and roles).
+                    let fleet = directory::Fleet::load(&db).await?;
+                    let tenant = fleet.tenant(&pt).ok_or_else(|| anyhow::anyhow!("no tenant {pt}"))?;
+                    let scope = Some(policy::Scope { fleet: &fleet, tenant });
+                    let d = p.decide_in(scope, &from, &can, &to, reply)?;
+                    println!("{}: {from} {can} {to}", if d.allowed { "ALLOW" } else { "DENY" });
+                    for b in &d.because {
+                        println!("  because {b}");
+                    }
+                    for a in &d.audit_would_deny {
+                        println!("  an audit rule would refuse it: {a}");
+                    }
+                    if d.allowed
+                        && let Some(hold) = p.ask_for_in(scope, &from, &can, &to)
+                    {
+                        println!(
+                            "  but it needs its person's approval first (an approval holds {} minutes)",
+                            hold / 60_000
+                        );
+                    }
+                    if can == "message" {
+                        let (per_hour, distinct) = p.limits_for(&from);
+                        if per_hour.is_some() || distinct.is_some() {
+                            let n = |v: Option<u32>| v.map_or("no limit".to_string(), |n| n.to_string());
+                            println!("  limits: {} messages an hour, {} recipients an hour", n(per_hour), n(distinct));
+                        }
+                        if p.untrusted(&from) {
+                            println!("  delivered as outside data (untrusted)");
+                        }
+                    }
+                    Ok(())
                 }
-                for r in sqlx::query(
+                AclCommand::Test { cases, policy } => {
+                    let p = policy::Compiled::parse(&std::fs::read_to_string(&policy)?)
+                        .map_err(|e| anyhow::anyhow!("{}: {e}", policy.display()))?;
+                    let list: Vec<policy::Case> = yaml_serde::from_str(&std::fs::read_to_string(&cases)?)
+                        .map_err(|e| anyhow::anyhow!("{}: {e}", cases.display()))?;
+                    let failures = policy::run_cases(&p, &list)?;
+                    for f in &failures {
+                        println!("FAIL {f}");
+                    }
+                    println!("{} of {} cases pass.", list.len() - failures.len(), list.len());
+                    anyhow::ensure!(failures.is_empty(), "{} case(s) failed", failures.len());
+                    Ok(())
+                }
+                AclCommand::Suggest { days, per_session } => {
+                    use sqlx::Row;
+                    let since = db::now_ms() - days * 86_400_000;
+                    let mut seen: Vec<(String, String, String)> = vec![];
+                    for r in
+                        sqlx::query("SELECT from_subject, to_subject FROM message_log WHERE tenant = ? AND at >= ?")
+                            .bind(t)
+                            .bind(since)
+                            .fetch_all(&db)
+                            .await?
+                    {
+                        seen.push((r.get(0), "message".into(), r.get(1)));
+                    }
+                    for r in sqlx::query(
                     "SELECT DISTINCT caller, tool, server_node FROM tool_connections WHERE tenant = ? AND opened_at >= ?
                      AND bytes_from_tool > 0",
                 )
@@ -936,47 +950,48 @@ async fn main() -> anyhow::Result<()> {
                     let (caller, tool, node): (String, String, String) = (r.get(0), r.get(1), r.get(2));
                     seen.push((caller, "use_tool".into(), format!("tool:{tool}@{node}")));
                 }
-                print!("{}", policy::suggest(&seen, !per_session));
-                Ok(())
-            }
-            AclCommand::Unapply => {
-                if authz::remove(&db, t).await? {
-                    println!("Removed the version 2 policy; version 1 rules decide again.");
-                } else {
-                    println!("No version 2 policy was applied.");
+                    print!("{}", policy::suggest(&seen, !per_session));
+                    Ok(())
                 }
-                Ok(())
-            }
-            AclCommand::Show => {
-                match authz::stored(&db, t).await? {
-                    Some(text) => print!("{text}"),
-                    None => println!("No version 2 policy is applied; version 1 rules decide (acl list)."),
+                AclCommand::Unapply => {
+                    if authz::remove(&db, &pt).await? {
+                        println!("Removed the version 2 policy; version 1 rules decide again.");
+                    } else {
+                        println!("No version 2 policy was applied.");
+                    }
+                    Ok(())
                 }
-                Ok(())
-            }
-            AclCommand::Log { limit } => {
-                for e in db::recent_events(&db, t, 500)
-                    .await?
-                    .into_iter()
-                    .filter(|e| e["channel"] == "access")
-                    .take(limit as usize)
-                {
-                    let at = e["at"].as_i64().and_then(|ms| jiff::Timestamp::from_millisecond(ms).ok());
-                    println!(
-                        "{}  {:<13} {}",
-                        at.map(|t| t.strftime("%Y-%m-%d %H:%M:%S").to_string()).unwrap_or_default(),
-                        e["kind"].as_str().unwrap_or("?"),
-                        e["summary"].as_str().unwrap_or("")
-                    );
+                AclCommand::Show => {
+                    match authz::stored(&db, &pt).await? {
+                        Some(text) => print!("{text}"),
+                        None => println!("No version 2 policy is applied; version 1 rules decide (acl list)."),
+                    }
+                    Ok(())
                 }
-                Ok(())
+                AclCommand::Log { limit } => {
+                    for e in db::recent_events(&db, &pt, 500)
+                        .await?
+                        .into_iter()
+                        .filter(|e| e["channel"] == "access")
+                        .take(limit as usize)
+                    {
+                        let at = e["at"].as_i64().and_then(|ms| jiff::Timestamp::from_millisecond(ms).ok());
+                        println!(
+                            "{}  {:<13} {}",
+                            at.map(|t| t.strftime("%Y-%m-%d %H:%M:%S").to_string()).unwrap_or_default(),
+                            e["kind"].as_str().unwrap_or("?"),
+                            e["summary"].as_str().unwrap_or("")
+                        );
+                    }
+                    Ok(())
+                }
+                AclCommand::Default { action } => acl::set_default(&db, &pt, acl::Action::parse(&action)?).await,
+                AclCommand::Check { from, to } => {
+                    println!("{}", if acl::allowed(&db, &pt, &from, &to).await? { "allowed" } else { "denied" });
+                    Ok(())
+                }
             }
-            AclCommand::Default { action } => acl::set_default(&db, t, acl::Action::parse(&action)?).await,
-            AclCommand::Check { from, to } => {
-                println!("{}", if acl::allowed(&db, t, &from, &to).await? { "allowed" } else { "denied" });
-                Ok(())
-            }
-        },
+        }
         Command::Fallback { channel, target, none } => {
             anyhow::ensure!(none != target.is_some(), "give a target or --none");
             if let Some(t) = &target {

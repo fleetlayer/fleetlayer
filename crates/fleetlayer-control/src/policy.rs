@@ -2,9 +2,13 @@
 //! to Cedar policies and decided by Cedar's authorizer. Deny always wins (Cedar: a `forbid` beats any `permit`), so the
 //! order of rules doesn't matter.
 //!
-//! Subjects (`who`) are `<tab>@<node>`, `-@<node>` or `plugin:<name>@<node>`; targets (`to`) are those, or
-//! `tool:<name>@<node>`, `sync:<bundle>@<node>`, `channel:<name>`. `*` matches any run of characters; `group:<name>`
-//! names a group of patterns.
+//! Subjects (`who`) are `<tab>@<node>`, `-@<node>`, `plugin:<name>@<node>` or `person:<handle>`; targets (`to`) are
+//! those, or `tool:<name>@<node>`, `sync:<bundle>@<node>`, `channel:<name>`, `service:<name>[/<owner>/…]`,
+//! `page:<space>/<path>`, `app:<space>/<name>`. `*` matches any run of characters; `group:<name>` names a group of
+//! patterns, `team:<name>` a team of the tenant (with its sub-teams), `role:admin` its admins, `owned-by:person:<h>` and
+//! `owned-by:team:<t>` what someone owns, `owner` (in `to`) whatever the subject's owner owns, and `outside` an agent
+//! that isn't a member of the tenant deciding. A pattern matches people only if it says so (`person:…`, `team:…`,
+//! `role:…`): a bare `*` in `who` is every agent. People, teams and owners: `docs/sso.md`.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::str::FromStr;
@@ -15,8 +19,11 @@ use cedar_policy::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::directory::Fleet;
+
 /// What a subject may do.
-pub const VERBS: &[&str] = &["message", "use_tool", "sync", "read", "subscribe", "publish", "start", "attach"];
+pub const VERBS: &[&str] =
+    &["message", "use_tool", "sync", "read", "subscribe", "publish", "start", "attach", "sign_in", "admin", "write"];
 
 /// One string or a list of them.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -108,7 +115,15 @@ pub fn default_ask() -> Vec<AskRule> {
         except: None,
         hold: hold.into(),
     };
-    vec![rule(&["start", "attach"], "10m"), rule(&["use_tool", "sync"], "30d")]
+    vec![rule(&["start", "attach"], "10m"), rule(&["use_tool", "sync", "admin", "write"], "30d")]
+}
+
+/// What an approval is held for: one target, except pages, approved per space (`page:<space>/*`).
+pub fn approval_target(target: &str) -> String {
+    match target.strip_prefix("page:").and_then(|rest| rest.split_once('/')) {
+        Some((space, _)) => format!("page:{space}/*"),
+        None => target.to_string(),
+    }
 }
 
 /// The policy file, version 2.
@@ -117,8 +132,19 @@ pub fn default_ask() -> Vec<AskRule> {
 pub struct PolicyFile {
     pub version: u32,
     pub default: String,
+    /// What people may do when no rule says: `own` (the default: anything to their own things, and read their teams'),
+    /// `deny` or `allow`. `default:` keeps deciding for agents.
+    #[serde(default)]
+    pub default_people: Option<String>,
+    /// `deny` refuses every action by or to this tenant's member agents that are members of another tenant too.
+    #[serde(default)]
+    pub agents_elsewhere: Option<String>,
     #[serde(default)]
     pub groups: BTreeMap<String, Vec<String>>,
+    /// Who owns what, for things whose owner isn't known otherwise (spaces of pages, apps): a pattern and its owner
+    /// (`person:<handle>` or `team:<name>`). The most specific (longest) matching pattern wins.
+    #[serde(default)]
+    pub owners: BTreeMap<String, String>,
     #[serde(default)]
     pub deny: Vec<Rule>,
     #[serde(default)]
@@ -189,21 +215,81 @@ fn quote(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
+/// The tenant a decision is made in, with the deployment's membership (`directory.rs`). Without one, nobody's
+/// membership is checked and only `owners:` and `service:` paths say who owns what (`acl explain --policy`, tests).
+#[derive(Clone, Copy)]
+pub struct Scope<'a> {
+    pub fleet: &'a Fleet,
+    pub tenant: &'a crate::directory::Tenant,
+}
+
+/// What an owner is written as: `person:<handle>` or `team:<name>`.
+fn valid_owner(o: &str) -> bool {
+    o.strip_prefix("person:").or_else(|| o.strip_prefix("team:")).is_some_and(valid_slug)
+}
+
+/// A handle, team or role name: a lowercase slug of at most 64 characters, with no `@` (so it can't clash with
+/// `<tab>@<node>`). A pattern may hold `*`.
+fn valid_slug_pattern(n: &str) -> bool {
+    !n.is_empty()
+        && n.len() <= 64
+        && n.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-' | '*'))
+}
+
+fn valid_slug(n: &str) -> bool {
+    !n.contains('*') && valid_slug_pattern(n)
+}
+
 /// The Cedar condition for one `who` or `to` term against `var` (`principal` or `resource`).
 fn term(var: &str, t: &str, groups: &BTreeMap<String, Vec<String>>) -> anyhow::Result<String> {
+    let subject = var == "principal";
     if let Some(g) = t.strip_prefix("group:") {
         anyhow::ensure!(groups.contains_key(g), "unknown group {g}");
         return Ok(format!("{var} in Group::{}", quote(g)));
     }
-    if t == "*" {
-        return Ok("true".into());
+    if let Some(o) = t.strip_prefix("owned-by:") {
+        anyhow::ensure!(valid_owner(o), "{t:?} isn't owned-by:person:<handle> or owned-by:team:<name>");
+        return Ok(format!("{var}.owner == {}", quote(o)));
     }
-    anyhow::ensure!(valid_pattern(t), "{t:?} isn't <tab>@<node>, tool:/sync:/channel:…, group:… or *");
+    if let Some(team) = t.strip_prefix("team:") {
+        anyhow::ensure!(valid_slug(team), "{t:?}: {team:?} isn't a team's name");
+        return Ok(format!("{var} in Team::{}", quote(team)));
+    }
+    if let Some(role) = t.strip_prefix("role:") {
+        anyhow::ensure!(matches!(role, "admin" | "member"), "{t:?}: roles are admin and member");
+        return Ok(format!("{var} in Role::{}", quote(role)));
+    }
+    if t == "owner" {
+        anyhow::ensure!(!subject, "`owner` names targets: use it in `to`, not `who`");
+        return Ok("context.same_owner".into());
+    }
+    if t == "outside" {
+        return Ok(format!("{var}.outside"));
+    }
+    if t == "*" {
+        // In `who`, a bare `*` means every agent, never people.
+        return Ok(if subject { "!principal.person".into() } else { "true".into() });
+    }
+    anyhow::ensure!(
+        valid_pattern(t),
+        "{t:?} isn't <tab>@<node>, person:/team:/role:…, tool:/sync:/channel:/service:/page:/app:…, group:…, \
+         owned-by:…, owner, outside or *"
+    );
+    if let Some(h) = t.strip_prefix("person:") {
+        anyhow::ensure!(valid_slug_pattern(h), "{t:?}: {h:?} isn't a handle");
+    }
+    if subject && !t.starts_with("person:") {
+        return Ok(format!("(!principal.person && principal.name like {})", quote(t)));
+    }
     Ok(format!("{var}.name like {}", quote(t)))
 }
 
 pub fn valid_pattern(p: &str) -> bool {
-    p == "*" || p.contains('@') || p.starts_with("channel:") || p.starts_with("group:")
+    p == "*"
+        || (p.contains('@') && !p.starts_with("person:"))
+        || ["channel:", "group:", "person:", "service:", "page:", "app:"]
+            .iter()
+            .any(|k| p.starts_with(k) && p.len() > k.len())
 }
 
 fn any(var: &str, terms: &[String], groups: &BTreeMap<String, Vec<String>>) -> anyhow::Result<String> {
@@ -281,6 +367,13 @@ fn forbids(
     Ok(())
 }
 
+/// Which side of a request a name is on, for terms that mean something different on each (`*`, `owner`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Who,
+    To,
+}
+
 impl Compiled {
     pub fn compile(file: PolicyFile) -> anyhow::Result<Compiled> {
         anyhow::ensure!(file.version == 2, "this is a version {} policy; version 2 is expected", file.version);
@@ -289,11 +382,29 @@ impl Compiled {
             "deny" => false,
             d => anyhow::bail!("default is allow or deny (got {d})"),
         };
+        let people_default = file.default_people.as_deref().unwrap_or("own");
+        anyhow::ensure!(
+            matches!(people_default, "own" | "deny" | "allow"),
+            "default_people is own, deny or allow (got {people_default})"
+        );
+        if let Some(e) = &file.agents_elsewhere {
+            anyhow::ensure!(matches!(e.as_str(), "allow" | "deny"), "agents_elsewhere is allow or deny (got {e})");
+        }
         for (name, members) in &file.groups {
             for m in members {
                 anyhow::ensure!(!m.starts_with("group:"), "group {name}: groups can't contain groups");
-                anyhow::ensure!(valid_pattern(m), "group {name}: {m:?} isn't a pattern");
+                let ok = valid_pattern(m)
+                    || m.strip_prefix("team:").is_some_and(valid_slug)
+                    || matches!(m.as_str(), "role:admin" | "role:member");
+                anyhow::ensure!(ok, "group {name}: {m:?} isn't a pattern, team:<name> or role:<role>");
             }
+        }
+        for (pattern, owner) in &file.owners {
+            anyhow::ensure!(valid_pattern(pattern) && pattern != "*", "owners: {pattern:?} isn't a pattern");
+            anyhow::ensure!(
+                valid_owner(owner),
+                "owners: {pattern}'s owner {owner:?} isn't person:<handle> or team:<name>"
+            );
         }
         let g = &file.groups;
         let mut enforced = PolicySet::new();
@@ -313,9 +424,28 @@ impl Compiled {
                 &mut enforced,
                 &mut notes,
                 "default".into(),
-                Some("the default is allow"),
-                "permit(principal, action, resource);".into(),
+                Some("the default for agents is allow"),
+                "permit(principal, action, resource) when { !principal.person };".into(),
             )?;
+        }
+        match people_default {
+            "own" => add(
+                &mut enforced,
+                &mut notes,
+                "default_people".into(),
+                Some("people may do anything to what they own, and read what their teams own"),
+                "permit(principal, action, resource) when { principal.person && (context.same_owner || \
+                 (action == Action::\"read\" && context.team_owns)) };"
+                    .into(),
+            )?,
+            "allow" => add(
+                &mut enforced,
+                &mut notes,
+                "default_people".into(),
+                Some("the default for people is allow"),
+                "permit(principal, action, resource) when { principal.person };".into(),
+            )?,
+            _ => {}
         }
         for t in &file.untrusted {
             term("principal", t, g)?;
@@ -344,26 +474,131 @@ impl Compiled {
         Compiled::compile(file)
     }
 
-    /// The groups a name belongs to.
-    fn groups_of(&self, name: &str) -> HashSet<EntityUid> {
+    /// The member `name` is, when it's a person in the scope's tenant.
+    fn person<'a>(scope: Option<Scope<'a>>, name: &str) -> Option<(&'a str, &'a crate::directory::Person)> {
+        let h = name.strip_prefix("person:")?;
+        let (handle, p) = scope?.tenant.people.get_key_value(h)?;
+        Some((handle.as_str(), p))
+    }
+
+    /// The teams a person is in (with the teams above them); empty for agents.
+    fn teams(scope: Option<Scope>, name: &str) -> std::collections::BTreeSet<String> {
+        match (scope, name.strip_prefix("person:")) {
+            (Some(s), Some(h)) => s.tenant.teams_of(h),
+            _ => Default::default(),
+        }
+    }
+
+    /// Whether a group member (a pattern, `team:…` or `role:…`) takes in `name`.
+    fn group_member(scope: Option<Scope>, m: &str, name: &str) -> bool {
+        if let Some(team) = m.strip_prefix("team:") {
+            return Compiled::teams(scope, name).contains(team);
+        }
+        if let Some(role) = m.strip_prefix("role:") {
+            return Compiled::person(scope, name).is_some_and(|(_, p)| p.role == role);
+        }
+        subject_glob(m, name)
+    }
+
+    /// The names of the policy's groups `name` belongs to.
+    fn group_names(&self, scope: Option<Scope>, name: &str) -> HashSet<String> {
         self.file
             .groups
             .iter()
-            .filter(|(_, members)| members.iter().any(|m| crate::acl::glob(m, name)))
-            .map(|(g, _)| uid("Group", g))
+            .filter(|(_, members)| members.iter().any(|m| Compiled::group_member(scope, m, name)))
+            .map(|(g, _)| g.clone())
             .collect()
     }
 
-    /// Whether `who` belongs to any of `terms` (patterns or groups).
+    /// Who owns `name`, in the scope's tenant: `person:<handle>`, `team:<name>`, `tenant` (a tenant's own node), or ""
+    /// when nobody does. `owners:` first (the most specific pattern), then a person themselves, then a service's path
+    /// (`service:<name>/<owner>/…`), then a node's owner for what's on it.
+    pub fn owner_of(&self, scope: Option<Scope>, name: &str) -> String {
+        let mut candidates = vec![name.to_string()];
+        if crate::directory::is_agent_side(name)
+            && let Some((_, node)) = name.rsplit_once('@')
+        {
+            candidates.push(format!("-@{node}"));
+        }
+        for c in &candidates {
+            if let Some((_, owner)) =
+                self.file.owners.iter().filter(|(p, _)| crate::acl::glob(p, c)).max_by_key(|(p, _)| p.len())
+            {
+                return owner.clone();
+            }
+        }
+        if name.starts_with("person:") {
+            return name.to_string();
+        }
+        if let Some(rest) = name.strip_prefix("service:")
+            && let Some((_, after)) = rest.split_once('/')
+        {
+            let seg = after.split('/').next().unwrap_or_default();
+            return match seg.strip_prefix("team:") {
+                Some(t) if valid_slug(t) => format!("team:{t}"),
+                None if valid_slug(seg) => format!("person:{seg}"),
+                _ => String::new(),
+            };
+        }
+        scope.map(|s| s.tenant.node_owner(s.fleet, name)).unwrap_or_default()
+    }
+
+    /// Whether `name` isn't a member of the scope's tenant (`outside`). Never true without a scope.
+    fn outside(scope: Option<Scope>, name: &str) -> bool {
+        scope.is_some_and(|s| !name.starts_with("service:") && !s.tenant.is_member(s.fleet, name))
+            && (crate::directory::is_agent_side(name) || name.starts_with("person:"))
+    }
+
+    /// Whether `name`, on `side`, matches one term; `other` is the request's other side (for `owner`).
+    fn term_matches(&self, scope: Option<Scope>, t: &str, name: &str, side: Side, other: &str) -> bool {
+        if let Some(g) = t.strip_prefix("group:") {
+            return self.group_names(scope, name).contains(g);
+        }
+        if let Some(o) = t.strip_prefix("owned-by:") {
+            return self.owner_of(scope, name) == o;
+        }
+        if t.starts_with("team:") || t.starts_with("role:") {
+            return Compiled::group_member(scope, t, name);
+        }
+        match t {
+            "outside" => Compiled::outside(scope, name),
+            "owner" => {
+                let mine = self.owner_of(scope, other);
+                side == Side::To && !mine.is_empty() && mine == self.owner_of(scope, name)
+            }
+            "*" if side == Side::To => true,
+            _ => subject_glob(t, name),
+        }
+    }
+
+    fn any_matches(&self, scope: Option<Scope>, terms: &[String], name: &str, side: Side, other: &str) -> bool {
+        terms.iter().any(|t| self.term_matches(scope, t, name, side, other))
+    }
+
+    /// Whether `who` doing `verb` to `target` is covered by a rule's who, except, can and to.
+    fn covers(
+        &self,
+        scope: Option<Scope>,
+        (who_terms, except, can, to): (&OneOrMany, &Option<OneOrMany>, &OneOrMany, &Option<OneOrMany>),
+        (who, verb, target): (&str, &str, &str),
+    ) -> bool {
+        can.items().iter().any(|c| c == verb)
+            && self.any_matches(scope, &who_terms.items(), who, Side::Who, target)
+            && !except.as_ref().is_some_and(|e| self.any_matches(scope, &e.items(), who, Side::Who, target))
+            && to.as_ref().is_none_or(|t| self.any_matches(scope, &t.items(), target, Side::To, who))
+    }
+
+    /// Whether `who` belongs to any of `terms` (patterns, groups, teams, roles).
     pub fn matches(&self, terms: &[String], who: &str) -> bool {
-        terms.iter().any(|t| match t.strip_prefix("group:") {
-            Some(g) => self.file.groups.get(g).is_some_and(|ms| ms.iter().any(|m| crate::acl::glob(m, who))),
-            None => crate::acl::glob(t, who),
-        })
+        self.any_matches(None, terms, who, Side::Who, "")
     }
 
     /// How long an approval holds when `who` doing `verb` to `target` needs one; None when it doesn't.
     pub fn ask_for(&self, who: &str, verb: &str, target: &str) -> Option<i64> {
+        self.ask_for_in(None, who, verb, target)
+    }
+
+    pub fn ask_for_in(&self, scope: Option<Scope>, who: &str, verb: &str, target: &str) -> Option<i64> {
         let defaults;
         let rules = match &self.file.ask {
             Some(r) => r,
@@ -374,22 +609,18 @@ impl Compiled {
         };
         rules
             .iter()
-            .filter(|r| r.can.items().iter().any(|c| c == verb))
-            .filter(|r| self.matches(&r.who.items(), who))
-            .filter(|r| !r.except.as_ref().is_some_and(|e| self.matches(&e.items(), who)))
-            .filter(|r| r.to.as_ref().is_none_or(|t| self.matches(&t.items(), target)))
+            .filter(|r| self.covers(scope, (&r.who, &r.except, &r.can, &r.to), (who, verb, target)))
             .filter_map(|r| parse_duration_ms(&r.hold).ok())
             .min()
     }
 
     /// Whether `who` doing `verb` to `target` must say why.
     pub fn needs_justification(&self, who: &str, verb: &str, target: &str) -> bool {
-        self.file.justify.iter().any(|r| {
-            r.can.items().iter().any(|c| c == verb)
-                && self.matches(&r.who.items(), who)
-                && !r.except.as_ref().is_some_and(|e| self.matches(&e.items(), who))
-                && r.to.as_ref().is_none_or(|t| self.matches(&t.items(), target))
-        })
+        self.needs_justification_in(None, who, verb, target)
+    }
+
+    pub fn needs_justification_in(&self, scope: Option<Scope>, who: &str, verb: &str, target: &str) -> bool {
+        self.file.justify.iter().any(|r| self.covers(scope, (&r.who, &r.except, &r.can, &r.to), (who, verb, target)))
     }
 
     /// Whether messages from `who` are delivered as outside data.
@@ -412,25 +643,87 @@ impl Compiled {
         (per_hour, distinct)
     }
 
-    /// Decide whether `who` may `verb` `target`. `reply` is true when `target` messaged `who` within the reply window.
+    /// Decide whether `who` may `verb` `target`, without a tenant's membership. `reply` is true when `target` messaged
+    /// `who` within the reply window.
     pub fn decide(&self, who: &str, verb: &str, target: &str, reply: bool) -> anyhow::Result<Decided> {
+        self.decide_in(None, who, verb, target, reply)
+    }
+
+    /// Why the scope's tenant refuses before reading any rule: a subject that isn't a member (except between agents,
+    /// where it's `outside`), or a member agent that's also a member elsewhere under `agents_elsewhere: deny`.
+    pub fn refused_up_front(&self, scope: Scope, who: &str, target: &str) -> Option<String> {
+        let (t, f) = (scope.tenant, scope.fleet);
+        let member = t.is_member(f, who);
+        if !member && (who.starts_with("person:") || !crate::directory::is_agent_side(target)) {
+            return Some(format!("{who} isn't a member of {}", t.slug));
+        }
+        if self.file.agents_elsewhere.as_deref() == Some("deny") {
+            for n in [who, target] {
+                if crate::directory::is_agent_side(n) && t.is_member(f, n) && f.elsewhere(&t.id, n) {
+                    return Some(format!(
+                        "{n} is also a member of another tenant, and {} refuses those (agents_elsewhere: deny)",
+                        t.slug
+                    ));
+                }
+            }
+        }
+        None
+    }
+
+    /// Decide in a tenant: membership first, then the policy's rules.
+    pub fn decide_in(
+        &self,
+        scope: Option<Scope>,
+        who: &str,
+        verb: &str,
+        target: &str,
+        reply: bool,
+    ) -> anyhow::Result<Decided> {
         anyhow::ensure!(VERBS.contains(&verb), "unknown verb {verb}");
+        if let Some(s) = scope
+            && let Some(r) = self.refused_up_front(s, who, target)
+        {
+            return Ok(Decided { allowed: false, because: vec![r], audit_would_deny: vec![] });
+        }
+        let person = who.starts_with("person:");
         let principal = uid("Agent", who);
         let resource = uid("Target", target);
-        let mut name = HashMap::new();
-        name.insert("name".to_string(), RestrictedExpression::new_string(who.to_string()));
-        let p = Entity::new(principal.clone(), name, self.groups_of(who))?;
-        let mut tname = HashMap::new();
-        tname.insert("name".to_string(), RestrictedExpression::new_string(target.to_string()));
-        let r = Entity::new(resource.clone(), tname, self.groups_of(target))?;
-        let groups: Vec<Entity> = self
-            .file
-            .groups
-            .keys()
-            .map(|g| Entity::new(uid("Group", g), HashMap::new(), HashSet::new()).map_err(|e| anyhow::anyhow!("{e}")))
+        let (who_owner, target_owner) = (self.owner_of(scope, who), self.owner_of(scope, target));
+        let attrs = |n: &str, owner: &str| {
+            HashMap::from([
+                ("name".to_string(), RestrictedExpression::new_string(n.to_string())),
+                ("person".to_string(), RestrictedExpression::new_bool(n.starts_with("person:"))),
+                ("owner".to_string(), RestrictedExpression::new_string(owner.to_string())),
+                ("outside".to_string(), RestrictedExpression::new_bool(Compiled::outside(scope, n))),
+            ])
+        };
+        let parents = |n: &str| -> HashSet<EntityUid> {
+            let mut out: HashSet<EntityUid> = self.group_names(scope, n).iter().map(|g| uid("Group", g)).collect();
+            out.extend(Compiled::teams(scope, n).iter().map(|t| uid("Team", t)));
+            if let Some((_, p)) = Compiled::person(scope, n) {
+                out.insert(uid("Role", &p.role));
+            }
+            out
+        };
+        let (who_parents, target_parents) = (parents(who), parents(target));
+        let mut others: HashSet<EntityUid> = self.file.groups.keys().map(|g| uid("Group", g)).collect();
+        others.extend(who_parents.iter().cloned());
+        others.extend(target_parents.iter().cloned());
+        let p = Entity::new(principal.clone(), attrs(who, &who_owner), who_parents)?;
+        let r = Entity::new(resource.clone(), attrs(target, &target_owner), target_parents)?;
+        let others: Vec<Entity> = others
+            .into_iter()
+            .map(|u| Entity::new(u, HashMap::new(), HashSet::new()).map_err(|e| anyhow::anyhow!("{e}")))
             .collect::<anyhow::Result<_>>()?;
-        let entities = Entities::from_entities([p, r].into_iter().chain(groups), None)?;
-        let context = Context::from_pairs([("reply".to_string(), RestrictedExpression::new_bool(reply))])?;
+        let entities = Entities::from_entities([p, r].into_iter().chain(others), None)?;
+        let same_owner = !who_owner.is_empty() && who_owner == target_owner;
+        let team_owns =
+            target_owner.strip_prefix("team:").is_some_and(|t| person && Compiled::teams(scope, who).contains(t));
+        let context = Context::from_pairs([
+            ("reply".to_string(), RestrictedExpression::new_bool(reply)),
+            ("same_owner".to_string(), RestrictedExpression::new_bool(same_owner)),
+            ("team_owns".to_string(), RestrictedExpression::new_bool(team_owns)),
+        ])?;
         let request = Request::new(principal, uid("Action", verb), resource, context, None)?;
         let authorizer = Authorizer::new();
         let resp = authorizer.is_authorized(&request, &self.enforced, &entities);
@@ -441,7 +734,16 @@ impl Compiled {
         let mut because: Vec<String> = resp.diagnostics().reason().map(|id| self.describe(id)).collect();
         because.sort();
         if because.is_empty() && !allowed {
-            because.push("no rule allows it (the default is deny)".into());
+            because.push(if person {
+                match self.file.default_people.as_deref().unwrap_or("own") {
+                    "own" => "no rule allows it (people may do only what they own, and read their teams', unless a \
+                              rule allows more)"
+                        .into(),
+                    _ => "no rule allows it (the default for people is deny)".into(),
+                }
+            } else {
+                "no rule allows it (the default is deny)".into()
+            });
         }
         let mut audit_would_deny = vec![];
         if allowed {
@@ -461,6 +763,14 @@ impl Compiled {
             None => id,
         }
     }
+}
+
+/// Whether pattern `p` matches `name`: people only through a `person:` pattern, so `*` and `*@laptop` never do.
+fn subject_glob(p: &str, name: &str) -> bool {
+    if name.starts_with("person:") != p.starts_with("person:") {
+        return false;
+    }
+    crate::acl::glob(p, name)
 }
 
 fn uid(kind: &str, id: &str) -> EntityUid {
@@ -509,6 +819,32 @@ pub struct Case {
     pub expect: String,
     #[serde(default)]
     pub reply: bool,
+    /// For a person (`from: person:<handle>`): their role in the tenant (`admin` or `member`, the default) and teams.
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub teams: Vec<String>,
+}
+
+impl Case {
+    /// A tenant for a case about a person: that person, with the role and teams the case gives, and every agent
+    /// admitted. None for a case about agents, decided without membership.
+    fn tenant(&self) -> Option<crate::directory::Tenant> {
+        let handle = self.from.strip_prefix("person:")?;
+        let mut t = crate::directory::Tenant { id: "test".into(), slug: "test".into(), ..Default::default() };
+        let person = crate::directory::Person {
+            id: "p_test".into(),
+            role: self.role.clone().unwrap_or_else(|| "member".into()),
+            teams: self.teams.clone(),
+        };
+        t.people.insert(handle.into(), person);
+        t.handles.insert("p_test".into(), handle.into());
+        t.agents.push("*".into());
+        for team in &self.teams {
+            t.teams.insert(team.clone(), None);
+        }
+        Some(t)
+    }
 }
 
 /// Check `cases` against `policy`; returns the failures as sentences.
@@ -520,7 +856,10 @@ pub fn run_cases(policy: &Compiled, cases: &[Case]) -> anyhow::Result<Vec<String
             "deny" => false,
             e => anyhow::bail!("expect is allow or deny (got {e})"),
         };
-        let d = policy.decide(&c.from, &c.can, &c.to, c.reply)?;
+        let tenant = c.tenant();
+        let fleet = Fleet::default();
+        let scope = tenant.as_ref().map(|tenant| Scope { fleet: &fleet, tenant });
+        let d = policy.decide_in(scope, &c.from, &c.can, &c.to, c.reply)?;
         if d.allowed != want {
             failures.push(format!(
                 "{} {} {}: expected {}, got {} because {}",
@@ -707,6 +1046,163 @@ audit:
         assert!(check_justification("because").unwrap_err().contains("too short"));
         assert!(check_justification("two lines of text\nare not one line").is_err());
         assert!(check_justification("hidden\u{202e}override characters here").unwrap_err().contains("hidden"));
+    }
+
+    /// The company policy from `docs/sso.md`.
+    const COMPANY: &str = r#"
+version: 2
+default: allow
+groups:
+  staff: [team:engineering, team:support]
+allow:
+  - who: role:admin
+    can: [sign_in, admin]
+    to: ["service:*"]
+  - who: group:staff
+    can: [sign_in]
+    to: [service:pages]
+  - who: group:staff
+    can: [read]
+    to: ["page:handbook/*"]
+deny:
+  - who: "person:*"
+    except: [role:admin]
+    can: [sign_in]
+    to: [service:hub]
+    why: The hub holds every Claude sign-in
+owners:
+  "page:handbook/*": team:support
+  "page:notes-c/*": person:c
+"#;
+
+    fn acme<'a>(f: &'a Fleet) -> Scope<'a> {
+        Scope { fleet: f, tenant: f.tenant("acme").unwrap() }
+    }
+
+    #[test]
+    fn people_get_what_the_company_policy_says() {
+        let f = crate::directory::tests::example();
+        let p = Compiled::parse(COMPANY).unwrap();
+        let s = Some(acme(&f));
+        let ok = |who: &str, can: &str, to: &str| p.decide_in(s, who, can, to, false).unwrap().allowed;
+        // C (admin, platform under engineering) and D (member, support).
+        assert!(ok("person:c", "sign_in", "service:hub"));
+        assert!(ok("person:c", "admin", "service:signin"));
+        assert!(!ok("person:d", "sign_in", "service:hub"), "the hub is for admins");
+        assert!(ok("person:d", "sign_in", "service:pages"));
+        assert!(ok("person:c", "sign_in", "service:pages"), "platform is in engineering, which is staff");
+        assert!(ok("person:d", "read", "page:handbook/start"));
+        assert!(!ok("person:d", "admin", "service:signin"));
+        // Their own things, and their teams', by default; nobody else's, whatever `default: allow` says for agents.
+        assert!(ok("person:c", "write", "page:notes-c/today"));
+        assert!(!ok("person:d", "read", "page:notes-c/today"));
+        assert!(!ok("person:d", "write", "page:handbook/start"), "a team's members read its things by default");
+    }
+
+    #[test]
+    fn membership_comes_before_any_rule() {
+        let f = crate::directory::tests::example();
+        let p = Compiled::parse("version: 2\ndefault: allow\ndefault_people: allow\n").unwrap();
+        let s = Some(acme(&f));
+        let d = p.decide_in(s, "person:b", "sign_in", "service:pages", false).unwrap();
+        assert!(!d.allowed);
+        assert_eq!(d.because, ["person:b isn't a member of acme"]);
+        let d = p.decide_in(s, "recipes@laptop", "read", "service:quietdeck/a/inbox", false).unwrap();
+        assert_eq!(d.because, ["recipes@laptop isn't a member of acme"]);
+        // Between agents, a non-member is an outside agent, for the rules to decide.
+        assert!(p.decide_in(s, "recipes@laptop", "message", "billing@laptop", false).unwrap().allowed);
+        let own = Compiled::parse(
+            "version: 2\ndefault: allow\ndeny:\n  - { who: outside, can: message }\n  - { who: \"*\", can: message, to: outside }\n",
+        )
+        .unwrap();
+        assert!(!own.decide_in(s, "recipes@laptop", "message", "billing@laptop", false).unwrap().allowed);
+        assert!(!own.decide_in(s, "billing@laptop", "message", "recipes@laptop", false).unwrap().allowed);
+        assert!(own.decide_in(s, "billing@laptop", "message", "x@c-vm", false).unwrap().allowed);
+    }
+
+    #[test]
+    fn agents_elsewhere_can_be_refused() {
+        let f = crate::directory::tests::example();
+        let p = Compiled::parse("version: 2\ndefault: allow\nagents_elsewhere: deny\n").unwrap();
+        let s = Some(acme(&f));
+        let d = p.decide_in(s, "finances@laptop", "read", "channel:ledger", false).unwrap();
+        assert!(!d.allowed);
+        assert!(d.because[0].contains("agents_elsewhere: deny"), "{:?}", d.because);
+        assert!(!p.decide_in(s, "billing@laptop", "message", "finances@laptop", false).unwrap().allowed);
+        assert!(p.decide_in(s, "billing@laptop", "message", "x@c-vm", false).unwrap().allowed);
+    }
+
+    #[test]
+    fn a_bare_star_never_means_people() {
+        let f = crate::directory::tests::example();
+        let s = Some(acme(&f));
+        let p = Compiled::parse(
+            "version: 2\ndefault: deny\ndefault_people: deny\nallow:\n  - { who: \"*\", can: read, to: \"*\" }\n",
+        )
+        .unwrap();
+        assert!(p.decide_in(s, "billing@laptop", "read", "page:x/y", false).unwrap().allowed);
+        assert!(!p.decide_in(s, "person:a", "read", "page:x/y", false).unwrap().allowed);
+        // An ask for `*` doesn't stop people either.
+        assert_eq!(
+            Compiled::parse("version: 2\ndefault: allow\n").unwrap().ask_for_in(
+                s,
+                "person:a",
+                "admin",
+                "service:signin"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn owners_and_owner_scoped_rules() {
+        let f = crate::directory::tests::example();
+        let s = Some(acme(&f));
+        let p = Compiled::parse(
+            "version: 2\ndefault: deny\nallow:\n  - { who: \"*\", can: read, to: [owner] }\n  - { who: owned-by:person:c, can: message, to: owned-by:team:engineering }\n",
+        )
+        .unwrap();
+        assert_eq!(p.owner_of(s, "billing@laptop"), "person:a");
+        assert_eq!(p.owner_of(s, "service:quietdeck/a/inbox"), "person:a");
+        assert_eq!(p.owner_of(s, "service:quietdeck/team:support/inbox"), "team:support");
+        assert_eq!(p.owner_of(s, "tool:shell@build-vm"), "team:engineering");
+        // An agent reads its person's things, and nobody else's.
+        assert!(p.decide_in(s, "billing@laptop", "read", "service:quietdeck/a/inbox", false).unwrap().allowed);
+        assert!(!p.decide_in(s, "billing@laptop", "read", "service:quietdeck/c/inbox", false).unwrap().allowed);
+        assert!(p.decide_in(s, "x@c-vm", "message", "y@build-vm", false).unwrap().allowed);
+        assert!(!p.decide_in(s, "billing@laptop", "message", "y@build-vm", false).unwrap().allowed);
+    }
+
+    #[test]
+    fn people_cases_say_their_role_and_teams() {
+        let cases: Vec<Case> = yaml_serde::from_str(
+            "- { from: person:sam, can: sign_in, to: service:hub, expect: deny }\n- { from: person:sam, role: admin, can: sign_in, to: service:hub, expect: allow }\n- { from: person:sam, teams: [support], can: read, to: page:handbook/start, expect: allow }\n- { from: person:sam, can: read, to: page:handbook/start, expect: deny }\n",
+        )
+        .unwrap();
+        let failures = run_cases(&Compiled::parse(COMPANY).unwrap(), &cases).unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
+    }
+
+    #[test]
+    fn new_verbs_ask_by_default_and_pages_are_approved_per_space() {
+        let p = Compiled::parse("version: 2\ndefault: allow\n").unwrap();
+        assert_eq!(p.ask_for("a@x", "write", "page:family/notes.md"), Some(30 * 86_400_000));
+        assert_eq!(p.ask_for("a@x", "admin", "service:grafana"), Some(30 * 86_400_000));
+        assert_eq!(p.ask_for("a@x", "sign_in", "service:grafana"), None);
+        assert_eq!(p.ask_for("a@x", "read", "page:family/notes.md"), None);
+        assert_eq!(approval_target("page:family/2026/notes.md"), "page:family/*");
+        assert_eq!(approval_target("tool:browser@laptop"), "tool:browser@laptop");
+    }
+
+    #[test]
+    fn bad_people_terms_are_refused() {
+        let bad =
+            |extra: &str| Compiled::parse(&format!("version: 2\ndefault: allow\n{extra}")).err().unwrap().to_string();
+        assert!(bad("allow:\n  - { who: role:owner, can: read }\n").contains("roles are admin and member"));
+        assert!(bad("allow:\n  - { who: owner, can: read }\n").contains("use it in `to`"));
+        assert!(bad("allow:\n  - { who: \"person:A@x\", can: read }\n").contains("isn't"));
+        assert!(bad("default_people: some\n").contains("default_people"));
+        assert!(bad("owners:\n  \"page:x/*\": david\n").contains("isn't person:<handle>"));
     }
 
     #[test]

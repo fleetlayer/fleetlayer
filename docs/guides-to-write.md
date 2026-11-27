@@ -299,3 +299,14 @@ managers, machines that sleep.
   uses `./fleetlayer-control.db` if that exists, else the one `fleetlayer up` makes
   (`~/.local/state/fleetlayer/control/control.db`), and admin commands refuse to create a database at a path nobody
   named. Where it lives: `crates/fleetlayer-control/src/main.rs`; the guides leave out `--db` on a laptop.
+- **Moving sign-in without breaking passkeys.** A passkey belongs to the domain it was made for (the relying party
+  ID), not to the machine. Make passkeys for a registrable domain you keep (`example.com`, or a tailnet's
+  `tail1234.ts.net`) and sign-in can move between machines and addresses under it; made on `localhost` or one
+  machine's name, they stop working after a move and everyone registers again. The move guide says this up front, in
+  the same words as the sign-in page's warning. Where it lives: `docs/sso.md` ("Moving it").
+- **An agent no tenant admitted can't do anything.** Since decisions moved to the tenants that own what's touched,
+  every request is decided in the tenants either agent is a member of, and an agent no tenant admitted is refused
+  ("neither … is a member of any tenant"). Upgrading keeps working: every existing node's agents were admitted to the
+  first tenant, and `node add` admits a new node's agents unless `--no-admit`. A node added with `--no-admit`, or a
+  person's node after they leave every tenant, needs `fleetlayer-control agent admit "*@<node>"` in some tenant first.
+  `acl explain --tenant <slug>` says which. Where it lives: `docs/sso.md` ("On the control plane").

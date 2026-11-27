@@ -41,6 +41,9 @@ pub mod method {
     pub const READING_PUBLISH: &str = "_fleetlayer.dev/reading/publish";
     pub const READING_SUBSCRIBE: &str = "_fleetlayer.dev/reading/subscribe";
     pub const READING_UPDATE: &str = "_fleetlayer.dev/reading/update";
+    /// Plugin → node: may this person or agent do this? `link::AccessCheck` → `link::AccessDecision`, decided by the
+    /// control plane. Needs the `access.check` grant.
+    pub const ACCESS_CHECK: &str = "_fleetlayer.dev/access/check";
     /// Plugin → node (notification): this plugin serves HTTP here (`ServiceListening`), sent after it has bound.
     /// Idempotent: resending replaces the entry of that name; the node drops a plugin's entries when it exits.
     pub const SERVICE_LISTENING: &str = "_fleetlayer.dev/service/listening";

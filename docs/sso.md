@@ -1,7 +1,8 @@
 # Fleetlayer sign-in: one sign-in for every service
 
-Status: design (27 November 2026). Step 1a (people, tenants, teams, memberships, invites, node owners on the control
-plane) is built; the rest follows the steps at the end, each one shippable.
+Status: design (27 November 2026). Steps 1a (people, tenants, teams, memberships, invites, node owners on the control
+plane) and 1b (decisions in the owning tenant, people in the policy, the check call) are built; the rest follows the
+steps at the end, each one shippable.
 
 People sign in once, with Fleetlayer, to every web service the fleet runs: the Claude sign-in hub, pages, and any
 other service someone chooses to run. Who may use what comes from the same access policy that decides what agents may
@@ -141,6 +142,7 @@ Why this split:
 | A web service | `service:<name>` | `service:hub` |
 | A member's or team's data in a service | `service:<name>/<owner>/<path>` | `service:quietdeck/david/inbox` |
 | A page, or a space of pages | `page:<space>/<path>` | `page:handbook/*` |
+| An app in a space (a static site on its own address) | `app:<space>/<name>` | `app:home/budget` |
 | The tenant's admins | `role:admin` | |
 
 - A handle and a team name are lowercase slugs (`[a-z0-9][a-z0-9._-]{0,63}`). They have no `@`, so they can't
@@ -162,14 +164,15 @@ Why this split:
 | `sign_in` | `service:<name>` | May sign in to this service at all. Checked before a token is issued, and on every forward-auth request. |
 | `admin` | `service:<name>` | May use the service's admin features. `admin` on `service:signin` manages the tenant's members and teams. |
 | `read` | `page:<space>/<path>` | May see this page (pages asks per request). The existing `read` verb, for a new kind of target. |
+| `read` | `app:<space>/<name>` | May open this static app. Owners and the default are as for spaces. Pages signs people in to its apps itself (it's the client `service:pages`) and checks this before letting anyone in. |
 | `write` | `page:<space>/<path>` | May push to this space (`fleetlayer pages push`, for agents without file sync). Reserved here, defined by pages. |
 
 **Approvals:** `admin` and `write` join Fleetlayer's default `ask:` rules (approved once, held 30 days, like the first
 `use_tool`), since they change things; `sign_in` and `read` never ask by default, or every page load would.
 
-A service may ask about any other verb and target it defines (`service:grafana` with `admin`, say): the check call
-below takes any verb in `service:` and `page:` targets that the policy names. The list of verbs that can change things
-stays exhaustive in the code.
+A service asks with these verbs about any target it defines (`service:grafana` with `admin`, say): the check call
+below takes `service:`, `page:` and `app:` targets. The list of verbs stays exhaustive in the code, so a policy can't
+name one Fleetlayer doesn't know.
 
 A policy for a company tenant:
 
@@ -406,6 +409,48 @@ plugins:
 - **Back it up:** losing this folder means every person registers new passkeys and every service's client secret is
   reissued. Back up `people.json` and `keys/`; sessions can be lost.
 
+## Moving it
+
+Every component can move (a Mac first, a home server or VPS later), and the sign-in service is built for it:
+
+- **All its state is one directory** (`dir`: `people.json`, `keys/`, sessions) and **all its settings one file**. It
+  assumes no hostname: the issuer URL, the passkey relying party ID and the listen address are settings.
+- **Moving to another machine with the same address** (`signin.example` now points at the new machine): stop it,
+  copy the directory and the settings file, start it there. The signing key moves with it, so tokens services hold
+  stay valid, passkeys keep working and clients change nothing. A test moves a directory between two instances and
+  signs in with an existing passkey and token.
+- **Changing its address** is the hard case, because **a passkey is bound to the relying party ID it was made for**
+  (a domain). Two ways:
+  - **The default plans for it.** Setup asks for a domain the person owns and makes passkeys for its registrable
+    domain (from the Public Suffix List), even when sign-in runs at `signin.home.example.com`: passkeys made for
+    `example.com` keep working at any address under it. A tailnet name works the same way: the registrable domain of
+    `laptop.tail1234.ts.net` is the tailnet's own `tail1234.ts.net`, so sign-in can move between the tailnet's
+    machines.
+  - **On localhost or a machine's own name** (no domain they own), the page says, before the first passkey is made
+    and outside any Advanced section: "Passkeys made now stop working if sign-in moves to another address; use a
+    domain you own to avoid that." After such a move, people sign in once with an invite link or an upstream provider
+    and register a new passkey; the admin page offers "Invite everyone again" for this.
+  Either way, services need the new issuer URL. While the old name still points at the service (a setting,
+  `previous_issuers`, for 30 days), it answers discovery with a redirect and keeps serving the JWKS, so tokens already issued verify until they expire; each client's issuer setting is
+  changed (the guide lists the hub's and pages' settings). Sessions on the old address end; people sign in again.
+- The control plane's address is a setting too, and its sign-in token moves with the settings file.
+
+## On a laptop
+
+On a laptop "mini home server" (every service at `http://<name>.localhost:7680` behind one proxy, no TLS), sign-in is
+its own service, `http://signin.localhost:7680`, never part of the control plane: it holds credentials, and it moves
+on its own later.
+
+- Browsers treat `*.localhost` as a secure context, so passkeys work there. The passkey domain is
+  `signin.localhost`, and the page shows the warning above before the first passkey.
+- The issuer is an `http://` URL. Fleetlayer's own clients (the hub, pages) accept `http://` only for `localhost` and
+  `*.localhost`; everywhere else the issuer must be HTTPS.
+- Server-to-server calls (token, JWKS, back-channel logout) can't rely on resolving `*.localhost` (it fails on Linux
+  without systemd-resolved), so each side has a `backend_url` setting next to the public one, and services check
+  tokens' `iss` against the public issuer while calling the backend one.
+- Cookies keep `Secure` and the `__Host-` prefix where the browser allows them on `http://localhost` (Chrome,
+  Firefox); a browser that doesn't is told so on the sign-in page rather than signed in with weaker cookies.
+
 ## On the control plane: tables and commands
 
 Step 1a. Every table is per tenant except `people`, and nothing here is a credential.
@@ -443,8 +488,11 @@ Every change to tenants, members, roles, teams, invites and owners is written to
 made it (`admin`, the person's handle, or `signin`).
 
 **Nodes, tenants and the existing `tenant` column.** Nodes and their sessions are a person's, so they belong to the
-deployment, not to a tenant. Today every row's `tenant` is `default`; until decisions move to the owning tenant (1b),
-the deployment's first tenant (`default`) keeps deciding and auditing everything, exactly as now.
+deployment, not to a tenant. Every row's `tenant` stays `default` (where a node's sessions, messages and events are
+kept); decisions don't use it. Since 1b each request is decided and audited in the tenants that own what it touches:
+every tenant either agent is a member of, or for a service's data, a page or an app, the tenant the service names. An
+agent no tenant admitted is refused (`agent admit` lets it in). A tenant without a version 2 policy keeps the version 1
+rules for its agents, and decides people with the built-in defaults (`default_people: own`).
 
 ## Migrating an existing deployment
 

@@ -420,6 +420,16 @@ impl Handler for FromPlugin {
                 self.grant("sync.publish")?;
                 crate::sync::publish(&self.node, self.plugin.name(), params(p)?).await
             }
+            ext::method::ACCESS_CHECK => {
+                // A service (pages, the hub) asking whether someone may do something; the control plane decides.
+                self.grant("access.check")?;
+                let req: fleetlayer_protocol::link::AccessCheck = params(p)?;
+                let peer = self.node.link.peer().await.ok_or_else(|| {
+                    RpcError::not_here("this node isn't linked to a control plane now, so nothing can be checked")
+                })?;
+                peer.request_within(fleetlayer_protocol::link::method::ACCESS_CHECK, &req, Duration::from_secs(10))
+                    .await
+            }
             ext::method::SESSIONS_QUERY => {
                 self.grant("sessions.query")?;
                 answer(&json!({"sessions": self.node.registry.all().await}))
