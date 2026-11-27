@@ -134,6 +134,10 @@ on your laptop](laptop.md#on-a-server-traefik-and-gatus-from-the-same-list)) and
 reaches it. Set `trusted_proxies`: the page locks a client address out for 15 minutes after five wrong logins, and
 behind a proxy every visitor shares the proxy's address unless the hub believes its `X-Forwarded-For`.
 
+From v0.3.9 the page can sign people in with Fleetlayer's own sign-in (passkeys, one sign-in for every service)
+instead of the login key: see the `signin` keys under [The hub](../plugins/claude-auth-manager.md#the-hub), and
+[Sign-in](../plugins/signin.md) for the other side.
+
 Its state lives in `~/.local/state/fleetlayer/claude-hub` (0700). Leave that folder out of backups. Losing it costs a
 few minutes of signing in again, and the tokens already on the nodes keep working for up to a year.
 
