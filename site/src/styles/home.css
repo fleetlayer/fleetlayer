@@ -285,6 +285,77 @@ main > section {
   color: var(--color-ok-on-graphite);
 }
 
+/* The problem: what breaks past one account and one machine, and the answer. */
+.pain,
+.solve {
+  padding-block: var(--space-3xl);
+  border-top: var(--rule-hair) solid var(--color-rule);
+}
+.pain__head h2,
+.solve > h2 {
+  font-size: var(--text-2xl);
+  font-weight: 600;
+}
+.pain__head p {
+  margin-top: var(--space-sm);
+  max-width: var(--measure);
+}
+.pain__list {
+  margin: var(--space-md) 0 0;
+  padding-left: 1.25em;
+  max-width: var(--measure);
+}
+.pain__list li + li {
+  margin-top: var(--space-xs);
+}
+.pain__list li::marker {
+  color: var(--color-muted);
+}
+
+.solve__grid {
+  list-style: none;
+  margin: var(--space-xl) 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-md);
+}
+.fix {
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-lg);
+  border: var(--rule-hair) solid var(--color-rule);
+  border-radius: var(--radius-md);
+  background: var(--color-paper-2);
+}
+.fix__was {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-muted);
+  text-decoration: line-through;
+  text-decoration-color: var(--color-rule);
+  margin-bottom: var(--space-sm);
+}
+.fix__x {
+  display: inline-block;
+  text-decoration: none;
+  margin-right: 0.35em;
+}
+.fix h3 {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  margin-bottom: var(--space-xs);
+}
+.fix__link {
+  margin-top: auto;
+  padding-top: var(--space-md);
+  font-weight: 500;
+  text-decoration: none;
+}
+.fix__link:hover {
+  text-decoration: underline;
+}
+
 /* The map. */
 .map {
   padding-block: var(--space-3xl);
@@ -467,6 +538,69 @@ main > section {
   margin-top: var(--space-xl);
 }
 
+/* Foundation: the primitives, and what's built on them. */
+.found {
+  padding-block: var(--space-3xl);
+  border-top: var(--rule-hair) solid var(--color-rule);
+}
+.found > h2 {
+  font-size: var(--text-2xl);
+  font-weight: 600;
+}
+.found__lede {
+  margin-top: var(--space-sm);
+  max-width: var(--measure);
+}
+.found__prims {
+  list-style: none;
+  margin: var(--space-md) 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  max-width: 56rem;
+}
+.found__prims li {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  padding: 0.3em 0.7em;
+  border: var(--rule-hair) solid var(--color-rule);
+  border-radius: 999px;
+}
+.found__prims code {
+  font: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+}
+.found__case {
+  margin-top: var(--space-xl);
+  padding: var(--space-lg);
+  max-width: var(--measure);
+  border: var(--rule-hair) solid var(--color-rule);
+  border-radius: var(--radius-md);
+  background: var(--color-paper-2);
+}
+.found__built {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+.found__case h3 {
+  font-size: var(--text-xl);
+  font-weight: 600;
+  margin: var(--space-2xs) 0 var(--space-xs);
+}
+.found__case ul {
+  margin: var(--space-sm) 0 0;
+  padding-left: 1.25em;
+}
+.found__case li + li {
+  margin-top: var(--space-xs);
+}
+
 /* Works with: names and one line each. */
 .works {
   padding-block: var(--space-3xl);
@@ -476,6 +610,44 @@ main > section {
   font-size: var(--text-2xl);
   font-weight: 600;
 }
+.stack {
+  list-style: none;
+  margin: var(--space-xl) 0 0;
+  padding: 0;
+  max-width: 48rem;
+}
+.stack__row {
+  display: grid;
+  grid-template-columns: 7.5rem minmax(0, 1fr);
+  gap: var(--space-md);
+  align-items: baseline;
+  padding: var(--space-sm) var(--space-md);
+  border-top: var(--rule-hair) solid var(--color-rule);
+}
+.stack__row:last-child {
+  border-bottom: var(--rule-hair) solid var(--color-rule);
+}
+.stack__role {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-muted);
+}
+.stack__row--core {
+  margin-block: var(--space-xs);
+  border: var(--rule-hair) solid var(--color-accent);
+  border-radius: var(--radius-md);
+  background: var(--color-paper-2);
+}
+.stack__row--core + .stack__row {
+  border-top-color: transparent;
+}
+.stack__row--core .stack__role {
+  font-family: var(--font-display);
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: var(--color-accent);
+}
+
 .works__intro {
   margin-top: var(--space-xs);
   color: var(--color-muted);
@@ -693,6 +865,9 @@ main > section {
   }
   .does__list {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .solve__grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .works__list {
     grid-template-columns: repeat(4, minmax(0, 1fr));

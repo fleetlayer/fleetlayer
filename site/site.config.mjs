@@ -6,7 +6,7 @@ export const site = {
   url: "https://fleetlayer.ai",
   title: "Fleetlayer",
   summary:
-    "Fleetlayer connects and controls the AI agent sessions you already run, on every machine you use, into one fleet you control: one view of every session, messages between them, webhooks routed to the agent that owns the work, shared Claude accounts, and access rules. Open source (Apache 2.0), self-hosted, no vendor lock-in.",
+    "An open framework for running AI agents securely and at scale: it connects the Claude Code and Codex sessions you already run in herdr, on your laptop, a home server or a VPS, so any agent can message any other, webhooks reach the right agent, and each agent gets its own access rules. Open source (Apache 2.0), self-hosted, no vendor lock-in.",
   // Working files that stay in the repo only.
   unpublished: ["guides-to-write", "problems"],
 };

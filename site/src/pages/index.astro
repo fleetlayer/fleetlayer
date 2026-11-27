@@ -49,9 +49,10 @@ const description = site.summary;
                session before changing the headline. -->
           <h1 id="hero-title">An open framework for running AI agents securely and at scale.</h1>
           <p class="lede">
-            Fleetlayer connects the Claude Code and Codex sessions you already run, on your laptop, a home server or a
-            VPS. Agents message each other across machines, webhooks wake the session that owns the work, and your
-            Claude accounts are shared with every session. Each agent gets its own access rules, every decision is audited, and every piece can be replaced.
+            Fleetlayer connects the Claude Code and Codex sessions you already run in <a
+            href="https://herdr.dev/">herdr</a>, on your laptop, a home server or a VPS. Any agent can
+            message any other agent, webhooks can be routed to specific agents, and each agent gets its
+            own access rules.
           </p>
           <div class="actions">
             <a class="btn btn--primary" href="/getting-started/">Install Fleetlayer</a>
@@ -78,9 +79,58 @@ const description = site.summary;
         </figure>
       </section>
 
+      <section class="pain" aria-labelledby="pain-title">
+        <div class="pain__head">
+          <h2 id="pain-title">Claude Code is awesome…</h2>
+          <p>
+            …when you have one Claude account and run it on one machine. Add a second account, a server or another
+            agent, and this starts happening:
+          </p>
+        </div>
+        <ul class="pain__list">
+          <li>claude.ai artifacts say “access denied” unless you’re signed in to the right account.</li>
+          <li>A session on your server can’t message one on your laptop.</li>
+          <li>You keep signing in and out of the Claude in Chrome extension.</li>
+          <li>An agent on your server can’t use the browser on your Mac.</li>
+          <li>An agent on your server can’t reach the Downloads or Screenshots folders on your Mac.</li>
+          <li>Codex and Gemini agents can’t make claude.ai artifacts at all.</li>
+          <li>You find out an account is out of usage when a session stops.</li>
+        </ul>
+      </section>
+
+      <section class="solve" aria-labelledby="solve-title">
+        <h2 id="solve-title">Fleetlayer solves all of this, and much more</h2>
+        <ul class="solve__grid">
+          <li class="fix">
+            <p class="fix__was"><span class="fix__x" aria-hidden="true">✕</span> “access denied” on artifacts</p>
+            <h3>Fleetlayer Pages and Apps</h3>
+            <p>Claude, Codex and Gemini agents write pages and interactive apps as plain folders, and Fleetlayer hosts them behind one sign-in.</p>
+            <a class="fix__link" href="/guides/pages/">Set up pages <span aria-hidden="true">→</span></a>
+          </li>
+          <li class="fix">
+            <p class="fix__was"><span class="fix__x" aria-hidden="true">✕</span> sessions that can’t reach each other</p>
+            <h3>Messages between any two agents</h3>
+            <p>Claude or Codex, on the same machine or another one: <code>fleetlayer msg send --to api@laptop</code>.</p>
+            <a class="fix__link" href="/guides/day-to-day/">Send a message <span aria-hidden="true">→</span></a>
+          </li>
+          <li class="fix">
+            <p class="fix__was"><span class="fix__x" aria-hidden="true">✕</span> signing the extension in and out</p>
+            <h3>Any agent can control your browser</h3>
+            <p>Agents on any machine and any Claude account can use the Chrome on your Mac, signed in as you (via Playwright MCP).</p>
+            <a class="fix__link" href="/guides/browser/">Share your browser <span aria-hidden="true">→</span></a>
+          </li>
+          <li class="fix">
+            <p class="fix__was"><span class="fix__x" aria-hidden="true">✕</span> an account that runs out mid-task</p>
+            <h3>Every account in one place</h3>
+            <p>Year-long sign-ins on every machine, and every account’s usage shared with every session.</p>
+            <a class="fix__link" href="/guides/claude-accounts/">Add your accounts <span aria-hidden="true">→</span></a>
+          </li>
+        </ul>
+      </section>
+
       <section class="map" aria-labelledby="map-title">
         <div class="map__head">
-          <h2 id="map-title">A node on each machine, one control plane. Works with herdr, with tmux and T3 Code to come.</h2>
+          <h2 id="map-title">A node on each machine, one control plane.</h2>
           <p>
             Fleetlayer attaches to herdr without taking it over, so its app and your terminals keep working as before.
             Each machine, or each Unix user, runs a small node that keeps one outbound connection to the control plane,
@@ -170,10 +220,10 @@ const description = site.summary;
             </p>
           </li>
           <li>
-            <h3>Rules for agents you trust less</h3>
+            <h3>Separate users, separate rules</h3>
             <p>
-              An agent that reads strangers' email gets its own Unix user, and the access policy limits whom it may
-              message and what it may use. Every refusal names the rule.
+              Run several nodes and herdr instances on the same machine or VM, each under its own Unix user. The access
+              policy limits whom each agent may message and what it may use.
             </p>
           </li>
           <li>
@@ -190,43 +240,80 @@ const description = site.summary;
         </p>
       </section>
 
-      <section class="works" aria-labelledby="works-title">
-        <h2 id="works-title">Works with</h2>
-        <p class="works__intro">The tools the author's own fleet runs on, and what Fleetlayer does with each.</p>
-        <ul class="works__list">
-          <li>
-            <a href="https://herdr.dev">herdr</a>
-            <p>Runs the sessions. Fleetlayer lists them, delivers messages into them and attaches to their terminals.</p>
-          </li>
-          <li>
-            <span class="works__name">herdr relay <span class="works__soon">coming</span></span>
-            <p>herdr on your phone, through Fleetlayer's one connection: pair once, reach every machine.</p>
-          </li>
-          <li>
-            <a href="https://github.com/anthropics/claude-code">Claude Code</a>
-            <p>Messages through its own channel, shared accounts and usage, year-long tokens on every machine.</p>
-          </li>
-          <li>
-            <a href="https://github.com/openai/codex">Codex</a>
-            <p>Its sessions in herdr are listed, get messages (typed in through herdr), and can be watched or driven with <code>fleetlayer attach</code>.</p>
-          </li>
-          <li>
-            <a href="https://github.com/microsoft/playwright-mcp">Playwright MCP</a>
-            <p>Your signed-in browser on the laptop, shared with agents on other machines, limited to the callers, networks and tools you allow.</p>
-          </li>
-          <li>
-            <a href="https://syncthing.net">Syncthing</a> <span class="works__soon">or any sync</span>
-            <p>Pages are plain folders: Fleetlayer hosts whatever Syncthing, or any sync you use, keeps in step.</p>
-          </li>
-          <li>
-            <a href="https://gatus.io">Gatus</a> and <a href="https://traefik.io">Traefik</a>
-            <p>On a server, Fleetlayer writes their config: a health check and an address for every service.</p>
-          </li>
-          <li>
-            <a href="https://restic.net">restic</a> <span class="works__soon">guide</span>
-            <p>Not built in: the <a href="/guides/backups/">backups guide</a> sets it up for every machine in a fleet.</p>
-          </li>
+      <section class="found" aria-labelledby="found-title">
+        <h2 id="found-title">A foundation for your own agent workflows</h2>
+        <p class="found__lede">
+          Fleetlayer started inside Quietdeck. Once we saw how useful that layer was on its own, we pulled it out into
+          its own project and refined it. It gives you the primitives to build your own apps and layers on top:
+        </p>
+        <ul class="found__prims" aria-label="Fleetlayer's primitives">
+          <li>sessions at <code>tab@node</code></li>
+          <li>messages</li>
+          <li>webhooks and channels</li>
+          <li>access rules</li>
+          <li>approvals</li>
+          <li>an audit log</li>
+          <li>plugins in any language</li>
+          <li>shared MCP tools</li>
+          <li>pages and apps</li>
         </ul>
+        <div class="found__case">
+          <p class="found__built">Built on Fleetlayer</p>
+          <h3><a href="https://quietdeck.ai/">Quietdeck</a></h3>
+          <p>An agent triages your email and proposes what to do, and you approve. Quietdeck runs on Fleetlayer and uses its features to:</p>
+          <ul>
+            <li>forward emails and notifications to the agent that owns the work through Fleetlayer’s messaging</li>
+            <li>know what all your agents are doing from Fleetlayer’s session summaries, and route each message to the right agent</li>
+            <li>start an isolated email triage agent on its own Unix user, connected through its own Fleetlayer node,
+              with access rules that limit whom it may message</li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="works" aria-labelledby="works-title">
+        <h2 id="works-title">One system, many parts</h2>
+        <p class="works__intro">
+          Fleetlayer is the layer between your agents and the tools around them. Each part does one job and can be
+          replaced.
+        </p>
+        <ol class="stack" aria-label="The parts of a fleet">
+          <li class="stack__row">
+            <span class="stack__role">Agents</span>
+            <span class="stack__parts"><a href="https://github.com/anthropics/claude-code">Claude Code</a>, <a href="https://github.com/openai/codex">Codex</a></span>
+          </li>
+          <li class="stack__row">
+            <span class="stack__role">Sessions</span>
+            <span class="stack__parts"><a href="https://herdr.dev/">herdr</a></span>
+          </li>
+          <li class="stack__row stack__row--core">
+            <span class="stack__role">Fleetlayer</span>
+            <span class="stack__parts">cross-agent messaging, webhooks, single sign-on, access rules, approvals, audit log, AI account management, session summaries, remote terminals, shared MCP tools, file sync, pages and apps</span>
+          </li>
+          <li class="stack__row">
+            <span class="stack__role">Browser</span>
+            <span class="stack__parts"><a href="https://github.com/microsoft/playwright-mcp">Playwright MCP</a></span>
+          </li>
+          <li class="stack__row">
+            <span class="stack__role">Files</span>
+            <span class="stack__parts"><a href="https://syncthing.net">Syncthing</a>, <a href="https://obsidian.md/sync">Obsidian Sync</a>, <a href="https://github.com/vrtmrz/obsidian-livesync">Obsidian LiveSync</a>, or any file syncing solution</span>
+          </li>
+          <li class="stack__row">
+            <span class="stack__role">Network</span>
+            <span class="stack__parts"><a href="https://tailscale.com">Tailscale</a>, <a href="https://www.cloudflare.com/products/tunnel/">Cloudflare Tunnel</a></span>
+          </li>
+          <li class="stack__row">
+            <span class="stack__role">Services</span>
+            <span class="stack__parts"><a href="https://gatus.io">Gatus</a> for health checks, <a href="https://traefik.io">Traefik</a> for addresses</span>
+          </li>
+          <li class="stack__row">
+            <span class="stack__role">Backups</span>
+            <span class="stack__parts"><a href="/guides/backups/">restic</a></span>
+          </li>
+          <li class="stack__row">
+            <span class="stack__role">Mobile</span>
+            <span class="stack__parts">herdr relay</span>
+          </li>
+        </ol>
       </section>
 
       <section class="band" aria-labelledby="band-title">

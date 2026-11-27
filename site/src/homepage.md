@@ -2,17 +2,36 @@
 
 An open framework for running AI agents securely and at scale.
 
-Fleetlayer connects the Claude Code and Codex sessions you already run, on your laptop, a home server or a VPS. Agents
-message each other across machines, webhooks wake the session that owns the work, and your Claude accounts are shared
-with every session. Each agent gets its own access rules, every decision is audited, and every piece can be replaced.
-Open source under Apache 2.0, early, built in public: https://github.com/fleetlayer/fleetlayer
+Fleetlayer connects the Claude Code and Codex sessions you already run in [herdr](https://herdr.dev/), on your laptop, a
+home server or a VPS. Any agent can message any other agent, webhooks can be routed to specific agents, and each agent
+gets its own access rules. Open source under Apache 2.0, early, built in public:
+https://github.com/fleetlayer/fleetlayer
+
+## Claude Code is awesome…
+
+…when you have one Claude account and run it on one machine. Add a second account, a server or another agent,
+and this starts happening:
+
+- claude.ai artifacts say “access denied” unless you’re signed in to the right account.
+- A session on your server can’t message one on your laptop.
+- You keep signing in and out of the Claude in Chrome extension.
+- An agent on your server can’t use the browser on your Mac.
+- An agent on your server can’t reach the Downloads or Screenshots folders on your Mac.
+- Codex and Gemini agents can’t make claude.ai artifacts at all.
+- You find out an account is out of usage when a session stops.
+
+## Fleetlayer solves all of this, and much more
+
+- **Fleetlayer Pages and Apps.** Claude, Codex and Gemini agents write pages and interactive apps as plain folders, and Fleetlayer hosts them behind one sign-in. [How](https://fleetlayer.ai/guides/pages/)
+- **Messages between any two agents.** Claude or Codex, on the same machine or another one: `fleetlayer msg send --to api@laptop`. [How](https://fleetlayer.ai/guides/day-to-day/)
+- **Any agent can control your browser.** Agents on any machine and any Claude account can use the Chrome on your Mac, signed in as you (via Playwright MCP). [How](https://fleetlayer.ai/guides/browser/)
+- **Every account in one place.** Year-long sign-ins on every machine, and every account's usage shared with every session. [How](https://fleetlayer.ai/guides/claude-accounts/)
 
 ## How it fits
 
 A node on each machine, or each Unix user, keeps one outbound connection to the control plane, so it works behind NAT
-with no ports to open. It works with herdr, with tmux and T3 Code to come, and doesn't replace them: your apps and
-terminals keep working beside it. Plugins are separate processes in any language, speaking the Agent Client Protocol
-plus Fleetlayer's extensions.
+with no ports to open. It attaches to herdr without taking it over: your apps and terminals keep working beside it.
+Plugins are separate processes in any language, speaking the Agent Client Protocol plus Fleetlayer's extensions.
 
 The pieces: `fleetlayer-node` (one per machine or Unix user), plugins (herdr, Claude Code, summaries, Claude accounts,
 pages), `fleetlayer-control` (the control plane: machines, sessions, messages, webhooks, access rules; it holds no
@@ -28,27 +47,39 @@ credentials) and `fleetlayer` (the command line).
 - **Webhooks that find the right agent**: a CI failure goes to the session that wrote the branch.
 - **Many Claude accounts, many machines**: usage across all your accounts, shared with every session; year-long tokens
   reach each machine sealed to its own key; sign-ins stay on a machine you control.
-- **Rules for agents you trust less**: an agent that reads strangers' email gets its own Unix user, and the access
-  policy limits whom it may message and what it may use. Every refusal names the rule.
+- **Separate users, separate rules**: run several nodes and herdr instances on the same machine or VM, each under its
+  own Unix user. The access policy limits whom each agent may message and what it may use.
 - **Tools that live on one machine**: your signed-in browser on a laptop, used by an agent on a server with
   `fleetlayer mcp browser@laptop`.
 
-## Works with
+## A foundation for your own agent workflows
 
-The tools the author's own fleet runs on, and what Fleetlayer does with each:
+Fleetlayer started inside Quietdeck. Once we saw how useful that layer was on its own, we pulled it out into its own
+project and refined it. It gives you the primitives to build your own apps and layers on top: sessions at `tab@node`,
+messages, webhooks and channels, access rules, approvals, an audit log, plugins in any language, shared MCP tools,
+and pages and apps.
 
-- **herdr** (https://herdr.dev): runs the sessions; Fleetlayer lists them, delivers messages into them and attaches to
-  their terminals.
-- **herdr relay** (coming): herdr on your phone through Fleetlayer's one connection, so you pair once and reach every
-  machine.
-- **Claude Code**: messages through its own channel, shared accounts and usage, year-long tokens on every machine.
-- **Codex**: its sessions in herdr are listed, get messages (typed in through herdr), and can be watched or driven
-  with `fleetlayer attach`. No Codex plugin yet.
-- **Playwright MCP**: your signed-in browser on the laptop, shared with agents on other machines, limited to the
-  callers, networks and tools you allow.
-- **Syncthing, or any sync**: pages are plain folders; Fleetlayer hosts whatever your sync keeps in step.
-- **Gatus and Traefik**: on a server, Fleetlayer writes their config, a health check and an address for every service.
-- **restic** (a guide, not built in): https://fleetlayer.ai/guides/backups.md sets it up for every machine in a fleet.
+Built on Fleetlayer: [Quietdeck](https://quietdeck.ai/). An agent triages your email and proposes what to do, and you
+approve. Quietdeck runs on Fleetlayer and uses its features to:
+
+- forward emails and notifications to the agent that owns the work through Fleetlayer’s messaging
+- know what all your agents are doing from Fleetlayer’s session summaries, and route each message to the right agent
+- start an isolated email triage agent on its own Unix user, connected through its own Fleetlayer node, with access
+  rules that limit whom it may message
+
+## One system, many parts
+
+Fleetlayer is the layer between your agents and the tools around them. Each part does one job and can be replaced.
+
+- **Agents:** Claude Code, Codex
+- **Sessions:** herdr (https://herdr.dev)
+- **Fleetlayer:** cross-agent messaging, webhooks, single sign-on, access rules, approvals, audit log, AI account management, session summaries, remote terminals, shared MCP tools, file sync, pages and apps
+- **Browser:** Playwright MCP
+- **Files:** Syncthing, Obsidian Sync, Obsidian LiveSync, or any file syncing solution
+- **Network:** Tailscale, Cloudflare Tunnel
+- **Services:** Gatus for health checks, Traefik for addresses
+- **Backups:** restic (https://fleetlayer.ai/guides/backups.md)
+- **Mobile:** herdr relay
 
 ## Start small, replace any component as you go
 
