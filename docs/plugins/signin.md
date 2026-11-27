@@ -79,7 +79,7 @@ under **Advanced**.
 | `dir` | All its state: `people.json` (passkeys), `keys/` (the token-signing key), `sessions.json`. Made readable by this user only. |
 | `issuer` | The address people and services use. https, except on this machine (`http://signin.localhost:7680`). |
 | `passkey_domain` | What passkeys are made for. Leave it out: it's the issuer's own domain (`example.com` for `signin.home.example.com`), so sign-in can move anywhere under it. |
-| `control_plane`, `token_file` | The control plane's address and the token from step 1. |
+| `control_plane`, `token_file` | The control plane's address and the token from step 1. On one machine, use `http://127.0.0.1:<port>`: a server often can't resolve `*.localhost` names the way a browser does. |
 | `listen` | Where it listens, behind your proxy. |
 | `clients` | Each service that signs people in: `name` (as in the policy, `service:<name>`), its exact `redirect_uris`, a `secret_file` for a service that keeps a secret (leave it out for one that can't, such as an app in a browser), and `post_logout_redirect_uris`. |
 | `heartbeat` | Pushed every five minutes; it fails when the folder can't be written or the control plane doesn't answer. |

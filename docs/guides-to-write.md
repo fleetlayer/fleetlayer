@@ -432,3 +432,9 @@ managers, machines that sleep.
 - **Where it lives:** `plugins/pages/src/web.rs` (`auth_callback`, `logout`) and `oidc.rs` (`client_for`);
   `docs/plugins/pages.md`, "Sign-in".
 
+- **A server can't reach `*.localhost`.** Browsers resolve every `*.localhost` name to this machine themselves, but
+  a server's own resolver often doesn't (glibc on Linux without systemd-resolved), so a service that calls another
+  by its `*.localhost` address (pages fetching the sign-in service's discovery document) fails with a DNS error. Give
+  server-to-server calls `127.0.0.1:<port>` (the sign-in service's `control_plane`), or resolve `*.localhost` to
+  loopback in the client, as pages does. Found by the pages tab testing against a real sign-in service. Where it
+  lives: `docs/plugins/signin.md` (Settings) and pages' HTTP client.
