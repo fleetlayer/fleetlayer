@@ -27,6 +27,8 @@ use crate::config::PluginConfig;
 use crate::sessions::Role;
 
 const PING_EVERY: Duration = Duration::from_secs(30);
+/// How often a plugin whose sessions can't be read is asked again.
+const RETRY_FAILING: Duration = Duration::from_secs(30);
 const PING_TIMEOUT: Duration = Duration::from_secs(10);
 const MISSED_PINGS: u32 = 3;
 const MAX_BACKOFF: Duration = Duration::from_secs(300);
@@ -64,6 +66,9 @@ struct Inner {
     restarts: u32,
     stderr: VecDeque<String>,
     relist_pending: bool,
+    /// Why its sessions can't be read now (`session/list` failed): it runs but can't do its job. Cleared by the next
+    /// list that works, and when it restarts.
+    failing: Option<String>,
     /// HTTP services it announced (`_fleetlayer.dev/service/listening`), by name; cleared when it exits.
     services: std::collections::BTreeMap<String, ext::ServiceListening>,
     /// Pages spaces it hosts (`_fleetlayer.dev/pages/spaces`); cleared when it exits.
@@ -80,6 +85,9 @@ pub struct PluginStatus {
     pub version: Option<String>,
     pub roles: Vec<&'static str>,
     pub restarts: u32,
+    /// Running, but its sessions can't be read: why.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
     pub stderr: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub services: Vec<ext::ServiceListening>,
@@ -97,6 +105,7 @@ impl PluginHandle {
                 restarts: 0,
                 stderr: VecDeque::new(),
                 relist_pending: false,
+                failing: None,
                 services: Default::default(),
                 pages_spaces: vec![],
             }),
@@ -139,6 +148,7 @@ impl PluginHandle {
             version: i.info.as_ref().map(|v| v.version.clone()),
             roles,
             restarts: i.restarts,
+            problem: i.failing.clone(),
             stderr: i.stderr.iter().cloned().collect(),
             services: i.services.values().cloned().collect(),
         }
@@ -287,6 +297,7 @@ async fn run_once(node: &Arc<Node>, plugin: &Arc<PluginHandle>) -> Result<String
         i.roles = meta.roles.clone();
         i.info = resp.agent_info.clone();
         i.peer = Some(peer.clone());
+        i.failing = None;
         i.state = State::Running { since: Timestamp::now() };
     }
     tracing::info!(plugin = plugin.name(), version = ?resp.agent_info.map(|i| i.version), "plugin running");
@@ -301,6 +312,9 @@ async fn run_once(node: &Arc<Node>, plugin: &Arc<PluginHandle>) -> Result<String
     let mut ping = tokio::time::interval(PING_EVERY);
     ping.tick().await;
     let mut poll = tokio::time::interval(Duration::from_secs(5));
+    // A plugin whose sessions can't be read is asked again until they can (herdr installed, or back on PATH).
+    let mut retry = tokio::time::interval(RETRY_FAILING);
+    retry.tick().await;
     loop {
         tokio::select! {
             status = child.wait() => {
@@ -323,6 +337,11 @@ async fn run_once(node: &Arc<Node>, plugin: &Arc<PluginHandle>) -> Result<String
                 }
             }
             _ = poll.tick(), if polls => relist(node, plugin).await,
+            _ = retry.tick(), if !polls => {
+                if plugin.inner.lock().await.failing.is_some() {
+                    relist(node, plugin).await;
+                }
+            }
         }
     }
 }
@@ -333,8 +352,19 @@ pub async fn relist(node: &Arc<Node>, plugin: &Arc<PluginHandle>) {
     let roles = plugin.roles().await;
     let role = if roles.session_manager.is_some() { Role::Manager } else { Role::Harness };
     match peer.request::<_, ListSessionsResponse>(acp::method::SESSION_LIST, &ListSessionsRequest::default()).await {
-        Ok(list) => node.registry.replace(plugin.name(), role, list.sessions).await,
-        Err(e) => tracing::warn!(plugin = plugin.name(), "session/list failed: {e}"),
+        Ok(list) => {
+            if plugin.inner.lock().await.failing.take().is_some() {
+                tracing::info!(plugin = plugin.name(), "session/list works again");
+            }
+            node.registry.replace(plugin.name(), role, list.sessions).await
+        }
+        Err(e) => {
+            let mut i = plugin.inner.lock().await;
+            if i.failing.is_none() {
+                tracing::warn!(plugin = plugin.name(), "session/list failed: {e}");
+            }
+            i.failing = Some(format!("its sessions can't be read: {}", e.message));
+        }
     }
 }
 

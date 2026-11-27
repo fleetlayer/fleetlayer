@@ -528,13 +528,11 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             }
             for p in v["plugins"].as_array().into_iter().flatten() {
                 let roles: Vec<&str> = p["roles"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
-                let mut line = format!(
-                    "  {:<16} {:<11} {}",
-                    p["name"].as_str().unwrap_or("?"),
-                    p["state"].as_str().unwrap_or("?"),
-                    roles.join(", ")
-                );
-                if let Some(r) = p["reason"].as_str() {
+                // Running but unable to do its job (its sessions can't be read) shows as failing.
+                let state = if p["problem"].is_string() { "failing" } else { p["state"].as_str().unwrap_or("?") };
+                let mut line =
+                    format!("  {:<16} {:<11} {}", p["name"].as_str().unwrap_or("?"), state, roles.join(", "));
+                if let Some(r) = p["reason"].as_str().or(p["problem"].as_str()) {
                     line.push_str(&format!("  ({r})"));
                 }
                 println!("{line}");

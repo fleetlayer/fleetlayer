@@ -18,8 +18,13 @@ pub async fn health(node: &Node, has_control: bool) -> Option<String> {
         if !p.config.enabled {
             continue;
         }
-        match p.status().await.state {
-            State::Running { .. } => {}
+        let status = p.status().await;
+        match status.state {
+            State::Running { .. } => {
+                if let Some(problem) = status.problem {
+                    problems.push(format!("plugin {} is failing ({problem})", p.name()));
+                }
+            }
             State::Starting => problems.push(format!("plugin {} is starting", p.name())),
             State::Restarting { reason, .. } => problems.push(format!("plugin {} is restarting ({reason})", p.name())),
             State::Broken { reason } => problems.push(format!("plugin {} is broken ({reason})", p.name())),

@@ -68,8 +68,26 @@ pub struct Session {
     pub status_changed_at: Timestamp,
 }
 
+/// Why herdr couldn't be run, as a sentence: a missing program says how to point the plugin at it.
+pub fn spawn_error(herdr: &str, e: &std::io::Error) -> String {
+    if e.kind() != std::io::ErrorKind::NotFound {
+        return format!("running {herdr}: {e}");
+    }
+    let fix = "give the herdr plugin `config: { program: <full path to herdr> }` in node.yaml";
+    if herdr.contains('/') {
+        format!("there's no herdr at {herdr}: {fix}")
+    } else {
+        let path = std::env::var("PATH").unwrap_or_default();
+        format!("{herdr} isn't on the node's PATH ({path}): {fix}")
+    }
+}
+
 async fn run_json<T: serde::de::DeserializeOwned>(herdr: &str, args: &[&str]) -> anyhow::Result<T> {
-    let out = tokio::process::Command::new(herdr).args(args).output().await?;
+    let out = tokio::process::Command::new(herdr)
+        .args(args)
+        .output()
+        .await
+        .map_err(|e| anyhow::anyhow!(spawn_error(herdr, &e)))?;
     if !out.status.success() {
         anyhow::bail!("herdr {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim());
     }
@@ -248,7 +266,11 @@ pub fn parse_event(line: &str) -> Event {
 
 /// herdr's API socket, as `herdr status server` reports it (it knows named sessions and dev builds).
 async fn socket_path(herdr: &str) -> anyhow::Result<PathBuf> {
-    let out = tokio::process::Command::new(herdr).args(["status", "server"]).output().await?;
+    let out = tokio::process::Command::new(herdr)
+        .args(["status", "server"])
+        .output()
+        .await
+        .map_err(|e| anyhow::anyhow!(spawn_error(herdr, &e)))?;
     let text = String::from_utf8_lossy(&out.stdout);
     text.lines()
         .find_map(|l| l.strip_prefix("socket:").map(|p| PathBuf::from(p.trim())))
@@ -319,7 +341,7 @@ pub async fn create_tab(herdr: &str, open: &OpenSession) -> Result<(String, Opti
     let out = tokio::time::timeout(std::time::Duration::from_secs(120), run)
         .await
         .map_err(|_| "herdr didn't answer within two minutes".to_string())?
-        .map_err(|e| format!("running {herdr}: {e}"))?;
+        .map_err(|e| spawn_error(herdr, &e))?;
     if !out.status.success() {
         return Err(herdr_error(&out.stderr));
     }
@@ -373,7 +395,7 @@ async fn run_plain(herdr: &str, args: &[&str]) -> Result<(), Failure> {
         .args(args)
         .output()
         .await
-        .map_err(|e| Failure::Other(format!("running {herdr}: {e}")))?;
+        .map_err(|e| Failure::Other(spawn_error(herdr, &e)))?;
     if out.status.success() { Ok(()) } else { Err(classify(herdr_error(&out.stderr))) }
 }
 
@@ -393,7 +415,7 @@ pub async fn prompt(herdr: &str, pane: &str, text: &str) -> Result<(), Failure> 
     // Typing takes milliseconds; a herdr that hangs is cut off at 3 seconds and its process killed.
     let run = tokio::process::Command::new(herdr).args(["agent", "prompt", pane, text]).kill_on_drop(true).output();
     let out = match tokio::time::timeout(std::time::Duration::from_secs(3), run).await {
-        Ok(r) => r.map_err(|e| Failure::Other(format!("running {herdr}: {e}")))?,
+        Ok(r) => r.map_err(|e| Failure::Other(spawn_error(herdr, &e)))?,
         Err(_) => return Err(Failure::Other(format!("{herdr} agent prompt didn't finish within 3 seconds"))),
     };
     if out.status.success() {
@@ -407,6 +429,17 @@ pub async fn prompt(herdr: &str, pane: &str, text: &str) -> Result<(), Failure> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_missing_herdr_says_how_to_point_at_it() {
+        let gone = std::io::Error::from(std::io::ErrorKind::NotFound);
+        let e = spawn_error("herdr", &gone);
+        assert!(e.starts_with("herdr isn't on the node's PATH ("), "{e}");
+        assert!(e.ends_with("give the herdr plugin `config: { program: <full path to herdr> }` in node.yaml"), "{e}");
+        assert!(spawn_error("/opt/herdr", &gone).starts_with("there's no herdr at /opt/herdr: "));
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        assert!(spawn_error("herdr", &denied).starts_with("running herdr: "));
+    }
 
     #[test]
     fn agents_join_their_tab_labels_and_unnamed_agents_are_kept() {

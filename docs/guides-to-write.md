@@ -462,3 +462,9 @@ managers, machines that sleep.
   named session). Uploads are linked into place without clobbering, never executable, quarantined on macOS, refused
   under 1 GB free; deletes go to a hidden trash purged after 30 days, judged by the time in the trashed name (a rename
   keeps the old modified time). Written: `docs/guides/folders.md`, `docs/plugins/folders.md`.
+- **A plugin that runs but can't do its job looked healthy.** A session manager whose program isn't on the service's
+  PATH (herdr in `~/.local/bin`, which launchd doesn't expand) answered every `session/list` with an error, yet
+  `fleetlayer status` said "running" and the heartbeat stayed green. Since then a failing `session/list` shows the
+  plugin as `failing` with the reason, turns the node's health red until a list works again (retried every 30
+  seconds), and herdr's error says to give the plugin `config: { program: <full path> }`. Where it lives:
+  `crates/fleetlayer-node/src/plugins.rs`, `plugins/herdr/src/herdr.rs`.
