@@ -105,6 +105,8 @@ pub struct App {
     pub(crate) invites_made: Mutex<HashMap<String, Vec<i64>>>,
     pub store: Store,
     pub keys: Keys,
+    /// Why the last key refresh failed, if it did (a problem until one succeeds).
+    pub(crate) key_error: std::sync::Mutex<Option<String>>,
     pub control: Control,
     webauthn: Webauthn,
     pending: Mutex<Pending>,
@@ -140,6 +142,7 @@ impl App {
             invites_made: Mutex::new(HashMap::new()),
             store,
             keys,
+            key_error: std::sync::Mutex::new(None),
             control,
             webauthn,
             pending: Mutex::new(Pending::default()),
@@ -219,6 +222,16 @@ impl App {
     }
 
     /// What's wrong, for `/healthz` and the heartbeat.
+    /// Rotate the signing key when it's due, and pick up a rotation made by the `keys rotate` command (every minute,
+    /// from a blocking task: making a key is slow).
+    pub fn refresh_keys(&self) {
+        let result = self.keys.refresh(now_ms()).map_err(|e| format!("{e:#}"));
+        if let Err(e) = &result {
+            tracing::warn!("rotating the token-signing key: {e}");
+        }
+        *self.key_error.lock().expect("key error lock") = result.err();
+    }
+
     pub async fn problems(&self) -> Vec<String> {
         let mut out = vec![];
         if !self.store.writable() {
@@ -226,6 +239,9 @@ impl App {
         }
         if !self.control.reachable().await {
             out.push("the control plane doesn't answer".into());
+        }
+        if let Some(e) = self.key_error.lock().expect("key error lock").clone() {
+            out.push(format!("rotating the token-signing key: {e}"));
         }
         out
     }

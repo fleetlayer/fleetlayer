@@ -289,6 +289,14 @@ async fn run(
     let a = app.clone();
     tokio::spawn(async move {
         loop {
+            let k = a.clone();
+            let _ = tokio::task::spawn_blocking(move || k.refresh_keys()).await;
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }
+    });
+    let a = app.clone();
+    tokio::spawn(async move {
+        loop {
             let problems = a.problems().await;
             for p in &problems {
                 tracing::warn!("{p}");
@@ -357,6 +365,38 @@ impl Handler for Shared {
     }
 }
 
+const KEYS_USAGE: &str = "usage: fleetlayer-signin keys rotate --dir <folder> [--drop-previous]";
+
+/// `keys rotate --dir <folder> [--drop-previous]`: a new signing key now. The running service picks it up within a
+/// minute. `--drop-previous` is for a key that leaked: the old key leaves the JWKS at once, so every token it signed
+/// stops verifying and people sign in to services again.
+fn keys_command(args: &[&str]) -> anyhow::Result<()> {
+    let mut dir = None;
+    let mut drop_previous = false;
+    let mut it = args.iter();
+    anyhow::ensure!(it.next() == Some(&"rotate"), "{KEYS_USAGE}");
+    while let Some(a) = it.next() {
+        match *a {
+            "--dir" => dir = it.next().map(PathBuf::from),
+            "--drop-previous" => drop_previous = true,
+            other => anyhow::bail!("unknown argument {other:?}\n{KEYS_USAGE}"),
+        }
+    }
+    let dir = dir.ok_or_else(|| anyhow::anyhow!("{KEYS_USAGE}"))?;
+    let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    let dir = expand(&home, &dir);
+    anyhow::ensure!(dir.join("keys").join("signing.pem").exists(), "no signing key in {}", dir.display());
+    let kid = keys::Keys::rotate_files(&dir, store::now_ms(), drop_previous)?;
+    println!("new signing key {kid}");
+    if drop_previous {
+        println!("the previous key is gone from the JWKS: tokens it signed no longer verify");
+    } else {
+        println!("the previous key stays in the JWKS for two weeks");
+    }
+    println!("the running service uses it within a minute");
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -383,6 +423,13 @@ async fn main() {
             .await;
             if let Err(e) = result {
                 eprintln!("fleetlayer-signin: {e}");
+                std::process::exit(1);
+            }
+        }
+        Some("keys") => {
+            let rest: Vec<&str> = args[1..].iter().map(String::as_str).collect();
+            if let Err(e) = keys_command(&rest) {
+                eprintln!("fleetlayer-signin: {e:#}");
                 std::process::exit(1);
             }
         }

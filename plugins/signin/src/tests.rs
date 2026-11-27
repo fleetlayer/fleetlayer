@@ -351,7 +351,7 @@ async fn moving_the_folder_keeps_passkeys_tokens_and_sessions() {
 
     // Stop, copy the folder, start elsewhere.
     let second = tempfile::tempdir().unwrap();
-    for f in ["people.json", "sessions.json", "keys/signing.pem"] {
+    for f in ["people.json", "sessions.json", "keys/signing.pem", "keys/state.json"] {
         std::fs::create_dir_all(second.path().join("keys")).unwrap();
         std::fs::copy(first.path().join(f), second.path().join(f)).unwrap();
     }
