@@ -484,7 +484,9 @@ of accounts, cut off from what it reads. It says so with a notification, on ever
 
 - `problem` is one line for a person, or null when all is well. While it's set, `fleetlayer status` shows the plugin
   as `failing` with it, and the node's health (and its heartbeat) is unhealthy. It's cleared by a report with `problem:
-  null` and when the plugin restarts.
+  null` and when the plugin restarts. A plugin that has sent a report and then sends none for 5 minutes while it's still running is
+  `failing` too ("it stopped reporting at <time>"): it may be up but stuck. A plugin that never sends one isn't
+  affected. So the node's heartbeat alone covers a node that's down, a plugin with a problem, and one gone quiet.
 - The node publishes each report as a reading (section 9): kind `plugin.status`, key the plugin's name from
   `node.yaml` (never anything in the report, so a plugin can only speak for itself), data `{plugin, problem,
   detail}`. A monitor reads it with `fleetlayer readings plugin.status`, or anywhere in the fleet.

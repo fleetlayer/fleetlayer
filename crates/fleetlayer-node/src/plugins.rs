@@ -71,6 +71,8 @@ struct Inner {
     failing: Option<String>,
     /// What it says is wrong (`_fleetlayer.dev/plugin/status`); cleared when it restarts.
     reported: Option<String>,
+    /// When it last sent a status report: one that reported once and then goes quiet is failing.
+    last_report: Option<(Instant, Timestamp)>,
     /// HTTP services it announced (`_fleetlayer.dev/service/listening`), by name; cleared when it exits.
     services: std::collections::BTreeMap<String, ext::ServiceListening>,
     /// Pages spaces it hosts (`_fleetlayer.dev/pages/spaces`); cleared when it exits.
@@ -109,6 +111,7 @@ impl PluginHandle {
                 relist_pending: false,
                 failing: None,
                 reported: None,
+                last_report: None,
                 services: Default::default(),
                 pages_spaces: vec![],
             }),
@@ -151,7 +154,7 @@ impl PluginHandle {
             version: i.info.as_ref().map(|v| v.version.clone()),
             roles,
             restarts: i.restarts,
-            problem: i.failing.clone().or_else(|| i.reported.clone()),
+            problem: problem(&i, Instant::now()),
             stderr: i.stderr.iter().cloned().collect(),
             services: i.services.values().cloned().collect(),
         }
@@ -302,6 +305,7 @@ async fn run_once(node: &Arc<Node>, plugin: &Arc<PluginHandle>) -> Result<String
         i.peer = Some(peer.clone());
         i.failing = None;
         i.reported = None;
+        i.last_report = None;
         i.state = State::Running { since: Timestamp::now() };
     }
     tracing::info!(plugin = plugin.name(), version = ?resp.agent_info.map(|i| i.version), "plugin running");
@@ -384,6 +388,22 @@ async fn relist_soon(node: Arc<Node>, plugin: Arc<PluginHandle>) {
     tokio::time::sleep(Duration::from_millis(300)).await;
     plugin.inner.lock().await.relist_pending = false;
     relist(&node, &plugin).await;
+}
+
+/// A plugin that sent a status report and then nothing for this long is failing: it may be up but stuck.
+const REPORT_SILENCE: Duration = Duration::from_secs(5 * 60);
+
+/// What's wrong with a running plugin, if anything: its sessions can't be read, it says so, or it stopped reporting.
+fn problem(i: &Inner, now: Instant) -> Option<String> {
+    if let Some(f) = &i.failing {
+        return Some(f.clone());
+    }
+    if let Some((at, wall)) = i.last_report
+        && now.saturating_duration_since(at) > REPORT_SILENCE
+    {
+        return Some(format!("it stopped reporting at {}", wall.round(jiff::Unit::Second).unwrap_or(wall)));
+    }
+    i.reported.clone()
 }
 
 /// The `plugin.status` reading for a plugin's report: keyed by the plugin's own name, so a plugin can only report
@@ -549,6 +569,7 @@ impl Handler for FromPlugin {
                         let mut i = plugin.inner.lock().await;
                         let changed = i.reported != r.problem;
                         i.reported = r.problem.clone();
+                        i.last_report = Some((Instant::now(), Timestamp::now()));
                         changed
                     };
                     if changed {
@@ -609,5 +630,38 @@ mod tests {
         assert_eq!(v["readings"][0]["key"], "summaries");
         assert_eq!(v["readings"][0]["data"]["detail"], json!({"truncated": true}));
         assert!(v["readings"][0]["data"]["problem"].is_null());
+    }
+
+    #[test]
+    fn a_plugin_that_reported_and_went_quiet_is_failing() {
+        let mut i = Inner {
+            state: State::Starting,
+            peer: None,
+            roles: Roles::default(),
+            info: None,
+            restarts: 0,
+            stderr: VecDeque::new(),
+            relist_pending: false,
+            failing: None,
+            reported: None,
+            last_report: None,
+            services: Default::default(),
+            pages_spaces: vec![],
+        };
+        let t0 = Instant::now();
+        // Never reported: never "stopped reporting".
+        assert_eq!(problem(&i, t0 + Duration::from_secs(3600)), None);
+        let wall: Timestamp = "2026-11-27T10:00:00Z".parse().unwrap();
+        i.last_report = Some((t0, wall));
+        assert_eq!(problem(&i, t0 + Duration::from_secs(299)), None);
+        assert_eq!(
+            problem(&i, t0 + Duration::from_secs(301)).as_deref(),
+            Some("it stopped reporting at 2026-11-27T10:00:00Z")
+        );
+        // Its own problem shows while it reports; a list that fails comes first.
+        i.reported = Some("stuck".into());
+        assert_eq!(problem(&i, t0 + Duration::from_secs(10)).as_deref(), Some("stuck"));
+        i.failing = Some("its sessions can't be read: x".into());
+        assert_eq!(problem(&i, t0 + Duration::from_secs(10)).as_deref(), Some("its sessions can't be read: x"));
     }
 }
