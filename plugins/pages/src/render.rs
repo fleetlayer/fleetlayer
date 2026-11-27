@@ -231,7 +231,9 @@ pub fn markdown(src: &str, space: &Path, page: &Path) -> Rendered {
                         // A link to a folder (another page) needs no file check beyond existing.
                         check_local(space, &rel, "link", &dest_url, false, &mut problems);
                     }
-                    Dest::Outside => problems.push(Problem::new(format!("The link {dest_url} points outside your pages folder."))),
+                    Dest::Outside => {
+                        problems.push(Problem::new(format!("The link {dest_url} points outside your pages folder.")))
+                    }
                     Dest::Refused => {
                         problems.push(Problem::new(format!(
                             "The link {dest_url} isn't allowed (http, https, mailto or a relative path only)."
@@ -248,7 +250,9 @@ pub fn markdown(src: &str, space: &Path, page: &Path) -> Rendered {
                     Dest::External => problems.push(Problem::new(format!(
                         "The image {dest_url} is on another site, so it isn't loaded: put it in the page's folder."
                     ))),
-                    Dest::Outside => problems.push(Problem::new(format!("The image {dest_url} is outside your pages folder."))),
+                    Dest::Outside => {
+                        problems.push(Problem::new(format!("The image {dest_url} is outside your pages folder.")))
+                    }
                     Dest::Refused => problems.push(Problem::new(format!("The image {dest_url} isn't allowed."))),
                 }
                 Event::Start(Tag::Image { link_type, dest_url, title, id })
@@ -466,7 +470,9 @@ pub fn html(src: &str, space: &Path, page: &Path) -> Rendered {
             }
             Dest::External => {}
             Dest::Local(rel) => check_local(space, &rel, "file", &r, is_image(&l), &mut problems),
-            Dest::Outside => problems.push(Problem::new(format!("The mock-up refers to {r}, outside your pages folder."))),
+            Dest::Outside => {
+                problems.push(Problem::new(format!("The mock-up refers to {r}, outside your pages folder.")))
+            }
             Dest::Refused => problems.push(Problem::new(format!("The mock-up refers to {r}, which isn't allowed."))),
         }
     }
