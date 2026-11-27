@@ -280,6 +280,12 @@ pub(crate) async fn connect_stream(
 /// How long to wait for the other direction once one has reached its end.
 const DRAIN: Duration = Duration::from_secs(10);
 
+/// A stream with nothing received for this long is dead (a machine asleep, a node restarted, a connection half open):
+/// both ends ping every 30 seconds, so three pings went unanswered. Closing it ends the caller's `fleetlayer mcp`, and
+/// the client fails the call in flight instead of waiting forever. A ping into a half-open connection succeeds, so only
+/// what comes back counts.
+pub(crate) const IDLE: Duration = Duration::from_secs(90);
+
 /// Copy bytes between a reader/writer pair and a WebSocket (binary frames). WebSocket has no half-close, so the end
 /// of one direction travels as an empty binary frame: the other side shuts its writer and keeps sending until its
 /// own end. Ends when both directions have ended (or `DRAIN` after the first), or the socket closes.
@@ -321,7 +327,7 @@ where
         ws_tx
     };
     let down = async move {
-        while let Some(Ok(m)) = ws_rx.next().await {
+        while let Ok(Some(Ok(m))) = tokio::time::timeout(IDLE, ws_rx.next()).await {
             let bytes = match m {
                 Message::Binary(b) if b.is_empty() => break,
                 Message::Ping(_) | Message::Pong(_) => continue,
@@ -410,7 +416,7 @@ async fn mcp_pipe<S>(
     // Caller to tool, line by line.
     let mut buf: Vec<u8> = Vec::new();
     let mut seq = 0u32;
-    while let Some(Ok(m)) = ws_rx.next().await {
+    while let Ok(Some(Ok(m))) = tokio::time::timeout(IDLE, ws_rx.next()).await {
         let bytes = match m {
             Message::Binary(b) if b.is_empty() => break,
             Message::Binary(b) => b.to_vec(),
@@ -726,5 +732,57 @@ mod tests {
     #[test]
     fn stream_urls_come_from_the_link_url() {
         assert_eq!(stream_url("wss://c.example/v1/link", "abc", "use"), "wss://c.example/v1/stream/abc?side=use");
+    }
+}
+
+#[cfg(test)]
+mod liveness_tests {
+    use super::*;
+    use futures::{SinkExt, StreamExt};
+    use tokio::io::{AsyncReadExt, duplex};
+    use tokio_tungstenite::WebSocketStream;
+    use tokio_tungstenite::tungstenite::protocol::Role;
+
+    /// `pipe` between a local stream and one end of an in-memory websocket; returns the local end, the far websocket
+    /// end and the pipe's task.
+    async fn piped() -> (tokio::io::DuplexStream, WebSocketStream<tokio::io::DuplexStream>, tokio::task::JoinHandle<()>)
+    {
+        let (near, far) = duplex(1 << 16);
+        let ws_near = WebSocketStream::from_raw_socket(near, Role::Client, None).await;
+        let ws_far = WebSocketStream::from_raw_socket(far, Role::Server, None).await;
+        let (local, pipe_side) = duplex(1 << 16);
+        let (r, w) = tokio::io::split(pipe_side);
+        let task = tokio::spawn(pipe(r, w, ws_near));
+        (local, ws_far, task)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_peer_that_stops_answering_ends_the_stream() {
+        // The far end never reads or writes: no pongs, no pings, no data, like a machine gone to sleep.
+        let (mut local, _far, task) = piped().await;
+        let mut buf = [0u8; 16];
+        let started = tokio::time::Instant::now();
+        assert_eq!(local.read(&mut buf).await.unwrap(), 0, "the local side sees end-of-file");
+        assert!(started.elapsed() >= IDLE && started.elapsed() < IDLE + Duration::from_secs(5));
+        tokio::time::timeout(DRAIN + Duration::from_secs(1), task).await.expect("the pipe finishes").unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_quiet_but_live_peer_keeps_the_stream() {
+        let (mut local, mut far, _task) = piped().await;
+        // The far end pings every 30 s and answers pings, but sends no data for five minutes.
+        let keep = tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(30));
+            loop {
+                tokio::select! {
+                    _ = tick.tick() => if far.send(Message::Ping(Vec::new().into())).await.is_err() { break },
+                    m = far.next() => if m.is_none() { break },
+                }
+            }
+        });
+        let mut buf = [0u8; 16];
+        let r = tokio::time::timeout(Duration::from_secs(300), local.read(&mut buf)).await;
+        assert!(r.is_err(), "still open after five quiet minutes: {r:?}");
+        keep.abort();
     }
 }

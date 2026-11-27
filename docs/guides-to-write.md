@@ -346,6 +346,16 @@ managers, machines that sleep.
   to bus" unless `XDG_RUNTIME_DIR=/run/user/$(id -u)` is set, and the user's services stop at logout unless
   `loginctl enable-linger <user>`. Found testing `fleetlayer up` on a Linux build server, 27 Nov 2026.
   Written: `docs/guides/node-services.md`.
+- **A shared tool call that hangs forever.** An agent using a shared browser (`fleetlayer mcp browser@<mac>`) waited
+  ten minutes, until it was restarted, after the Mac's node restarted mid-call. Claude Code waits a very long time for
+  an MCP tool call by default (its `MCP_TOOL_TIMEOUT` setting, in milliseconds, shortens that), and nothing on the way
+  noticed the other end was gone: a ping into a half-open TCP connection succeeds. Now the limits are Fleetlayer's: a
+  stream with nothing received for 90 s (three pings) is closed by the nodes and by the control plane's relay, which
+  also closes one leg the moment the other closes; `fleetlayer mcp` gives the tool's first answer 30 s; and each call
+  gets a JSON-RPC error after `--call-timeout` (120 s): "<tool>@<node> didn't answer within 120s (the machine may be
+  asleep, or its node restarting)", with later calls still working. Found 27 Nov 2026. Where it lives:
+  `crates/fleetlayer-cli/src/mcp_bridge.rs`, `IDLE` in `crates/fleetlayer-node/src/tools.rs` and
+  `crates/fleetlayer-control/src/streams.rs`.
 - **A user service's PATH isn't your shell's.** A PATH copied from the shell into a launchd plist or systemd unit can
   hold `~/.local/bin`, `$HOME/...` or `./node_modules/.bin`: the shell expands and resolves those, launchd, systemd
   and execvp don't, and the service runs in another folder. So a tool the shell found (herdr in `~/.local/bin`) was

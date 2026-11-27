@@ -144,16 +144,37 @@ async fn join(app: Arc<App>, id: String, side: Side, socket: WebSocket) {
     }
 }
 
+/// A leg with nothing received for this long is dead: nodes ping every 30 seconds, and a half-open connection (a node
+/// that restarted or went to sleep without closing) would otherwise hold the other leg open forever.
+const IDLE: Duration = Duration::from_secs(90);
+
 /// Copy frames both ways, unchanged (an empty binary frame is a node's end-of-input marker, passed on like any other).
-/// Ends when both directions have ended, or 30 seconds after the first, or either socket closes. Returns the bytes
-/// each way and why it ended. When the control plane shuts down (`closing`), both sides get a "restarting" close frame.
+/// When either leg closes, errors or goes quiet for `IDLE`, the other leg is closed at once; the copy ends when both
+/// directions have ended, or 30 seconds after the first. Returns the bytes each way and why it ended. When the control
+/// plane shuts down (`closing`), both sides get a "restarting" close frame.
 async fn copy(
     use_ws: WebSocket,
     serve_ws: WebSocket,
     closing: tokio::sync::watch::Receiver<bool>,
 ) -> (i64, i64, &'static str) {
-    let (mut use_tx, mut use_rx) = use_ws.split();
-    let (mut serve_tx, mut serve_rx) = serve_ws.split();
+    let (use_tx, use_rx) = use_ws.split();
+    let (serve_tx, serve_rx) = serve_ws.split();
+    relay(use_tx, use_rx, serve_tx, serve_rx, closing).await
+}
+
+async fn relay<UT, UR, ST, SR, E>(
+    mut use_tx: UT,
+    mut use_rx: UR,
+    mut serve_tx: ST,
+    mut serve_rx: SR,
+    closing: tokio::sync::watch::Receiver<bool>,
+) -> (i64, i64, &'static str)
+where
+    UT: futures::Sink<Message> + Unpin,
+    ST: futures::Sink<Message> + Unpin,
+    UR: futures::Stream<Item = Result<Message, E>> + Unpin,
+    SR: futures::Stream<Item = Result<Message, E>> + Unpin,
+{
     let to_tool = Arc::new(AtomicI64::new(0));
     let from_tool = Arc::new(AtomicI64::new(0));
     let up = {
@@ -162,13 +183,14 @@ async fn copy(
         async move {
             loop {
                 let m = tokio::select! {
-                    m = use_rx.next() => m,
+                    m = tokio::time::timeout(IDLE, use_rx.next()) => m,
                     _ = crate::link::until_closing(&mut closing) => {
                         let _ = serve_tx.send(crate::link::restarting()).await;
                         break;
                     }
                 };
-                let Some(Ok(m)) = m else { break };
+                // Nothing for IDLE, an error or the end: close the other leg (below).
+                let Ok(Some(Ok(m))) = m else { break };
                 if matches!(m, Message::Close(_)) {
                     break;
                 }
@@ -186,13 +208,14 @@ async fn copy(
         async move {
             loop {
                 let m = tokio::select! {
-                    m = serve_rx.next() => m,
+                    m = tokio::time::timeout(IDLE, serve_rx.next()) => m,
                     _ = crate::link::until_closing(&mut closing) => {
                         let _ = use_tx.send(crate::link::restarting()).await;
                         break;
                     }
                 };
-                let Some(Ok(m)) = m else { break };
+                // Nothing for IDLE, an error or the end: close the other leg (below).
+                let Ok(Some(Ok(m))) = m else { break };
                 if matches!(m, Message::Close(_)) {
                     break;
                 }
@@ -262,4 +285,62 @@ pub async fn recent(db: &db::Db, tenant: &str, limit: i64) -> anyhow::Result<Vec
             })
         })
         .collect())
+}
+
+#[cfg(test)]
+mod relay_tests {
+    use super::*;
+    use futures::channel::mpsc;
+
+    type Rx = futures::stream::Map<mpsc::UnboundedReceiver<Message>, fn(Message) -> Result<Message, ()>>;
+
+    /// One leg: what the relay reads from (fed by the returned sender) and writes to (read from the returned receiver).
+    fn leg() -> (mpsc::UnboundedSender<Message>, Rx, mpsc::UnboundedSender<Message>, mpsc::UnboundedReceiver<Message>) {
+        let (feed, rx) = mpsc::unbounded::<Message>();
+        let (tx, out) = mpsc::unbounded::<Message>();
+        (feed, rx.map(Ok as fn(Message) -> Result<Message, ()>), tx, out)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_leg_that_closes_closes_the_other_at_once() {
+        let (use_feed, use_rx, use_tx, _use_out) = leg();
+        let (_serve_feed, serve_rx, serve_tx, mut serve_out) = leg();
+        let (_closing_tx, closing) = tokio::sync::watch::channel(false);
+        let task = tokio::spawn(relay(use_tx, use_rx, serve_tx, serve_rx, closing));
+        use_feed.unbounded_send(Message::Binary(b"hi".to_vec().into())).unwrap();
+        assert!(matches!(serve_out.next().await, Some(Message::Binary(_))));
+        drop(use_feed); // the caller's node went away
+        let started = tokio::time::Instant::now();
+        assert!(serve_out.next().await.is_none(), "the tool's leg is closed");
+        assert!(started.elapsed() < Duration::from_secs(1));
+        let (_, _, why) = task.await.unwrap();
+        assert_eq!(why, "the caller closed");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shutting_down_tells_both_legs_it_is_restarting() {
+        let (_use_feed, use_rx, use_tx, mut use_out) = leg();
+        let (_serve_feed, serve_rx, serve_tx, mut serve_out) = leg();
+        let (closing_tx, closing) = tokio::sync::watch::channel(false);
+        let task = tokio::spawn(relay(use_tx, use_rx, serve_tx, serve_rx, closing));
+        tokio::task::yield_now().await;
+        closing_tx.send(true).unwrap();
+        assert!(matches!(serve_out.next().await, Some(Message::Close(_))));
+        assert!(matches!(use_out.next().await, Some(Message::Close(_))));
+        task.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_leg_that_goes_quiet_is_closed_with_the_other() {
+        let (_use_feed, use_rx, use_tx, mut use_out) = leg();
+        let (_serve_feed, serve_rx, serve_tx, mut serve_out) = leg();
+        let (_closing_tx, closing) = tokio::sync::watch::channel(false);
+        let task = tokio::spawn(relay(use_tx, use_rx, serve_tx, serve_rx, closing));
+        // Neither leg sends anything (half-open connections): after IDLE both are closed.
+        let started = tokio::time::Instant::now();
+        assert!(serve_out.next().await.is_none());
+        assert!(use_out.next().await.is_none());
+        assert!(started.elapsed() >= IDLE && started.elapsed() < IDLE + Duration::from_secs(1));
+        task.await.unwrap();
+    }
 }

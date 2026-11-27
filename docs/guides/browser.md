@@ -132,6 +132,11 @@ claude mcp add browser -- fleetlayer mcp browser@laptop
 Or, in any other harness's MCP settings, the command `fleetlayer mcp` with the argument `browser@laptop`. The session
 sees Playwright MCP's tools, minus the denied ones, and its tabs open in a tab group named after it.
 
+A call that gets no answer within 120 seconds is answered with an error ("browser@laptop didn't answer within 120s (the
+machine may be asleep, or its node restarting)"), and the next call works as usual; a stream that has heard nothing for
+90 seconds closes. For slow work (a page that takes minutes to load), raise the limit after the target:
+`claude mcp add browser -- fleetlayer mcp browser@laptop --call-timeout 300`.
+
 `fleetlayer-control tools` on the control plane lists every connection: who used which tool, and when.
 
 The same mechanism shares other things on the laptop: [your screenshots and downloads](folders.md), for example.

@@ -21,6 +21,10 @@ claude mcp add browser -- fleetlayer mcp browser@laptop
 In another harness, the MCP server's command is `fleetlayer mcp` with the argument `browser@laptop`. If the access
 rules want a reason, add `--why "…"` after the target, or set `FLEETLAYER_WHY` in the server's environment.
 
+A call with no answer within 120 seconds fails with "browser@laptop didn't answer within 120s (the machine may be
+asleep, or its node restarting)". Say so to your person rather than retrying in a loop; the next call works normally
+once the machine is back. For slow pages, add `--call-timeout 300` after the target.
+
 Your first use is usually held for the person's approval: you get a request ID. Tell your person, then try again once
 they've approved it (see "When a call is held or refused" in the `fleetlayer` skill). An approval lasts 30 days and
 renews while you use it.

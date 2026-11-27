@@ -1,5 +1,6 @@
 //! fleetlayer: the command line. It talks to this machine's node over its local socket.
 
+mod mcp_bridge;
 mod pages;
 #[cfg(test)]
 mod skill_commands;
@@ -95,6 +96,10 @@ enum Command {
         /// Why this session uses it, in one line, when its access rules ask for a reason. Default: $FLEETLAYER_WHY.
         #[arg(long, env = "FLEETLAYER_WHY")]
         why: Option<String>,
+        /// Seconds one call may take before it's answered with an error (the machine may be asleep, or its node
+        /// restarting).
+        #[arg(long, default_value_t = 120)]
+        call_timeout: u64,
     },
     /// Watch or drive a session's terminal anywhere in the fleet: `fleetlayer attach planning@laptop`. Ctrl-] leaves.
     Attach {
@@ -236,7 +241,12 @@ enum Msg {
 }
 
 /// Connect stdin and stdout to a shared tool through this node's tools socket.
-async fn mcp(socket: &std::path::Path, target: &str, why: Option<&str>) -> anyhow::Result<()> {
+async fn mcp(
+    socket: &std::path::Path,
+    target: &str,
+    why: Option<&str>,
+    limit: std::time::Duration,
+) -> anyhow::Result<()> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     let (tool, node) = target.rsplit_once('@').ok_or_else(|| anyhow::anyhow!("give <tool>@<node>"))?;
     let stream = tokio::net::UnixStream::connect(socket)
@@ -248,24 +258,21 @@ async fn mcp(socket: &std::path::Path, target: &str, why: Option<&str>) -> anyho
     w.write_all(format!("{req}\n").as_bytes()).await?;
     let mut r = BufReader::new(r);
     let mut line = String::new();
-    r.read_line(&mut line).await?;
+    match tokio::time::timeout(std::time::Duration::from_secs(30), r.read_line(&mut line)).await {
+        Ok(read) => read?,
+        Err(_) => anyhow::bail!(
+            "{target} didn't answer within 30s (the node or the control plane may be restarting, or {node} asleep)"
+        ),
+    };
     let answer: Value = serde_json::from_str(&line).unwrap_or_default();
     if let Some(e) = answer["error"].as_str() {
         anyhow::bail!("{e}");
     }
-    let up = async move {
-        let _ = tokio::io::copy(&mut tokio::io::stdin(), &mut w).await;
-        let _ = w.shutdown().await;
-    };
-    let down = async move {
-        let mut out = tokio::io::stdout();
-        let _ = tokio::io::copy(&mut r, &mut out).await;
-        let _ = out.flush().await;
-    };
-    // When stdin ends, the tool gets end-of-file and exits, which ends `down`; when the tool ends, so do we.
-    tokio::spawn(up);
-    down.await;
-    Ok(())
+    // When stdin ends, the tool gets end-of-file and exits, which ends the bridge; when the tool ends, so do we.
+    mcp_bridge::bridge(tokio::io::stdin(), tokio::io::stdout(), r, w, target, limit).await;
+    // Exit now: tokio reads stdin on a blocking thread, and the runtime would wait for that read (for the client to
+    // close stdin) before exiting, so a tool whose node went away would hang the client's call instead of failing it.
+    std::process::exit(0)
 }
 
 /// `fleetlayer me` for a person or an agent to read.
@@ -623,8 +630,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         let push = pages::Push { dir, space, name: name.as_deref(), new: *new, why: why.as_deref(), caller: caller() };
         return pages::push(&socket.with_extension("tools.sock"), push).await;
     }
-    if let Command::Mcp { target, why } = &cli.command {
-        return mcp(&socket.with_extension("tools.sock"), target, why.as_deref()).await;
+    if let Command::Mcp { target, why, call_timeout } = &cli.command {
+        let limit = std::time::Duration::from_secs(*call_timeout);
+        return mcp(&socket.with_extension("tools.sock"), target, why.as_deref(), limit).await;
     }
     let stream = tokio::net::UnixStream::connect(&socket).await.map_err(|e| {
         anyhow::anyhow!("can't reach the node at {} ({e}). Is fleetlayer-node running?", socket.display())
