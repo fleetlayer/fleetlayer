@@ -92,6 +92,7 @@ async fn from_the_browser_database_to_the_targets_files() {
         share_problems: Mutex::new(BTreeMap::new()),
         // As the Linux source would have them, so the test doesn't depend on this machine's keyring.
         keys: Mutex::new([("Chrome".to_string(), Ok(Keys::linux(None)))].into()),
+        refused: Mutex::new(HashMap::new()),
     };
     let cookies = read_share(&plugin, &share, d.path()).await.unwrap();
     assert_eq!(cookies.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["auth_token", "ct0"]);

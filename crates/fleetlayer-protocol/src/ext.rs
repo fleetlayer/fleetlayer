@@ -735,6 +735,10 @@ pub struct SyncApply {
     pub bundle: String,
     pub version: u64,
     pub items: Vec<SyncItem>,
+    /// The node that published it. A plugin applying secrets checks it against the source it trusts, since any node
+    /// can run a plugin of the same name and publish a bundle of the same name. Older nodes leave it out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
 }
 
 /// `_fleetlayer.dev/message/send`, from a plugin or the CLI.

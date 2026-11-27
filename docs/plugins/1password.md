@@ -49,7 +49,7 @@ plugins:
 
 | Field | Default | What it is |
 |---|---|---|
-| `token_files` | | One service-account token file per 1Password account. Each reference is read with the token whose account has its vault (refer to a vault by its ID if two accounts share a name) |
+| `token_files` | | One service-account token file per 1Password account, mode 0600 (a token file others can read is refused). Each reference is read with the token whose account has its vault (refer to a vault by its ID if two accounts share a name) |
 | `roles` | | Each `role`, its `nodes`, and the items it may `read` |
 | `op` | `op` | 1Password's command line, when it isn't on `PATH` |
 | `every_minutes` | 5 | How often it checks 1Password for changes |
@@ -67,16 +67,18 @@ plugins:
     grants: [reading.publish]
     config:
       receive:
+        from: secrets                       # the source's node: bundles from any other node are refused
         write:                              # optional: files for tools that read one
           - { format: env, path: ~/.config/fleetlayer/secrets/github.env, values: { GITHUB_TOKEN: op://github/deploy-bot/token } }
           - { format: file, path: ~/.config/fleetlayer/secrets/aws-key, ref: op://terraform/aws-deploy/secret-key }
 ```
 
-`receive: {}` with no files is enough: agents then use the items through `fleetlayer secrets run` (below), and nothing
-is written but the node's registry.
+`receive: {from: secrets}` with no files is enough: agents then use the items through `fleetlayer secrets run` (below),
+and nothing is written but the node's registry.
 
 | Field | Default | What it is |
 |---|---|---|
+| `from` | | The source's node. Required: any node can run a plugin called `1password` and publish a bundle named after this node, so a bundle from any other node is refused (and shows as a problem for a day) |
 | `write` | none | Files to write: `format: env` with `values` (variable → reference), or `format: file` with one `ref` |
 | `stale_hours` | 48 | Report a problem when nothing has arrived for this long |
 
@@ -106,6 +108,16 @@ and the command that approves it. Your access policy decides which nodes may rec
 (`sync:1password/<node>@<node>`). Each delivery is written to the control plane's audit log; values never appear in
 logs, messages, readings or the plugin's state files.
 
+Also limit who may send these bundles at all, so a node other than the source can't even try:
+
+```yaml
+deny:
+  - who: "*"
+    except: ["-@secrets"]          # the source's node
+    can: [sync]
+    to: ["sync:1password/*@*"]
+```
+
 `fleetlayer secrets grants`, from any node that may read the source's readings, lists every role, its nodes and its
 items. Grants live in the source's own `node.yaml`, under a user the agents can't write to.
 
@@ -113,8 +125,10 @@ items. Grants live in the source's own `node.yaml`, under a user the agents can'
 
 Remove the reference (or the role, or a node from a role) and restart the source's node. Within a round, each node
 affected gets a new bundle without it: the plugin drops it from the node's registry and removes any file that needed
-it. A node that loses every grant gets an empty bundle, even after the source restarted (the source remembers which
-nodes it delivered to, in `~/.local/state/fleetlayer/1password/source.json`).
+it. A node that loses every grant gets an empty bundle. The source keeps such a node in
+`~/.local/state/fleetlayer/1password/source.json`, and sends it that bundle again each round, until the node has
+applied it: a node that was offline or waiting for approval still loses its items, even if the source restarted
+meanwhile.
 
 Whatever an agent already read could have been copied: rotate the item in 1Password if that matters.
 
@@ -122,9 +136,12 @@ Whatever an agent already read could have been copied: rotate the item in 1Passw
 
 The plugin reports whether it does its job (`fleetlayer status`, the `plugin.status` reading, the node's heartbeat):
 
-- **Source:** a token file it can't read, `op` missing or failing (no network, a rate limit, a refused token), or a
-  granted item that isn't in 1Password (renamed or removed). While `op` fails, nothing is sent, so a target never loses
-  an item over a network blip.
+- **Source:** a token file it can't read, `op` missing or failing (no network, a rate limit, a refused token), a
+  granted item that isn't in 1Password (renamed or removed), or a reference that's ambiguous (two items with the same
+  title, two accounts with a vault of the same name: refer to it by ID). A problem with one reference holds up only
+  that reference: an item that can't be read keeps going out with its last value, and a node granted an item that has
+  never been read waits for it rather than getting a bundle without it. Only 1Password's own "isn't an item", "isn't
+  a vault" and "does not have a field" remove an item from targets; no other error does.
 - **Target:** a file it couldn't write, a file whose item isn't delivered, or nothing arrived for `stale_hours` (the
   source is down, no role names this node, or its delivery isn't approved).
 
@@ -143,7 +160,8 @@ every five minutes stay far below them.
 ## The bundle
 
 `1password/<node>`, one item, `secrets.json`: `{node, readAt, secrets: [{ref, value, updatedAt}]}`, where `updatedAt`
-is when 1Password last changed the item. A bundle is the node's complete set.
+is when 1Password last changed the item. A bundle is the node's complete set. Versions come from a counter kept in
+the source's state folder, so they keep going up when the clock steps back or the source moves.
 
 ## Moving it
 

@@ -38,6 +38,7 @@ in (`fleetlayer me` names your node). Grants are per role, never per session, an
    a 0600 file owned by that user. Have the person create the token in 1Password and paste it into that file
    themselves; never handle it in the chat.
 2. The source's `source:` config: `token_files` and `roles` (role name, its nodes, the `op://` references it may read).
-3. `receive: {}` (or files to write) on each role's node, then approve the first delivery to each
+3. `receive: {from: <the source's node>}` (and any files to write) on each role's node, plus the `deny` rule in the
+   doc so only the source's node may send `1password/` bundles; then approve the first delivery to each
    (`fleetlayer readings sync.status` on the source names the command).
 4. Check: `fleetlayer secrets list` on a role's node, and `fleetlayer status` on both for problems.

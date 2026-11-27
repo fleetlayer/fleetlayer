@@ -17,6 +17,7 @@ case "$1 $2" in
   "vault list") cat {d}/vaults.json ;;
   "item list") cat {d}/items-$4.json ;;
   "read --no-newline")
+    [ -e {d}/readfail ] && {{ echo '[ERROR] 2026/11/28 10:00:00 dial tcp: lookup my.1password.com: host not found' >&2; exit 1; }}
     f={d}/values/$(printf %s "$3" | tr '/' '_')
     if [ -e "$f" ]; then cat "$f"; else echo "[ERROR] 2026/11/28 10:00:00 \"x\" isn't an item in the \"v\" vault" >&2; exit 1; fi ;;
   *) echo "unexpected $*" >&2; exit 2 ;;
@@ -56,10 +57,10 @@ async fn items_are_read_once_and_again_only_when_their_version_moves() {
     items(d.path(), 1);
     value(d.path(), TOKEN, "ghp_first_value_0001");
     let refs: BTreeSet<String> = [TOKEN.to_string()].into();
-    let tokens = vec!["sa-token".to_string()];
+    let tokens = vec![Some("sa-token".to_string())];
     let mut st = SourceState::default();
     let r = collect(&op, &tokens, &refs, &mut st).await;
-    assert!(r.failed.is_empty() && r.missing.is_empty(), "{:?} {:?}", r.failed, r.missing);
+    assert!(r.stuck.is_empty() && r.missing.is_empty(), "{:?} {:?}", r.problems, r.missing);
     assert_eq!(r.values[TOKEN].value, "ghp_first_value_0001");
     let r = collect(&op, &tokens, &refs, &mut st).await;
     assert_eq!(r.values[TOKEN].value, "ghp_first_value_0001");
@@ -72,24 +73,99 @@ async fn items_are_read_once_and_again_only_when_their_version_moves() {
 }
 
 #[tokio::test]
-async fn a_missing_item_is_left_out_and_a_failure_publishes_nothing() {
+async fn a_missing_item_is_left_out_and_a_failure_keeps_the_last_value_or_holds_back() {
     let d = tempfile::tempdir().unwrap();
     let op = fake_op(d.path());
     items(d.path(), 1);
     value(d.path(), TOKEN, "ghp_first_value_0001");
     let refs: BTreeSet<String> = [TOKEN.to_string(), "op://github/gone/token".into(), "op://nowhere/x/y".into()].into();
-    let tokens = vec!["sa-token".to_string()];
+    let tokens = vec![Some("sa-token".to_string())];
     let mut st = SourceState::default();
     let r = collect(&op, &tokens, &refs, &mut st).await;
-    assert!(r.failed.is_empty(), "{:?}", r.failed);
+    assert!(r.stuck.is_empty(), "{:?}", r.problems);
     assert_eq!(r.values.len(), 1);
     let missing: Vec<&str> = r.missing.iter().map(|(r, _)| r.as_str()).collect();
     assert_eq!(missing, ["op://github/gone/token", "op://nowhere/x/y"]);
+    // op fails (a rate limit): what was read before is still delivered, nothing is called missing.
     std::fs::write(d.path().join("fail"), "").unwrap();
     st.vaults_at = None;
     let r = collect(&op, &tokens, &refs, &mut st).await;
-    assert!(r.failed[0].contains("Too many requests"), "{:?}", r.failed);
-    assert!(r.values.is_empty());
+    assert!(r.problems.iter().any(|p| p.contains("Too many requests")), "{:?}", r.problems);
+    assert_eq!(r.values[TOKEN].value, "ghp_first_value_0001");
+    assert!(!r.stuck.contains(TOKEN) && !r.missing.iter().any(|(m, _)| m == TOKEN));
+    assert!(r.stuck.contains("op://nowhere/x/y"), "a vault no token could list just now isn't called missing");
+    // With nothing read before, it's held back rather than left out.
+    let r = collect(&op, &tokens, &refs, &mut SourceState::default()).await;
+    assert!(r.stuck.contains(TOKEN) && r.values.is_empty());
+}
+
+#[tokio::test]
+async fn an_ambiguous_item_holds_back_only_itself() {
+    let d = tempfile::tempdir().unwrap();
+    let op = fake_op(d.path());
+    std::fs::write(
+        d.path().join("items-v1.json"),
+        r#"[{"id":"i1","title":"bot","version":1},{"id":"i2","title":"twin","version":1},{"id":"i3","title":"twin","version":1}]"#,
+    )
+    .unwrap();
+    value(d.path(), TOKEN, "ghp_first_value_0001");
+    let refs: BTreeSet<String> = [TOKEN.to_string(), "op://github/twin/token".into()].into();
+    let r = collect(&op, &[Some("t".into())], &refs, &mut SourceState::default()).await;
+    assert_eq!(r.values[TOKEN].value, "ghp_first_value_0001", "the other item still goes");
+    assert!(r.stuck.contains("op://github/twin/token"));
+    assert!(r.problems.iter().any(|p| p.contains("2 items called")), "{:?}", r.problems);
+}
+
+#[tokio::test]
+async fn a_recreated_item_at_the_same_version_is_read_again() {
+    let d = tempfile::tempdir().unwrap();
+    let op = fake_op(d.path());
+    items(d.path(), 1);
+    value(d.path(), TOKEN, "ghp_first_value_0001");
+    let refs: BTreeSet<String> = [TOKEN.to_string()].into();
+    let tokens = vec![Some("t".to_string())];
+    let mut st = SourceState::default();
+    collect(&op, &tokens, &refs, &mut st).await;
+    std::fs::write(d.path().join("items-v1.json"), r#"[{"id":"i9","title":"bot","version":1}]"#).unwrap();
+    value(d.path(), TOKEN, "ghp_recreated_value_9");
+    let r = collect(&op, &tokens, &refs, &mut st).await;
+    assert_eq!(r.values[TOKEN].value, "ghp_recreated_value_9");
+}
+
+#[tokio::test]
+async fn an_error_that_merely_says_not_found_never_removes_an_item() {
+    let d = tempfile::tempdir().unwrap();
+    let op = fake_op(d.path());
+    items(d.path(), 1);
+    std::fs::write(d.path().join("readfail"), "").unwrap();
+    let refs: BTreeSet<String> = [TOKEN.to_string()].into();
+    let r = collect(&op, &[Some("t".into())], &refs, &mut SourceState::default()).await;
+    assert!(r.missing.is_empty(), "{:?}", r.missing);
+    assert!(r.stuck.contains(TOKEN));
+}
+
+#[test]
+fn versions_only_go_up_even_when_the_clock_steps_back() {
+    let mut disk = SourceDisk::default();
+    let t1 = Timestamp::from_second(1_800_000_000).unwrap();
+    let v1 = disk.next_version(t1);
+    let v2 = disk.next_version(Timestamp::from_second(1_700_000_000).unwrap());
+    assert!(v2 > v1);
+    let back: SourceDisk = serde_json::from_str(&serde_json::to_string(&disk).unwrap()).unwrap();
+    let mut back = back;
+    assert!(back.next_version(t1) > v2, "the counter survives a restart");
+}
+
+#[test]
+fn a_token_file_others_can_read_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tempfile::tempdir().unwrap();
+    let f = d.path().join("token");
+    std::fs::write(&f, "ops_x\n").unwrap();
+    std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(op::read_token(&f).unwrap_err().contains("chmod 600"));
+    std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(op::read_token(&f).unwrap(), "ops_x");
 }
 
 #[tokio::test]
@@ -99,12 +175,12 @@ async fn the_token_reaches_op_in_its_environment_not_its_arguments() {
     items(d.path(), 1);
     value(d.path(), TOKEN, "ghp_first_value_0001");
     let refs: BTreeSet<String> = [TOKEN.to_string()].into();
-    collect(&op, &["ops_secret_token".to_string()], &refs, &mut SourceState::default()).await;
+    collect(&op, &[Some("ops_secret_token".to_string())], &refs, &mut SourceState::default()).await;
     let calls = std::fs::read_to_string(d.path().join("calls")).unwrap();
     assert!(!calls.contains("ops_secret_token"), "{calls}");
     // With no token at all, op refuses: the fake checks the variable.
-    let r = collect(&op, &[String::new()], &refs, &mut SourceState::default()).await;
-    assert!(!r.failed.is_empty());
+    let r = collect(&op, &[Some(String::new())], &refs, &mut SourceState::default()).await;
+    assert!(r.stuck.contains(TOKEN), "{:?}", r.problems);
 }
 
 fn delivered(r: &str, v: &str) -> Delivered {
@@ -147,6 +223,26 @@ fn files_are_written_removed_when_a_grant_goes_and_a_persons_file_is_left_alone(
 }
 
 #[test]
+fn an_env_file_of_ours_is_recognised_without_the_state_file() {
+    let d = tempfile::tempdir().unwrap();
+    let env = d.path().join("github.env");
+    let outputs = vec![Output {
+        format: Format::Env,
+        path: env.clone(),
+        values: [("GITHUB_TOKEN".to_string(), TOKEN.to_string())].into(),
+        reference: None,
+    }];
+    apply_outputs(&outputs, &[delivered(TOKEN, "old")], &[]);
+    // The state file is gone (written list empty): the file is still rewritten, and still removed with its grant.
+    let (written, _, errors) = apply_outputs(&outputs, &[delivered(TOKEN, "new")], &[]);
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(std::fs::read_to_string(&env).unwrap().contains("GITHUB_TOKEN=new"));
+    assert_eq!(written, vec![env.clone()]);
+    apply_outputs(&outputs, &[], &[]);
+    assert!(!env.exists());
+}
+
+#[test]
 fn a_multi_line_value_goes_in_a_file_not_an_env_file() {
     let got: BTreeMap<&str, &str> = [(TOKEN, "line1\nline2")].into();
     let e = env_file(&[("K".to_string(), TOKEN.to_string())].into(), &got).unwrap_err();
@@ -159,7 +255,7 @@ fn config_is_checked() {
     let ok = json!({
         "source": {"token_files": ["~/.config/fleetlayer/1password/token"],
             "roles": [{"role": "everyday", "nodes": ["agents", "mac-agents"], "read": [TOKEN]}]},
-        "receive": {"write": [{"format": "env", "path": "~/s/github.env", "values": {"GITHUB_TOKEN": TOKEN}}]}
+        "receive": {"from": "secrets", "write": [{"format": "env", "path": "~/s/github.env", "values": {"GITHUB_TOKEN": TOKEN}}]}
     });
     let c = load(home, &ok).unwrap();
     assert_eq!(c.source.unwrap().token_files[0], PathBuf::from("/home/a/.config/fleetlayer/1password/token"));
@@ -171,9 +267,10 @@ fn config_is_checked() {
             json!({"source": {"token_files": ["/t"], "roles": [{"role": "a", "nodes": ["n"], "read": ["x"]}]}}),
             "reference",
         ),
-        (json!({"receive": {"write": [{"format": "env", "path": "/e", "values": {}}]}}), "needs values"),
-        (json!({"receive": {"write": [{"format": "file", "path": "/f"}]}}), "one ref"),
-        (json!({"receive": {"write": [{"format": "file", "path": "rel", "ref": TOKEN}]}}), "absolute"),
+        (json!({"receive": {"from": "s", "write": [{"format": "env", "path": "/e", "values": {}}]}}), "needs values"),
+        (json!({"receive": {"from": "s", "write": [{"format": "file", "path": "/f"}]}}), "one ref"),
+        (json!({"receive": {"from": "s", "write": [{"format": "file", "path": "rel", "ref": TOKEN}]}}), "absolute"),
+        (json!({"receive": {}}), "from"),
     ] {
         let e = load(home, &bad).unwrap_err();
         assert!(e.contains(says), "{bad}: {e}");
@@ -193,7 +290,7 @@ fn roles_on_several_nodes_and_nodes_in_several_roles_merge_per_node() {
 
 #[test]
 fn a_target_says_when_nothing_has_arrived_or_a_file_lost_its_grant() {
-    let rc = Receive::default();
+    let rc = Receive { stale_hours: 48, ..Default::default() };
     let start = Timestamp::from_second(1_800_000_000).unwrap();
     let later = Timestamp::from_second(1_800_000_000 + 49 * 3600).unwrap();
     let st = Received::default();
@@ -211,6 +308,7 @@ async fn applying_registers_the_values_and_forgetting_removes_everything() {
         home: d.path().to_path_buf(),
         node: "agents".into(),
         receive: Some(Receive {
+            from: "secrets".into(),
             write: vec![Output {
                 format: Format::Env,
                 path: env.clone(),
@@ -222,6 +320,7 @@ async fn applying_registers_the_values_and_forgetting_removes_everything() {
         started: Timestamp::now(),
         received: Mutex::new(Received::default()),
         source_problem: Mutex::new(None),
+        refused: Mutex::new(None),
     };
     let body =
         Body { node: "agents".into(), read_at: Timestamp::now(), secrets: vec![delivered(TOKEN, "ghp_value_123456")] };

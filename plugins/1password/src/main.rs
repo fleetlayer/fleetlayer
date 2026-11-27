@@ -45,6 +45,8 @@ use tokio::sync::Mutex;
 use op::{Op, OpError, Reference};
 
 const ITEM: &str = "secrets.json";
+/// The first line of every env file this plugin writes, which marks it as the plugin's.
+const ENV_HEADER: &str = "# Written by fleetlayer-1password, and replaced whenever an item changes.\n";
 const BUNDLE_PREFIX: &str = "1password/";
 /// The registry's source name on targets.
 const SOURCE: &str = "1password";
@@ -109,6 +111,9 @@ impl Output {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Receive {
+    /// The source's node: bundles from any other node are refused, since any node can run a plugin called 1password
+    /// and publish a bundle named after this node.
+    from: String,
     #[serde(default)]
     write: Vec<Output>,
     /// Report a problem when nothing has arrived for this long.
@@ -173,6 +178,9 @@ fn load(home: &Path, raw: &Value) -> Result<Config, String> {
         }
     }
     if let Some(rc) = &mut c.receive {
+        if !name_ok(&rc.from) {
+            return Err("receive: from must name the 1Password source's node".into());
+        }
         let mut paths = BTreeSet::new();
         for o in &mut rc.write {
             o.path = expand(home, &o.path);
@@ -237,6 +245,7 @@ fn grants_by_node(roles: &[Role]) -> BTreeMap<String, BTreeSet<String>> {
 /// What the source knows of an item it read: never written to disk.
 #[derive(Clone)]
 struct Known {
+    item_id: String,
     version: u64,
     updated_at: Option<String>,
     value: String,
@@ -247,68 +256,123 @@ struct Known {
 struct SourceState {
     /// Vault name or ID → (token index, vault ID).
     vaults: HashMap<String, (usize, String)>,
+    /// Vault names more than one account has: references to them are ambiguous.
+    clashes: BTreeSet<String>,
     vaults_at: Option<std::time::Instant>,
     known: HashMap<String, Known>,
 }
 
-/// One round's result: each reference's value (when it could be read), and the problems.
+/// One round's result. Each reference ends up delivered (read now, or its last value when it couldn't be read this
+/// time), gone (1Password says it isn't there: left out, so targets remove it), or stuck (it couldn't be read and has
+/// no value from before: a node granted it is held back rather than sent a bundle without it).
 #[derive(Default)]
 struct Round {
     values: BTreeMap<String, Delivered>,
-    /// References that aren't in 1Password (removed or renamed): left out of bundles.
+    /// References 1Password says aren't there (removed or renamed), and why.
     missing: Vec<(String, String)>,
-    /// Something failed that says nothing about whether items are there: nothing is published this round.
-    failed: Vec<String>,
+    stuck: BTreeSet<String>,
+    /// For the plugin's status: what failed, by reference or token. Never values.
+    problems: Vec<String>,
 }
 
-async fn collect(op: &Op, tokens: &[String], refs: &BTreeSet<String>, st: &mut SourceState) -> Round {
-    let mut round = Round::default();
-    let parsed: Vec<Reference> = refs.iter().filter_map(|r| Reference::parse(r).ok()).collect();
-    // Which token sees which vault: asked again hourly, and whenever a vault isn't known.
-    let unknown = parsed.iter().any(|r| !st.vaults.contains_key(&r.vault));
-    if st.vaults_at.is_none_or(|t| t.elapsed() > Duration::from_secs(3600)) || unknown {
-        let mut vaults = HashMap::new();
-        let mut clashes = BTreeSet::new();
-        for (i, t) in tokens.iter().enumerate() {
-            match op.vaults(t).await {
-                Ok(vs) => {
-                    for v in vs {
-                        for key in [v.name.clone(), v.id.clone()] {
-                            if let Some((other, _)) = vaults.insert(key.clone(), (i, v.id.clone()))
-                                && other != i
-                            {
-                                clashes.insert(key);
-                            }
-                        }
-                    }
-                }
-                Err(e) => round.failed.push(format!("token {}: {e}", i + 1)),
+impl Round {
+    /// `r` couldn't be read now: deliver its last value if there is one, else hold back the nodes granted it.
+    fn stuck(&mut self, st: &SourceState, r: &str, why: String) {
+        match st.known.get(r) {
+            Some(k) => {
+                self.values.insert(
+                    r.to_string(),
+                    Delivered { reference: r.to_string(), value: k.value.clone(), updated_at: k.updated_at.clone() },
+                );
+                self.problems.push(format!("{r}: {why} (still sending its last value)"));
+            }
+            None => {
+                self.stuck.insert(r.to_string());
+                self.problems.push(format!("{r}: {why}"));
             }
         }
-        if !round.failed.is_empty() {
-            return round;
+    }
+}
+
+/// Read every reference. `tokens` has one entry per token file, None for one that couldn't be read.
+async fn collect(op: &Op, tokens: &[Option<String>], refs: &BTreeSet<String>, st: &mut SourceState) -> Round {
+    let mut round = Round::default();
+    let parsed: Vec<Reference> = refs.iter().filter_map(|r| Reference::parse(r).ok()).collect();
+    // Which token sees which vault: asked again hourly, and whenever a vault isn't known. A token that can't list its
+    // vaults keeps what it listed before.
+    let unknown = parsed.iter().any(|r| !st.vaults.contains_key(&r.vault));
+    let mut all_listed = tokens.iter().all(Option::is_some);
+    if st.vaults_at.is_none_or(|t| t.elapsed() > Duration::from_secs(3600)) || unknown {
+        let mut listed: Vec<Option<Vec<op::Vault>>> = vec![];
+        for (i, t) in tokens.iter().enumerate() {
+            let Some(t) = t else {
+                listed.push(None);
+                continue;
+            };
+            match op.vaults(t).await {
+                Ok(vs) => listed.push(Some(vs)),
+                Err(e) => {
+                    round.problems.push(format!("token {}: {e}", i + 1));
+                    all_listed = false;
+                    listed.push(None);
+                }
+            }
         }
-        for c in clashes {
-            round.failed.push(format!("two accounts have a vault called {c:?}; refer to it by its ID"));
+        let mut vaults: HashMap<String, (usize, String)> = st
+            .vaults
+            .iter()
+            .filter(|(_, (i, _))| listed.get(*i).is_some_and(Option::is_none))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let mut clashes = BTreeSet::new();
+        for (i, vs) in listed.iter().enumerate() {
+            for v in vs.iter().flatten() {
+                for key in [v.name.clone(), v.id.clone()] {
+                    if let Some((other, _)) = vaults.insert(key.clone(), (i, v.id.clone()))
+                        && other != i
+                    {
+                        clashes.insert(key);
+                    }
+                }
+            }
         }
         st.vaults = vaults;
-        st.vaults_at = Some(std::time::Instant::now());
+        st.clashes = clashes;
+        if all_listed {
+            st.vaults_at = Some(std::time::Instant::now());
+        }
     }
     let mut by_vault: BTreeMap<String, Vec<&Reference>> = BTreeMap::new();
     for r in &parsed {
         by_vault.entry(r.vault.clone()).or_default().push(r);
     }
     for (vault, refs) in by_vault {
-        let Some((ti, vault_id)) = st.vaults.get(&vault).cloned() else {
+        if st.clashes.contains(&vault) {
             for r in refs {
-                round.missing.push((r.full.clone(), format!("no account's token can see a vault called {vault:?}")));
+                round.stuck(st, &r.full, format!("two accounts have a vault called {vault:?}; refer to it by its ID"));
+            }
+            continue;
+        }
+        let token =
+            st.vaults.get(&vault).cloned().and_then(|(ti, id)| tokens.get(ti).cloned().flatten().map(|t| (t, id)));
+        let Some((token, vault_id)) = token else {
+            for r in refs {
+                if st.vaults.contains_key(&vault) || !all_listed {
+                    round.stuck(st, &r.full, format!("the token for the {vault:?} vault can't be used now"));
+                } else {
+                    round
+                        .missing
+                        .push((r.full.clone(), format!("no account's token can see a vault called {vault:?}")));
+                }
             }
             continue;
         };
-        let items = match op.items(&tokens[ti], &vault_id).await {
+        let items = match op.items(&token, &vault_id).await {
             Ok(i) => i,
             Err(e) => {
-                round.failed.push(e.to_string());
+                for r in refs {
+                    round.stuck(st, &r.full, e.to_string());
+                }
                 continue;
             }
         };
@@ -321,21 +385,31 @@ async fn collect(op: &Op, tokens: &[String], refs: &BTreeSet<String>, st: &mut S
                 }
                 [one] => *one,
                 _ => {
-                    round.failed.push(format!(
-                        "{}: the {vault:?} vault has {} items called {:?}; refer to it by its ID",
-                        r.full,
+                    let why = format!(
+                        "the {vault:?} vault has {} items called {:?}; refer to it by its ID",
                         found.len(),
                         r.item
-                    ));
+                    );
+                    round.stuck(st, &r.full, why);
                     continue;
                 }
             };
-            let fresh = st.known.get(&r.full).filter(|k| k.version == item.version && item.version > 0).cloned();
+            // Unchanged only if it's the same item at the same version: a deleted and recreated item is read again.
+            let fresh = st
+                .known
+                .get(&r.full)
+                .filter(|k| k.item_id == item.id && k.version == item.version && item.version > 0)
+                .cloned();
             let known = match fresh {
                 Some(k) => k,
-                None => match op.read(&tokens[ti], &r.full).await {
+                None => match op.read(&token, &r.full).await {
                     Ok(value) => {
-                        let k = Known { version: item.version, updated_at: item.updated_at.clone(), value };
+                        let k = Known {
+                            item_id: item.id.clone(),
+                            version: item.version,
+                            updated_at: item.updated_at.clone(),
+                            value,
+                        };
                         st.known.insert(r.full.clone(), k.clone());
                         k
                     }
@@ -344,7 +418,7 @@ async fn collect(op: &Op, tokens: &[String], refs: &BTreeSet<String>, st: &mut S
                         continue;
                     }
                     Err(OpError::Failed(e)) => {
-                        round.failed.push(e);
+                        round.stuck(st, &r.full, e);
                         continue;
                     }
                 },
@@ -355,7 +429,8 @@ async fn collect(op: &Op, tokens: &[String], refs: &BTreeSet<String>, st: &mut S
             );
         }
     }
-    st.known.retain(|k, _| refs.contains(k));
+    let gone: BTreeSet<&String> = round.missing.iter().map(|(r, _)| r).collect();
+    st.known.retain(|k, _| refs.contains(k) && !gone.contains(k));
     round
 }
 
@@ -375,6 +450,17 @@ fn digest(secrets: &[Delivered]) -> String {
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct SourceDisk {
     nodes: BTreeSet<String>,
+    /// The last bundle version sent. Versions only go up, even when the clock steps back or the source moves to a
+    /// machine whose clock is behind (copy this folder when moving it), or targets would ignore what comes next.
+    #[serde(default)]
+    version: u64,
+}
+
+impl SourceDisk {
+    fn next_version(&mut self, now: Timestamp) -> u64 {
+        self.version = (now.as_millisecond().max(0) as u64).max(self.version + 1);
+        self.version
+    }
 }
 
 /// What a target keeps (`~/.local/state/fleetlayer/1password/received.json`): never values.
@@ -394,7 +480,7 @@ struct Received {
 }
 
 fn env_file(values: &BTreeMap<String, String>, got: &BTreeMap<&str, &str>) -> Result<String, String> {
-    let mut out = String::from("# Written by fleetlayer-1password, and replaced whenever an item changes.\n");
+    let mut out = String::from(ENV_HEADER);
     for (var, r) in values {
         let v = got.get(r.as_str()).ok_or_else(|| format!("{r} wasn't delivered"))?;
         if v.contains(['\n', '\r', '\0']) {
@@ -414,6 +500,15 @@ fn apply_outputs(
     written_before: &[PathBuf],
 ) -> (Vec<PathBuf>, Vec<String>, Vec<String>) {
     let got: BTreeMap<&str, &str> = secrets.iter().map(|s| (s.reference.as_str(), s.value.as_str())).collect();
+    // Ours: what the state file lists, and env files that start with this plugin's header (so a lost state file doesn't
+    // strand them). A plain `file` has no header: if the state file is lost, it's reported as someone else's.
+    let mut ours: Vec<PathBuf> = written_before.to_vec();
+    for o in outputs.iter().filter(|o| o.format == Format::Env && !written_before.contains(&o.path)) {
+        if std::fs::read_to_string(&o.path).is_ok_and(|t| t.starts_with(ENV_HEADER)) {
+            ours.push(o.path.clone());
+        }
+    }
+    let written_before = ours.as_slice();
     let mut written = vec![];
     let mut missing = BTreeSet::new();
     let mut errors = vec![];
@@ -494,6 +589,8 @@ struct Plugin {
     started: Timestamp,
     received: Mutex<Received>,
     source_problem: Mutex<Option<String>>,
+    /// The last bundle refused for coming from the wrong node, and when.
+    refused: Mutex<Option<(String, Timestamp)>>,
 }
 
 impl Plugin {
@@ -607,6 +704,7 @@ impl Handler for Shared {
                     started: Timestamp::now(),
                     received: Mutex::new(Received::default()),
                     source_problem: Mutex::new(None),
+                    refused: Mutex::new(None),
                 });
                 *plugin.received.lock().await = plugin.load_received();
                 let first = self.0.lock().await.replace(plugin.clone()).is_none();
@@ -637,8 +735,17 @@ impl Handler for Shared {
             ext::method::SYNC_APPLY => {
                 let a: SyncApply = params(p)?;
                 let plugin = self.0.lock().await.clone().ok_or_else(|| RpcError::refused("not initialised"))?;
-                if a.bundle != format!("{BUNDLE_PREFIX}{}", plugin.node) || plugin.receive.is_none() {
+                let Some(rc) = plugin.receive.clone() else {
                     return Err(RpcError::not_here(format!("this plugin doesn't receive {}", a.bundle)));
+                };
+                if a.bundle != format!("{BUNDLE_PREFIX}{}", plugin.node) {
+                    return Err(RpcError::not_here(format!("this plugin doesn't receive {}", a.bundle)));
+                }
+                let pins = plugin.state_dir().join("sources.json");
+                if let Err(e) = fleetlayer_secrets::pin::check(&pins, &a.bundle, a.from.as_deref(), Some(&rc.from)) {
+                    tracing::error!("{e}");
+                    *plugin.refused.lock().await = Some((e.clone(), Timestamp::now()));
+                    return Ok(json!({"applied": false, "error": e}));
                 }
                 let body: Body = match a.items.iter().find(|i| i.name == ITEM).map(|i| serde_json::from_str(&i.content))
                 {
@@ -663,7 +770,9 @@ impl Handler for Shared {
     }
 }
 
-async fn publish(peer: &Peer, node: &str, version: u64, body: &Body) -> Result<(), String> {
+/// Hand a node its bundle. Answers whether the node applied it now (false: it's offline, waiting for approval or
+/// refused it, and the source's node keeps trying).
+async fn publish(peer: &Peer, node: &str, version: u64, body: &Body) -> Result<bool, String> {
     let publish = SyncPublish {
         bundle: format!("{BUNDLE_PREFIX}{node}"),
         version,
@@ -680,11 +789,16 @@ async fn publish(peer: &Peer, node: &str, version: u64, body: &Body) -> Result<(
         .request_within(ext::method::SYNC_PUBLISH, &publish, Duration::from_secs(90))
         .await
         .map_err(|e| format!("handing the bundle for {node} to the node: {e}"))?;
-    for f in r["results"].as_array().into_iter().flatten().filter(|x| x["ok"] != true) {
-        tracing::warn!(target = %f["target"], error = %f["error"], version,
-            "a target didn't get this version; the node tries it again");
+    let mut applied = false;
+    for f in r["results"].as_array().into_iter().flatten() {
+        if f["ok"] == true {
+            applied = true;
+        } else {
+            tracing::warn!(target = %f["target"], error = %f["error"], version,
+                "a target didn't get this version; the node tries it again");
+        }
     }
-    Ok(())
+    Ok(applied)
 }
 
 /// Every `every_minutes`: read what changed in 1Password, send each node whose items changed (or after
@@ -715,68 +829,83 @@ async fn source_loop(plugin: Arc<Plugin>, s: Source, peer: Peer) {
             .collect();
         peer.notify(ext::method::READING_PUBLISH, &ext::Readings { readings: grants });
 
-        let tokens: Result<Vec<String>, String> = s.token_files.iter().map(op::read_token).collect();
-        let mut readings = vec![];
-        match tokens {
-            Err(e) => problems.push(e),
-            Ok(tokens) => {
-                let round = collect(&op, &tokens, &all_refs, &mut st).await;
-                for (r, why) in &round.missing {
-                    problems.push(format!("{r}: {why}"));
-                }
-                problems.extend(round.failed.iter().cloned());
-                if round.failed.is_empty() {
-                    for (node, refs) in &by_node {
-                        let secrets: Vec<Delivered> =
-                            refs.iter().filter_map(|r| round.values.get(r).cloned()).collect();
-                        let d = digest(&secrets);
-                        let due = last.get(node).is_none_or(|(old, _, at)| {
-                            *old != d
-                                || now.duration_since(*at).unsigned_abs()
-                                    >= Duration::from_secs(s.resend_hours.max(1) * 3600)
-                        });
-                        if due {
-                            let version = now.as_millisecond() as u64;
-                            let count = secrets.len();
-                            let body = Body { node: node.clone(), read_at: now, secrets };
-                            match publish(&peer, node, version, &body).await {
-                                Ok(()) => {
-                                    tracing::info!(node, version, items = count, "sent");
-                                    last.insert(node.clone(), (d, version, now));
-                                    disk.nodes.insert(node.clone());
-                                }
-                                Err(e) => problems.push(e),
-                            }
-                        }
-                        let (version, published) =
-                            last.get(node).map(|(_, v, at)| (Some(*v), Some(at.to_string()))).unwrap_or((None, None));
-                        readings.push(ext::Reading {
-                            kind: "onepassword.source".into(),
-                            key: node.clone(),
-                            at: now,
-                            node: None,
-                            data: json!({"node": node, "items": refs.iter().map(|r| json!({"ref": r,
-                                "updatedAt": round.values.get(r).and_then(|v| v.updated_at.clone()),
-                                "delivered": round.values.contains_key(r)})).collect::<Vec<_>>(),
-                                "version": version, "publishedAt": published, "readAt": now.to_string()}),
-                        });
-                    }
-                    // Nodes that had secrets and are in no role now: an empty bundle removes them there.
-                    let gone: Vec<String> = disk.nodes.iter().filter(|n| !by_node.contains_key(*n)).cloned().collect();
-                    for node in gone {
-                        let body = Body { node: node.clone(), read_at: now, secrets: vec![] };
-                        match publish(&peer, &node, now.as_millisecond() as u64, &body).await {
-                            Ok(()) => {
-                                tracing::info!(node, "sent an empty bundle: no role names this node any more");
-                                disk.nodes.remove(&node);
-                            }
-                            Err(e) => problems.push(e),
-                        }
-                    }
-                    plugin.save_source(&disk);
+        let mut tokens = vec![];
+        for f in &s.token_files {
+            match op::read_token(f) {
+                Ok(t) => tokens.push(Some(t)),
+                Err(e) => {
+                    problems.push(e);
+                    tokens.push(None);
                 }
             }
         }
+        let mut readings = vec![];
+        let round = collect(&op, &tokens, &all_refs, &mut st).await;
+        for (r, why) in &round.missing {
+            problems.push(format!("{r}: {why}"));
+        }
+        problems.extend(round.problems.iter().cloned());
+        for (node, refs) in &by_node {
+            // A node granted an item that couldn't be read, with no earlier value, waits: a bundle without it would
+            // remove it there.
+            let waiting: Vec<&String> = refs.iter().filter(|r| round.stuck.contains(*r)).collect();
+            let secrets: Vec<Delivered> = refs.iter().filter_map(|r| round.values.get(r).cloned()).collect();
+            let d = digest(&secrets);
+            let due = last.get(node).is_none_or(|(old, _, at)| {
+                *old != d || now.duration_since(*at).unsigned_abs() >= Duration::from_secs(s.resend_hours.max(1) * 3600)
+            });
+            if !waiting.is_empty() {
+                problems.push(format!(
+                    "not sending {node} its items until {} can be read",
+                    waiting.iter().map(|r| r.as_str()).collect::<Vec<_>>().join(", ")
+                ));
+            } else if due {
+                let version = disk.next_version(now);
+                let count = secrets.len();
+                let body = Body { node: node.clone(), read_at: now, secrets };
+                disk.nodes.insert(node.clone());
+                plugin.save_source(&disk);
+                match publish(&peer, node, version, &body).await {
+                    Ok(applied) => {
+                        tracing::info!(node, version, items = count, applied, "sent");
+                        last.insert(node.clone(), (d, version, now));
+                    }
+                    Err(e) => problems.push(e),
+                }
+            }
+            let (version, published) =
+                last.get(node).map(|(_, v, at)| (Some(*v), Some(at.to_string()))).unwrap_or((None, None));
+            readings.push(ext::Reading {
+                kind: "onepassword.source".into(),
+                key: node.clone(),
+                at: now,
+                node: None,
+                data: json!({"node": node, "items": refs.iter().map(|r| json!({"ref": r,
+                    "updatedAt": round.values.get(r).and_then(|v| v.updated_at.clone()),
+                    "delivered": round.values.contains_key(r)})).collect::<Vec<_>>(),
+                    "version": version, "publishedAt": published, "readAt": now.to_string()}),
+            });
+        }
+        // Nodes that had items and are in no role now: an empty bundle removes them there. A node stays on the list
+        // until it has applied that bundle, across restarts, so a node that was offline still loses its items.
+        let gone: Vec<String> = disk.nodes.iter().filter(|n| !by_node.contains_key(*n)).cloned().collect();
+        for node in gone {
+            let body = Body { node: node.clone(), read_at: now, secrets: vec![] };
+            let version = disk.next_version(now);
+            plugin.save_source(&disk);
+            match publish(&peer, &node, version, &body).await {
+                Ok(true) => {
+                    tracing::info!(node, "removed every item: no role names this node any more");
+                    disk.nodes.remove(&node);
+                }
+                Ok(false) => problems.push(format!(
+                    "{node} is in no role now but hasn't applied the bundle that removes its items yet (offline, or \
+                     waiting for approval); trying again each round"
+                )),
+                Err(e) => problems.push(e),
+            }
+        }
+        plugin.save_source(&disk);
         let problem = (!problems.is_empty()).then(|| format!("1password source: {}", problems.join("; ")));
         if let Some(p) = &problem {
             tracing::warn!("{p}");
@@ -797,7 +926,13 @@ async fn status_loop(plugin: Arc<Plugin>, peer: Peer) {
         let mut problems: Vec<String> = plugin.source_problem.lock().await.iter().cloned().collect();
         if let Some(rc) = &plugin.receive {
             let st = plugin.received.lock().await.clone();
-            let problem = receive_problem(rc, &st, now, plugin.started);
+            let mut problem = receive_problem(rc, &st, now, plugin.started);
+            if let Some((e, at)) = plugin.refused.lock().await.clone()
+                && now.duration_since(at).unsigned_abs() < Duration::from_secs(24 * 3600)
+            {
+                problem =
+                    Some(format!("1password: {e} (at {}); another node tried to send this node's secrets", when(at)));
+            }
             let r = ext::Reading {
                 kind: "onepassword.receive".into(),
                 key: plugin.node.clone(),

@@ -62,6 +62,9 @@ struct Config {
     /// Node: the Claude Code binary for the token checks. Default: `claude` on PATH, then the usual install places
     /// (a LaunchAgent's PATH has none of them).
     claude: Option<String>,
+    /// Node: the hub's node, the only one whose tokens bundle is applied. Default: the first node that sent one
+    /// (remembered), since any node can run a plugin of this name and publish a bundle of the same name.
+    from: Option<String>,
     /// Hub: the tokens file.
     tokens_file: Option<PathBuf>,
     /// Hub: the nodes to send them to.
@@ -123,6 +126,8 @@ struct Plugin {
     kept: Mutex<Option<String>>,
     /// The node user's home, for the secrets registry.
     home: Mutex<Option<PathBuf>>,
+    /// The hub's node, when the config names it.
+    from: Mutex<Option<String>>,
 }
 
 impl Default for Plugin {
@@ -135,6 +140,7 @@ impl Default for Plugin {
             node: Mutex::default(),
             kept: Mutex::default(),
             home: Mutex::default(),
+            from: Mutex::default(),
         }
     }
 }
@@ -250,6 +256,7 @@ impl Handler for Shared {
                     }
                     *self.0.kept.lock().await = Some(kept);
                     *self.0.home.lock().await = Some(home.clone());
+                    *self.0.from.lock().await = config.from.clone();
                     let claude = health::Claude { bin: find_claude(&home, config.claude.as_deref()) };
                     *self.0.node.lock().await = node.node.clone();
                     let env = coordinator::NodeEnv {
@@ -361,6 +368,15 @@ impl Handler for Shared {
                 }
                 let layout = self.0.layout.lock().await.clone().ok_or_else(|| RpcError::refused("not a node"))?;
                 let store = self.0.store.lock().await.clone().ok_or_else(|| RpcError::refused("not a node"))?;
+                if let Some(home) = self.0.home.lock().await.clone() {
+                    let pins = home.join(".local/state/fleetlayer/claude-auth-manager/sources.json");
+                    let from = self.0.from.lock().await.clone();
+                    if let Err(e) = fleetlayer_secrets::pin::check(&pins, &a.bundle, a.from.as_deref(), from.as_deref())
+                    {
+                        tracing::error!("{e}");
+                        return Ok(json!({"applied": false, "error": e}));
+                    }
+                }
                 let item = a
                     .items
                     .iter()

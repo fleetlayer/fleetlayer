@@ -31,7 +31,9 @@ API tokens live only on machines you control. When one machine needs a credentia
 - The sending node encrypts the bundle to each target node's public key before anything leaves the machine. The
   control plane relays ciphertext it can't read, and **never stores it**.
 - The sender pins each target's key the first time it seals to it, and refuses a changed key until a person removes
-  the old pin. A control plane that lied about a node's key still couldn't read what's sent to it.
+  the old pin. A control plane that lied about a node's key couldn't read what's sent to it after that. The first
+  seal trusts the key it's given, so check a new node's key fingerprint (`keyFingerprint` in
+  `fleetlayer status --json`) before trusting it with secrets.
 - By default, the first bundle from each source to each target waits for a person's approval.
 - Status flows back to the sender ("applied", or the error). Content never flows back.
 

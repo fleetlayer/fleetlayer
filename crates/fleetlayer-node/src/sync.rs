@@ -403,7 +403,7 @@ pub async fn deliver(node: &Arc<Node>, d: SyncDeliver) -> Result<Value, RpcError
     let r: Value = peer
         .request_within(
             ext::method::SYNC_APPLY,
-            &SyncApply { bundle: d.bundle.clone(), version: d.version, items },
+            &SyncApply { bundle: d.bundle.clone(), version: d.version, items, from: Some(d.from.clone()) },
             Duration::from_secs(60),
         )
         .await?;

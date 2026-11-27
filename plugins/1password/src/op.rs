@@ -113,10 +113,11 @@ impl Op {
             _ => msg.to_string(),
         };
         let lower = msg.to_ascii_lowercase();
-        let not_found =
-            ["isn't an item", "isn't a vault", "isn't a field", "could not find", "no item found", "not found"]
-                .iter()
-                .any(|p| lower.contains(p));
+        // op's own words for a vault, item or field that isn't there (op 2.x). Anything else, even with "not found" in
+        // it, says nothing about whether the item exists, and must never make a target remove it.
+        let not_found = ["isn't an item in the", "isn't a vault in this account", "does not have a field"]
+            .iter()
+            .any(|p| lower.contains(p));
         let msg = format!("op {}: {msg}", args[0]);
         Err(if not_found { OpError::NotFound(msg) } else { OpError::Failed(msg) })
     }
@@ -137,8 +138,19 @@ impl Op {
     }
 }
 
-/// Read a token file: one token, whitespace around it ignored.
+/// Read a token file: one token, whitespace around it ignored. Refused if anyone but its owner may read it.
 pub fn read_token(path: &PathBuf) -> Result<String, String> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode =
+        std::fs::metadata(path).map_err(|e| format!("reading the token {}: {e}", path.display()))?.permissions().mode();
+    if mode & 0o077 != 0 {
+        return Err(format!(
+            "the token file {} can be read by others (mode {:o}); chmod 600 it, and rotate the token if other users \
+             could have read it",
+            path.display(),
+            mode & 0o777
+        ));
+    }
     let t = std::fs::read_to_string(path).map_err(|e| format!("reading the token {}: {e}", path.display()))?;
     let t = t.trim().to_string();
     if t.is_empty() {

@@ -96,6 +96,7 @@ plugins:
 | `write` | | The files to write, each with a `format` and an absolute `path` (`~` is the node user's home) |
 | `require` | | More cookies that must be there and unexpired. The ones an `env` file names always are |
 | `stale_hours` | 48 | Report a problem when nothing has arrived for this long |
+| `from` | the first sender | The source's node. Any node can run a plugin called `cookies` and publish a set of the same name, so only one node's bundles are applied: this one, or else the first node that sent the set (remembered in `~/.local/state/fleetlayer/cookies/sources.json`). Others are refused and show as a problem for a day |
 
 Formats:
 

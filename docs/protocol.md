@@ -459,7 +459,10 @@ A `sync_source` plugin publishes through its node:
   it's used: each bundle sent pushes it a full hold on, so it lapses only after that long unused.
 
 On the target node, the node opens the bundle with its private key and hands the plaintext to the local plugin that
-registered as `sync_target` for that bundle name, with `_fleetlayer.dev/sync/apply` `{bundle, version, items}`. The
+registered as `sync_target` for that bundle name, with `_fleetlayer.dev/sync/apply` `{bundle, version, items, from}`,
+where `from` is the node that published it. Any node can run a plugin of the same name and publish a bundle of the
+same name, so a plugin applying secrets checks `from` against the one source it trusts (its config's, or the first it
+saw: `fleetlayer_secrets::pin`) and refuses the rest. The
 plugin writes it where it belongs (a keychain item, a file, a skills folder) and answers `{applied: true}` or an
 error. The node reports `{bundle, version, applied, error?}` back to the source: **status flows back, content
 never does.**
@@ -495,6 +498,9 @@ applied, so the next delivery of the same version is applied again.
 A control plane that lied about a node's key could read secrets meant for it. So the sending node pins each target's
 key the first time it seals to it (in `~/.local/state/fleetlayer/known-keys.json`), and refuses a changed key until
 the person removes the old pin by hand. Showing each key's fingerprint to the person, in the hub's page, is planned.
+That's trust on first use: for a node nothing has sealed to yet, a control plane that lied could hand over a key of its
+own, and the first bundle would be sealed to it. Compare the key's fingerprint (`keyFingerprint` in `fleetlayer status
+--json` on the target) with the pin on the sender before trusting a new node with secrets.
 
 ## 9. Readings
 

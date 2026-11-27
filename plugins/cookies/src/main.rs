@@ -90,6 +90,10 @@ struct Output {
 #[serde(deny_unknown_fields)]
 struct Receive {
     set: String,
+    /// The source's node, the only one whose bundles for this set are applied. Default: the first node that sent one
+    /// (remembered), since any node can run a plugin called cookies and publish a bundle of the same name.
+    #[serde(default)]
+    from: Option<String>,
     write: Vec<Output>,
     /// Cookies that must be there and unexpired (the ones `env` outputs name are always required).
     #[serde(default)]
@@ -352,6 +356,8 @@ struct Plugin {
     received: Mutex<HashMap<String, Received>>,
     /// Each source set's problem, None when it sends fine.
     share_problems: Mutex<BTreeMap<String, Option<String>>>,
+    /// Each set's last bundle refused for coming from the wrong node, and when.
+    refused: Mutex<HashMap<String, (String, Timestamp)>>,
     /// Keys read once per process: a Keychain refusal isn't asked again until the plugin restarts.
     keys: Mutex<HashMap<String, Result<Keys, String>>>,
 }
@@ -403,6 +409,7 @@ impl Handler for Shared {
                     received: Mutex::new(HashMap::new()),
                     share_problems: Mutex::new(BTreeMap::new()),
                     keys: Mutex::new(HashMap::new()),
+                    refused: Mutex::new(HashMap::new()),
                 });
                 {
                     let mut rec = plugin.received.lock().await;
@@ -447,6 +454,12 @@ impl Handler for Shared {
                     .find(|r| r.set == set)
                     .cloned()
                     .ok_or_else(|| RpcError::not_here(format!("no receive entry for {}", a.bundle)))?;
+                let pins = plugin.home.join(".local/state/fleetlayer/cookies/sources.json");
+                if let Err(e) = fleetlayer_secrets::pin::check(&pins, &a.bundle, a.from.as_deref(), r.from.as_deref()) {
+                    tracing::error!("{e}");
+                    plugin.refused.lock().await.insert(set.clone(), (e.clone(), Timestamp::now()));
+                    return Ok(json!({"applied": false, "error": e}));
+                }
                 let body: Body = match a.items.iter().find(|i| i.name == ITEM).map(|i| serde_json::from_str(&i.content))
                 {
                     Some(Ok(b)) => b,
@@ -674,7 +687,13 @@ async fn status_loop(plugin: Arc<Plugin>, peer: Peer) {
         let rec = plugin.received.lock().await;
         for r in &plugin.receive {
             let st = rec.get(&r.set).cloned().unwrap_or_default();
-            let problem = receive_problem(r, &st, now, plugin.started);
+            let mut problem = receive_problem(r, &st, now, plugin.started);
+            if let Some((e, at)) = plugin.refused.lock().await.get(&r.set).cloned()
+                && now.duration_since(at).unsigned_abs() < Duration::from_secs(24 * 3600)
+            {
+                problem =
+                    Some(format!("cookies: {e} (at {}); another node tried to send this set", when(at.as_second())));
+            }
             let (earliest, _, _) = check(&st.cookies, &r.required(), now.as_second());
             readings.push(ext::Reading {
                 kind: "cookies.receive".into(),
