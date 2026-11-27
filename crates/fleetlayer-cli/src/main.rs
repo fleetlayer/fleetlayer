@@ -62,7 +62,7 @@ enum Command {
     Summaries {
         /// Words to search for.
         query: Vec<String>,
-        /// A session ID: its timeline, newest first.
+        /// A session ID: its timeline, the newest --limit records, oldest first.
         #[arg(long)]
         session: Option<String>,
         #[arg(long, default_value_t = 10)]

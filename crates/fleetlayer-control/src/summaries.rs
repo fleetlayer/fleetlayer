@@ -206,12 +206,14 @@ pub async fn feed(db: &Db, tenant: &str, after: &str, limit: i64) -> anyhow::Res
     Ok(items.into_iter().map(|(_, v)| v).collect())
 }
 
-/// A session's timeline, oldest first: every record.
+/// A session's timeline: its newest `limit` records, oldest first (every record with a large limit). A small limit
+/// used to give the oldest records.
 pub async fn timeline(db: &Db, tenant: &str, session_id: &str, limit: i64) -> anyhow::Result<Vec<Value>> {
     let rows = sqlx::query(concat!(
-        "SELECT ",
+        "SELECT * FROM (SELECT ",
         columns!(),
-        " FROM summaries s WHERE s.tenant = ? AND s.session_id = ? ORDER BY s.activity_from, s.activity_to LIMIT ?"
+        " FROM summaries s WHERE s.tenant = ? AND s.session_id = ? ORDER BY s.activity_from DESC, s.activity_to DESC \
+         LIMIT ?) ORDER BY activity_from, activity_to"
     ))
     .bind(tenant)
     .bind(session_id)
@@ -309,6 +311,9 @@ mod tests {
         let tl = timeline(&db, t, "s1", 10).await.unwrap();
         assert_eq!(tl[0]["sentence"], "Wrote the protocol draft.", "oldest first");
         assert_eq!(tl[0]["origin"], "node");
+        let newest = timeline(&db, t, "s1", 1).await.unwrap();
+        assert_eq!(newest.len(), 1);
+        assert_eq!(newest[0]["sentence"], "Built and tested the summaries plugin.", "a small limit gives the newest");
         store(&db, t, "agents", &rec("s2", "03", "Fixed sc-1234 and sc-12345.")).await.unwrap();
         store(&db, t, "agents", &rec("s2", "04", "Shipped sc-1234.")).await.unwrap();
         let m = mentions(&db, t, "sc-1234", 10).await.unwrap();
