@@ -20,7 +20,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use axum::extract::{ConnectInfo, Path as UrlPath, State};
+use axum::extract::{ConnectInfo, Path as UrlPath, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
@@ -82,11 +82,27 @@ pub struct HubConfig {
     pub dir: PathBuf,
     pub claude: PathBuf,
     pub listen: SocketAddr,
-    pub login_file: PathBuf,
+    /// The login key's file; None when a deployment has turned the key off and signs in only with Fleetlayer.
+    pub login_file: Option<PathBuf>,
+    /// "Sign in with Fleetlayer": the sign-in service, this hub's client there, and the hub's own address.
+    pub signin: Option<Signin>,
     pub trusted_proxies: Vec<IpAddr>,
     /// Shown under the login box: where this deployment keeps its login key (never the key or its file's path).
     pub login_hint: Option<String>,
     pub heartbeat: Option<Heartbeat>,
+}
+
+/// The hub as a client of Fleetlayer's sign-in service (`docs/plugins/signin.md`). Who may open the hub is the
+/// policy's `sign_in` on `service:hub` (by default the tenant's admins), checked by the sign-in service before it
+/// hands the hub anything.
+#[derive(Debug, Clone)]
+pub struct Signin {
+    pub issuer: String,
+    /// The hub's client ID there (default `hub`).
+    pub client: String,
+    pub secret: String,
+    /// The hub's own address (`https://hub.example.com`): it comes back to `<base>/_/auth/callback`.
+    pub base_url: String,
 }
 
 /// A heartbeat the hub pushes after each round (Gatus external-endpoint style: `?success=true|false&error=…`, with a
@@ -195,10 +211,12 @@ pub struct Hub {
     cfg: HubConfig,
     store: Mutex<Store>,
     flows: Mutex<HashMap<String, Flow>>,
-    sessions: Mutex<HashMap<String, Instant>>,
+    /// Each session, and whether it came through Fleetlayer (so signing out ends that sign-in too).
+    sessions: Mutex<HashMap<String, (Instant, bool)>>,
     failures: Mutex<HashMap<IpAddr, VecDeque<Instant>>>,
     polled: Mutex<HashMap<u32, Polled>>,
-    login: String,
+    login: Option<String>,
+    oidc: Option<fleetlayer_oidc::Oidc>,
 }
 
 fn new_id() -> String {
@@ -408,11 +426,22 @@ impl Hub {
         use std::os::unix::fs::PermissionsExt;
         std::fs::create_dir_all(cfg.dir.join("home/.claude/accounts"))?;
         std::fs::set_permissions(&cfg.dir, std::fs::Permissions::from_mode(0o700))?;
-        let login = std::fs::read_to_string(&cfg.login_file)
-            .map_err(|e| anyhow::anyhow!("reading the login file {}: {e}", cfg.login_file.display()))?
-            .trim()
-            .to_string();
-        anyhow::ensure!(login.len() >= 32, "the hub's login value must be at least 32 characters");
+        let login = match &cfg.login_file {
+            Some(f) => {
+                let login = std::fs::read_to_string(f)
+                    .map_err(|e| anyhow::anyhow!("reading the login file {}: {e}", f.display()))?
+                    .trim()
+                    .to_string();
+                anyhow::ensure!(login.len() >= 32, "the hub's login value must be at least 32 characters");
+                Some(login)
+            }
+            None => None,
+        };
+        let oidc = match &cfg.signin {
+            Some(s) => Some(fleetlayer_oidc::Oidc::new(&s.issuer, &s.client, &s.secret, &s.base_url)?),
+            None => None,
+        };
+        anyhow::ensure!(login.is_some() || oidc.is_some(), "the hub needs a login_file, signin, or both");
         let store: Store = match std::fs::read(cfg.dir.join("hub.json")) {
             Ok(b) => serde_json::from_slice(&b)?,
             Err(_) => Store::default(),
@@ -428,6 +457,7 @@ impl Hub {
             failures: Mutex::default(),
             polled: Mutex::default(),
             login,
+            oidc,
         }))
     }
 
@@ -1081,9 +1111,10 @@ impl Hub {
     }
 
     fn check_login(&self, given: &str) -> bool {
+        let Some(login) = &self.login else { return false };
         // Compare hashes, so the comparison's time doesn't depend on where the values differ.
         let a = Sha256::digest(given.trim().as_bytes());
-        let b = Sha256::digest(self.login.as_bytes());
+        let b = Sha256::digest(login.as_bytes());
         a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
     }
 
@@ -1091,7 +1122,7 @@ impl Hub {
         let Some(cookie) = headers.get(header::COOKIE).and_then(|v| v.to_str().ok()) else { return false };
         let Some(sid) = cookie.split(';').find_map(|c| c.trim().strip_prefix("hub_session=")) else { return false };
         let mut sessions = self.sessions.lock().await;
-        sessions.retain(|_, t| t.elapsed() < Duration::from_secs(SESSION_HOURS as u64 * 3600));
+        sessions.retain(|_, (t, _)| t.elapsed() < Duration::from_secs(SESSION_HOURS as u64 * 3600));
         sessions.contains_key(sid)
     }
 }
@@ -1105,6 +1136,9 @@ pub fn router(hub: Arc<Hub>) -> Router {
         .route("/healthz", get(healthz))
         .route("/login", get(login_page).post(login))
         .route("/logout", post(logout))
+        .route("/_/auth/start", get(signin_start))
+        .route("/_/auth/callback", get(signin_callback))
+        .route("/_/signed-out", get(signed_out))
         .route("/", get(page))
         .route("/api/state", get(api_state))
         .route("/api/accounts", post(api_add))
@@ -1188,7 +1222,27 @@ fn login_html(hub: &Hub, msg: &str) -> Html<String> {
         format!(r#"<p class="field-error" id="login-error" role="alert">{}</p>"#, esc(msg))
     };
     let invalid = if msg.is_empty() { "" } else { r#" aria-invalid="true" aria-describedby="login-error""# };
-    Html(LOGIN_HTML.replace("{hint}", &hint).replace("{msg}", &msg).replace("{invalid}", invalid))
+    let signin = if hub.oidc.is_some() {
+        r#"<a class="btn btn-primary btn-block" href="/_/auth/start">Sign in with Fleetlayer</a>"#
+    } else {
+        ""
+    };
+    let form = if hub.login.is_some() {
+        format!(
+            r#"<form class="login-card" method="post" action="/login">
+    <label class="label" for="login">Login key</label>
+    <input class="input mono" type="password" id="login" name="login" autocomplete="current-password"{autofocus} required spellcheck="false"{invalid}>
+    {msg}
+    <button class="btn {kind} btn-block" type="submit">Open hub</button>
+  </form>"#,
+            autofocus = if hub.oidc.is_some() { "" } else { " autofocus" },
+            kind = if hub.oidc.is_some() { "btn-secondary" } else { "btn-primary" },
+        )
+    } else {
+        msg
+    };
+    let hint = if hub.login.is_some() { hint } else { String::new() };
+    Html(LOGIN_HTML.replace("{signin}", signin).replace("{form}", &form).replace("{hint}", &hint))
 }
 
 async fn login_page(State(hub): Ctx) -> Html<String> {
@@ -1215,11 +1269,79 @@ async fn login(
         tracing::warn!(%ip, "a failed hub login");
         return (StatusCode::UNAUTHORIZED, login_html(&hub, "That isn't the hub's login key.")).into_response();
     }
-    let sid = new_id();
-    hub.sessions.lock().await.insert(sid.clone(), Instant::now());
-    let cookie =
-        format!("hub_session={sid}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age={}", SESSION_HOURS * 3600);
+    let cookie = hub.start_session(false).await;
     ([(header::SET_COOKIE, cookie)], Redirect::to("/")).into_response()
+}
+
+impl Hub {
+    /// A new session, and its cookie.
+    async fn start_session(&self, through_fleetlayer: bool) -> String {
+        let sid = new_id();
+        self.sessions.lock().await.insert(sid.clone(), (Instant::now(), through_fleetlayer));
+        format!("hub_session={sid}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age={}", SESSION_HOURS * 3600)
+    }
+}
+
+/// The browser's half of a Fleetlayer sign-in: SameSite=Lax, since the issuer's redirect back is a cross-site
+/// navigation, and only for the callback's path.
+fn oidc_cookie(state: &str, max_age: u32) -> String {
+    format!("hub_oidc={state}; HttpOnly; Secure; SameSite=Lax; Path=/_/auth; Max-Age={max_age}")
+}
+
+/// Off to the sign-in service, which checks `sign_in` on `service:hub` before it sends anyone back.
+async fn signin_start(State(hub): Ctx) -> Response {
+    let Some(oidc) = &hub.oidc else { return Redirect::to("/login").into_response() };
+    match oidc.start("/").await {
+        Ok((url, state)) => ([(header::SET_COOKIE, oidc_cookie(&state, 600))], Redirect::to(&url)).into_response(),
+        Err(e) => {
+            tracing::warn!("starting a Fleetlayer sign-in: {e:#}");
+            (StatusCode::BAD_GATEWAY, login_html(&hub, "Fleetlayer's sign-in can't be reached right now."))
+                .into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct CallbackQuery {
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+}
+
+async fn signin_callback(State(hub): Ctx, headers: HeaderMap, Query(q): Query<CallbackQuery>) -> Response {
+    let Some(oidc) = &hub.oidc else { return Redirect::to("/login").into_response() };
+    if q.error.is_some() {
+        return (StatusCode::FORBIDDEN, login_html(&hub, "Fleetlayer didn't sign you in to the hub.")).into_response();
+    }
+    let (Some(code), Some(state)) = (q.code.as_deref(), q.state.as_deref()) else {
+        return (StatusCode::BAD_REQUEST, login_html(&hub, "That sign-in link isn't complete. Sign in again."))
+            .into_response();
+    };
+    let bound = headers
+        .get(header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|c| c.split(';').find_map(|c| c.trim().strip_prefix("hub_oidc=").map(str::to_string)));
+    match oidc.finish(code, state, bound.as_deref()).await {
+        Ok((person, _)) => {
+            tracing::info!(who = %person.sub, handle = ?person.handle, tenant = %person.tenant, "signed in to the hub through Fleetlayer");
+            let session = hub.start_session(true).await;
+            // A page, not a redirect: the session cookie is SameSite=Strict (fleetlayer_oidc::continue_page).
+            let mut res =
+                Html(fleetlayer_oidc::continue_page("/", "Signed in · Claude hub", "Continue")).into_response();
+            let h = res.headers_mut();
+            h.append(header::SET_COOKIE, session.parse().expect("a cookie"));
+            h.append(header::SET_COOKIE, oidc_cookie("", 0).parse().expect("a cookie"));
+            res
+        }
+        Err(e) => {
+            tracing::warn!("a Fleetlayer sign-in to the hub failed: {e:#}");
+            (StatusCode::FORBIDDEN, login_html(&hub, "Signing in didn't work. Sign in again.")).into_response()
+        }
+    }
+}
+
+async fn signed_out(State(hub): Ctx) -> Html<String> {
+    login_html(&hub, "You're signed out.")
 }
 
 async fn logout(State(hub): Ctx, headers: HeaderMap) -> Response {
@@ -1228,7 +1350,18 @@ async fn logout(State(hub): Ctx, headers: HeaderMap) -> Response {
         .and_then(|v| v.to_str().ok())
         .and_then(|c| c.split(';').find_map(|c| c.trim().strip_prefix("hub_session=").map(str::to_string)))
     {
-        hub.sessions.lock().await.remove(&sid);
+        let ended = hub.sessions.lock().await.remove(&sid);
+        // Signed in through Fleetlayer: sign out there too. A page, not a redirect (the form's `form-action 'self'`).
+        if ended.is_some_and(|(_, fl)| fl)
+            && let Some(oidc) = &hub.oidc
+            && let Some(url) = oidc.logout_url().await
+        {
+            return (
+                [(header::SET_COOKIE, "hub_session=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0")],
+                Html(fleetlayer_oidc::continue_page(&url, "Signing out · Claude hub", "Continue signing out")),
+            )
+                .into_response();
+        }
     }
     (
         [(header::SET_COOKIE, "hub_session=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0")],
@@ -1390,7 +1523,8 @@ mod tests {
             dir: d.path().join("hub"),
             claude: "claude".into(),
             listen: "127.0.0.1:0".parse().unwrap(),
-            login_file: d.path().join("login"),
+            login_file: Some(d.path().join("login")),
+            signin: None,
             trusted_proxies: vec![],
             heartbeat: None,
             login_hint: None,
@@ -1418,7 +1552,8 @@ mod tests {
             dir: d.path().join("hub"),
             claude: "claude".into(),
             listen: "127.0.0.1:0".parse().unwrap(),
-            login_file: d.path().join("login"),
+            login_file: Some(d.path().join("login")),
+            signin: None,
             trusted_proxies: vec![],
             heartbeat: None,
             login_hint: None,
@@ -1482,13 +1617,103 @@ mod tests {
         assert!(tokens.is_empty());
     }
 
+    async fn get(hub: &Arc<Hub>, uri: &str, cookie: Option<&str>) -> (StatusCode, Vec<String>, Option<String>, String) {
+        use tower::ServiceExt;
+        let mut req = axum::http::Request::builder().uri(uri);
+        if let Some(c) = cookie {
+            req = req.header(header::COOKIE, c);
+        }
+        let res = router(hub.clone()).oneshot(req.body(axum::body::Body::empty()).unwrap()).await.unwrap();
+        let status = res.status();
+        let cookies = res
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|v| v.to_str().unwrap().split(';').next().unwrap().to_string())
+            .collect();
+        let location = res.headers().get(header::LOCATION).map(|v| v.to_str().unwrap().to_string());
+        let body = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        (status, cookies, location, String::from_utf8_lossy(&body).to_string())
+    }
+
+    #[tokio::test]
+    async fn signing_in_with_fleetlayer_opens_the_hub_and_signing_out_ends_it_there_too() {
+        use fleetlayer_oidc::testing::{FakeIssuer, good, param};
+        let f = FakeIssuer::start_for("hub").await;
+        let d = tempfile::tempdir().unwrap();
+        let signin = Signin {
+            issuer: f.url.clone(),
+            client: "hub".into(),
+            secret: "s3cret".into(),
+            base_url: "https://hub.example".into(),
+        };
+        // The login key turned off: Fleetlayer only.
+        let hub = Hub::open(HubConfig {
+            dir: d.path().join("hub"),
+            claude: PathBuf::from("/bin/false"),
+            listen: "127.0.0.1:0".parse().unwrap(),
+            login_file: None,
+            signin: Some(signin),
+            trusted_proxies: vec![],
+            heartbeat: None,
+            login_hint: None,
+        })
+        .unwrap();
+        let (_, _, _, page) = get(&hub, "/login", None).await;
+        assert!(page.contains("Sign in with Fleetlayer"), "{page}");
+        assert!(!page.contains("Login key"), "no key to type when it's turned off");
+
+        let (status, cookies, to, _) = get(&hub, "/_/auth/start", None).await;
+        assert!(status.is_redirection());
+        let to = to.unwrap();
+        assert_eq!(param(&to, "client_id"), "hub");
+        assert_eq!(param(&to, "redirect_uri"), "https://hub.example/_/auth/callback");
+        assert_eq!(param(&to, "code_challenge_method"), "S256");
+        let state = param(&to, "state");
+        assert_eq!(cookies[0], format!("hub_oidc={state}"));
+        *f.token.lock().unwrap() = Some(good(&f, f.claims(&param(&to, "nonce"))));
+
+        // Back from the sign-in service in another browser: refused.
+        let cb = format!("/_/auth/callback?code=c&state={state}");
+        let (status, _, _, _) = get(&hub, &cb, Some("hub_oidc=someone-else")).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        // A fresh sign-in, back in the same browser: a session, through a page (the Strict cookie).
+        let (_, _, to, _) = get(&hub, "/_/auth/start", None).await;
+        let to = to.unwrap();
+        let state = param(&to, "state");
+        *f.token.lock().unwrap() = Some(good(&f, f.claims(&param(&to, "nonce"))));
+        let (status, cookies, _, body) =
+            get(&hub, &format!("/_/auth/callback?code=c&state={state}"), Some(&format!("hub_oidc={state}"))).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.contains("http-equiv=\"refresh\""));
+        let session = cookies.iter().find(|c| c.starts_with("hub_session=")).unwrap().clone();
+        let (status, _, _, _) = get(&hub, "/", Some(&session)).await;
+        assert_eq!(status, StatusCode::OK, "the hub opens");
+        assert!(!hub.check_login(""), "and no login key works");
+
+        // Signing out ends the Fleetlayer sign-in too.
+        use tower::ServiceExt;
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/logout")
+            .header(header::COOKIE, &session)
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let res = router(hub.clone()).oneshot(req).await.unwrap();
+        let body = String::from_utf8_lossy(&axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap()).to_string();
+        assert!(body.contains(&format!("{}/logout", f.url)), "{body}");
+        let (status, _, _, _) = get(&hub, "/", Some(&session)).await;
+        assert!(status.is_redirection(), "the session is gone");
+    }
+
     fn test_hub(d: &Path, claude: PathBuf) -> Arc<Hub> {
         std::fs::write(d.join("login"), "z".repeat(40)).unwrap();
         Hub::open(HubConfig {
             dir: d.join("hub"),
             claude,
             listen: "127.0.0.1:0".parse().unwrap(),
-            login_file: d.join("login"),
+            login_file: Some(d.join("login")),
+            signin: None,
             trusted_proxies: vec![],
             heartbeat: None,
             login_hint: None,

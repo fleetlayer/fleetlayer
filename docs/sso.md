@@ -2,8 +2,9 @@
 
 Status: design (27 November 2026). Steps 1a (people, tenants, teams, memberships, invites, node owners on the control
 plane), 1b (decisions in the owning tenant, people in the policy, the check call), 1c (the sign-in token and its
-routes), 2a (the sign-in service: OpenID Connect provider, passkeys, invites, the move test) and 2b (the admin pages)
-are built; the rest follows the steps at the end, each one shippable.
+routes), 2a (the sign-in service: OpenID Connect provider, passkeys, invites, the move test), 2b (the admin pages)
+and 3 (the hub and pages sign in with Fleetlayer, through the shared `crates/fleetlayer-oidc`) are built; the rest
+follows the steps at the end, each one shippable.
 
 People sign in once, with Fleetlayer, to every web service the fleet runs: the Claude sign-in hub, pages, and any
 other service someone chooses to run. Who may use what comes from the same access policy that decides what agents may

@@ -28,10 +28,14 @@ nix = { version = "0.32.0", default-features = false, features = ["signal"] }
 form_urlencoded = "1.2.3"
 portable-pty = "0.9.0"
 vt100 = "0.18.1"
+# "Sign in with Fleetlayer" (shared with pages).
+fleetlayer-oidc = { path = "../../crates/fleetlayer-oidc" }
 
 [dev-dependencies]
 tempfile = "3.27.0"
 tokio = { workspace = true, features = ["test-util"] }
+fleetlayer-oidc = { path = "../../crates/fleetlayer-oidc", features = ["testing"] }
+tower = { version = "0.5", features = ["util"] }
 
 [lints]
 workspace = true

@@ -78,8 +78,14 @@ struct HubSection {
     dir: Option<String>,
     /// Where the web page listens, e.g. `10.5.7.37:7660`. Put it behind a private HTTPS proxy, never on the internet.
     listen: std::net::SocketAddr,
-    /// A file holding the page's login value (at least 32 characters), 0600.
-    login_file: String,
+    /// A file holding the page's login value (at least 32 characters), 0600. Leave it out to sign in only with
+    /// Fleetlayer (`signin`).
+    #[serde(default)]
+    login_file: Option<String>,
+    /// "Sign in with Fleetlayer" (`docs/plugins/signin.md`): who may open the hub is the policy's `sign_in` on
+    /// `service:hub`, by default the tenant's admins.
+    #[serde(default)]
+    signin: Option<SigninSection>,
     /// Proxies whose `X-Forwarded-For` is believed, for the per-address login lockout.
     #[serde(default)]
     trusted_proxies: Vec<std::net::IpAddr>,
@@ -88,6 +94,20 @@ struct HubSection {
     login_hint: Option<String>,
     /// The name it announces to the node's gateway (`claude-hub.localhost`). Default `claude-hub`.
     service: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SigninSection {
+    /// The sign-in service (`https://signin.example.com`).
+    issuer: String,
+    /// The hub's client ID there. Default `hub`.
+    #[serde(default)]
+    client: Option<String>,
+    /// The client secret, shared with the sign-in service's settings for this client.
+    secret_file: String,
+    /// The hub's own address (`https://hub.example.com`); register `<it>/_/auth/callback` and `<it>/_/signed-out`.
+    base_url: String,
 }
 
 struct Plugin {
@@ -244,7 +264,19 @@ impl Handler for Shared {
                         dir: dir.into(),
                         claude: find_claude(&home, config.claude.as_deref()).into(),
                         listen: h.listen,
-                        login_file: expand(&home, &h.login_file).into(),
+                        login_file: h.login_file.as_deref().map(|f| expand(&home, f).into()),
+                        signin: match &h.signin {
+                            Some(s) => Some(hub::Signin {
+                                issuer: s.issuer.clone(),
+                                client: s.client.clone().unwrap_or_else(|| "hub".into()),
+                                secret: std::fs::read_to_string(expand(&home, &s.secret_file))
+                                    .map_err(|e| RpcError::refused(format!("the hub's signin secret_file: {e}")))?
+                                    .trim()
+                                    .to_string(),
+                                base_url: s.base_url.clone(),
+                            }),
+                            None => None,
+                        },
                         trusted_proxies: h.trusted_proxies.clone(),
                         heartbeat: h.heartbeat.clone(),
                         login_hint: h.login_hint.clone(),
