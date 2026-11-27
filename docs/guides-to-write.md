@@ -502,6 +502,13 @@ managers, machines that sleep.
   changed before the old name goes away. Also, a reverse proxy that doesn't pass the original `Host` on (nginx without
   `proxy_set_header Host $host`) makes old-address requests look like new ones. Where it lives:
   `docs/plugins/signin.md` ("Keep it running", "Change its address").
+- **Forward-auth and headers a browser can forge.** A service behind a proxy's forward-auth trusts identity headers
+  (`X-Forwarded-User`, `Remote-User`, `X-Fleetlayer-Person`). If the proxy passes a browser's own copy of them on, on
+  any route (an unprotected path, another site on the same proxy that reaches the same backend), anyone can claim to
+  be anyone. Strip them on every route. Two traps: in Caddy, `request_header` runs after `forward_auth` in the
+  default directive order, so it deletes the headers forward-auth just set unless both sit in a `route` block in the
+  right order; and nginx's `auth_request` can't pass a redirect to sign in, so the auth service answers 401 with a
+  `Location` the config turns into the redirect. Where it lives: `docs/plugins/signin.md` ("forward-auth").
 - **Rotating a token-signing key.** Publish the new key and keep the old one in the JWKS for as long as tokens it
   signed live (two weeks here, for safety), so nothing breaks; apps must look the JWKS up again when a token names an
   unknown key. A key that may have leaked is the exception: take it out at once and accept that everyone signs in to

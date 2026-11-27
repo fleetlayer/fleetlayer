@@ -128,6 +128,7 @@ impl App {
             ended
         };
         self.drop_access_tokens(person).await;
+        self.forward_cache.forget(person).await;
         let logouts = ended.iter().flat_map(|(k, s)| self.logouts_for(k, s, now)).collect();
         self.queue(logouts).await?;
         if !ended.is_empty() {

@@ -162,6 +162,7 @@ fn app_with(dir: &std::path::Path, control: &str, backchannel: Option<String>) -
         passkey_domain: "example.com".into(),
         passkeys_fixed: false,
         previous_issuers: vec![],
+        forward: None,
         clients: vec![client("hub"), client("vault")],
     };
     Arc::new(web::App::new(settings, store, keys, crate::control::Control::new(control, "fls_test")).unwrap())
@@ -467,6 +468,7 @@ async fn on_plain_http_localhost_the_cookie_isnt_secure_and_everywhere_else_it_i
         passkey_domain: "signin.localhost".into(),
         passkeys_fixed: true,
         previous_issuers: vec![],
+        forward: None,
         clients: vec![],
     };
     let local = Arc::new(web::App::new(settings, store, keys, crate::control::Control::new(&control, "t")).unwrap());
@@ -490,6 +492,7 @@ async fn with_upstream(
         passkey_domain: "example.com".into(),
         passkeys_fixed: false,
         previous_issuers: vec![],
+        forward: None,
         clients: vec![web::Client {
             name: "hub".into(),
             redirect_uris: vec!["https://hub.example.com/cb".into()],
@@ -913,4 +916,156 @@ async fn a_previous_address_serves_the_jwks_and_sends_everything_else_to_the_iss
     // The issuer's own address is served as usual.
     let r = at("signin.example.com", "GET", "/.well-known/openid-configuration").await;
     assert_eq!(r.status(), StatusCode::OK);
+}
+
+/// An app with forward-auth for `grafana.example.com` (the policy's `service:hub`, allowed) and `vault.example.com`
+/// (`service:vault`, refused).
+fn forward_app(dir: &std::path::Path, control: &str) -> Arc<web::App> {
+    let mut a = Arc::try_unwrap(app(dir, control)).ok().unwrap();
+    let host = |h: &str, s: &str| crate::forward::Host { host: h.into(), service: s.into(), tenant: "acme".into() };
+    a.settings.forward = Some(crate::forward::Settings {
+        cookie_domain: "example.com".into(),
+        hosts: vec![host("grafana.example.com", "hub"), host("vault.example.com", "vault")],
+    });
+    Arc::new(a)
+}
+
+async fn forward_check(a: &Arc<web::App>, headers: &[(&str, &str)]) -> axum::response::Response {
+    let mut req = Request::builder().uri("/forward-auth");
+    for (k, v) in headers {
+        req = req.header(*k, *v);
+    }
+    web::router(a.clone()).oneshot(req.body(Body::empty()).unwrap()).await.unwrap()
+}
+
+fn set_cookies(r: &axum::response::Response) -> Vec<String> {
+    r.headers().get_all(header::SET_COOKIE).iter().map(|v| v.to_str().unwrap().to_string()).collect()
+}
+
+async fn text_of(r: axum::response::Response) -> String {
+    String::from_utf8_lossy(&axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap()).to_string()
+}
+
+#[tokio::test]
+async fn forward_auth_lets_in_whom_the_policy_allows_and_sends_others_to_sign_in() {
+    let control = control_plane(Arc::new(Mutex::new(Seen::default()))).await;
+    let dir = tempfile::tempdir().unwrap();
+    let a = forward_app(dir.path(), &control);
+    let grafana =
+        [("x-forwarded-proto", "https"), ("x-forwarded-host", "grafana.example.com"), ("x-forwarded-uri", "/d/1?x=2")];
+
+    // No cookie: off to sign in, and back to the page after. nginx gets a 401 its config turns into that.
+    let r = forward_check(&a, &grafana).await;
+    assert_eq!(r.status(), StatusCode::SEE_OTHER);
+    let to = r.headers()[header::LOCATION].to_str().unwrap().to_string();
+    assert_eq!(to, format!("{ORIGIN}/forward/start?rd=https%3A%2F%2Fgrafana.example.com%2Fd%2F1%3Fx%3D2"));
+    let r = forward_check(&a, &[("x-original-url", "https://grafana.example.com/d/1")]).await;
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+    // A host that isn't set up: refused.
+    let r = forward_check(&a, &[("x-forwarded-host", "other.example.com")]).await;
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+
+    // Not signed in at /forward/start: to the sign-in page first, which comes back.
+    let start = "/forward/start?rd=https%3A%2F%2Fgrafana.example.com%2Fd%2F1%3Fx%3D2";
+    let r = call(&a, "GET", start, None, None, "").await;
+    assert!(r.location.as_deref().unwrap().starts_with("/login?return=%2Fforward%2Fstart"), "{:?}", r.location);
+    // Signed in: the cookie, on the shared domain, and on to the page.
+    let session = register(&a, &mut SoftPasskey::new(true)).await;
+    let req = Request::builder().uri(start).header(header::COOKIE, &session).body(Body::empty()).unwrap();
+    let r = web::router(a.clone()).oneshot(req).await.unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let set = set_cookies(&r).into_iter().find(|c| c.starts_with("__Secure-fleetlayer-fwd=")).expect("the cookie");
+    assert!(set.contains("Domain=example.com") && set.contains("HttpOnly") && set.contains("Secure"), "{set}");
+    assert!(text_of(r).await.contains("https://grafana.example.com/d/1?x=2"));
+    let fwd = set.split(';').next().unwrap().to_string();
+
+    // With it: in, with who they are.
+    let mut with = grafana.to_vec();
+    with.push(("cookie", fwd.as_str()));
+    let r = forward_check(&a, &with).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(r.headers()["x-fleetlayer-person"], "a");
+    assert_eq!(r.headers()["x-forwarded-user"], "a");
+    assert_eq!(r.headers()["x-fleetlayer-tenant"], "acme");
+    assert_eq!(r.headers()["x-fleetlayer-teams"], "engineering");
+
+    // The vault isn't theirs: 403, saying only that, with no rule names.
+    let r = forward_check(&a, &[("x-forwarded-host", "vault.example.com"), ("cookie", fwd.as_str())]).await;
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    assert_eq!(text_of(r).await.trim(), "You're not allowed to use vault.");
+    let req = Request::builder()
+        .uri("/forward/start?rd=https%3A%2F%2Fvault.example.com%2F")
+        .header(header::COOKIE, &session)
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(web::router(a.clone()).oneshot(req).await.unwrap().status(), StatusCode::FORBIDDEN);
+
+    // Signing out ends it at once, decisions included, and clears the cookie.
+    assert!(a.forward_cache.len().await > 0);
+    let req =
+        Request::builder().method("POST").uri("/logout").header(header::COOKIE, &session).body(Body::empty()).unwrap();
+    let r = web::router(a.clone()).oneshot(req).await.unwrap();
+    assert!(set_cookies(&r).iter().any(|c| c.starts_with("__Secure-fleetlayer-fwd=;") && c.contains("Max-Age=0")));
+    assert_eq!(a.forward_cache.len().await, 0);
+    let r = forward_check(&a, &with).await;
+    assert_eq!(r.status(), StatusCode::SEE_OTHER, "the cookie no longer works");
+}
+
+#[tokio::test]
+async fn forward_auth_only_returns_to_a_configured_host() {
+    let control = control_plane(Arc::new(Mutex::new(Seen::default()))).await;
+    let dir = tempfile::tempdir().unwrap();
+    let a = forward_app(dir.path(), &control);
+    let f = a.settings.forward.as_ref().unwrap();
+    assert!(crate::forward::safe_rd(&a, f, "https://grafana.example.com/d/1?x=2").is_some());
+    assert!(crate::forward::safe_rd(&a, f, "HTTPS://Grafana.Example.com/").is_some());
+    for bad in [
+        "https://evil.example.org/",
+        "https://grafana.example.com.evil.org/",
+        "https://evilgrafana.example.com/",
+        "https://user@grafana.example.com/",
+        "https://grafana.example.com@evil.org/",
+        "https://evil.org\\@grafana.example.com/",
+        "https://evil.org#@grafana.example.com/",
+        "//grafana.example.com/",
+        "/grafana.example.com/",
+        "http://grafana.example.com/",
+        "https://grafana.example.com:444/",
+        "javascript:alert(1)",
+        "https:/\\grafana.example.com/",
+        "https://grafana.example.com\t/",
+    ] {
+        assert!(crate::forward::safe_rd(&a, f, bad).is_none(), "{bad}");
+    }
+    let session = register(&a, &mut SoftPasskey::new(true)).await;
+    let req = Request::builder()
+        .uri("/forward/start?rd=https%3A%2F%2Fevil.example.org%2F")
+        .header(header::COOKIE, &session)
+        .body(Body::empty())
+        .unwrap();
+    let r = web::router(a.clone()).oneshot(req).await.unwrap();
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    assert!(r.headers().get(header::LOCATION).is_none() && set_cookies(&r).iter().all(|c| !c.contains("fwd")));
+}
+
+#[tokio::test]
+async fn signing_out_everywhere_ends_forward_auth_too() {
+    let control = control_plane(Arc::new(Mutex::new(Seen::default()))).await;
+    let dir = tempfile::tempdir().unwrap();
+    let a = forward_app(dir.path(), &control);
+    let session = register(&a, &mut SoftPasskey::new(true)).await;
+    let req = Request::builder()
+        .uri("/forward/start?rd=https%3A%2F%2Fgrafana.example.com%2F")
+        .header(header::COOKIE, &session)
+        .body(Body::empty())
+        .unwrap();
+    let r = web::router(a.clone()).oneshot(req).await.unwrap();
+    let fwd = set_cookies(&r).into_iter().find(|c| c.starts_with("__Secure-fleetlayer-fwd=")).unwrap();
+    let fwd = fwd.split(';').next().unwrap().to_string();
+    let with = [("x-forwarded-host", "grafana.example.com"), ("cookie", fwd.as_str())];
+    assert_eq!(forward_check(&a, &with).await.status(), StatusCode::OK);
+    crate::logout::revoke(dir.path(), "p_a", crate::store::now_ms()).unwrap();
+    a.apply_revocations().await.unwrap();
+    assert_eq!(a.forward_cache.len().await, 0);
+    assert_eq!(forward_check(&a, &with).await.status(), StatusCode::SEE_OTHER);
 }

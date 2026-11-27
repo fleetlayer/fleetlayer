@@ -53,6 +53,8 @@ pub struct Settings {
     /// Addresses it had before (`host[:port]`), still pointed here while services are repointed: discovery there
     /// redirects to the issuer, the JWKS is served, and everything else redirects to the same path at the issuer.
     pub previous_issuers: Vec<String>,
+    /// Forward-auth, for services that can't speak OpenID Connect.
+    pub forward: Option<crate::forward::Settings>,
 }
 
 struct Code {
@@ -114,6 +116,8 @@ pub struct App {
     pub keys: Keys,
     /// Why the last key refresh failed, if it did (a problem until one succeeds).
     pub(crate) key_error: std::sync::Mutex<Option<String>>,
+    /// Forward-auth decisions, reused for a minute.
+    pub(crate) forward_cache: crate::forward::Cache,
     pub control: Control,
     webauthn: Webauthn,
     pending: Mutex<Pending>,
@@ -150,6 +154,7 @@ impl App {
             store,
             keys,
             key_error: std::sync::Mutex::new(None),
+            forward_cache: Default::default(),
             control,
             webauthn,
             pending: Mutex::new(Pending::default()),
@@ -215,6 +220,7 @@ impl App {
                 verified_at: now,
                 via_tenant: via_tenant.map(String::from),
                 clients: Default::default(),
+                forward: Default::default(),
             },
         );
         self.store.save_sessions(&sessions)?;
@@ -232,6 +238,7 @@ impl App {
             gone
         };
         let Some(s) = gone else { return Ok(None) };
+        self.forward_cache.forget(&s.person).await;
         self.queue(self.logouts_for(&key, &s, now_ms())).await?;
         Ok(Some(s.person))
     }
@@ -309,6 +316,8 @@ pub fn router(app: Arc<App>) -> axum::Router {
         .route("/userinfo", get(userinfo))
         .route("/logout", get(logout).post(logout))
         .route("/logout/everywhere", post(logout_everywhere))
+        .route("/forward-auth", get(crate::forward::check))
+        .route("/forward/start", get(crate::forward::start))
         .route("/login", get(login_page))
         .route("/invite", get(invite_page))
         .route("/invite/join", post(invite_join))
@@ -733,6 +742,9 @@ async fn logout(State(app): State<Arc<App>>, headers: HeaderMap, Query(q): Query
         None => page(StatusCode::OK, "Signed out", "<p>You're signed out.</p>"),
     };
     resp.headers_mut().append(header::SET_COOKIE, clear);
+    if let Some(f) = &app.settings.forward {
+        resp.headers_mut().append(header::SET_COOKIE, crate::forward::fwd_cookie(&app, f, "", 0));
+    }
     resp
 }
 
@@ -754,6 +766,9 @@ async fn logout_everywhere(State(app): State<Arc<App>>, headers: HeaderMap) -> R
         "<p>You're signed out on every browser and device, and of every service.</p>",
     );
     resp.headers_mut().append(header::SET_COOKIE, app.session_cookie("", 0));
+    if let Some(f) = &app.settings.forward {
+        resp.headers_mut().append(header::SET_COOKIE, crate::forward::fwd_cookie(&app, f, "", 0));
+    }
     resp
 }
 

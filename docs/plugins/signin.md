@@ -9,7 +9,8 @@ Everything a company needs is built on the same service: single sign-on, teams, 
 fits together, and why, is in [Sign-in and SSO](../sso.md).
 
 Status: experimental. Passkeys, invites, signing in to services, the admin pages, signing in with Google Workspace or
-another OpenID Connect provider, and signing out of every service at once work. Workspace groups as teams come next.
+another OpenID Connect provider, signing out of every service at once, and forward-auth for services that can't sign
+people in themselves work. Workspace groups as teams come next.
 
 ## Set it up
 
@@ -120,6 +121,7 @@ true}`: on a public provider that would let in anyone on the internet.
 | `clients` | Each service that signs people in: `name` (as in the policy, `service:<name>`), its exact `redirect_uris`, a `secret_file` for a service that keeps a secret (leave it out for one that can't, such as an app in a browser), `post_logout_redirect_uris`, and `backchannel_logout_uri`, where it's told someone signed out (below). |
 | `upstreams` | Providers people may sign in with (above): `name`, `kind` (`google` or `oidc`), `issuer` (oidc), `domain` (required for google), `label`, `tenant`, `client_id`, `client_secret_file`, `join`. |
 | `previous_issuers` | Addresses it had before, still pointed at it while services are repointed (below). |
+| `forward_auth` | `cookie_domain` and `hosts` (`host`, `service`, `tenant`), for services behind a proxy's forward-auth (above). |
 | `heartbeat` | Pushed every five minutes; it fails when `/healthz` would. |
 
 ## For a service
@@ -151,6 +153,116 @@ with its client ID (the `name`) and secret.
 - The token never says what someone may do. For anything finer, a Fleetlayer plugin asks its node
   (`_fleetlayer.dev/access/check`), and any other service asks `POST /api/check` with its client ID and secret, about
   its own `service:<name>` only.
+
+## Services that can't sign people in themselves: forward-auth
+
+For a service with no OpenID Connect support, the reverse proxy in front of it asks the sign-in service about every
+request (`GET /forward-auth`), and lets it through only when the person may use it:
+
+```yaml
+forward_auth:
+  cookie_domain: example.com          # the sign-in service and every host below are under it
+  hosts:
+    - host: grafana.example.com
+      service: grafana                # as in the policy: sign_in on service:grafana
+      tenant: acme
+```
+
+- **Signed in and allowed:** the request goes through with `X-Fleetlayer-Person` and `X-Forwarded-User` (the
+  person's handle), `X-Fleetlayer-Tenant` and `X-Fleetlayer-Teams` (comma-separated, cut at 2 KB), for the service to
+  trust.
+- **Not signed in:** sent to sign in, then back to the page they asked for (only ever to a host in this list).
+- **Not allowed:** "You're not allowed to use grafana."
+- **Signing out**, signing out everywhere and the `signout` command end forward-auth at once. Access is checked again
+  at most a minute later, so removing someone, or a rule, takes up to a minute to reach forward-auth.
+- **The cookie** (`__Secure-fleetlayer-fwd`) is set on `cookie_domain`, so every host under it receives it. It's only
+  an opaque ID and can't sign anyone in to a service through OpenID Connect, but a host under that domain run by
+  someone else could replay it to your forward-auth hosts: pick a domain whose subdomains are all yours.
+
+**The proxy** must remove any `X-Fleetlayer-*` and `X-Forwarded-User` headers a browser sends, on every site it
+serves, not only the protected ones, or a browser could claim to be anyone. `/forward-auth` is best reachable only
+from the proxy; nothing breaks if it isn't (it answers only about the caller's own cookie).
+
+Caddy (`route` keeps the order: the headers go before `forward_auth` copies its own in):
+
+```caddyfile
+(strip_identity) {
+	request_header -X-Fleetlayer-Person
+	request_header -X-Fleetlayer-Tenant
+	request_header -X-Fleetlayer-Teams
+	request_header -X-Forwarded-User
+}
+
+grafana.example.com {
+	route {
+		import strip_identity
+		forward_auth 127.0.0.1:7680 {
+			uri /forward-auth
+			copy_headers X-Fleetlayer-Person X-Fleetlayer-Tenant X-Fleetlayer-Teams X-Forwarded-User
+		}
+		reverse_proxy 127.0.0.1:3000
+	}
+}
+
+other.example.com {
+	route {
+		import strip_identity
+		reverse_proxy 127.0.0.1:4000
+	}
+}
+```
+
+Traefik (strip first, then check):
+
+```yaml
+http:
+  middlewares:
+    strip-identity:
+      headers:
+        customRequestHeaders:
+          X-Fleetlayer-Person: ""
+          X-Fleetlayer-Tenant: ""
+          X-Fleetlayer-Teams: ""
+          X-Forwarded-User: ""
+    fleetlayer:
+      forwardAuth:
+        address: http://127.0.0.1:7680/forward-auth
+        authResponseHeaders: [X-Fleetlayer-Person, X-Fleetlayer-Tenant, X-Fleetlayer-Teams, X-Forwarded-User]
+  routers:
+    grafana:
+      rule: Host(`grafana.example.com`)
+      middlewares: [strip-identity, fleetlayer]
+      service: grafana
+```
+
+nginx (`auth_request` can't pass a redirect on, so the sign-in service answers 401 with where to go):
+
+```nginx
+location = /_fleetlayer/auth {
+    internal;
+    proxy_pass http://127.0.0.1:7680/forward-auth;
+    proxy_pass_request_body off;
+    proxy_set_header Content-Length "";
+    proxy_set_header X-Original-URL $scheme://$http_host$request_uri;
+}
+
+location / {
+    auth_request /_fleetlayer/auth;
+    auth_request_set $fl_signin $upstream_http_location;
+    auth_request_set $fl_person $upstream_http_x_fleetlayer_person;
+    auth_request_set $fl_tenant $upstream_http_x_fleetlayer_tenant;
+    auth_request_set $fl_teams $upstream_http_x_fleetlayer_teams;
+    error_page 401 =302 $fl_signin;
+    # Set on every request, so a browser's own values never get through.
+    proxy_set_header X-Fleetlayer-Person $fl_person;
+    proxy_set_header X-Forwarded-User $fl_person;
+    proxy_set_header X-Fleetlayer-Tenant $fl_tenant;
+    proxy_set_header X-Fleetlayer-Teams $fl_teams;
+    proxy_pass http://127.0.0.1:3000;
+}
+```
+
+On nginx's other sites, `proxy_set_header X-Fleetlayer-Person "";` (and the same for the other three) removes them.
 
 ## Signing out
 

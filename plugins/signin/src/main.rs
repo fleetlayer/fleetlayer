@@ -23,6 +23,7 @@
 mod admin;
 mod control;
 mod domain;
+mod forward;
 mod keys;
 mod logout;
 mod store;
@@ -112,6 +113,9 @@ struct Config {
     /// Addresses it had before, still pointed here while every service is repointed (`docs/sso.md`, "Moving it").
     #[serde(default)]
     previous_issuers: Vec<String>,
+    /// Forward-auth for services that can't speak OpenID Connect (`docs/plugins/signin.md`).
+    #[serde(default)]
+    forward_auth: Option<ForwardConfig>,
     control_plane: String,
     /// The sign-in token (`fleetlayer-control signin token`).
     token_file: PathBuf,
@@ -122,6 +126,53 @@ struct Config {
     upstreams: Vec<UpstreamConfig>,
     #[serde(default)]
     heartbeat: Option<Heartbeat>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ForwardConfig {
+    /// The parent domain the cookie is set on; the sign-in service and every host must be under it.
+    cookie_domain: String,
+    hosts: Vec<ForwardHostConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ForwardHostConfig {
+    host: String,
+    service: String,
+    tenant: String,
+}
+
+/// Whether `host` (no port) is `domain` or under it.
+fn under(host: &str, domain: &str) -> bool {
+    host == domain || host.ends_with(&format!(".{domain}"))
+}
+
+fn forward_settings(f: ForwardConfig, issuer: &url::Url) -> anyhow::Result<forward::Settings> {
+    let domain = f.cookie_domain.trim_start_matches('.').to_ascii_lowercase();
+    anyhow::ensure!(
+        domain.contains('.') && !domain.contains(['/', ':', ' ']),
+        "forward_auth.cookie_domain {:?}: a domain such as example.com",
+        f.cookie_domain
+    );
+    let own = issuer.host_str().unwrap_or_default().to_ascii_lowercase();
+    anyhow::ensure!(
+        under(&own, &domain),
+        "forward_auth.cookie_domain {domain}: the sign-in service ({own}) must be under it, to set its cookie"
+    );
+    let mut hosts = vec![];
+    for h in f.hosts {
+        anyhow::ensure!(valid_client_name(&h.service), "forward_auth host {}: service {:?}", h.host, h.service);
+        let host = h.host.to_ascii_lowercase();
+        let bare = host.rsplit_once(':').map(|(b, _)| b).unwrap_or(&host);
+        anyhow::ensure!(
+            !host.contains(['/', ' ', '@']) && under(bare, &domain),
+            "forward_auth host {host}: a host name under {domain}, which the cookie reaches"
+        );
+        hosts.push(forward::Host { host, service: h.service, tenant: h.tenant });
+    }
+    Ok(forward::Settings { cookie_domain: domain, hosts })
 }
 
 /// Pushed every five minutes (Gatus external-endpoint style: `?success=true|false&error=…`, with a bearer token),
@@ -208,6 +259,7 @@ fn build(cfg: Config, home: &Path) -> anyhow::Result<(Arc<web::App>, SocketAddr,
         );
         previous_issuers.push(host);
     }
+    let forward = cfg.forward_auth.map(|f| forward_settings(f, &issuer)).transpose()?;
     let mut origin = issuer.clone();
     origin.set_path("");
     let settings = web::Settings {
@@ -217,6 +269,7 @@ fn build(cfg: Config, home: &Path) -> anyhow::Result<(Arc<web::App>, SocketAddr,
         passkeys_fixed,
         clients,
         previous_issuers,
+        forward,
     };
     let mut upstreams = vec![];
     for u in cfg.upstreams {

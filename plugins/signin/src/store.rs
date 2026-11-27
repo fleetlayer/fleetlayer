@@ -64,6 +64,9 @@ pub struct Session {
     /// The services it signed in to, which are sent a logout when it ends.
     #[serde(default)]
     pub clients: BTreeSet<String>,
+    /// Forward-auth cookies it set (their SHA-256): they work while it lasts.
+    #[serde(default)]
+    pub forward: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
