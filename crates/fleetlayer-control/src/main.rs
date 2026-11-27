@@ -475,8 +475,11 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
     let cli = Cli::parse();
-    let path = match &cli.db {
-        Some(p) => p.clone(),
+    // `acl test` reads only its files: it works anywhere, with no database (CI runs it in a clean checkout).
+    let offline = matches!(&cli.command, Command::Acl { command: AclCommand::Test { .. } });
+    let db = match &cli.db {
+        Some(p) => db::open(p).await?,
+        None if offline => db::open_memory().await?,
         None => {
             let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"));
             let path = default_db(std::path::Path::new("fleetlayer-control.db"), &home);
@@ -486,10 +489,9 @@ async fn main() -> anyhow::Result<()> {
                 "no control plane database at {} (pass --db, or set FLEETLAYER_CONTROL_DB)",
                 path.display()
             );
-            path
+            db::open(&path).await?
         }
     };
-    let db = db::open(&path).await?;
     let t = DEFAULT_TENANT;
     match cli.command {
         Command::Serve { listen, hooks_listen, admin_token_file, audit_key_file, audit_anchor_dir } => {

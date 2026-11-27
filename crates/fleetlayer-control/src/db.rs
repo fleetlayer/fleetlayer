@@ -24,7 +24,7 @@ pub async fn open(path: &Path) -> anyhow::Result<Db> {
     Ok(db)
 }
 
-#[cfg(test)]
+/// A database in memory: for tests, and commands that read only their own files (`acl test`).
 pub async fn open_memory() -> anyhow::Result<Db> {
     let db = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await?;
     sqlx::migrate!("./migrations").run(&db).await?;
