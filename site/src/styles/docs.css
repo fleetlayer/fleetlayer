@@ -64,3 +64,8 @@ h1#_top,
 .expressive-code .frame {
   --ec-brdRad: var(--radius-sm);
 }
+
+/* The plugin directory's tables: keep each name on one line, so the Name column is as wide as its longest name. */
+.sl-markdown-content table td:first-child a[href^="/directory/"] {
+  white-space: nowrap;
+}

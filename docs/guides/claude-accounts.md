@@ -215,7 +215,7 @@ there and not in the slot. Unset `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKE
 
 ## Every account in the menu bar
 
-[CodexBar](https://github.com/steipete/CodexBar), a macOS menu bar app for AI usage limits, can show several Claude
+[CodexBar](https://codexbar.app), a macOS menu bar app for AI usage limits, can show several Claude
 accounts from a program that prints claude-swap's account list. `fleetlayer-claude-accounts` prints the hub's
 accounts in that format, with the newest usage from any node, so every account shows on every Mac whether or not that
 Mac holds a sign-in.

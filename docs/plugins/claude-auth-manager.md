@@ -197,7 +197,7 @@ every sign-in there. Both of Claude Code's flows work that way:
 
 ## Every account in a menu bar: `fleetlayer-claude-accounts` for CodexBar
 
-CodexBar (a macOS menu bar app for AI usage limits) can show several Claude accounts from an external program that
+[CodexBar](https://codexbar.app) (a macOS menu bar app for AI usage limits) can show several Claude accounts from an external program that
 prints claude-swap's account list. `fleetlayer-claude-accounts` is that program for the accounts the hub manages: one
 row per `claude.signin_age` reading, with the newest `claude.usage` from any node, so every account shows on every
 machine whether or not it holds a sign-in.

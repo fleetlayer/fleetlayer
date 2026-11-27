@@ -1,5 +1,5 @@
 name: fleetlayer-claude-accounts
-summary: Shows every Claude account the hub manages, with its usage, in menu bar apps such as CodexBar.
+summary: Shows every Claude account the hub manages, with its usage, in menu bar apps such as [CodexBar](https://codexbar.app).
 kind: tool
 roles: []
 ships_with_fleetlayer: true
