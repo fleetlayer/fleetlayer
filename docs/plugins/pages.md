@@ -128,6 +128,11 @@ plugins:
         token_file: /etc/fleetlayer-pages/heartbeat-token
 ```
 
+Under a node, once it's listening the service announces itself (`_fleetlayer.dev/service/listening`, protocol
+section 10): its real address (so `listen: 127.0.0.1:0` works), `/healthz`, and the host pattern of its apps relative
+to the pages site's domain (`*--*.apps` for `apps_domain: apps.localhost` beside `pages.localhost`), so a gateway
+such as `fleetlayer-gateway` routes `pages.<domain>` and every app to it.
+
 `fleetlayer-pages serve <config.json>` runs the same web service without a node (the config's JSON form), for trying
 a page format change locally.
 

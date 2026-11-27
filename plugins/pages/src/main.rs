@@ -137,8 +137,33 @@ async fn beat(hb: &Heartbeat, problems: &[String]) {
     }
 }
 
-/// The web service and its heartbeat, until the web service stops.
-async fn run(app: Arc<web::App>, listen: SocketAddr, heartbeat: Option<Heartbeat>) -> anyhow::Result<()> {
+fn loopback_if_any(a: SocketAddr) -> SocketAddr {
+    if a.ip().is_unspecified() { SocketAddr::new(std::net::Ipv4Addr::LOCALHOST.into(), a.port()) } else { a }
+}
+
+/// The web service and its heartbeat, until the web service stops. Under a node, it tells the node where it listens
+/// once bound (`listen` may use port 0), and which hosts it serves, so a gateway can route to it.
+async fn run(
+    app: Arc<web::App>,
+    listen: SocketAddr,
+    heartbeat: Option<Heartbeat>,
+    peer: Option<Peer>,
+) -> anyhow::Result<()> {
+    let listener = tokio::net::TcpListener::bind(listen).await?;
+    let bound = loopback_if_any(listener.local_addr()?);
+    tracing::info!(%bound, "pages listening");
+    if let Some(peer) = peer {
+        let hosts = app.apps_host_pattern().into_iter().collect();
+        peer.notify(
+            ext::method::SERVICE_LISTENING,
+            &ext::ServiceListening {
+                name: "pages".into(),
+                url: format!("http://{bound}"),
+                health: Some("/healthz".into()),
+                hosts,
+            },
+        );
+    }
     let a = app.clone();
     tokio::spawn(async move {
         loop {
@@ -152,7 +177,7 @@ async fn run(app: Arc<web::App>, listen: SocketAddr, heartbeat: Option<Heartbeat
             tokio::time::sleep(Duration::from_secs(60)).await;
         }
     });
-    web::serve(app, listen).await
+    web::serve(app, listener).await
 }
 
 #[derive(Default)]
@@ -164,7 +189,7 @@ struct Shared(Arc<Plugin>);
 
 #[async_trait]
 impl Handler for Shared {
-    async fn request(&self, _peer: &Peer, method: &str, p: Value) -> Result<Value, RpcError> {
+    async fn request(&self, peer: &Peer, method: &str, p: Value) -> Result<Value, RpcError> {
         match method {
             acp::method::INITIALIZE => {
                 let req: InitializeRequest = params(p)?;
@@ -177,8 +202,9 @@ impl Handler for Shared {
                 let mut started = self.0.started.lock().await;
                 if !*started {
                     *started = true;
+                    let peer = peer.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = run(app, listen, heartbeat).await {
+                        if let Err(e) = run(app, listen, heartbeat, Some(peer)).await {
                             // Exiting makes the node restart the plugin, with backoff, and report it.
                             tracing::error!("the web service stopped: {e}");
                             std::process::exit(1);
@@ -229,7 +255,7 @@ async fn main() {
             let result = async {
                 let cfg: Config = serde_json::from_slice(&std::fs::read(path)?)?;
                 let (app, listen, heartbeat) = build(cfg, &home)?;
-                run(app, listen, heartbeat).await
+                run(app, listen, heartbeat, None).await
             }
             .await;
             if let Err(e) = result {

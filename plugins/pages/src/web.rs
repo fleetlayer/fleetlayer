@@ -80,11 +80,26 @@ async fn by_host(State(app): Ctx, req: axum::extract::Request, next: axum::middl
     next.run(req).await
 }
 
-pub async fn serve(app: Arc<App>, listen: SocketAddr) -> anyhow::Result<()> {
-    let listener = tokio::net::TcpListener::bind(listen).await?;
-    tracing::info!(%listen, "pages listening");
+pub async fn serve(app: Arc<App>, listener: tokio::net::TcpListener) -> anyhow::Result<()> {
     axum::serve(listener, router(app).into_make_service_with_connect_info::<SocketAddr>()).await?;
     Ok(())
+}
+
+impl App {
+    /// The host pattern for apps, relative to the gateway's domain (the pages site's domain without its first label):
+    /// `apps_domain: apps.localhost` with `base_url: http://pages.localhost:7680` gives `*--*.apps`. None without apps,
+    /// or when the apps domain isn't under the pages site's domain.
+    pub fn apps_host_pattern(&self) -> Option<String> {
+        let apps = self.apps_domain.as_deref()?;
+        let base = self.base_url.as_deref()?.split_once("://")?.1;
+        let host = base.split(['/', ':']).next()?;
+        let domain = host.split_once('.')?.1;
+        if apps == domain {
+            return Some("*--*".into());
+        }
+        let rel = apps.strip_suffix(domain)?.strip_suffix('.')?;
+        Some(format!("*--*.{rel}"))
+    }
 }
 
 // ------------------------------------------------------------ headers
@@ -1230,6 +1245,22 @@ mod tests {
 
     async fn get_host(app: &Arc<App>, host: &str, path: &str, sid: &str) -> Response {
         req(app, "GET", host, path, &[format!("{}={sid}", auth::COOKIE)], None).await
+    }
+
+    #[test]
+    fn the_apps_host_pattern_is_relative_to_the_pages_site_s_domain() {
+        let (mut a, _d) = app();
+        let m = Arc::get_mut(&mut a).unwrap();
+        m.base_url = Some("http://pages.localhost:7680".into());
+        m.apps_domain = Some("apps.localhost".into());
+        assert_eq!(a.apps_host_pattern().as_deref(), Some("*--*.apps"));
+        let m = Arc::get_mut(&mut a).unwrap();
+        m.base_url = Some("https://pages.home.example".into());
+        m.apps_domain = Some("home.example".into());
+        assert_eq!(a.apps_host_pattern().as_deref(), Some("*--*"));
+        let m = Arc::get_mut(&mut a).unwrap();
+        m.apps_domain = Some("apps.other.example".into());
+        assert_eq!(a.apps_host_pattern(), None);
     }
 
     #[test]
