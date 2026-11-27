@@ -1918,6 +1918,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "fleetlayer-scheduler"
+version = "0.3.11"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "clap",
+ "fleetlayer-plugin",
+ "fleetlayer-protocol",
+ "jiff 1.0.3",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "yaml_serde",
+]
+
+[[package]]
 name = "fleetlayer-shared-folders"
 version = "0.3.11"
 dependencies = [

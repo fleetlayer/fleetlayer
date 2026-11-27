@@ -51,6 +51,7 @@ export const pages = [
   { file: "plugins/claude-auth-manager", group: "Plugins", label: "Claude accounts" },
   { file: "plugins/signin", group: "Plugins", label: "Sign-in" },
   { file: "plugins/shared-folders", group: "Plugins", label: "Folders" },
+  { file: "plugins/scheduler", group: "Plugins", label: "Scheduler" },
   { file: "access-control", group: "Reference", label: "Access control" },
   { file: "protocol", group: "Reference", label: "Plugin protocol" },
   { file: "link", group: "Reference", label: "Node link" },

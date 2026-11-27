@@ -1,0 +1,31 @@
+name: scheduler
+summary: Sends a message to an agent session on a schedule (every few hours, a cron expression, or once at a set time).
+kind: plugin
+roles: []
+ships_with_fleetlayer: true
+status: beta
+licence: Apache-2.0
+maintainer: Fleetlayer
+source: https://github.com/fleetlayer/fleetlayer/tree/main/plugins/scheduler
+install: bundled
+command: fleetlayer-scheduler
+platforms: [linux, macos]
+min_fleetlayer: 0.3.12
+protocol: 1
+grants: [message.send]
+config: |
+  plugins:
+    - name: scheduler
+      command: fleetlayer-scheduler
+      grants: [message.send]
+      # entries go in ~/.config/fleetlayer/scheduler.yaml
+security: >-
+  Sends messages as plugin:scheduler@<node>, under the same access policy as any sender: a message to another node is
+  checked, one to a session on its own node isn't (as with every message on one node). It's only as trusted as its
+  node's Unix user, so it can't give an agent orders that node couldn't. Reads only its settings file and state
+  directory.
+docs: plugins/scheduler
+description: |
+  The recurring prompt you'd otherwise send a worker agent by hand ("check the queue every three hours") as one entry
+  in a settings file. It retries a session that's waiting on a person, never sends a burst of catch-up messages after
+  downtime, and reports a problem when fires stop getting through, so your monitoring hears about it.

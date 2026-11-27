@@ -625,3 +625,12 @@ managers, machines that sleep.
   so read them off the screen and check the screen again before typing: a late answer must never land on the next
   prompt. herdr can't read scrollback while an agent is blocked; read the visible screen. Where it lives:
   `docs/protocol.md` ("Blocked prompts"), `crates/fleetlayer-node/src/act.rs`, `plugins/claude-code/src/hooks.rs`.
+- **Sending an agent a prompt on a schedule.** The usual way is a cron line that types into the agent's terminal,
+  which goes wrong quietly: it types into whatever runs there (a shell, a permission prompt), fires a burst after the
+  machine was asleep, and nobody hears when it stops working. The scheduler plugin sends through the node instead, so
+  it gets a real answer per fire (delivered, offline, busy, refused): it retries a session waiting on a person every
+  minute, sends one late message for fires missed while off, saves which fires it handled before each send so a
+  restart never sends twice, and reports a problem through `plugin.status` after repeated failures. Footguns: run it
+  on a machine that's always on; a message to a session on the same node skips the access policy (every message on
+  one node does), so it's only as trusted as that node's user; a bare `<tab>` in `to` looks on its own node first, so
+  after moving it, write `<tab>@<node>`. Where it lives: `docs/plugins/scheduler.md`, `plugins/scheduler/`.
