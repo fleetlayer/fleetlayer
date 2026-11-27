@@ -141,8 +141,15 @@ plugins:
   strict Content-Security-Policy, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` (so the sign-in page never
   learns the hub's address) and `Cache-Control: no-store`; sign-in links, codes and tokens are never stored in the
   browser.
+- **A setup token must be the account's own.** It belongs to whichever claude.ai account the person's browser was
+  signed in as, and nothing in the token says which. The hub keeps the organization from the account's profile at
+  sign-in, and after the usual check makes one tiny request with the new token for its `anthropic-organization-id`
+  header. A token for another organization is refused ("That token is for a different Claude account…"). A token
+  whose organization couldn't be read is kept but shown as "Account not checked", and the poll tries again; one found
+  to be another account's later is left out of the bundle, shown as "Wrong account", and fails the heartbeat.
 - **The JSON API** (every route behind the login): `GET /api/state` (accounts with `tier`, `signInExpiresAt`,
-  `tokenExpiresAt`, the last poll's `usage` and `signInNeeded`, and the running `flows`), `POST /api/accounts`, `DELETE
+  `tokenExpiresAt`, `tokenWrongAccount`, `tokenUnchecked`, the last poll's `usage` and `signInNeeded`, and the running
+  `flows`), `POST /api/accounts`, `DELETE
   /api/accounts/{n}`, `POST /api/accounts/{n}/sign-in` and `/setup-token` (answer a flow `id`), `GET /api/flows/{id}`
   (`stage`: `starting`, `link`, `checking`, `done`, `failed` or `cancelled`; `url`; `message`, Claude Code's words
   about the latest code), `POST /api/flows/{id}/code` and `DELETE /api/flows/{id}` (cancel).

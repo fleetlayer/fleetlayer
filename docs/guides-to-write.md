@@ -215,3 +215,8 @@ managers, machines that sleep.
   (`playwright-core` + `chromium_headless_shell`, pointing `executablePath` at it when versions differ) on
   localhost, with a small mock of the API that serves the real page files, so every state (failures, a code cut
   short, done) can be shown without real sign-ins and nothing opens to the network.
+- **A Claude setup token belongs to whoever the browser was signed in as, and nothing checks it.** Making a token for
+  account 2 while claude.ai is signed in as account 1 gives account 1's token, and every "does it work" check
+  passes. Compare organizations: the profile's at sign-in, and the `anthropic-organization-id` header on one tiny
+  `/v1/messages` request made with the token (`anthropic-beta: oauth-2025-04-20`). Where it lives:
+  `plugins/claude-auth-manager/src/hub.rs` (`token_org`, `wrong_account`).

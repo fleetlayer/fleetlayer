@@ -64,6 +64,12 @@ pub struct HubAccount {
     /// The organization's rate-limit tier from the profile (`default_claude_max_20x`), for showing the plan.
     #[serde(default)]
     pub tier: Option<String>,
+    /// The account's organization from the profile at sign-in: a setup token must belong to the same one.
+    #[serde(default)]
+    pub org_id: Option<String>,
+    /// The organization the setup token answered for, when the hub could read it.
+    #[serde(default)]
+    pub token_org_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -345,6 +351,54 @@ pub fn client_ip(peer: IpAddr, headers: &HeaderMap, trusted: &[IpAddr]) -> IpAdd
         .unwrap_or(peer)
 }
 
+/// Who a sign-in is, from the profile.
+struct Who {
+    email: String,
+    uuid: Option<String>,
+    expires: Option<Timestamp>,
+    tier: Option<String>,
+    org: Option<String>,
+}
+
+const MESSAGES_URL: &str = "https://api.anthropic.com/v1/messages";
+
+/// The organization a setup token belongs to: the `anthropic-organization-id` header of one tiny request made with it
+/// alone (on an error answer too: the header comes with any authenticated answer). None when it couldn't be read.
+async fn token_org(token: &str) -> Option<String> {
+    let res = reqwest::Client::new()
+        .post(MESSAGES_URL)
+        .bearer_auth(token)
+        .header("anthropic-beta", "oauth-2025-04-20")
+        .header("anthropic-version", "2023-06-01")
+        .json(&json!({"model": "claude-haiku-4-5", "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]}))
+        .timeout(Duration::from_secs(30))
+        .send()
+        .await
+        .ok()?;
+    org_header(res.headers())
+}
+
+fn org_header(h: &HeaderMap) -> Option<String> {
+    h.get("anthropic-organization-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(String::from)
+}
+
+/// Why a setup token can't be kept for this account: it answered for another organization than the account's sign-in.
+/// None when they match or either isn't known.
+pub fn wrong_account(expected: Option<&str>, token: Option<&str>, email: Option<&str>) -> Option<String> {
+    let (expected, token) = (expected?, token?);
+    (expected != token).then(|| {
+        let who = email.map_or("this account".to_string(), |e| e.to_string());
+        format!(
+            "That token is for a different Claude account. Sign in to claude.ai as {who} in your browser, then make the \
+            token again."
+        )
+    })
+}
+
 fn days_since(t: Timestamp) -> i64 {
     Timestamp::now().duration_since(t).as_secs() / 86_400
 }
@@ -398,10 +452,12 @@ impl Hub {
 
     async fn save(&self, store: &Store) -> anyhow::Result<()> {
         write_private(&self.cfg.dir.join("hub.json"), &serde_json::to_vec_pretty(store)?)?;
-        // The tokens bundle: every account with a setup token and a known account UUID.
+        // The tokens bundle: every account with a setup token and a known account UUID, but never a token found to be
+        // another account's (machines would use the wrong account under this one's number).
         let tokens: Vec<Value> = store
             .accounts
             .iter()
+            .filter(|(_, a)| wrong_account(a.org_id.as_deref(), a.token_org_id.as_deref(), None).is_none())
             .filter_map(|(slot, a)| {
                 let (token, at, uuid, email) = (a.token.as_ref()?, a.token_at?, a.account_uuid.as_ref()?, a.email.as_ref()?);
                 let expires = at + SignedDuration::from_hours(24 * TOKEN_LIFETIME_DAYS);
@@ -413,7 +469,7 @@ impl Hub {
     }
 
     /// Who a slot is signed in as, with its account UUID (from the profile endpoint) and the sign-in's expiry.
-    async fn identify(&self, slot: u32) -> Option<(String, Option<String>, Option<Timestamp>, Option<String>)> {
+    async fn identify(&self, slot: u32) -> Option<Who> {
         use crate::coordinator::core::{Deps, Stored};
         let logger = crate::coordinator::deps::Logger::new(self.cfg.dir.join("hub.log"));
         let deps = crate::coordinator::deps::RealDeps::new(
@@ -427,7 +483,7 @@ impl Hub {
         let who =
             crate::coordinator::model::identity_from_profile(deps.fetch_profile(&cred.access_token).await.as_ref())?;
         let expires = cred.refresh_token_expires_at.and_then(|ms| Timestamp::from_millisecond(ms).ok());
-        Some((who.email?, who.account_uuid, expires, who.tier))
+        Some(Who { email: who.email?, uuid: who.account_uuid, expires, tier: who.tier, org: who.org_id })
     }
 
     // ------------------------------------------------------------ flows
@@ -513,7 +569,7 @@ impl Hub {
                     return;
                 }
                 match hub.identify(slot).await {
-                    Some((email, uuid, expires, tier)) => {
+                    Some(Who { email, uuid, expires, tier, org }) => {
                         let mut store = hub.store.lock().await;
                         let a = store.accounts.entry(slot).or_default();
                         a.email = Some(email.clone());
@@ -524,6 +580,9 @@ impl Hub {
                         a.sign_in_expires_at = expires;
                         if tier.is_some() {
                             a.tier = tier;
+                        }
+                        if org.is_some() {
+                            a.org_id = org;
                         }
                         let snapshot = store.clone();
                         drop(store);
@@ -637,10 +696,30 @@ impl Hub {
                         if cancel.is_cancelled() {
                             break;
                         }
+                        // Whose token it is: the one the person's browser was signed in to claude.ai as, which may not
+                        // be this account. Refused when its organization isn't the account's.
+                        let token_org = token_org(&token).await;
+                        let (expected, email) = {
+                            let store = hub.store.lock().await;
+                            let a = store.accounts.get(&slot);
+                            (a.and_then(|a| a.org_id.clone()), a.and_then(|a| a.email.clone()))
+                        };
+                        if let Some(why) = wrong_account(expected.as_deref(), token_org.as_deref(), email.as_deref()) {
+                            tracing::warn!(slot, "the setup token is for a different account");
+                            *state.lock().unwrap() = format!("failed: {why}");
+                            break;
+                        }
+                        if token_org.is_none() {
+                            tracing::warn!(slot, "couldn't read which account the setup token is for");
+                        }
+                        if cancel.is_cancelled() {
+                            break;
+                        }
                         let mut store = hub.store.lock().await;
                         let a = store.accounts.entry(slot).or_default();
                         a.token = Some(token);
                         a.token_at = Some(Timestamp::now());
+                        a.token_org_id = token_org;
                         let snapshot = store.clone();
                         drop(store);
                         let _ = hub.save(&snapshot).await;
@@ -749,6 +828,9 @@ impl Hub {
                 json!({"slot": slot, "email": a.email, "accountUuid": a.account_uuid, "tier": a.tier,
                     "signInExpiresAt": signin_expires, "tokenExpiresAt": token_expires,
                     "signInNeeded": p.sign_in_needed, "usage": p.usage,
+                    "tokenWrongAccount": a.token.is_some() && wrong_account(a.org_id.as_deref(), a.token_org_id.as_deref(), None).is_some(),
+                    // A token whose account couldn't be read (or made before the hub checked): not known to match.
+                    "tokenUnchecked": a.token.is_some() && a.token_org_id.is_none(),
                     "signedInAt": a.signed_in_at, "signInDaysLeft": signin_left,
                     "signInWarn": signin_days.is_some_and(|d| d >= SIGNIN_WARN_DAYS) || signin_left.is_some_and(|l| l <= SIGNIN_LIFETIME_DAYS - SIGNIN_WARN_DAYS),
                     "hasToken": a.token.is_some(), "tokenAt": a.token_at, "tokenDaysLeft": token_left,
@@ -786,7 +868,7 @@ impl Hub {
             let why = number.and_then(|n| sign_in_needed.get(&n));
             out.push(json!({"kind": "claude.signin_age", "key": uuid, "at": now, "data": {
                 "email": a["email"], "daysLeft": a["signInDaysLeft"], "warn": a["signInWarn"],
-                "number": number, "signedIn": !a["signedInAt"].is_null(), "signInNeeded": why}}));
+                "number": number, "signedIn": !a["signedInAt"].is_null(), "signInNeeded": why, "tier": a["tier"]}}));
             if a["hasToken"] == true {
                 out.push(json!({"kind": "claude.setup_token_age", "key": uuid, "at": now, "data": {
                     "email": a["email"], "daysLeft": a["tokenDaysLeft"], "warn": a["tokenWarn"]}}));
@@ -893,6 +975,33 @@ impl Hub {
                     problems.push(format!("account {slot}: the usage endpoint answered {status}"))
                 }
             }
+        }
+        // Tokens made before the hub checked whose they are (or whose check couldn't be read): once each.
+        let unchecked: Vec<(u32, String)> = self
+            .store
+            .lock()
+            .await
+            .accounts
+            .iter()
+            .filter(|(_, a)| a.token_org_id.is_none())
+            .filter_map(|(slot, a)| Some((*slot, a.token.clone()?)))
+            .collect();
+        for (slot, a) in self.store.lock().await.accounts.iter() {
+            if a.token.is_some() && wrong_account(a.org_id.as_deref(), a.token_org_id.as_deref(), None).is_some() {
+                problems.push(format!("account {slot}: its setup token is for a different Claude account"));
+            }
+        }
+        for (slot, token) in unchecked {
+            let Some(org) = token_org(&token).await else { continue };
+            let mut store = self.store.lock().await;
+            let Some(a) = store.accounts.get_mut(&slot) else { continue };
+            if a.token.as_deref() != Some(token.as_str()) {
+                continue;
+            }
+            a.token_org_id = Some(org);
+            let snapshot = store.clone();
+            drop(store);
+            let _ = self.save(&snapshot).await;
         }
         {
             let mut polled = self.polled.lock().await;
@@ -1313,6 +1422,19 @@ mod tests {
         assert_eq!(readings.len(), 2, "sign-in age and token age for the account with a UUID");
         let signin = readings.iter().find(|r| r["kind"] == "claude.signin_age").unwrap();
         assert!(signin["data"]["number"].as_u64().is_some(), "the account's number, for account lists");
+        // A token found to be another account's leaves the bundle.
+        {
+            let mut st = hub.store.lock().await;
+            let a = st.accounts.get_mut(&2).unwrap();
+            a.org_id = Some("org-a".into());
+            a.token_org_id = Some("org-b".into());
+            let snap = st.clone();
+            drop(st);
+            hub.save(&snap).await.unwrap();
+        }
+        let tokens: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(hub.tokens_file()).unwrap()).unwrap();
+        assert!(tokens.is_empty(), "a token for the wrong account is never sent");
+        assert_eq!(hub.state_json().await["accounts"][0]["tokenWrongAccount"], true);
         // Deleting account 2 drops it from the tokens file.
         assert!(hub.delete(2).await.unwrap());
         assert!(!hub.delete(2).await.unwrap());
@@ -1459,5 +1581,18 @@ mod tests {
         for (_, _, body) in ASSETS {
             assert!(!body.contains("localStorage"), "nothing kept in the browser");
         }
+    }
+
+    #[test]
+    fn a_setup_token_for_another_account_is_refused() {
+        assert!(wrong_account(Some("org-a"), Some("org-a"), Some("a@example.com")).is_none());
+        let why = wrong_account(Some("org-a"), Some("org-b"), Some("a@example.com")).unwrap();
+        assert!(why.contains("different Claude account") && why.contains("a@example.com"), "{why}");
+        assert!(wrong_account(None, Some("org-b"), None).is_none(), "no sign-in yet: nothing to compare with");
+        assert!(wrong_account(Some("org-a"), None, None).is_none(), "the token's organization unread");
+        let mut h = HeaderMap::new();
+        h.insert("anthropic-organization-id", " org-b ".parse().unwrap());
+        assert_eq!(org_header(&h).as_deref(), Some("org-b"));
+        assert_eq!(org_header(&HeaderMap::new()), None);
     }
 }

@@ -83,10 +83,11 @@ function signInStatus(a) {
 
 function tokenStatus(a) {
   if (!a.hasToken) return { tone: 'off', text: 'None' };
+  if (a.tokenWrongAccount) return { tone: 'bad', text: 'Wrong account', sub: 'Make it again' };
   const d = a.tokenDaysLeft;
   if (d != null && d <= 0) return { tone: 'bad', text: 'Expired', sub: a.tokenExpiresAt && `on ${fmtDate(a.tokenExpiresAt)}` };
   if (a.tokenWarn) return { tone: 'warn', text: `${days(d)} left`, sub: `until ${fmtDate(a.tokenExpiresAt)}` };
-  return { tone: 'ok', text: `Until ${fmtDate(a.tokenExpiresAt)}` };
+  return { tone: 'ok', text: `Until ${fmtDate(a.tokenExpiresAt)}`, sub: a.tokenUnchecked ? 'Account not checked' : undefined };
 }
 
 // ------------------------------------------------------------------ state
@@ -592,7 +593,7 @@ async function finishPart() {
   const title = k === 'sign_in' ? 'Signed in' : 'Setup token ready';
   const detail = k === 'sign_in'
     ? [a.email, a.signInExpiresAt && `until ${fmtDate(a.signInExpiresAt)}`].filter(Boolean).join(' · ')
-    : a.tokenExpiresAt ? `Valid until ${fmtDate(a.tokenExpiresAt)}` : '';
+    : [a.tokenExpiresAt && `Valid until ${fmtDate(a.tokenExpiresAt)}`, a.tokenUnchecked && "couldn't check which account it's for"].filter(Boolean).join(' · ');
   $('[data-v="body"]', flowDlg).innerHTML = `<div class="done" role="status">
     <div class="done-mark">${icon('check')}</div><h3>${title}</h3>${detail ? `<p>${esc(detail)}</p>` : ''}
     ${more ? `<p>Next: ${PART_LABEL[r.parts[r.part + 1]].toLowerCase()}</p>` : ''}</div>`;
