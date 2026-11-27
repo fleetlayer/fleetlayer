@@ -1665,6 +1665,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "fleetlayer-1password"
+version = "0.3.12"
+dependencies = [
+ "async-trait",
+ "fleetlayer-plugin",
+ "fleetlayer-protocol",
+ "fleetlayer-secrets",
+ "hex",
+ "jiff 1.0.3",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "fleetlayer-accounts"
 version = "0.3.12"
 dependencies = [

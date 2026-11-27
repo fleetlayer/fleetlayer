@@ -44,6 +44,99 @@ you name, which write them where the tool looks. When an agent only needs to loo
 [your shared browser](guides/browser.md) is better: the cookies never leave your laptop.
 [fleetlayer-cookies](plugins/cookies.md) has the details.
 
+### Secrets from 1Password, granted per role
+
+`fleetlayer-1password` delivers 1Password items to the roles you grant them to. It runs under a Unix user of its own
+and holds the 1Password service-account token there, so no agent holds a token that opens a whole vault. A grant names
+items (`op://github/deploy-bot/token`) and the nodes of a role, so vaults become a way to organise items, not a way to
+control access, and nobody makes a vault or a token per agent. Each node gets exactly its items, sealed to its key,
+again within minutes whenever one changes in 1Password, and loses them (files included) when a grant is taken away.
+[fleetlayer-1password](plugins/1password.md) covers the setup.
+
+### One shape for every secret
+
+Claude setup tokens, browser cookies and 1Password items go the same way:
+
+1. **A source** holds the secret: the Claude hub, the browser on your laptop, a password manager.
+2. **A grant** says which role gets it. A role is a Unix user with its own node, because that's the boundary the
+   machine enforces. Grants never name a session: sessions start, end and get renamed all day, and a new session in a
+   role has the role's secrets with no setup.
+3. **Sealed delivery**, as above. Your [access policy](access-control.md) decides which nodes may receive which
+   bundles (`sync`), and the first delivery to each node waits for your approval.
+4. **A writer** on the target puts it where tools look: an env file, a file, a keychain item. Each file is mode 0600,
+   replaced in one rename, and never written over a file a person made.
+5. **Readings** say when each secret last arrived and when it expires, never its value. The control plane's audit log
+   records every delivery, never the value.
+
+Every plugin that writes secrets on a node also lists them in the node's **registry**
+(`~/.local/state/fleetlayer/secrets/`, readable only by the node's user), by reference: `op://vault/item/field`,
+`cookie://x/ct0`, `claude://account/2`. That's how the node knows what to scrub, and what `fleetlayer secrets run` may
+fill in.
+
+### Using a secret without seeing it
+
+Agents use a delivered secret by its reference, so the value never appears in their commands or their context:
+
+```sh
+fleetlayer secrets list                     # what this role has, by reference
+GITHUB_TOKEN=op://github/deploy-bot/token fleetlayer secrets run -- gh api user
+fleetlayer secrets run --env-file .env -- terraform plan    # lines like NAME=op://vault/item/field
+```
+
+`fleetlayer secrets run` replaces `op run`: every environment variable and `--env-file` line whose value is a
+delivered reference gets the value, a reference the role wasn't granted is refused with a message saying so, and the
+command's output comes back with every delivered secret redacted (`--no-masking` passes it through untouched).
+`fleetlayer secrets grants` shows who may read what across the fleet: each source publishes its grants (role, nodes,
+references) as a reading. `fleetlayer secrets forget` removes everything delivered to this node; the next delivery
+puts it back.
+
+### Scrubbing what leaves a node
+
+The node knows exactly which secrets it delivered, so it removes exact matches, with no guessing, from everything it
+sends the control plane: messages, events, readings, session titles, summaries and catch-ups. A match is replaced by
+`[REDACTED <reference>]`, such as `[REDACTED op://github/deploy-bot/token]`. It matches the forms a value takes once
+something has encoded it:
+
+- the value itself, and without a trailing newline;
+- JSON-escaped, once and twice (a value in a JSON string, and in JSON carried inside a JSON string, as transcripts
+  and tool results do);
+- URL-encoded;
+- base64, standard and URL-safe, wherever it starts in a longer encoded text;
+- for values of 32 characters or more, a long prefix (half the value, at least 16 characters), so a token cut short
+  on screen is still caught.
+
+Values shorter than 8 characters aren't matched (too many ordinary strings would look like them); the
+`secrets.delivered` reading lists them under `tooShort`.
+
+**A match means the secret has already leaked**: it was on a session's screen and went to the model's API before the
+node caught it on the way out. So the node also logs it (by reference and form, never the value), publishes a
+`secrets.redacted` reading and an event on the `secrets` channel for whichever agent watches for it, and fails its
+heartbeat for a day with a message that says to rotate the secret. Rotate it: redaction keeps the value out of the
+fleet view, other agents' messages and the control plane, but it can't take it back from the model provider or the
+session's own transcript.
+
+Transcripts are copied off machines for search and backups, so scrub the copy before it leaves:
+
+```sh
+fleetlayer secrets scrub /path/to/the/copy            # in place; --check only reports
+fleetlayer secrets scrub --gitleaks /path/to/the/copy  # also what gitleaks finds, as [REDACTED gitleaks:<rule>]
+```
+
+It refuses the live folders (`~/.claude/projects`, `~/.codex/sessions`): rewriting a file a running session appends
+to loses its lines. [gitleaks](https://github.com/gitleaks/gitleaks) (MIT) catches secrets nobody delivered, such as
+a key pasted into a chat; it's optional, and has to be on `PATH`.
+
+Not scrubbed yet: what goes over a stream of its own rather than the node's link. A shared MCP server's calls and
+results will be, by the node's MCP gate (being built). Terminal attach (`fleetlayer attach`) isn't: it carries the
+terminal's raw bytes, where a value can be split between chunks, and it shows a person their own session. Pages and
+apps aren't either.
+
+| Reading | Key | Data |
+|---|---|---|
+| `secrets.delivered` | node | `{references, redacted, tooShort, errors}`: what the node redacts now (references only) |
+| `secrets.redacted` | reference | `{reference, forms, hits, firstAt, lastAt, lastContext, action}` |
+| `secrets.grants` | `<source>/<role>` | `{source, role, nodes, items: [{ref, access}]}` |
+
 ### Tools that hold their own sign-in
 
 An MCP server with its own sign-in (a signed-in browser, a service's API) can run on one machine and be shared with
@@ -98,24 +191,11 @@ The principles they share:
   of roles covers most fleets (everyday work, untrusted input, a trusted runner, infrastructure). A new session in a
   role gets that role's secrets with no setup. Which session used a secret is still recorded in the audit log.
 
-### Secrets granted per role, from your password manager
+### Short-lived credentials minted per use
 
-A secrets plugin reads items from 1Password, and later other secret stores, and delivers each one sealed to the
-roles your policy grants it to, the same way Claude tokens travel today. The plugin holds the password manager's
-credential under its own Unix user, so no agent holds a token that opens a whole vault. Grants are per item, so
-vaults become a way to organise items, not a way to control access. Delivered secrets are written for the role's
-user only, and their freshness shows as a reading, never their value.
-
-Where a service can mint short-lived credentials (a GitHub App's installation tokens, scoped cloud tokens), the plan
-prefers minting one per use over delivering a long-lived token.
-
-### Scrubbing what leaves a node
-
-A node knows exactly which secrets it delivered, so it can remove exact matches from everything that leaves it:
-messages, events, session summaries, tool calls and their results, and copies of transcripts before they're synced
-or backed up. It will match encoded forms too (JSON-escaped, base64, URL-encoded), with a general secret scanner for
-what it didn't deliver. A match also raises an alert to rotate that secret, because by then the value has already
-been on a screen and sent to a model.
+Where a service can mint short-lived credentials (a GitHub App's installation tokens, scoped cloud tokens), a broker
+holding the root credential will mint one per use instead of delivering a long-lived token. Storing a secret from an
+agent (`fleetlayer secrets put`, by grant and approval) is planned too.
 
 ### Network access per role
 

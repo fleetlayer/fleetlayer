@@ -729,3 +729,22 @@ managers, machines that sleep.
   `HTTPS_PROXY`; Node tools often don't, which the transparent redirect covers. Written: `docs/egress.md`,
   `docs/guides/egress.md`, `plugins/egress/`. Still to write: other TCP ports transparently (by matching the
   addresses the resolver handed out), and macOS (a Lima VM for now).
+- **Giving agents 1Password items without a vault-wide token.** The usual setup puts a service-account token in every
+  agent's shell and uses `op run`; that token opens every item in its vaults, and a vault and token per agent is more
+  work than anyone does. Fleetlayer's 1Password plugin holds the token under its own Unix user and delivers items to
+  roles (a Unix user with its own node), item by item, sealed; `fleetlayer secrets run` replaces `op run` from what
+  the role was granted, with its output redacted. Footguns: grants go to roles, never sessions, because everything
+  in one Unix user can read what its sessions can; a value with a line break can't go in an env file (write it as a
+  file); two 1Password accounts with a vault of the same name need vault IDs in the references; whatever an agent read
+  before a grant was removed could have been copied, so rotate what matters; a service account has hourly read limits
+  (`op service-account ratelimit`), and the plugin reads an item only when its version moved. Written:
+  `docs/plugins/1password.md`, `docs/credentials.md`. To write: a guide that walks from "token in my shell" to roles,
+  with the Unix users and the first approvals.
+- **Keeping secrets out of transcripts that get synced or backed up.** Claude Code and Codex transcripts hold every
+  tool result, so a token an agent printed is in them, and then in whatever search index or backup they're copied to.
+  Scrub the copy, never the live file (rewriting a `.jsonl` a session appends to loses lines): copy first, then
+  `fleetlayer secrets scrub <copy>` (exact matches of every secret delivered to that node, JSON-escaped forms
+  included), with `--gitleaks` for secrets nobody delivered. Footguns: a sync tool that copies straight to the
+  destination leaves no copy to scrub, so stage it; a hit means the value already went to the model provider, so
+  rotate it; already-synced archives need one backfill pass. Written: `docs/credentials.md` ("Scrubbing what leaves a
+  node"). To write: a guide with a staged rsync hook and the backfill.

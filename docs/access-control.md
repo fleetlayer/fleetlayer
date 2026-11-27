@@ -219,7 +219,7 @@ allow:                           # what the role may do while its window is open
   while it was off are sent at once. `fleetlayer me` and `fleetlayer role list` show when it ends.
 - **The end** (its time, `fleetlayer role deactivate admin`, `fleetlayer-control role deactivate admin` or `DELETE
   /v1/windows/admin`): the role is off again at once, and its node closes every session it has, removes everything
-  delivered to it (`fleetlayer secrets forget`, [Secrets](secrets.md)), runs its `on_end` hook, and confirms. The node
+  delivered to it (`fleetlayer secrets forget`, [Credentials](credentials.md#using-a-secret-without-seeing-it)), runs its `on_end` hook, and confirms. The node
   keeps the window's end on disk and closes it by itself at that time, linked to the control plane or not, and after a
   restart.
 - **Hooks**, in the node's config, run with `FLEETLAYER_WINDOW_ROLE`, `FLEETLAYER_WINDOW_ID`,

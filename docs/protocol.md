@@ -482,7 +482,7 @@ A target plugin that writes secret values (a token, a cookie, a password-manager
 reference it's known by (`op://vault/item/field`, `cookie://x/ct0`, `claude://account/2`), in
 `~/.local/state/fleetlayer/secrets/<source>.json` (mode 0600, written in one rename; the `fleetlayer-secrets` crate's
 `registry::register`), and clears its list when the bundle no longer has any. The node reads that folder to redact
-those values from everything it sends the control plane ([secrets](secrets.md#scrubbing)), and `fleetlayer secrets run`
+those values from everything it sends the control plane ([credentials](credentials.md#scrubbing-what-leaves-a-node)), and `fleetlayer secrets run`
 reads it to fill in references.
 
 `_fleetlayer.dev/sync/forget` `{}` asks a `sync_target` plugin to remove everything it wrote, from every bundle, and its
