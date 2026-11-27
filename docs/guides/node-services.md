@@ -199,19 +199,24 @@ middle of what someone is typing in that tab. In the test node's node.yaml:
 typing_fallback: false     # such messages fail at once instead
 ```
 
-**Give it its own files.** The node keeps its config, key and token under `$XDG_CONFIG_HOME/fleetlayer`, and its
-socket under `$XDG_RUNTIME_DIR`, the same as the real node. Point both somewhere else, and enrol it under its own name:
-
-```yaml
-name: server-test
-socket: /tmp/fleetlayer-test/node.sock
-typing_fallback: false
-```
+**Give it its own instance.** From the release after v0.3.8, `FLEETLAYER_INSTANCE` runs a second node under the same
+account without touching the real one: its own launchd label or systemd unit (`dev.fleetlayer.test.node`,
+`fleetlayer-test-node.service`), its own config and state under the `HOME` you give it, and its own socket. Pointing
+`XDG_CONFIG_HOME` somewhere else isn't enough: `fleetlayer-node install` would replace the real node's service.
 
 ```sh
-XDG_CONFIG_HOME=/tmp/fleetlayer-test/config fleetlayer-node run
-FLEETLAYER_SOCKET=/tmp/fleetlayer-test/node.sock fleetlayer status
+export FLEETLAYER_INSTANCE=test HOME=~/fleetlayer-test
+mkdir -p "$HOME/.config/fleetlayer"
+cat > "$HOME/.config/fleetlayer/node.yaml" <<'YAML'
+name: server-test
+typing_fallback: false
+YAML
+fleetlayer-node install
+fleetlayer status          # the same two variables point the command line at the test node
 ```
+
+Enrol it under its own name if it should link to the control plane. Open a new shell to talk to the real node again;
+`fleetlayer-node uninstall`, run with both variables set, removes the test node's service.
 
 **Stop it carefully.** `pkill -f fleetlayer-node` also matches the shell running that command (its own command line
 contains the pattern) and kills it. Put a bracket in the pattern so it can't match itself, and never use
