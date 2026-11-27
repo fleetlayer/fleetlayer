@@ -1,8 +1,12 @@
-//! Signing people in through Fleetlayer's sign-in service (`docs/plugins/signin.md`), or any OpenID Connect provider:
-//! the authorization code flow with PKCE (S256), the state and nonce kept here and used once, and the ID token checked
-//! with `jsonwebtoken`, pinned to RS256 and to keys from the issuer's own JWKS.
+//! Signing people in to a Fleetlayer service through the sign-in service (`docs/plugins/signin.md`), or any OpenID
+//! Connect provider: the authorization code flow with PKCE (S256), the state and nonce kept here and used once, and the
+//! ID token checked with `jsonwebtoken`, pinned to RS256 and to keys from the issuer's own JWKS. Used by pages and the
+//! Claude sign-in hub; first written for pages.
 //!
-//! The token only says who someone is. What they may read is asked of the node per request (`auth.rs`).
+//! A service's addresses follow one convention: it comes back to `<base>/_/auth/callback` and, after signing out at the
+//! sign-in service, to `<base>/_/signed-out`. Register both with the sign-in service.
+//!
+//! The token only says who someone is. What they may do is asked per request (`_fleetlayer.dev/access/check`).
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -11,8 +15,6 @@ use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
-
-use crate::auth::Person;
 
 /// How long a sign-in may take, from leaving for the issuer to coming back.
 const PENDING: Duration = Duration::from_secs(10 * 60);
@@ -78,6 +80,42 @@ struct TokenResponse {
     id_token: String,
 }
 
+/// A person signed in through Fleetlayer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Person {
+    /// The person's ID (the token's `sub`), never reused.
+    pub sub: String,
+    /// The tenant they signed in to (`fleetlayer.dev/tenant`).
+    pub tenant: String,
+    pub handle: Option<String>,
+    pub name: Option<String>,
+}
+
+/// 32 random bytes from the kernel (`/dev/urandom` on Linux and macOS), hex.
+pub fn new_id() -> String {
+    use std::io::Read;
+    let mut b = [0u8; 32];
+    std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b)).expect("reading /dev/urandom");
+    hex::encode(b)
+}
+
+fn esc(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
+}
+
+/// A page that moves the browser on to `url`, for two places a redirect doesn't work: after the callback (a
+/// `SameSite=Strict` session cookie isn't sent with a redirect that's still the issuer's cross-site navigation) and
+/// when signing out (a form's `form-action 'self'` stops a redirect to the sign-in service). `title` and `link` are
+/// what the page says while it moves on.
+pub fn continue_page(url: &str, title: &str, link: &str) -> String {
+    format!(
+        r#"<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url={0}"><title>{1}</title><p><a href="{0}">{2}</a></p>"#,
+        esc(url),
+        esc(title),
+        esc(link)
+    )
+}
+
 /// An issuer address: https, or plain http only on this machine.
 pub fn valid_issuer(issuer: &str) -> bool {
     if issuer.starts_with("https://") {
@@ -102,7 +140,7 @@ fn b64url(bytes: &[u8]) -> String {
 
 /// The HTTP client for the issuer. A `*.localhost` issuer (a laptop's `signin.localhost:7680`) is this machine
 /// (RFC 6761), as browsers know, but the system's resolver often doesn't: resolve it to loopback here.
-fn client_for(issuer: &str) -> anyhow::Result<reqwest::Client> {
+pub fn client_for(issuer: &str) -> anyhow::Result<reqwest::Client> {
     let mut b = reqwest::Client::builder().timeout(Duration::from_secs(15));
     let host = issuer.split("://").nth(1).unwrap_or_default().split(['/', ':']).next().unwrap_or_default();
     if host.ends_with(".localhost") {
@@ -153,9 +191,9 @@ impl Oidc {
     /// Where to send the browser to sign in, and the state to bind to it (a cookie), for coming back to `next`.
     pub async fn start(&self, next: &str) -> anyhow::Result<(String, String)> {
         let meta = self.meta().await?;
-        let state = crate::auth::new_id();
-        let nonce = crate::auth::new_id();
-        let verifier = format!("{}{}", crate::auth::new_id(), &crate::auth::new_id()[..32]);
+        let state = new_id();
+        let nonce = new_id();
+        let verifier = format!("{}{}", new_id(), &new_id()[..32]);
         let challenge = b64url(&Sha256::digest(verifier.as_bytes()));
         {
             let mut p = self.pending.lock().await;
@@ -265,8 +303,9 @@ impl Oidc {
     }
 }
 
-#[cfg(test)]
-pub(crate) mod tests {
+#[cfg(any(test, feature = "testing"))]
+pub mod testing {
+    //! A fake issuer for tests (with the `testing` feature for other crates).
     use super::*;
 
     use std::sync::Arc;
@@ -280,19 +319,31 @@ pub(crate) mod tests {
     use serde_json::{Value, json};
 
     /// An issuer for the tests: discovery, a JWKS and a token endpoint that hands out whatever ID token the test set.
-    pub(crate) struct FakeIssuer {
+    pub struct FakeIssuer {
         pub url: String,
         key: rsa::PrivateKey,
+        /// The client ID tokens are for (`aud`): `pages` unless started with [`FakeIssuer::start_for`].
+        pub client: String,
         pub token: std::sync::Mutex<Option<String>>,
         pub seen: std::sync::Mutex<Vec<HashMap<String, String>>>,
     }
 
     impl FakeIssuer {
-        pub(crate) async fn start() -> Arc<FakeIssuer> {
+        pub async fn start() -> Arc<FakeIssuer> {
+            FakeIssuer::start_for("pages").await
+        }
+
+        pub async fn start_for(client: &str) -> Arc<FakeIssuer> {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
             let key = rsa::PrivateKey::new(&mut crypto_common::getrandom::SysRng, 2048).unwrap();
-            let me = Arc::new(FakeIssuer { url, key, token: Default::default(), seen: Default::default() });
+            let me = Arc::new(FakeIssuer {
+                url,
+                key,
+                client: client.to_string(),
+                token: Default::default(),
+                seen: Default::default(),
+            });
             let router = Router::new()
                 .route("/.well-known/openid-configuration", get(discovery))
                 .route("/jwks", get(jwks))
@@ -302,17 +353,17 @@ pub(crate) mod tests {
             me
         }
 
-        pub(crate) fn sign(&self, header: Value, claims: Value) -> String {
+        pub fn sign(&self, header: Value, claims: Value) -> String {
             let b = |v: &Value| b64url(v.to_string().as_bytes());
             let input = format!("{}.{}", b(&header), b(&claims));
             let sig = SigningKey::<Sha256>::new(self.key.clone()).sign(input.as_bytes());
             format!("{input}.{}", b64url(&sig.to_vec()))
         }
 
-        pub(crate) fn claims(&self, nonce: &str) -> Value {
+        pub fn claims(&self, nonce: &str) -> Value {
             let now = jiff::Timestamp::now().as_second();
             json!({
-                "iss": self.url, "aud": "pages", "sub": "p_123", "exp": now + 600, "iat": now, "nonce": nonce,
+                "iss": self.url, "aud": self.client, "sub": "p_123", "exp": now + 600, "iat": now, "nonce": nonce,
                 "preferred_username": "alice", "name": "Alice", "fleetlayer.dev/tenant": "home",
             })
         }
@@ -337,10 +388,23 @@ pub(crate) mod tests {
         Json(json!({"id_token": f.token.lock().unwrap().clone().unwrap_or_default(), "token_type": "Bearer"}))
     }
 
-    pub(crate) fn param(url: &str, name: &str) -> String {
+    pub fn param(url: &str, name: &str) -> String {
         let q = url.split_once('?').unwrap().1;
         form_urlencoded::parse(q.as_bytes()).find(|(k, _)| k == name).map(|(_, v)| v.into_owned()).unwrap()
     }
+
+    pub fn good(f: &FakeIssuer, c: Value) -> String {
+        f.sign(json!({"alg": "RS256", "typ": "JWT", "kid": "k1"}), c)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::testing::*;
+    use super::*;
+    use serde_json::{Value, json};
 
     /// Starts a sign-in and has the issuer answer with the token `make` builds from the expected claims.
     async fn sign_in(
@@ -355,10 +419,6 @@ pub(crate) mod tests {
         *f.token.lock().unwrap() = Some(make(&f, claims));
         let r = o.finish("the-code", &state, Some(&state)).await;
         (f, r)
-    }
-
-    pub(crate) fn good(f: &FakeIssuer, c: Value) -> String {
-        f.sign(json!({"alg": "RS256", "typ": "JWT", "kid": "k1"}), c)
     }
 
     #[tokio::test]

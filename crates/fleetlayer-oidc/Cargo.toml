@@ -1,0 +1,37 @@
+[package]
+name = "fleetlayer-oidc"
+description = "Signing people in to a Fleetlayer service through the sign-in service (or any OpenID Connect provider): code flow with PKCE, ID tokens pinned to RS256 and the issuer's own JWKS"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+# A fake issuer for other crates' tests (FakeIssuer, param, good).
+testing = ["dep:axum", "dep:rsa", "dep:crypto-common", "dep:jiff"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+sha2 = "0.11"
+hex = "0.4"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json"] }
+form_urlencoded = "1.2.3"
+# The ID token: pinned to RS256, keys from the issuer's JWKS.
+jsonwebtoken = { version = "12", default-features = false, features = ["rust_crypto"] }
+axum = { version = "0.8.9", optional = true }
+rsa = { version = "0.10", optional = true }
+crypto-common = { version = "0.2", features = ["getrandom"], optional = true }
+jiff = { workspace = true, optional = true }
+
+[dev-dependencies]
+axum = "0.8.9"
+rsa = "0.10"
+crypto-common = { version = "0.2", features = ["getrandom"] }
+jiff.workspace = true
+
+[lints]
+workspace = true

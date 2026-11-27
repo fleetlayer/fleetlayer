@@ -331,10 +331,7 @@ async fn auth_callback(State(app): Ctx, headers: HeaderMap, Query(q): Query<Call
             let sid = app.auth.start(Viewer { person: Some(person) }).await;
             // A page, not a redirect: the session cookie is SameSite=Strict, and a redirect still counts as the
             // issuer's cross-site navigation, so the browser wouldn't send the cookie with it.
-            let body = format!(
-                r#"<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url={0}"><title>Signed in · Pages</title><p><a href="{0}">Continue</a></p>"#,
-                esc(&next)
-            );
+            let body = fleetlayer_oidc::continue_page(&next, "Signed in · Pages", "Continue");
             let mut res = Html(body).into_response();
             let h = res.headers_mut();
             h.append(header::SET_COOKIE, auth::cookie(&sid, secure).parse().expect("a cookie"));
@@ -387,10 +384,7 @@ async fn logout(State(app): Ctx, headers: HeaderMap) -> Response {
         && let Some(oidc) = &app.auth.oidc
         && let Some(url) = oidc.logout_url().await
     {
-        let body = format!(
-            r#"<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url={0}"><title>Signing out · Pages</title><p><a href="{0}">Continue signing out</a></p>"#,
-            esc(&url)
-        );
+        let body = fleetlayer_oidc::continue_page(&url, "Signing out · Pages", "Continue signing out");
         return (clear, Html(body)).into_response();
     }
     (StatusCode::SEE_OTHER, clear, [(header::LOCATION, "/_/signed-out")]).into_response()
@@ -1451,9 +1445,9 @@ mod tests {
 
     /// A site with Fleetlayer's sign-in only, against a fake issuer; the checker lets alice read `personal` only, and
     /// can't be reached for `down`.
-    async fn signin_app() -> (Arc<App>, tempfile::TempDir, Arc<crate::oidc::tests::FakeIssuer>) {
+    async fn signin_app() -> (Arc<App>, tempfile::TempDir, Arc<fleetlayer_oidc::testing::FakeIssuer>) {
         let (base, d) = app();
-        let f = crate::oidc::tests::FakeIssuer::start().await;
+        let f = fleetlayer_oidc::testing::FakeIssuer::start().await;
         let oidc = crate::oidc::Oidc::new(&f.url, "pages", "s3cret", "https://pages.test").unwrap();
         let checker = auth::Checker::Fixed(Box::new(|t: &str| match t {
             "page:personal/*" | "page:personal/2026-11-27-qa" => Ok(true),
@@ -1500,19 +1494,19 @@ mod tests {
         let to = r.headers()[header::LOCATION].to_str().unwrap().to_string();
         assert!(to.starts_with(&format!("{}/authorize?", f.url)), "{to}");
         let bound = cookie_set(&r, "pages_oidc").unwrap();
-        let state = crate::oidc::tests::param(&to, "state");
+        let state = fleetlayer_oidc::testing::param(&to, "state");
         assert_eq!(bound, state);
         *f.token.lock().unwrap() =
-            Some(crate::oidc::tests::good(&f, f.claims(&crate::oidc::tests::param(&to, "nonce"))));
+            Some(fleetlayer_oidc::testing::good(&f, f.claims(&fleetlayer_oidc::testing::param(&to, "nonce"))));
 
         // Coming back without the browser's cookie fails; with it, signed in.
         let cb = format!("/_/auth/callback?code=c1&state={state}");
         assert_eq!(get(&app, &cb, None).await.status(), StatusCode::FORBIDDEN);
         let r = get(&app, "/_/login/start?next=/personal/", None).await;
         let to = r.headers()[header::LOCATION].to_str().unwrap().to_string();
-        let state = crate::oidc::tests::param(&to, "state");
+        let state = fleetlayer_oidc::testing::param(&to, "state");
         *f.token.lock().unwrap() =
-            Some(crate::oidc::tests::good(&f, f.claims(&crate::oidc::tests::param(&to, "nonce"))));
+            Some(fleetlayer_oidc::testing::good(&f, f.claims(&fleetlayer_oidc::testing::param(&to, "nonce"))));
         let r =
             get_with(&app, &format!("/_/auth/callback?code=c2&state={state}"), &format!("pages_oidc={state}")).await;
         assert_eq!(r.status(), StatusCode::OK);

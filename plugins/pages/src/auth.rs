@@ -30,16 +30,7 @@ const LOCKOUT: Duration = Duration::from_secs(15 * 60);
 /// How long an access decision is remembered.
 const DECISION: Duration = Duration::from_secs(60);
 
-/// A person signed in through Fleetlayer.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Person {
-    /// The person's ID (the token's `sub`), never reused.
-    pub sub: String,
-    /// The tenant they signed in to (`fleetlayer.dev/tenant`).
-    pub tenant: String,
-    pub handle: Option<String>,
-    pub name: Option<String>,
-}
+pub use fleetlayer_oidc::Person;
 
 /// Someone signed in.
 #[derive(Debug, Clone)]
@@ -216,13 +207,7 @@ pub fn clear_cookie(secure: bool) -> String {
     format!("{COOKIE}=; HttpOnly{s}; SameSite=Strict; Path=/; Max-Age=0")
 }
 
-/// 32 random bytes from the kernel (`/dev/urandom` on Linux and macOS), hex.
-pub fn new_id() -> String {
-    use std::io::Read;
-    let mut b = [0u8; 32];
-    std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b)).expect("reading /dev/urandom");
-    hex::encode(b)
-}
+pub use fleetlayer_oidc::new_id;
 
 /// The client's address: from `X-Forwarded-For` only when the connection comes from a trusted proxy (the right-most
 /// address that isn't one), else the connection's own.
@@ -288,7 +273,7 @@ mod tests {
                 _ => Ok(false),
             }
         }));
-        let f = crate::oidc::tests::FakeIssuer::start().await;
+        let f = fleetlayer_oidc::testing::FakeIssuer::start().await;
         let oidc = crate::oidc::Oidc::new(&f.url, "pages", "s", "https://p.example").unwrap();
         let auth = Auth::new(None, Some(oidc), Some(checker)).unwrap();
         assert_eq!(auth.may(&alice(), "page:personal/*").await, Access::Yes);
@@ -305,7 +290,7 @@ mod tests {
 
     #[tokio::test]
     async fn signin_without_a_node_is_refused() {
-        let f = crate::oidc::tests::FakeIssuer::start().await;
+        let f = fleetlayer_oidc::testing::FakeIssuer::start().await;
         let oidc = crate::oidc::Oidc::new(&f.url, "pages", "s", "https://p.example").unwrap();
         assert!(Auth::new(None, Some(oidc), None).is_err());
         assert!(Auth::new(None, None, None).is_err());

@@ -1778,23 +1778,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "fleetlayer-oidc"
+version = "0.3.8"
+dependencies = [
+ "anyhow",
+ "axum",
+ "crypto-common 0.2.2",
+ "form_urlencoded",
+ "hex",
+ "jiff 1.0.3",
+ "jsonwebtoken",
+ "reqwest",
+ "rsa",
+ "serde",
+ "serde_json",
+ "sha2 0.11.2",
+ "tokio",
+]
+
+[[package]]
 name = "fleetlayer-pages"
 version = "0.3.8"
 dependencies = [
  "anyhow",
  "async-trait",
  "axum",
- "crypto-common 0.2.2",
+ "fleetlayer-oidc",
  "fleetlayer-plugin",
  "fleetlayer-protocol",
  "form_urlencoded",
  "futures",
  "hex",
  "jiff 1.0.3",
- "jsonwebtoken",
  "pulldown-cmark",
  "reqwest",
- "rsa",
  "serde",
  "serde_json",
  "sha2 0.11.2",

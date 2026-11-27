@@ -16,7 +16,7 @@
 
 mod apps;
 mod auth;
-mod oidc;
+use fleetlayer_oidc as oidc;
 mod receive;
 mod render;
 mod space;
