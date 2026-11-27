@@ -662,3 +662,12 @@ managers, machines that sleep.
   on a machine that's always on; a message to a session on the same node skips the access policy (every message on
   one node does), so it's only as trusted as that node's user; a bare `<tab>` in `to` looks on its own node first, so
   after moving it, write `<tab>@<node>`. Where it lives: `docs/plugins/scheduler.md`, `plugins/scheduler/`.
+- **Agents on a Mac inside a Linux VM.** A stray `rm -rf ~` or `pkill -f` from an agent hits only the VM, while the
+  agents keep doing their work: worktrees and databases on the VM's own disk, dev servers opened in the Mac's browser
+  through forwarded ports, and the Mac's files, browser and notes through Fleetlayer's plugins instead of mounts. Lima
+  (Apache 2.0) gets the full guide: a `lima.yaml` with host mounts off (Lima mounts the home folder read-only by
+  default, so set `mounts: []`), port forwarding, a Unix user per role, a node per user, what stays on the Mac
+  (Xcode, signing, Keychain and Touch ID, Claude in Chrome, computer use), RAM and disk sizing, and the footguns.
+  OrbStack gets a short section: the best macOS integration, paid for business use, and it mounts all of `/Users` by
+  default, so turn that off. Being tried on a real Mac now. To write: `docs/guides/mac-vm.md`, from the trial's notes
+  once the setup works.
