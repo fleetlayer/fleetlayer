@@ -143,10 +143,13 @@ fn set_name_ok(s: &str) -> bool {
         && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
 }
 
-/// A plain host name with at least one dot: never a wildcard, an IP range or a bare top-level domain.
+/// A plain host name below a public suffix: never a wildcard, a bare top-level domain or a suffix anyone can register
+/// under (`co.uk`, `github.io`), which would share every site below it.
 fn domain_ok(d: &str) -> bool {
-    let d = d.trim_start_matches('.');
-    d.contains('.') && d.split('.').all(|l| !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+    let d = d.trim_start_matches('.').to_ascii_lowercase();
+    let plain = d.contains('.')
+        && d.split('.').all(|l| !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
+    plain && psl::domain_str(&d).is_some()
 }
 
 fn env_var_ok(v: &str) -> bool {
@@ -163,7 +166,10 @@ fn load(home: &Path, raw: &Value) -> Result<Config, String> {
             return Err(format!("share: {:?} isn't a unique set name (a-z, 0-9, - and _)", s.set));
         }
         if s.domains.is_empty() || !s.domains.iter().all(|d| domain_ok(d)) {
-            return Err(format!("share {}: domains must be plain host names such as x.com", s.set));
+            return Err(format!(
+                "share {}: domains must be plain host names such as x.com, never a public suffix such as co.uk or github.io",
+                s.set
+            ));
         }
         if s.to.is_empty() {
             return Err(format!("share {}: no nodes to send to", s.set));

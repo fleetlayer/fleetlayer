@@ -1789,6 +1789,7 @@ dependencies = [
  "hex",
  "jiff 1.0.3",
  "pbkdf2 0.12.2",
+ "psl",
  "rusqlite",
  "security-framework",
  "serde",

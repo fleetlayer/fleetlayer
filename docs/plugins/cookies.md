@@ -49,7 +49,7 @@ plugins:
 | Field | Default | What it is |
 |---|---|---|
 | `set` | | A name for this group of cookies (`a-z`, `0-9`, `-`, `_`); targets ask for it by name |
-| `domains` | | Host names, each covering its subdomains. Never a wildcard or a bare top-level domain |
+| `domains` | | Host names, each covering its subdomains. Never a wildcard, a bare top-level domain or a public suffix (`co.uk`, `github.io`) |
 | `names` | all | Only these cookies. Prefer a short list: everything sent is something a target can use |
 | `to` | | The nodes to send to |
 | `browser` | `chrome` | `chrome`, `chromium`, `brave` or `edge` |

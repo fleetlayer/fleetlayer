@@ -29,10 +29,15 @@ fn config_is_checked() {
     .unwrap();
     assert_eq!(ok.share[0].cookies_file.as_deref(), Some(Path::new("/home/alice/c/Cookies")));
     assert_eq!(ok.share[0].profile, "Default");
+    for good in ["bbc.co.uk", "someone.github.io", "api.x.com", ".x.com"] {
+        assert!(domain_ok(good), "{good}");
+    }
     let bad = [
         json!({"share": [{"set": "x", "domains": ["com"], "to": ["s"]}]}),
         json!({"share": [{"set": "x", "domains": ["*.x.com"], "to": ["s"]}]}),
         json!({"share": [{"set": "x", "domains": [], "to": ["s"]}]}),
+        json!({"share": [{"set": "x", "domains": ["co.uk"], "to": ["s"]}]}),
+        json!({"share": [{"set": "x", "domains": ["github.io"], "to": ["s"]}]}),
         json!({"share": [{"set": "x", "domains": ["x.com"], "to": []}]}),
         json!({"share": [{"set": "X Y", "domains": ["x.com"], "to": ["s"]}]}),
         json!({"share": [{"set": "x", "domains": ["x.com"], "to": ["s"], "sites": ["oops"]}]}),
