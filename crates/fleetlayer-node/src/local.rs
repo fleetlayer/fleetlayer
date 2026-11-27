@@ -61,6 +61,15 @@ struct Send {
     #[serde(default)]
     why: Option<String>,
     caller: Option<Caller>,
+    /// Who's sending, when the caller isn't one of this node's sessions (a service on the machine): shown as
+    /// "<from> (<node>)". Access control still sees `-@<node>`.
+    #[serde(default)]
+    from: Option<String>,
+    /// The text is outside data (an email, a web page): the recipient gets it marked untrusted.
+    #[serde(default)]
+    untrusted: bool,
+    #[serde(default)]
+    subkind: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -183,9 +192,16 @@ impl Handler for Local {
                         node: Some(node.name.clone()),
                         session_id: Some(c.session_id.clone()),
                     },
-                    None => From { label: format!("a shell on {}", node.name), ..Default::default() },
+                    None => {
+                        let label = match s.from.as_deref().map(str::trim).filter(|l| !l.is_empty()) {
+                            Some(l) => format!("{} ({})", l.chars().take(60).collect::<String>(), node.name),
+                            None => format!("a shell on {}", node.name),
+                        };
+                        From { label, ..Default::default() }
+                    }
                 };
-                answer(&crate::deliver::send(node, &s.to, &s.text, from, caller.as_ref(), s.why.clone()).await?)
+                let marks = crate::deliver::Marks { untrusted: s.untrusted, subkind: s.subkind.clone() };
+                answer(&crate::deliver::send(node, &s.to, &s.text, from, caller.as_ref(), s.why.clone(), marks).await?)
             }
             _ => Err(RpcError::method_not_found(method)),
         }

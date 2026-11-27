@@ -115,6 +115,12 @@ pub struct SendRequest {
     /// Why, in one line, when the sender gave a reason (`--why`): access rules can require one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub justification: Option<String>,
+    /// The sender says the text is outside data; the control plane marks it untrusted (as it does for senders the
+    /// policy calls untrusted).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub untrusted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subkind: Option<String>,
 }
 
 /// Deliver to the session `name` names on the receiving node. `text` is rendered.

@@ -512,6 +512,12 @@ pub struct MessageSend {
     /// `<tab>@<node>`, `<tab>` (this node), or a session ID.
     pub to: String,
     pub text: String,
+    /// The text is outside data (an email, a web page): the recipient gets it marked untrusted.
+    #[serde(default)]
+    pub untrusted: bool,
+    /// A finer kind for the recipient's harness (`forward`, …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subkind: Option<String>,
 }
 
 #[cfg(test)]

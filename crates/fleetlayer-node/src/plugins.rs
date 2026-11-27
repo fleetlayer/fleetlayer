@@ -428,7 +428,8 @@ impl Handler for FromPlugin {
                     node: Some(self.node.name.clone()),
                     session_id: None,
                 };
-                let d = crate::deliver::send(&self.node, &m.to, &m.text, from, None, None).await?;
+                let marks = crate::deliver::Marks { untrusted: m.untrusted, subkind: m.subkind.clone() };
+                let d = crate::deliver::send(&self.node, &m.to, &m.text, from, None, None, marks).await?;
                 answer(&d)
             }
             ext::method::SYNC_PUBLISH => {
