@@ -98,9 +98,11 @@ pub fn install(home: &Path, config: &Path, start: bool) -> anyhow::Result<()> {
         bin: stable_bin()?,
         path: fleetlayer_protocol::local::service_path(
             &std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into()),
-            fleetlayer_protocol::local::instance().as_deref(),
-            home,
-            nix::unistd::User::from_uid(nix::unistd::getuid()).ok().flatten().map(|u| u.dir).as_deref(),
+            &nix::unistd::User::from_uid(nix::unistd::getuid())
+                .ok()
+                .flatten()
+                .map(|u| u.dir)
+                .unwrap_or_else(|| home.to_path_buf()),
         ),
         log: home.join("Library/Logs/fleetlayer-node.log"),
     };

@@ -315,6 +315,13 @@ managers, machines that sleep.
   to bus" unless `XDG_RUNTIME_DIR=/run/user/$(id -u)` is set, and the user's services stop at logout unless
   `loginctl enable-linger <user>`. Found testing `fleetlayer up` on a Linux build server, 27 Nov 2026.
   Written: `docs/guides/node-services.md`.
+- **A user service's PATH isn't your shell's.** A PATH copied from the shell into a launchd plist or systemd unit can
+  hold `~/.local/bin`, `$HOME/...` or `./node_modules/.bin`: the shell expands and resolves those, launchd, systemd
+  and execvp don't, and the service runs in another folder. So a tool the shell found (herdr in `~/.local/bin`) was
+  "No such file or directory" for the service. Fixed when writing the unit: expand a leading `~` and `$HOME` against
+  the account's home, drop relative, empty and repeated entries; and `fleetlayer up` writes the absolute path of the
+  programs plugins run (herdr's `program:`, summaries' `claude:`). Found by the Mac test, 27 Nov 2026. Where it lives:
+  `service_path` in `crates/fleetlayer-protocol/src/local.rs`.
 - **A second copy of a user service under the same account.** A test copy with only its own `HOME` still replaces the
   real one: launchd labels and systemd unit names are per account, and the service manager starts the job with the
   account's real `HOME`, so it reads the real config. And systemd reads user units only from the account's own

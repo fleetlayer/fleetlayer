@@ -45,16 +45,31 @@ pub fn systemd_unit(name: &str, instance: Option<&str>) -> String {
     }
 }
 
-/// The PATH written into a user service: the installing shell's, without empty entries (an empty entry means the
-/// current folder). For a second instance whose HOME isn't the account's, entries inside the account's own home are
-/// dropped too (its `~/.local/bin`, version-manager shims), so a binary missing from the copy's folder can't fall
-/// through to the real install.
-pub fn service_path(path: &str, instance: Option<&str>, home: &Path, account_home: Option<&Path>) -> String {
-    let foreign = |e: &str| match (instance, account_home) {
-        (Some(_), Some(acct)) if acct != home && acct != Path::new("/") => Path::new(e).starts_with(acct),
-        _ => false,
-    };
-    path.split(':').filter(|e| !e.is_empty() && !foreign(e)).collect::<Vec<_>>().join(":")
+/// The PATH written into a user service, from the installing shell's: launchd and systemd don't expand `~` or `$HOME`
+/// and run services in another folder, so a leading `~` and `$HOME` are expanded against the account's own home (where
+/// the shell found its tools, even for a second instance with another `HOME`), relative and empty entries (the current
+/// folder) are dropped, and so are repeats (the first one stays).
+pub fn service_path(path: &str, account_home: &Path) -> String {
+    let home = account_home.display().to_string();
+    let mut out: Vec<String> = vec![];
+    for e in path.split(':') {
+        let e = if e == "~" || e == "$HOME" || e == "${HOME}" {
+            home.clone()
+        } else if let Some(rest) = e.strip_prefix("~/").or(e.strip_prefix("$HOME/")).or(e.strip_prefix("${HOME}/")) {
+            format!("{}/{rest}", home.trim_end_matches('/'))
+        } else {
+            e.to_string()
+        };
+        if e.starts_with('/') && !out.contains(&e) {
+            out.push(e);
+        }
+    }
+    out.join(":")
+}
+
+/// A program as the service will find it: the first `dir/name` on `path` (as [`service_path`] writes it) that is a file.
+pub fn find_on(path: &str, name: &str) -> Option<PathBuf> {
+    path.split(':').map(|d| Path::new(d).join(name)).find(|p| p.is_file())
 }
 
 #[cfg(test)]
@@ -74,11 +89,21 @@ mod tests {
             assert_eq!(launchd_label(name, None), format!("dev.fleetlayer.{name}"));
             assert_eq!(systemd_unit(name, None), format!("fleetlayer-{name}.service"));
         }
-        // Without an instance only empty entries go: the account's own folders stay.
+        // Absolute entries stay as they are, in order; only empty ones go.
+        assert_eq!(service_path("/usr/bin::/home/a/.local/bin:", home), "/usr/bin:/home/a/.local/bin");
+    }
+
+    #[test]
+    fn service_path_expands_home_and_drops_what_a_service_cant_use() {
+        let acct = Path::new("/Users/a");
         assert_eq!(
-            service_path("/usr/bin::/home/a/.local/bin:", None, home, Some(home)),
-            "/usr/bin:/home/a/.local/bin"
+            service_path(
+                "/b:~/.local/bin:./node_modules/.bin:$HOME/.dotnet/tools:~/.local/bin:/usr/bin:${HOME}/x:bin::/b:~",
+                acct
+            ),
+            "/b:/Users/a/.local/bin:/Users/a/.dotnet/tools:/usr/bin:/Users/a/x:/Users/a"
         );
+        assert_eq!(service_path("~/.local/bin", Path::new("/")), "/.local/bin");
     }
 
     #[test]
@@ -91,15 +116,8 @@ mod tests {
         assert_eq!(node_socket_in(None, home, Some("try")), Path::new("/tmp/try/.local/state/fleetlayer/node.sock"));
         assert_eq!(launchd_label("node", Some("try")), "dev.fleetlayer.try.node");
         assert_eq!(systemd_unit("gateway", Some("try")), "fleetlayer-try-gateway.service");
-        assert_eq!(
-            service_path(
-                "/b:/usr/bin::/Users/a/.local/bin:/tmp/try/.local/bin:",
-                Some("try"),
-                home,
-                Some(Path::new("/Users/a"))
-            ),
-            "/b:/usr/bin:/tmp/try/.local/bin"
-        );
+        // An instance's HOME doesn't change what `~` meant to the shell: the account's own home, where its tools are.
+        assert_eq!(service_path("/b:~/.local/bin", Path::new("/Users/a")), "/b:/Users/a/.local/bin");
         for bad in ["", "a/b", "a.b", "a b", &"x".repeat(33)] {
             assert!(!valid_instance(bad), "{bad:?}");
         }

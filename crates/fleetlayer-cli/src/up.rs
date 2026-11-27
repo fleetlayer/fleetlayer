@@ -237,12 +237,7 @@ impl Unit {
 
     /// Write the file and (re)start the service.
     pub fn install(&self) -> anyhow::Result<()> {
-        let path_env = fleetlayer_protocol::local::service_path(
-            &std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into()),
-            fleetlayer_protocol::local::instance().as_deref(),
-            &home(),
-            nix::unistd::User::from_uid(nix::unistd::getuid()).ok().flatten().map(|u| u.dir).as_deref(),
-        );
+        let path_env = service_path_env();
         let file = self.file();
         std::fs::create_dir_all(file.parent().expect("a unit file has a directory"))?;
         std::fs::write(&file, self.render(&path_env))?;
@@ -323,12 +318,13 @@ impl Layout {
 
 /// The node.yaml `up` writes for a machine that has none.
 /// The session plugins `up` adds: herdr's when herdr is installed, Claude Code's when Claude Code is, summaries when
-/// asked for.
-#[derive(Debug, Clone, Copy, Default)]
+/// asked for. herdr and summaries carry the absolute path of the program they run (herdr, claude), so a service PATH
+/// that differs from the shell's can't hide it.
+#[derive(Debug, Clone, Default)]
 pub struct SessionPlugins {
-    pub herdr: bool,
+    pub herdr: Option<PathBuf>,
     pub claude_code: bool,
-    pub summaries: bool,
+    pub summaries: Option<PathBuf>,
 }
 
 pub fn node_yaml_text(
@@ -337,7 +333,7 @@ pub fn node_yaml_text(
     gateway: &str,
     hub: Option<&Path>,
     pages: Option<(&Path, &Path, u16)>,
-    sessions: SessionPlugins,
+    sessions: &SessionPlugins,
 ) -> String {
     let mut y = format!(
         "# Written by `fleetlayer up`. Yours to edit: `fleetlayer up` never overwrites it.\ncontrol:\n  url: {}\n  token_file: {}\n# The gateway's own health is part of this node's (`fleetlayer status`).\ngateway: {}\nplugins:\n",
@@ -385,8 +381,11 @@ pub fn node_yaml_text(
             yaml_str(&space.join("apps").display().to_string()),
         ));
     }
-    if sessions.herdr {
-        y.push_str("  # Your herdr tabs, so the fleet sees and reaches every session in them.\n  - name: herdr\n    command: fleetlayer-herdr\n");
+    if let Some(herdr) = &sessions.herdr {
+        y.push_str(&format!(
+            "  # Your herdr tabs, so the fleet sees and reaches every session in them.\n  - name: herdr\n    command: fleetlayer-herdr\n    config:\n      program: {}\n",
+            yaml_str(&herdr.display().to_string())
+        ));
     }
     if sessions.claude_code {
         y.push_str("  # Claude Code's own view of each session (status, transcript), and starting sessions.\n  - name: claude-code\n    command: fleetlayer-claude-code\n");
@@ -396,31 +395,52 @@ pub fn node_yaml_text(
     } else {
         ""
     };
-    if sessions.summaries {
-        y.push_str("  # A short summary of each session as it goes (runs Claude Code, so it spends tokens).\n  - name: summaries\n    command: fleetlayer-summaries\n    grants: [sessions.watch, summary.publish]\n");
+    if let Some(claude) = &sessions.summaries {
+        y.push_str(&format!(
+            "  # A short summary of each session as it goes (runs Claude Code, so it spends tokens).\n  - name: summaries\n    command: fleetlayer-summaries\n    grants: [sessions.watch, summary.publish]\n    config:\n      claude: {}\n",
+            yaml_str(&claude.display().to_string())
+        ));
     }
     y.push_str(hint);
     y
 }
 
-/// A program on PATH.
-fn on_path(name: &str) -> bool {
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    std::env::split_paths(&path).any(|d| d.join(name).is_file())
+/// The account's own home: where the shell's `~` pointed when it found its tools, even for a second instance whose
+/// `HOME` is elsewhere.
+fn account_home() -> PathBuf {
+    nix::unistd::User::from_uid(nix::unistd::getuid()).ok().flatten().map(|u| u.dir).unwrap_or_else(home)
+}
+
+/// The PATH the user services get (see `service_path`).
+fn service_path_env() -> String {
+    fleetlayer_protocol::local::service_path(
+        &std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into()),
+        &account_home(),
+    )
+}
+
+/// A program as the services will find it: an absolute path on their PATH.
+fn on_path(name: &str) -> Option<PathBuf> {
+    fleetlayer_protocol::local::find_on(&service_path_env(), name)
 }
 
 /// Which session plugins this machine can run, and a line for each one left out.
 fn detect_sessions(want_summaries: bool) -> (SessionPlugins, Vec<String>) {
     let mut skipped = vec![];
-    let herdr = on_path("herdr") && find_bin("fleetlayer-herdr").is_ok();
-    if !herdr {
-        skipped.push(if on_path("herdr") {
+    let herdr_bin = on_path("herdr");
+    let herdr = herdr_bin.clone().filter(|_| find_bin("fleetlayer-herdr").is_ok());
+    if herdr.is_none() {
+        skipped.push(if herdr_bin.is_some() {
             "herdr: fleetlayer-herdr isn't installed next to fleetlayer".to_string()
         } else {
             "herdr: not installed (https://herdr.dev), so the fleet sees no herdr tabs".to_string()
         });
     }
-    let claude = on_path("claude") || home().join(".claude/local/claude").is_file();
+    let claude_bin = on_path("claude").or_else(|| {
+        let local = account_home().join(".claude/local/claude");
+        local.is_file().then_some(local)
+    });
+    let claude = claude_bin.is_some();
     let claude_code = claude && find_bin("fleetlayer-claude-code").is_ok();
     if !claude_code {
         skipped.push(if claude {
@@ -429,8 +449,8 @@ fn detect_sessions(want_summaries: bool) -> (SessionPlugins, Vec<String>) {
             "claude-code: Claude Code isn't installed".to_string()
         });
     }
-    let summaries = want_summaries && claude && find_bin("fleetlayer-summaries").is_ok();
-    if want_summaries && !summaries {
+    let summaries = claude_bin.clone().filter(|_| want_summaries && find_bin("fleetlayer-summaries").is_ok());
+    if want_summaries && summaries.is_none() {
         skipped.push("summaries: needs Claude Code and fleetlayer-summaries".into());
     }
     (SessionPlugins { herdr, claude_code, summaries }, skipped)
@@ -563,15 +583,18 @@ pub async fn up(mut a: UpArgs) -> anyhow::Result<()> {
         let (sessions, skipped) = detect_sessions(a.summaries);
         create(
             &node_yaml,
-            &node_yaml_text(&control_url, &token_file, &gateway_url, hub_login.as_deref(), pages, sessions),
+            &node_yaml_text(&control_url, &token_file, &gateway_url, hub_login.as_deref(), pages, &sessions),
             0o600,
         )?;
         println!("Wrote {}.", node_yaml.display());
-        let added: Vec<&str> =
-            [("herdr", sessions.herdr), ("claude-code", sessions.claude_code), ("summaries", sessions.summaries)]
-                .into_iter()
-                .filter_map(|(n, on)| on.then_some(n))
-                .collect();
+        let added: Vec<&str> = [
+            ("herdr", sessions.herdr.is_some()),
+            ("claude-code", sessions.claude_code),
+            ("summaries", sessions.summaries.is_some()),
+        ]
+        .into_iter()
+        .filter_map(|(n, on)| on.then_some(n))
+        .collect();
         if !added.is_empty() {
             println!("Session plugins: {}.", added.join(", "));
         }
@@ -606,9 +629,9 @@ pub async fn up(mut a: UpArgs) -> anyhow::Result<()> {
         for (plugin, flag) in [
             ("claude-auth-manager", a.no_hub),
             ("pages", a.no_pages),
-            ("herdr", !sessions.herdr),
+            ("herdr", sessions.herdr.is_none()),
             ("claude-code", !sessions.claude_code),
-            ("summaries", !sessions.summaries),
+            ("summaries", sessions.summaries.is_none()),
         ] {
             if !flag && !text.contains(&format!("name: {plugin}")) {
                 notes.push(format!(
@@ -812,7 +835,7 @@ mod tests {
             "http://127.0.0.1:7680",
             Some(Path::new("/h/.local/state/fleetlayer/claude-hub-login")),
             Some((Path::new("/h/.local/state/fleetlayer/pages/login"), Path::new("/h/Fleetlayer/personal"), 7680)),
-            SessionPlugins { herdr: true, claude_code: true, summaries: false },
+            &SessionPlugins { herdr: Some("/h/.local/bin/herdr".into()), claude_code: true, summaries: None },
         );
         let v: serde_json::Value = yaml_serde_from(&y);
         assert_eq!(v["gateway"], "http://127.0.0.1:7680");
@@ -820,6 +843,7 @@ mod tests {
         assert_eq!(v["plugins"][1]["config"]["base_url"], "http://pages.localhost:7680");
         assert_eq!(v["plugins"][1]["config"]["spaces"]["personal"]["dir"], "/h/Fleetlayer/personal/pages");
         assert_eq!(v["plugins"][2]["name"], "herdr");
+        assert_eq!(v["plugins"][2]["config"]["program"], "/h/.local/bin/herdr");
         assert_eq!(v["plugins"][3]["command"], "fleetlayer-claude-code");
         assert!(v["plugins"].get(4).is_none(), "summaries only when asked for");
         assert!(y.contains("# harnesses:") && v.get("harnesses").is_none(), "a commented hint only");
@@ -829,11 +853,12 @@ mod tests {
             "http://g",
             None,
             None,
-            SessionPlugins { summaries: true, ..Default::default() },
+            &SessionPlugins { summaries: Some("/h/.local/bin/claude".into()), ..Default::default() },
         );
         let v: serde_json::Value = yaml_serde_from(&y);
         assert_eq!(v["plugins"][0]["name"], "summaries");
         assert_eq!(v["plugins"][0]["grants"][1], "summary.publish");
+        assert_eq!(v["plugins"][0]["config"]["claude"], "/h/.local/bin/claude");
         let g: serde_json::Value = yaml_serde_from(&gateway_yaml_text(7680, Some(7600), Some("planning")));
         assert_eq!(g["listen"], "127.0.0.1:7680");
         assert_eq!(g["services"]["control"]["url"], "http://127.0.0.1:7600");
