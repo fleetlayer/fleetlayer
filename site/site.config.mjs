@@ -16,6 +16,7 @@ export const site = {
 export const pages = [
   { file: "getting-started", group: "Start here" },
   { file: "guides/laptop", group: "Guides", label: "Start on your laptop" },
+  { file: "guides/browser", group: "Guides", label: "Share your browser" },
   { file: "guides/untrusted-input", group: "Guides", label: "An agent that reads strangers' text" },
   { file: "guides/backups", group: "Guides", label: "Backups" },
   { file: "plugins/summaries", group: "Plugins", label: "Summaries" },
