@@ -39,5 +39,5 @@ docs: plugins/signin
 description: |
   People sign in once, with a passkey, and use every service that speaks OpenID Connect: the Claude sign-in hub,
   pages, and most self-hosted apps. Who may use which service comes from the same access policy as your agents.
-  Experimental: passkeys, invites and signing in to services work; admin pages, signing out everywhere at once and
-  Google Workspace sign-in come next.
+  Experimental: passkeys, invites, signing in to services and the admin pages work; signing out everywhere at once
+  and Google Workspace sign-in come next.
