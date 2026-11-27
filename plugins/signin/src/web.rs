@@ -50,6 +50,9 @@ pub struct Settings {
     pub passkey_domain: String,
     pub passkeys_fixed: bool,
     pub clients: Vec<Client>,
+    /// Addresses it had before (`host[:port]`), still pointed here while services are repointed: discovery there
+    /// redirects to the issuer, the JWKS is served, and everything else redirects to the same path at the issuer.
+    pub previous_issuers: Vec<String>,
 }
 
 struct Code {
@@ -320,7 +323,27 @@ pub fn router(app: Arc<App>) -> axum::Router {
         .route("/upstream/{name}/start", get(crate::upstream::start))
         .route("/upstream/{name}/callback", get(crate::upstream::callback))
         .route("/", get(home))
+        .layer(axum::middleware::from_fn_with_state(app.clone(), previous_issuer))
         .with_state(app)
+}
+
+/// A request to one of the `previous_issuers` (by its `Host`): the JWKS as it is, so tokens issued there still
+/// verify; anything else is sent to the same path at the issuer. Only ever to the configured issuer, never to an
+/// address from the request. Services must still be repointed: a client won't follow a redirect on a POST (the
+/// token endpoint), and tokens from now on name the new issuer.
+async fn previous_issuer(
+    State(app): State<Arc<App>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let host = req.headers().get(header::HOST).and_then(|h| h.to_str().ok()).map(str::to_ascii_lowercase);
+    let old = host.is_some_and(|h| app.settings.previous_issuers.contains(&h));
+    if !old || req.uri().path() == "/jwks" {
+        return next.run(req).await;
+    }
+    let path = req.uri().path_and_query().map(|p| p.as_str()).unwrap_or("/");
+    let to = format!("{}{path}", app.settings.issuer);
+    (StatusCode::PERMANENT_REDIRECT, [(header::LOCATION, to)]).into_response()
 }
 
 async fn discovery(State(app): State<Arc<App>>) -> Json<Value> {

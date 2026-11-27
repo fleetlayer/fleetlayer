@@ -161,6 +161,7 @@ fn app_with(dir: &std::path::Path, control: &str, backchannel: Option<String>) -
         origin: Url::parse(ORIGIN).unwrap(),
         passkey_domain: "example.com".into(),
         passkeys_fixed: false,
+        previous_issuers: vec![],
         clients: vec![client("hub"), client("vault")],
     };
     Arc::new(web::App::new(settings, store, keys, crate::control::Control::new(control, "fls_test")).unwrap())
@@ -465,6 +466,7 @@ async fn on_plain_http_localhost_the_cookie_isnt_secure_and_everywhere_else_it_i
         origin: Url::parse("http://signin.localhost:7680").unwrap(),
         passkey_domain: "signin.localhost".into(),
         passkeys_fixed: true,
+        previous_issuers: vec![],
         clients: vec![],
     };
     let local = Arc::new(web::App::new(settings, store, keys, crate::control::Control::new(&control, "t")).unwrap());
@@ -487,6 +489,7 @@ async fn with_upstream(
         origin: Url::parse(ORIGIN).unwrap(),
         passkey_domain: "example.com".into(),
         passkeys_fixed: false,
+        previous_issuers: vec![],
         clients: vec![web::Client {
             name: "hub".into(),
             redirect_uris: vec!["https://hub.example.com/cb".into()],
@@ -883,4 +886,31 @@ async fn the_signout_command_signs_someone_out_everywhere_from_the_command_line(
     assert_eq!(s.status, StatusCode::OK);
     a.apply_revocations().await.unwrap();
     assert_eq!(a.store.sessions.lock().await.sessions.len(), 1);
+}
+
+#[tokio::test]
+async fn a_previous_address_serves_the_jwks_and_sends_everything_else_to_the_issuer_only() {
+    let control = control_plane(Arc::new(Mutex::new(Seen::default()))).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = Arc::try_unwrap(app(dir.path(), &control)).ok().unwrap();
+    a.settings.previous_issuers = vec!["signin.old.example".into()];
+    let a = Arc::new(a);
+    let at = |host: &'static str, method: &'static str, uri: &'static str| {
+        let req = Request::builder().method(method).uri(uri).header(header::HOST, host).body(Body::empty()).unwrap();
+        let r = web::router(a.clone());
+        async move { r.oneshot(req).await.unwrap() }
+    };
+    let r = at("signin.old.example", "GET", "/.well-known/openid-configuration").await;
+    assert_eq!(r.status(), StatusCode::PERMANENT_REDIRECT);
+    assert_eq!(r.headers()[header::LOCATION], format!("{ORIGIN}/.well-known/openid-configuration"));
+    let r = at("signin.old.example", "GET", "/jwks").await;
+    assert_eq!(r.status(), StatusCode::OK, "tokens issued there still verify");
+    let r = at("SIGNIN.OLD.EXAMPLE", "GET", "/authorize?client_id=hub&x=1").await;
+    assert_eq!(r.headers()[header::LOCATION], format!("{ORIGIN}/authorize?client_id=hub&x=1"));
+    // Never to anywhere the request names.
+    let r = at("signin.old.example", "GET", "//evil.example/x").await;
+    assert!(r.headers()[header::LOCATION].to_str().unwrap().starts_with(&format!("{ORIGIN}/")));
+    // The issuer's own address is served as usual.
+    let r = at("signin.example.com", "GET", "/.well-known/openid-configuration").await;
+    assert_eq!(r.status(), StatusCode::OK);
 }

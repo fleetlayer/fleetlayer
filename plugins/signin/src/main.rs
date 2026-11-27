@@ -109,6 +109,9 @@ struct Config {
     /// What passkeys are made for; by default the issuer's registrable domain.
     #[serde(default)]
     passkey_domain: Option<String>,
+    /// Addresses it had before, still pointed here while every service is repointed (`docs/sso.md`, "Moving it").
+    #[serde(default)]
+    previous_issuers: Vec<String>,
     control_plane: String,
     /// The sign-in token (`fleetlayer-control signin token`).
     token_file: PathBuf,
@@ -189,6 +192,22 @@ fn build(cfg: Config, home: &Path) -> anyhow::Result<(Arc<web::App>, SocketAddr,
     let keys = keys::Keys::load_or_make(&dir)?;
     let token = read_secret(&expand(home, &cfg.token_file), "the sign-in token")?;
     let control = control::Control::new(&cfg.control_plane, &token);
+    let host_port = |u: &url::Url| {
+        u.host_str().map(|h| match u.port() {
+            Some(port) => format!("{h}:{port}").to_ascii_lowercase(),
+            None => h.to_ascii_lowercase(),
+        })
+    };
+    let mut previous_issuers = vec![];
+    for p in &cfg.previous_issuers {
+        let u = url::Url::parse(p).map_err(|e| anyhow::anyhow!("previous_issuers: {p}: {e}"))?;
+        let host = host_port(&u).ok_or_else(|| anyhow::anyhow!("previous_issuers: {p} has no host"))?;
+        anyhow::ensure!(
+            Some(&host) != host_port(&issuer).as_ref(),
+            "previous_issuers: {p} is the issuer's own address"
+        );
+        previous_issuers.push(host);
+    }
     let mut origin = issuer.clone();
     origin.set_path("");
     let settings = web::Settings {
@@ -197,6 +216,7 @@ fn build(cfg: Config, home: &Path) -> anyhow::Result<(Arc<web::App>, SocketAddr,
         passkey_domain,
         passkeys_fixed,
         clients,
+        previous_issuers,
     };
     let mut upstreams = vec![];
     for u in cfg.upstreams {
