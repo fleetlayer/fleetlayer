@@ -1,5 +1,6 @@
-# On a version tag (v0.2.0), build every binary for Linux and macOS, attest where each came from, and publish them
-# with SHA-256 checksums as a GitHub release. Nodes update themselves from these releases.
+# On a version tag (v0.2.0), build every binary for Linux and macOS, sign and notarise the macOS ones, attest where
+# each came from, and publish them with SHA-256 checksums as a GitHub release. Nodes update themselves from these
+# releases. Signing: scripts/release/sign-macos.sh and docs/releasing.md.
 name: Release
 
 on:
@@ -22,7 +23,13 @@ jobs:
           - { target: aarch64-apple-darwin, os: macos-15 }
           - { target: x86_64-apple-darwin, os: macos-15-intel }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    # Notarising usually takes a few minutes, but Apple's queue can take much longer
+    timeout-minutes: 90
+    env:
+      BINARIES: >-
+        fleetlayer fleetlayer-node fleetlayer-control fleetlayer-herdr fleetlayer-claude-code fleetlayer-summaries
+        fleetlayer-files fleetlayer-claude-auth-manager fleetlayer-claude-accounts fleetlayer-pages fleetlayer-gateway
+        fleetlayer-signin fleetlayer-folders
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -34,13 +41,24 @@ jobs:
           cargo build --release --locked --target ${{ matrix.target }}
           -p fleetlayer-cli -p fleetlayer-node -p fleetlayer-control
           -p fleetlayer-herdr -p fleetlayer-claude-code -p fleetlayer-summaries -p fleetlayer-files -p fleetlayer-claude-auth-manager -p fleetlayer-accounts -p fleetlayer-pages -p fleetlayer-gateway -p fleetlayer-signin -p fleetlayer-folders
+      # Skipped with a warning where the secrets aren't set (a fork), so the build still passes there
+      - name: Sign and notarise the macOS binaries
+        if: runner.os == 'macOS'
+        env:
+          CODESIGN_CERTIFICATE: ${{ secrets.CODESIGN_CERTIFICATE }}
+          CODESIGN_CERTIFICATE_PASSWORD: ${{ secrets.CODESIGN_CERTIFICATE_PASSWORD }}
+          CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
+          APPLE_NOTARY_KEY: ${{ secrets.APPLE_NOTARY_KEY }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: scripts/release/sign-macos.sh "target/${{ matrix.target }}/release" $BINARIES
       - name: Package
         shell: bash
         run: |
           set -euo pipefail
           name=fleetlayer-${GITHUB_REF_NAME}-${{ matrix.target }}
           mkdir -p "dist/$name"
-          for b in fleetlayer fleetlayer-node fleetlayer-control fleetlayer-herdr fleetlayer-claude-code fleetlayer-summaries fleetlayer-files fleetlayer-claude-auth-manager fleetlayer-claude-accounts fleetlayer-pages fleetlayer-gateway fleetlayer-signin fleetlayer-folders; do
+          for b in $BINARIES; do
             cp "target/${{ matrix.target }}/release/$b" "dist/$name/"
           done
           cp LICENSE NOTICE README.md "dist/$name/"

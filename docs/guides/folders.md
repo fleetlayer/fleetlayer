@@ -58,9 +58,18 @@ agent that macOS refused, and the agent tells you.
 To change it later: System Settings > Privacy & Security > **Files and Folders**, find `fleetlayer-node` and turn
 **Downloads Folder** on or off.
 
-macOS remembers the answer for the node's binary at its exact path. Fleetlayer installs each release in a folder of
-its own (`readlink ~/.local/bin/fleetlayer-node` shows the current one), so after an upgrade macOS asks again, once.
-Asking an agent to run the `folders` tool after an upgrade shows at once whether each folder can still be read.
+Fleetlayer's macOS releases are signed with a Developer ID and notarised by Apple ([how](../releasing.md)), and macOS
+remembers your answer for the signed program, whichever folder it's installed in. So you answer once, and upgrades
+keep the permission. `codesign -dv ~/.local/bin/fleetlayer-node` shows whether yours is signed: a signed one says
+`Authority=Developer ID Application`.
+
+Two cases ask again:
+
+- **The first signed release**, once. macOS knew the unsigned node only by its path, and that answer doesn't carry
+  over to the signed one.
+- **A node you built yourself**, or an unsigned build from a fork, after every upgrade: macOS knows an unsigned
+  program by its exact path and bytes, and each build has new ones. Asking an agent to run the `folders` tool after an
+  upgrade shows at once whether each folder can still be read.
 
 ## 4. Decide which agents see them
 
@@ -138,8 +147,8 @@ ask: "look at my latest screenshot", "read the CSV I downloaded this morning". T
 
 ## When it doesn't work
 
-- **"macOS refused access to the downloads folder"**: section 3. After an upgrade this is expected once: answer the
-  prompt on the Mac, or turn the node back on under Files and Folders.
+- **"macOS refused access to the downloads folder"**: section 3. Answer the prompt on the Mac, or turn the node back
+  on under Files and Folders. With an unsigned build this is expected once after every upgrade.
 - **An agent's first read of Downloads hangs**: macOS is waiting for someone to answer its prompt on the Mac's screen.
 - **"is kept in the cloud and isn't downloaded"**: the file is an iCloud Drive or Dropbox placeholder. Open it in
   Finder once to download it, and ask again. The tool never starts a download itself.

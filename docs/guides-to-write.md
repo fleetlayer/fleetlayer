@@ -52,6 +52,25 @@ managers, machines that sleep.
   node retries with backoff, so it usually links once the person allows the prompt. If a fresh install keeps failing
   that way, check System Settings > Privacy & Security > Local Network. Seen installing the first Mac node, 26 Nov 2026.
   Written: `docs/guides/node-services.md`.
+- **macOS asks for the same permission again after every upgrade of an unsigned program.** macOS stores a privacy
+  answer (Files and Folders, Local Network) for an unsigned or ad-hoc signed binary by its path and code hash, and
+  each release has a new path (`~/.local/lib/fleetlayer/<version>/`) and new bytes. The prompt names the program
+  launchd started (the node), not the tool it runs, and the tool's call hangs until someone answers. Solved by signing
+  the macOS release binaries with a Developer ID: macOS then stores the designated requirement (team plus identifier),
+  which is the same in every release. Three things make it work: an explicit `--identifier` per binary (the linker's
+  default, `fleetlayer_node-<hash>`, changes every build), the hardened runtime (Apple won't notarise without it; Rust
+  binaries that start other programs need no entitlements), and `--timestamp`. Bare binaries can't be stapled, so
+  notarise a zip of them and let macOS look the ticket up online; curl and the node's update don't mark files as
+  downloaded, so they never need the lookup. In CI: a temporary keychain, `security set-key-partition-list` or
+  codesign waits for a dialog, and check the submission's status, not notarytool's exit code. The first signed
+  release still asks once, since the old answer belonged to a path. Where it lives: `scripts/release/sign-macos.sh`,
+  `docs/releasing.md`. Written: `docs/guides/folders.md` (section 3).
+- **Testing a release's binaries beside a running node.** Before v0.3.9 a node ignores `FLEETLAYER_INSTANCE`, and any
+  node started by hand binds the default socket: it removes the running node's socket file and takes its place, and
+  when it stops, the real node is still running with no socket (`fleetlayer status` says it can't reach the node)
+  until its service is restarted. Check `fleetlayer-node config` prints a socket of its own before `run`, or set
+  `socket:` in the test config. A node could refuse to start when another already answers on its socket. Seen while
+  smoke-testing signed binaries, 27 Nov 2026. Not written yet.
 - **The browser over an SSH bridge (the interim before Fleetlayer's shared tools).** From the homeserver session's
   build, 26 Nov 2026: OpenSSH's `AllowTcpForwarding no` also refuses Unix-socket remote forwards, so use
   `AllowTcpForwarding remote` with `PermitListen none`; a socket created in a setgid directory inherits its group;
