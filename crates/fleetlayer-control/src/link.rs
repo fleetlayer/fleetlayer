@@ -36,8 +36,6 @@ pub struct Links {
     pub nodes: Mutex<HashMap<(String, String), NodeConn>>,
     /// The reading kinds each linked node subscribed to.
     pub reading_kinds: Mutex<HashMap<(String, String), Vec<String>>>,
-    /// The roles each linked node watches the windows of (its config's `windows:`), from `link/hello`.
-    pub watchers: Mutex<HashMap<(String, String), Vec<String>>>,
     /// Which node hosts each pages space, by (tenant, space), from `link/pages_spaces`. Kept when the node unlinks, so
     /// a push can say the space's node is offline.
     pub pages: Mutex<HashMap<(String, String), String>>,
@@ -200,7 +198,6 @@ async fn run(app: Arc<App>, (tenant, name): (String, String), socket: WebSocket)
     if nodes.get(&(tenant.clone(), name.clone())).is_some_and(|c| c.conn == conn) {
         nodes.remove(&(tenant.clone(), name.clone()));
         app.links.reading_kinds.lock().await.remove(&(tenant.clone(), name.clone()));
-        app.links.watchers.lock().await.remove(&(tenant.clone(), name.clone()));
     }
     tracing::info!(node = %name, "node unlinked");
 }

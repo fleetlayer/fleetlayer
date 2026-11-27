@@ -207,10 +207,18 @@ pub async fn post_approval(
         .map(crate::policy::parse_duration_ms)
         .transpose()
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-    let done = crate::approvals::decide(&app.db, DEFAULT_TENANT, &id, body.approve, hold).await.map_err(internal)?;
+    let done = crate::approvals::decide(&app.db, DEFAULT_TENANT, &id, body.approve, hold, "admin token")
+        .await
+        .map_err(internal)?;
     let Some(d) = done else {
         return Err((StatusCode::NOT_FOUND, format!("no pending request {id}")));
     };
+    // A window opens at once, rather than at the loop's next pass.
+    if d.verb == "activate"
+        && let Err(e) = crate::windows::tick(&app).await
+    {
+        tracing::warn!("opening a window just approved: {e}");
+    }
     Ok(Json(json!({"id": id, "approved": body.approve, "from": d.subject, "verb": d.verb, "to": d.target})))
 }
 

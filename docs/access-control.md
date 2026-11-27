@@ -208,8 +208,9 @@ allow:                           # what the role may do while its window is open
 ```
 
 - **Off:** every request by the role's agents, or to them, is refused, whatever the rules say: no messages, no shared
-  tools (its own included), no secrets or bundles delivered to it, no sessions started on it from elsewhere. The refusal
-  says how to ask.
+  tools (its own included), no secrets or bundles delivered to it, no sessions started on it from elsewhere, nothing it
+  reads (the fleet view, summaries, readings), and its sessions don't show in anyone else's fleet view. The refusal
+  says how to ask. This is the part that's enforced: it's decided in the control plane, which the role can't change.
 - **Asking:** one of its agents runs `fleetlayer role activate admin --for 1h --why "upgrade postgres to 17"`. That
   files an ordinary approval (verb `activate`, target `window:admin`), so it reaches the person like every other
   approval, with the reason. A request for longer than `longest:` is refused, and so is a request from anyone the role
@@ -226,7 +227,9 @@ allow:                           # what the role may do while its window is open
   `FLEETLAYER_WINDOW_ENDS_AT` and `FLEETLAYER_WINDOW_STATE` (`open` or `closed`). On the role's own node `on_end` runs
   at the end. A node of a more trusted Unix user can watch the role and run `on_start` and `on_end` both: that's how a
   sudo rule is added for the window and removed after it, since the role's own user must never be able to add it
-  itself. Hooks must be safe to run twice.
+  itself. Hooks must be safe to run twice. Every node a window concerns confirms its close, the watching ones too, and
+  the nodes a window opened on are recorded, so a policy change mid-window (another node, or a shorter `longest:`,
+  which ends it at once) still reaches them.
 
   ```yaml
   windows:
@@ -235,8 +238,10 @@ allow:                           # what the role may do while its window is open
       on_end: [sudo, -n, /usr/local/sbin/admin-window, close]
   ```
 
+- **Who approved** is kept with the approval and written in the window's audit entry; a window closed before the
+  control plane's loop saw it open is still recorded, audited and closed.
 - **Watched:** opening and closing are published as `access.window.opened` and `access.window.closed` on the `access`
-  channel. A window whose nodes haven't confirmed closing it within five minutes of its end, or that didn't close
+  channel. A window whose nodes (the role's, and those watching it) haven't confirmed closing it within five minutes of its end, or that didn't close
   cleanly (a hook failed, a session wouldn't close), shows in the control plane's `/healthz` and in the node's health
   and heartbeat until it's fixed.
 
@@ -244,6 +249,27 @@ Prefer credentials whose lifetime is the window, so the end is real even for a c
 (`aws sts assume-role --duration-seconds 3600`, up to the role's maximum session duration), GitHub App installation
 tokens (an hour), short-lived database users. A static key the role saw could have been copied: rotate the important
 ones on a schedule. The whole setup, sudo rule included: [An admin role that's off until you open it](guides/admin-window.md).
+
+### Windows in a deck or an inbox
+
+Whatever shows the person approvals can show windows too: a card for each request, a card for each open window with
+its end time, and a Close button. Everything it needs:
+
+- **The request** is an ordinary approval with verb `activate` and target `window:<role>`. `GET /v1/approvals` lists it
+  (`{"id": "ap_…", "from": "ops@server-admin", "verb": "activate", "to": "window:admin", "status": "pending", …}`), the
+  `access.ask` event announces it, and `POST /v1/approvals/<id>` `{"approve": true, "for": "1h"}` (admin token) opens
+  the window. `for` can shorten it; the window never runs past the role's `longest:`. The reason the agent gave is in
+  the audit log (`asked for admin's window for 1h; why: …`).
+- **`GET /v1/windows`** (read token): `{"roles": [{"role", "state", "endsAt"?, "id"?, "longestMs", "member"}],
+  "windows": [{"id", "role", "requestedBy", "openedAt", "endsAt", "closedAt", "closedBy", "unconfirmed", "problem"}]}`.
+  `state` is `open`, `pending` (a request waiting, `id` is its approval) or `off`. `windows` lists the 50 most recent,
+  newest first: `closedAt` is null while open, `unconfirmed` lists the nodes (the role's, and those watching it) that haven't confirmed closing it,
+  and `problem` says what went wrong if one reported a problem. Times are milliseconds since the epoch.
+- **`DELETE /v1/windows/<role>`** (admin token): close it now. `{"role", "closed"}`, with `closed` false when none was
+  open. A pending request for the role is withdrawn too.
+- **Events** on the `access` channel: `access.window.opened` and `access.window.closed`, with subject
+  `window:<role>`, body `{"id", "role", "endsAt"}` and dedupe key `<kind>:<id>`. Subscribe to the channel to update a
+  card without polling.
 
 ## Roles that never ask
 

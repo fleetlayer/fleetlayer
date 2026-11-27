@@ -6,7 +6,8 @@
 //! Closing a window, on one of the role's nodes: every session here is closed (the role is this node's Unix user, so
 //! all of them are its), everything delivered to the node is removed, and the `on_end` hooks run (the documented use:
 //! remove a sudoers drop-in). Then it confirms to the control plane (`link/window_closed`), with what went wrong if
-//! anything did. A node that only watches a role (`windows:` in its config, a trusted runner on another Unix user) runs
+//! anything did. Nodes that only watch the role confirm too, since their hook is often what removes the rights. A node
+//! that only watches a role (`windows:` in its config, a trusted runner on another Unix user) runs
 //! its hooks: `on_start` when a window opens (add the drop-in), `on_end` when it closes. Hooks must be safe to run
 //! twice.
 //!
@@ -165,9 +166,7 @@ async fn close(node: &Arc<Node>, n: &WindowNotice) {
     // Already closed here (the control plane missed the confirmation): confirm again.
     let done = node.windows.closed.lock().await.get(&n.id).cloned();
     if let Some(problem) = done {
-        if n.member {
-            confirm(node, &n.id, problem).await;
-        }
+        confirm(node, &n.id, problem).await;
         return;
     }
     // The timer that called us is the one being taken out; aborting it would stop this very close.
@@ -205,9 +204,9 @@ async fn close(node: &Arc<Node>, n: &WindowNotice) {
         }
         closed.insert(n.id.clone(), problem.clone());
     }
-    if member {
-        confirm(node, &n.id, problem).await;
-    }
+    // Every node the window concerns confirms, the ones that only watch it too: their hook is what takes the sudo rule
+    // away.
+    confirm(node, &n.id, problem).await;
 }
 
 async fn confirm(node: &Node, id: &str, problem: Option<String>) {

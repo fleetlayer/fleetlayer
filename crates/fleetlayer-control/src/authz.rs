@@ -421,18 +421,10 @@ async fn say_in(
         None => None,
     };
     if let Some(p) = compiled {
-        // A role with `activation: window` has no rights until its window is open: nothing by its agents, nothing to
-        // them (`windows.rs`).
-        for (name, side) in [(who, "by"), (target, "to")] {
-            let off = crate::windows::closed_roles(&app.db, id, &p, name).await.map_err(RpcError::internal)?;
-            if let Some(role) = off.first() {
-                let because = format!(
-                    "role {role} is off until its window is open (nothing {side} its agents until then): one of its agents asks with `fleetlayer role activate {role} --for 1h`, and the person approves"
-                );
-                let say =
-                    Say { tenant: id.to_string(), slug: tenant.slug.clone(), allowed: false, because, policy: Some(p) };
-                return Ok(Some((say, vec![])));
-            }
+        if let Some(because) = window_off(app, id, &p, who, target).await? {
+            let say =
+                Say { tenant: id.to_string(), slug: tenant.slug.clone(), allowed: false, because, policy: Some(p) };
+            return Ok(Some((say, vec![])));
         }
         let d = p.decide_in(Some(scope), who, verb, target, reply).map_err(RpcError::internal)?;
         let mut because = d.because.join(", ");
@@ -516,6 +508,27 @@ pub async fn dry(app: &App, home: &str, who: &str, verb: &str, target: &str) -> 
         }
     }
     Dry::Allowed { why, until }
+}
+
+/// Why a request is refused before any rule: `who` or `target` is one of the agents of a role with `activation:
+/// window` whose window isn't open (`windows.rs`). Every decision checks it, the filtered reads too.
+async fn window_off(
+    app: &App,
+    tenant: &str,
+    p: &Compiled,
+    who: &str,
+    target: &str,
+) -> Result<Option<String>, RpcError> {
+    for (name, side) in [(who, "by"), (target, "to")] {
+        let off = crate::windows::closed_roles(&app.db, tenant, p, name).await.map_err(RpcError::internal)?;
+        if let Some(role) = off.first() {
+            return Ok(Some(format!(
+                "role {role} is off until its window is open (nothing {side} its agents until then): one of its \
+                 agents asks with `fleetlayer role activate {role} --for 1h`, and the person approves"
+            )));
+        }
+    }
+    Ok(None)
 }
 
 /// Whether `who` is one of the agents of a role whose window is open: the window's approval covers its `ask:` rules.
@@ -609,7 +622,10 @@ pub async fn may_see(app: &App, _home: &str, who: &str, target: &str) -> bool {
     for tenant in deciders {
         let scope = Scope { fleet: &fleet, tenant };
         let allowed = match app.authz.policy(&app.db, &tenant.id).await {
-            Ok(Some(p)) => p.decide_in(Some(scope), who, "read", target, false).is_ok_and(|d| d.allowed),
+            Ok(Some(p)) => {
+                matches!(window_off(app, &tenant.id, &p, who, target).await, Ok(None))
+                    && p.decide_in(Some(scope), who, "read", target, false).is_ok_and(|d| d.allowed)
+            }
             Ok(None) => {
                 builtin().refused_up_front(scope, who, target).is_none()
                     && crate::acl::allowed(&app.db, &tenant.id, who, target).await.unwrap_or(false)
@@ -634,7 +650,10 @@ pub async fn may_read(app: &App, _home: &str, who: &str, target: &str) -> bool {
     for tenant in deciders {
         let scope = Scope { fleet: &fleet, tenant };
         let allowed = match app.authz.policy(&app.db, &tenant.id).await {
-            Ok(Some(p)) => p.decide_in(Some(scope), who, "read", target, false).is_ok_and(|d| d.allowed),
+            Ok(Some(p)) => {
+                matches!(window_off(app, &tenant.id, &p, who, target).await, Ok(None))
+                    && p.decide_in(Some(scope), who, "read", target, false).is_ok_and(|d| d.allowed)
+            }
             Ok(None) => builtin().refused_up_front(scope, who, target).is_none(),
             Err(_) => false,
         };
@@ -796,7 +815,7 @@ mod tests {
         // Asking again doesn't file a second request.
         access_check(&app, "web", &ask("connect", "host:example.com", why)).await.unwrap();
         assert_eq!(crate::approvals::list(&app.db, &acme, false).await.unwrap().len(), 1);
-        crate::approvals::decide(&app.db, &acme, &id, true, None).await.unwrap().unwrap();
+        crate::approvals::decide(&app.db, &acme, &id, true, None, "admin").await.unwrap().unwrap();
         let d = access_check(&app, "web", &ask("connect", "host:example.com", why)).await.unwrap();
         assert!(d.allowed, "{d:?}");
         assert!(log(&app.db, &acme).await.contains(&"allowed -@web connect host:example.com".to_string()));
@@ -809,6 +828,21 @@ mod tests {
         .await
         .unwrap();
         assert!(!access_check(&app, "web", &ask("connect", "host:example.com", why)).await.unwrap().allowed);
+    }
+
+    #[tokio::test]
+    async fn an_off_role_reads_nothing_and_nobody_reads_it() {
+        let (app, _) = example().await;
+        people::agent_admit(&app.db, "default", "ops@web", "admin").await.unwrap();
+        let text = "version: 2\ndefault: allow\nroles:\n  admin: { who: \"*@laptop\", activation: window }\n";
+        store(&app.db, "default", text).await.unwrap();
+        assert!(!may_read(&app, "default", "recipes@laptop", "ops@web").await, "the fleet view, summaries, readings");
+        assert!(!may_see(&app, "default", "recipes@laptop", "ops@web").await);
+        assert!(!may_see(&app, "default", "ops@web", "recipes@laptop").await, "others don't see its sessions");
+        let p = app.authz.policy(&app.db, "default").await.unwrap().unwrap();
+        crate::windows::open_now(&app.db, "default", &p, "admin", "1h", "person").await.unwrap();
+        assert!(may_read(&app, "default", "recipes@laptop", "ops@web").await);
+        assert!(may_see(&app, "default", "ops@web", "recipes@laptop").await);
     }
 
     #[tokio::test]

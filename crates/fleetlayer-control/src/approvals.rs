@@ -130,7 +130,7 @@ pub struct Decided {
     pub target: String,
 }
 
-/// Approve (for `hold_ms`, or the request's own) or deny a request. None when there's no pending request by that ID.
+/// Approve (for `hold_ms`, or the request's own) or deny a request, as `by` (kept with it, for the audit log). None when there's no pending request by that ID.
 /// The hold granted is kept, so a renewing approval renews by it.
 pub async fn decide(
     db: &Db,
@@ -138,6 +138,7 @@ pub async fn decide(
     id: &str,
     approve: bool,
     hold_ms: Option<i64>,
+    by: &str,
 ) -> anyhow::Result<Option<Decided>> {
     let now = now_ms();
     let r = sqlx::query(
@@ -153,12 +154,13 @@ pub async fn decide(
     // A denial is remembered for an hour (expires_at), so the agent can't ask again at once.
     let expires = if approve { now + hold } else { now + 3_600_000 };
     sqlx::query(
-        "UPDATE approvals SET status = ?, decided_at = ?, expires_at = ?, hold_ms = ? WHERE tenant = ? AND id = ?",
+        "UPDATE approvals SET status = ?, decided_at = ?, expires_at = ?, hold_ms = ?, decided_by = ? WHERE tenant = ? AND id = ?",
     )
     .bind(if approve { "approved" } else { "denied" })
     .bind(now)
     .bind(expires)
     .bind(hold)
+    .bind(by)
     .bind(tenant)
     .bind(id)
     .execute(db)
@@ -219,7 +221,7 @@ mod tests {
         .execute(&db)
         .await
         .unwrap();
-        let d = decide(&db, t, "ap_1", true, Some(365 * DAY)).await.unwrap().unwrap();
+        let d = decide(&db, t, "ap_1", true, Some(365 * DAY), "admin").await.unwrap().unwrap();
         assert_eq!(
             (d.subject.as_str(), d.verb.as_str(), d.target.as_str()),
             ("-@laptop", "sync", "sync:file-sync/skills@server")
@@ -227,6 +229,6 @@ mod tests {
         let hold: i64 =
             sqlx::query_scalar("SELECT hold_ms FROM approvals WHERE id = 'ap_1'").fetch_one(&db).await.unwrap();
         assert_eq!(hold, 365 * DAY, "it renews by what the person granted");
-        assert!(decide(&db, t, "ap_1", true, None).await.unwrap().is_none(), "already decided");
+        assert!(decide(&db, t, "ap_1", true, None, "admin").await.unwrap().is_none(), "already decided");
     }
 }

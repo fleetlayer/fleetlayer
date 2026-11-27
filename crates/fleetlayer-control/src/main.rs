@@ -936,14 +936,14 @@ async fn main() -> anyhow::Result<()> {
                 }
                 ApprovalsCommand::Approve { id, hold } => {
                     let hold = hold.map(|h| policy::parse_duration_ms(&h)).transpose()?;
-                    let d = approvals::decide(&db, &pt, &id, true, hold)
+                    let d = approvals::decide(&db, &pt, &id, true, hold, &cli.actor)
                         .await?
                         .ok_or_else(|| anyhow::anyhow!("no pending request {id}"))?;
                     println!("Approved {id}: {} may {} {}.", d.subject, d.verb, d.target);
                     Ok(())
                 }
                 ApprovalsCommand::Deny { id } => {
-                    let d = approvals::decide(&db, &pt, &id, false, None)
+                    let d = approvals::decide(&db, &pt, &id, false, None, &cli.actor)
                         .await?
                         .ok_or_else(|| anyhow::anyhow!("no pending request {id}"))?;
                     println!("Refused {id}: {} may not {} {}.", d.subject, d.verb, d.target);
@@ -1122,6 +1122,25 @@ async fn main() -> anyhow::Result<()> {
                     let tenant = fleet.tenant(&pt).ok_or_else(|| anyhow::anyhow!("no tenant {pt}"))?;
                     let scope = Some(policy::Scope { fleet: &fleet, tenant });
                     let d = p.decide_in(scope, &from, &can, &to, reply)?;
+                    // A role with a window that isn't open refuses before any rule.
+                    let mut off = vec![];
+                    for name in [&from, &to] {
+                        for role in windows::closed_roles(&db, &pt, &p, name).await? {
+                            off.push(format!("{name} is one of role {role}'s agents, and its window isn't open"));
+                        }
+                    }
+                    if !off.is_empty() {
+                        println!("DENY: {from} {can} {to}");
+                        for o in off {
+                            println!("  because {o}");
+                        }
+                        println!(
+                            "  (the rules alone would {}: {})",
+                            if d.allowed { "allow it" } else { "refuse it" },
+                            d.because.join(", ")
+                        );
+                        return Ok(());
+                    }
                     println!("{}: {from} {can} {to}", if d.allowed { "ALLOW" } else { "DENY" });
                     for b in &d.because {
                         println!("  because {b}");

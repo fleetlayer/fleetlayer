@@ -29,8 +29,6 @@ const EVERY: Duration = Duration::from_secs(5);
 const CONFIRM_WITHIN_MS: i64 = 5 * 60_000;
 /// Closed windows are told again to nodes that haven't confirmed, this often.
 const RETELL_MS: i64 = 60_000;
-/// Nodes that only watch a role hear of windows closed this recently when they link.
-const WATCHERS_HEAR_MS: i64 = 86_400_000;
 
 pub fn target(role: &str) -> String {
     format!("window:{role}")
@@ -191,10 +189,11 @@ pub async fn deactivate(app: &App, tenant: &str, role: &str, who: &str) -> anyho
 pub async fn deactivate_db(db: &Db, tenant: &str, role: &str, who: &str) -> anyhow::Result<bool> {
     let now = now_ms();
     let r = sqlx::query(
-        "UPDATE approvals SET expires_at = ? WHERE tenant = ? AND verb = 'activate' AND target = ?
+        "UPDATE approvals SET expires_at = ?, ended_by = ? WHERE tenant = ? AND verb = 'activate' AND target = ?
          AND status = 'approved' AND expires_at > ?",
     )
     .bind(now)
+    .bind(who)
     .bind(tenant)
     .bind(target(role))
     .bind(now)
@@ -306,21 +305,81 @@ async fn publish(app: &App, tenant: &str, kind: &str, role: &str, id: &str, summ
     let _ = crate::route::publish(app, tenant, e, "fleetlayer access control").await;
 }
 
-/// The nodes whose agents are the role's: (home tenant, node), members of `tenant`.
-async fn role_nodes(app: &App, tenant: &str, p: &Compiled, role: &str) -> anyhow::Result<Vec<(String, String)>> {
-    let Some(def) = p.file.roles.get(role) else { return Ok(vec![]) };
+/// A node a window concerns: one of the role's (`member`), or one that watches it (runs its hooks).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct NodeRef {
+    home: String,
+    node: String,
+    member: bool,
+}
+
+/// Whether `node` (with home tenant `home`) belongs to `tenant`.
+fn in_tenant(fleet: &crate::directory::Fleet, tenant: &str, home: &str, node: &str) -> bool {
+    home == tenant || fleet.tenant(tenant).is_some_and(|t| t.is_member(fleet, &format!("-@{node}")))
+}
+
+/// The nodes a window of `role` concerns under the policy now: the role's own, and those that watch it.
+async fn involved(app: &App, tenant: &str, p: &Compiled, role: &str) -> anyhow::Result<Vec<NodeRef>> {
     let fleet = app.authz.fleet(&app.db).await?;
-    let rows = sqlx::query("SELECT tenant, name FROM nodes ORDER BY name").fetch_all(&app.db).await?;
-    let pats = def.who.items();
-    Ok(rows
-        .into_iter()
-        .map(|r| (r.get::<String, _>(0), r.get::<String, _>(1)))
-        .filter(|(_, n)| {
-            let me = format!("-@{n}");
-            pats.iter().any(|w| crate::acl::glob(w, &me))
-                && fleet.tenant(tenant).is_none_or(|t| t.is_member(&fleet, &me))
-        })
-        .collect())
+    let mut out: Vec<NodeRef> = vec![];
+    if let Some(def) = p.file.roles.get(role) {
+        let pats = def.who.items();
+        let rows = sqlx::query("SELECT tenant, name FROM nodes ORDER BY name").fetch_all(&app.db).await?;
+        for r in rows {
+            let (home, node): (String, String) = (r.get(0), r.get(1));
+            let me = format!("-@{node}");
+            if pats.iter().any(|w| crate::acl::glob(w, &me)) && in_tenant(&fleet, tenant, &home, &node) {
+                out.push(NodeRef { home, node, member: true });
+            }
+        }
+    }
+    let rows = sqlx::query("SELECT tenant, node FROM role_watchers WHERE role = ? ORDER BY node")
+        .bind(role)
+        .fetch_all(&app.db)
+        .await?;
+    for r in rows {
+        let (home, node): (String, String) = (r.get(0), r.get(1));
+        if in_tenant(&fleet, tenant, &home, &node) && !out.iter().any(|n| n.home == home && n.node == node) {
+            out.push(NodeRef { home, node, member: false });
+        }
+    }
+    Ok(out)
+}
+
+/// `a` with the nodes of `b` it doesn't have (a node that's a member in either is a member).
+fn union(mut a: Vec<NodeRef>, b: Vec<NodeRef>) -> Vec<NodeRef> {
+    for n in b {
+        match a.iter_mut().find(|m| m.home == n.home && m.node == n.node) {
+            Some(m) => m.member |= n.member,
+            None => a.push(n),
+        }
+    }
+    a
+}
+
+fn nodes_of(json: &str) -> Vec<NodeRef> {
+    serde_json::from_str(json).unwrap_or_default()
+}
+
+/// Record the roles a node watches (`windows:` in its config, sent in `link/hello`), replacing what it said before.
+pub async fn watch(db: &Db, home: &str, node: &str, roles: &[String]) -> anyhow::Result<()> {
+    let mut tx = db.begin().await?;
+    sqlx::query("DELETE FROM role_watchers WHERE tenant = ? AND node = ?")
+        .bind(home)
+        .bind(node)
+        .execute(&mut *tx)
+        .await?;
+    for r in roles {
+        sqlx::query("INSERT OR IGNORE INTO role_watchers (tenant, node, role, seen_at) VALUES (?, ?, ?, ?)")
+            .bind(home)
+            .bind(node)
+            .bind(r)
+            .bind(now_ms())
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(())
 }
 
 /// Tell `node` (in its home tenant) about a window, if it's linked.
@@ -334,33 +393,17 @@ async fn tell(app: &App, home: &str, node: &str, n: &WindowNotice) -> bool {
     }
 }
 
-/// Tell the role's nodes and the nodes watching it.
-async fn tell_all(app: &App, tenant: &str, members: &[(String, String)], n: &WindowNotice) {
-    for (home, node) in members {
-        tell(app, home, node, &WindowNotice { member: true, ..n.clone() }).await;
+async fn tell_all(app: &App, nodes: &[NodeRef], n: &WindowNotice) {
+    for r in nodes {
+        tell(app, &r.home, &r.node, &WindowNotice { member: r.member, ..n.clone() }).await;
     }
-    let watchers: Vec<(String, String)> = app
-        .links
-        .watchers
-        .lock()
-        .await
-        .iter()
-        .filter(|(_, roles)| roles.contains(&n.role))
-        .map(|(k, _)| k.clone())
-        .collect();
-    let fleet = app.authz.fleet(&app.db).await.ok();
-    for (home, node) in watchers {
-        if members.iter().any(|(h, m)| *h == home && *m == node) {
-            continue;
-        }
-        let member_of_tenant = home == tenant
-            || fleet
-                .as_ref()
-                .and_then(|f| f.tenant(tenant).map(|t| t.is_member(f, &format!("-@{node}"))))
-                .unwrap_or(false);
-        if member_of_tenant {
-            tell(app, &home, &node, &WindowNotice { member: false, ..n.clone() }).await;
-        }
+}
+
+/// Write a window's entry to the audit log; a failure is logged (the log's own health shows it in `/healthz`), and the
+/// window still opens or closes: closing must never wait on the log, and an approved window's rights already apply.
+async fn record_or_log(app: &App, tenant: &str, decision: &str, who: &str, role: &str, reason: String) {
+    if let Err(e) = record(app, tenant, decision, who, role, reason.clone()).await {
+        tracing::error!(role, decision, reason, "a window's audit entry couldn't be written: {}", e.message);
     }
 }
 
@@ -368,73 +411,111 @@ async fn tell_all(app: &App, tenant: &str, members: &[(String, String)], n: &Win
 pub async fn tick(app: &App) -> anyhow::Result<()> {
     let db = &app.db;
     let now = now_ms();
-    // Opened: approved, and not recorded yet.
+    // Opened: approved and not recorded yet, even if it has ended already (closed early before this loop saw it): a
+    // window's rights apply from the approval, so each one is recorded, audited and closed.
     let rows = sqlx::query(
-        "SELECT a.tenant, a.id, a.target, a.subject, a.decided_at, a.expires_at FROM approvals a
-         WHERE a.verb = 'activate' AND a.status = 'approved' AND a.expires_at > ?
+        "SELECT a.tenant, a.id, a.target, a.subject, a.decided_at, a.expires_at, a.decided_by, a.ended_by FROM approvals a
+         WHERE a.verb = 'activate' AND a.status = 'approved' AND a.decided_at > ?
          AND NOT EXISTS (SELECT 1 FROM role_windows w WHERE w.id = a.id)",
     )
-    .bind(now)
+    .bind(now - 7 * 86_400_000)
     .fetch_all(db)
     .await?;
     for r in rows {
-        let (tenant, id, tgt, by, decided, expires): (String, String, String, String, i64, i64) =
-            (r.get(0), r.get(1), r.get(2), r.get(3), r.get(4), r.get(5));
+        #[allow(clippy::type_complexity)]
+        let (tenant, id, tgt, by, decided, expires, approver, ended_by): (
+            String,
+            String,
+            String,
+            String,
+            i64,
+            i64,
+            Option<String>,
+            Option<String>,
+        ) = (r.get(0), r.get(1), r.get(2), r.get(3), r.get(4), r.get(5), r.get(6), r.get(7));
         let Some(role) = tgt.strip_prefix("window:") else { continue };
         let Some(p) = app.authz.policy(db, &tenant).await? else { continue };
-        let Some(def) = p.file.roles.get(role).filter(|d| d.windowed()) else { continue };
-        let ends = expires.min(decided + def.longest_ms());
-        if ends <= now {
-            continue;
-        }
-        // A tick from `deactivate` can run beside the loop's: only the one that records the window goes on.
+        let longest = p.file.roles.get(role).filter(|d| d.windowed()).map_or(0, |d| d.longest_ms());
+        let ends = expires.min(decided + longest);
+        let nodes = involved(app, &tenant, &p, role).await?;
+        // A tick from `deactivate` or the API can run beside the loop's: only the one that records the window goes on.
         let inserted = sqlx::query(
-            "INSERT OR IGNORE INTO role_windows (tenant, id, role, requested_by, opened_at, ends_at) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO role_windows (tenant, id, role, requested_by, opened_at, ends_at, nodes, closed_by)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&tenant)
         .bind(&id)
         .bind(role)
         .bind(&by)
         .bind(decided)
-        .bind(ends)
+        .bind(ends.max(decided))
+        .bind(serde_json::to_string(&nodes)?)
+        .bind(&ended_by)
         .execute(db)
         .await?
         .rows_affected();
         if inserted == 0 {
             continue;
         }
-        let summary = format!("{role}'s window is open until {} (asked by {by}, window {id})", when(ends));
-        tracing::info!(role, id, ends, "a window opened");
-        let _ = record(app, &tenant, "allowed", &by, role, format!("window {id} opened until {}", when(ends))).await;
-        publish(app, &tenant, "access.window.opened", role, &id, summary, ends).await;
-        let members = role_nodes(app, &tenant, &p, role).await?;
-        let n = WindowNotice { id: id.clone(), role: role.into(), open: true, ends_at: ends, member: true };
-        tell_all(app, &tenant, &members, &n).await;
-        kick_sync(app, &members).await;
+        let approver = approver.unwrap_or_else(|| "someone unrecorded".into());
+        tracing::info!(role, id, ends, approver, "a window opened");
+        record_or_log(
+            app,
+            &tenant,
+            "allowed",
+            &by,
+            role,
+            format!("window {id} opened until {}, approved by {approver}", when(ends)),
+        )
+        .await;
+        if ends > now {
+            let summary = format!("{role}'s window is open until {} (asked by {by}, window {id})", when(ends));
+            publish(app, &tenant, "access.window.opened", role, &id, summary, ends).await;
+            let n = WindowNotice { id: id.clone(), role: role.into(), open: true, ends_at: ends, member: true };
+            tell_all(app, &nodes, &n).await;
+            for r in nodes.iter().filter(|r| r.member) {
+                crate::link::send_owed(app, &r.home, &r.node).await;
+            }
+        }
     }
-    // Ended: recorded, not closed, and past its end (or its approval was cut short).
+    // Ended: its time, closed early (its approval cut short), or the policy changed (a shorter `longest:`, or the role
+    // gone or no longer windowed).
     let rows = sqlx::query(
-        "SELECT w.tenant, w.id, w.role, w.requested_by, MIN(w.ends_at, COALESCE(a.expires_at, w.ends_at)), w.closed_by
-         FROM role_windows w LEFT JOIN approvals a ON a.id = w.id
-         WHERE w.closed_at IS NULL AND MIN(w.ends_at, COALESCE(a.expires_at, w.ends_at)) <= ?",
+        "SELECT w.tenant, w.id, w.role, w.requested_by, w.opened_at, MIN(w.ends_at, COALESCE(a.expires_at, w.ends_at)),
+         w.closed_by, w.nodes FROM role_windows w LEFT JOIN approvals a ON a.id = w.id WHERE w.closed_at IS NULL",
     )
-    .bind(now)
     .fetch_all(db)
     .await?;
     for r in rows {
-        let (tenant, id, role, by, ends, closed_by): (String, String, String, String, i64, Option<String>) =
-            (r.get(0), r.get(1), r.get(2), r.get(3), r.get(4), r.get(5));
-        let members = match app.authz.policy(db, &tenant).await? {
-            Some(p) => role_nodes(app, &tenant, &p, &role).await?,
-            None => vec![],
+        let (tenant, id, role, by, opened, ends, closed_by, nodes): (
+            String,
+            String,
+            String,
+            String,
+            i64,
+            i64,
+            Option<String>,
+            String,
+        ) = (r.get(0), r.get(1), r.get(2), r.get(3), r.get(4), r.get(5), r.get(6), r.get(7));
+        let p = app.authz.policy(db, &tenant).await?;
+        let longest = p.as_ref().and_then(|p| p.file.roles.get(&role)).filter(|d| d.windowed()).map(|d| d.longest_ms());
+        let ends = ends.min(opened + longest.unwrap_or(0));
+        if ends > now {
+            continue;
+        }
+        // The nodes it opened on, and any the policy names now.
+        let nodes = match &p {
+            Some(p) => union(nodes_of(&nodes), involved(app, &tenant, p, &role).await?),
+            None => nodes_of(&nodes),
         };
-        let pending: Vec<String> = members.iter().map(|(_, n)| n.clone()).collect();
+        let pending: Vec<&str> = nodes.iter().map(|n| n.node.as_str()).collect();
         let closed = sqlx::query(
-            "UPDATE role_windows SET closed_at = ?, ends_at = ?, pending_nodes = ? WHERE id = ? AND closed_at IS NULL",
+            "UPDATE role_windows SET closed_at = ?, ends_at = ?, pending_nodes = ?, nodes = ? WHERE id = ? AND closed_at IS NULL",
         )
         .bind(now)
         .bind(ends)
         .bind(serde_json::to_string(&pending)?)
+        .bind(serde_json::to_string(&nodes)?)
         .bind(&id)
         .execute(db)
         .await?
@@ -442,12 +523,19 @@ pub async fn tick(app: &App) -> anyhow::Result<()> {
         if closed == 0 {
             continue;
         }
-        let how = match &closed_by {
-            Some(c) => format!("closed early by {c}"),
-            None => "its time ran out".into(),
+        // Its approval is spent: a longer one must not stand for the next request.
+        sqlx::query("UPDATE approvals SET expires_at = MIN(expires_at, ?) WHERE id = ?")
+            .bind(now)
+            .bind(&id)
+            .execute(db)
+            .await?;
+        let how = match (&closed_by, longest) {
+            (Some(c), _) => format!("closed early by {c}"),
+            (None, None) => "the role no longer has `activation: window`".into(),
+            (None, Some(_)) => "its time ran out".into(),
         };
         tracing::info!(role, id, how, "a window closed");
-        let _ = record(
+        record_or_log(
             app,
             &tenant,
             "closed",
@@ -456,52 +544,30 @@ pub async fn tick(app: &App) -> anyhow::Result<()> {
             format!("window {id} closed: {how}"),
         )
         .await;
-        publish(
-            app,
-            &tenant,
-            "access.window.closed",
-            &role,
-            &id,
-            format!("{role}'s window closed ({how}, window {id})"),
-            ends,
-        )
-        .await;
+        let summary = format!("{role}'s window closed ({how}, window {id})");
+        publish(app, &tenant, "access.window.closed", &role, &id, summary, ends).await;
         let n = WindowNotice { id: id.clone(), role: role.clone(), open: false, ends_at: ends, member: true };
-        tell_all(app, &tenant, &members, &n).await;
+        tell_all(app, &nodes, &n).await;
     }
-    // Closed, but some of the role's nodes haven't confirmed: tell them again, once a minute.
+    // Closed, but some nodes haven't confirmed: tell them again, once a minute.
     let rows = sqlx::query(
-        "SELECT tenant, id, role, ends_at, closed_at, pending_nodes FROM role_windows
-         WHERE closed_at IS NOT NULL AND pending_nodes != '[]' AND closed_at > ?",
+        "SELECT id, role, ends_at, closed_at, pending_nodes, nodes FROM role_windows
+         WHERE closed_at IS NOT NULL AND pending_nodes != '[]'",
     )
-    .bind(now - 7 * 86_400_000)
     .fetch_all(db)
     .await?;
     for r in rows {
-        let (tenant, id, role, ends, closed, pending): (String, String, String, i64, i64, String) =
+        let (id, role, ends, closed, pending, nodes): (String, String, i64, i64, String, String) =
             (r.get(0), r.get(1), r.get(2), r.get(3), r.get(4), r.get(5));
         if now - closed < RETELL_MS || (now - closed) % RETELL_MS >= EVERY.as_millis() as i64 {
             continue;
         }
         let pending: Vec<String> = serde_json::from_str(&pending).unwrap_or_default();
+        let nodes: Vec<NodeRef> = nodes_of(&nodes).into_iter().filter(|n| pending.contains(&n.node)).collect();
         let n = WindowNotice { id, role, open: false, ends_at: ends, member: true };
-        for node in pending {
-            tell(app, &home_of(db, &node).await.unwrap_or_else(|| tenant.clone()), &node, &n).await;
-        }
+        tell_all(app, &nodes, &n).await;
     }
     Ok(())
-}
-
-async fn home_of(db: &Db, node: &str) -> Option<String> {
-    sqlx::query_scalar("SELECT tenant FROM nodes WHERE name = ? LIMIT 1").bind(node).fetch_optional(db).await.ok()?
-}
-
-/// Bundles owed to the role's nodes are held back while its window is off (the sync is refused, and the source
-/// retries with a backoff); ask the sources to send them now.
-async fn kick_sync(app: &App, members: &[(String, String)]) {
-    for (home, node) in members {
-        crate::link::send_owed(app, home, node).await;
-    }
 }
 
 pub async fn run(app: Arc<App>) {
@@ -513,7 +579,8 @@ pub async fn run(app: Arc<App>) {
     }
 }
 
-/// A role's node confirms it closed a window.
+/// A node confirms it closed a window: one of the role's (sessions closed, deliveries removed, hook run) or one that
+/// watches it (its hook run).
 pub async fn confirmed(app: &App, node: &str, c: &WindowClosed) -> Result<(), RpcError> {
     let db = &app.db;
     let row = sqlx::query("SELECT tenant, role, pending_nodes FROM role_windows WHERE id = ?")
@@ -523,51 +590,106 @@ pub async fn confirmed(app: &App, node: &str, c: &WindowClosed) -> Result<(), Rp
         .map_err(RpcError::internal)?
         .ok_or_else(|| RpcError::invalid_params(format!("no window {}", c.id)))?;
     let (tenant, role, pending): (String, String, String) = (row.get(0), row.get(1), row.get(2));
-    let mut pending: Vec<String> = serde_json::from_str(&pending).unwrap_or_default();
+    let pending: Vec<String> = serde_json::from_str(&pending).unwrap_or_default();
+    if !pending.iter().any(|n| n == node) {
+        return Ok(());
+    }
     let reason = match &c.problem {
-        None => {
-            pending.retain(|n| n != node);
-            format!("window {} closed on {node}: sessions closed, deliveries removed, hook run", c.id)
-        }
+        None => format!("window {} closed on {node}", c.id),
         Some(p) => format!("window {} didn't close cleanly on {node}: {p}", c.id),
     };
-    sqlx::query("UPDATE role_windows SET pending_nodes = ?, problem = ? WHERE id = ?")
-        .bind(serde_json::to_string(&pending).map_err(|e| RpcError::internal(e.to_string()))?)
-        .bind(c.problem.as_deref().map(|p| format!("{node}: {p}")))
+    // In one statement: several nodes confirm at the same moment, and a read-then-write would lose one of them.
+    let changed = match &c.problem {
+        None => sqlx::query(
+            "UPDATE role_windows SET pending_nodes =
+             (SELECT COALESCE(json_group_array(value), '[]') FROM json_each(role_windows.pending_nodes) WHERE value != ?)
+             WHERE id = ? AND EXISTS (SELECT 1 FROM json_each(role_windows.pending_nodes) WHERE value = ?)",
+        )
+        .bind(node)
         .bind(&c.id)
-        .execute(db)
-        .await
-        .map_err(RpcError::internal)?;
+        .bind(node),
+        Some(p) => sqlx::query("UPDATE role_windows SET problem = ? WHERE id = ?").bind(format!("{node}: {p}")).bind(&c.id),
+    }
+    .execute(db)
+    .await
+    .map_err(RpcError::internal)?
+    .rows_affected();
+    if changed == 0 {
+        return Ok(());
+    }
     record(app, &tenant, if c.problem.is_some() { "problem" } else { "closed" }, &format!("-@{node}"), &role, reason)
         .await
 }
 
-/// When `node` links: tell it about open windows of roles it's in or watches, and closed ones it hasn't confirmed.
+/// When `node` links: record what it watches, and tell it about open windows of roles it's in or watches, and closed
+/// ones it hasn't confirmed, however long ago.
 pub async fn on_link(app: &App, home: &str, node: &str, watched: &[String]) -> anyhow::Result<()> {
+    watch(&app.db, home, node, watched).await?;
+    for n in notices_on_link(app, home, node, watched).await? {
+        tell(app, home, node, &n).await;
+    }
+    Ok(())
+}
+
+/// What to tell `node` when it links.
+pub async fn notices_on_link(
+    app: &App,
+    home: &str,
+    node: &str,
+    watched: &[String],
+) -> anyhow::Result<Vec<WindowNotice>> {
     let db = &app.db;
-    app.links.watchers.lock().await.insert((home.to_string(), node.to_string()), watched.to_vec());
-    let now = now_ms();
+    let mut out = vec![];
     let rows = sqlx::query(
-        "SELECT w.tenant, w.id, w.role, w.ends_at, w.closed_at, w.pending_nodes FROM role_windows w
-         WHERE w.closed_at IS NULL OR w.closed_at > ?",
+        "SELECT tenant, id, role, ends_at, closed_at, pending_nodes, nodes FROM role_windows
+         WHERE closed_at IS NULL OR pending_nodes != '[]'",
     )
-    .bind(now - WATCHERS_HEAR_MS)
     .fetch_all(db)
     .await?;
     for r in rows {
-        let (tenant, id, role, ends, closed, pending): (String, String, String, i64, Option<i64>, String) =
-            (r.get(0), r.get(1), r.get(2), r.get(3), r.get(4), r.get(5));
-        let Some(p) = app.authz.policy(db, &tenant).await? else { continue };
-        let member = role_nodes(app, &tenant, &p, &role).await?.iter().any(|(h, n)| h == home && n == node);
-        let pending: Vec<String> = serde_json::from_str(&pending).unwrap_or_default();
-        let open = closed.is_none()
-            && active(db, &tenant, &role, p.file.roles.get(&role).map_or(0, |d| d.longest_ms())).await?.is_some();
-        let tell_it = if member { open || pending.iter().any(|n| n == node) } else { watched.contains(&role) };
-        if tell_it {
-            tell(app, home, node, &WindowNotice { id, role, open, ends_at: ends, member }).await;
+        let (tenant, id, role, ends, closed, pending, nodes): (
+            String,
+            String,
+            String,
+            i64,
+            Option<i64>,
+            String,
+            String,
+        ) = (r.get(0), r.get(1), r.get(2), r.get(3), r.get(4), r.get(5), r.get(6));
+        let recorded = nodes_of(&nodes).into_iter().find(|n| n.home == home && n.node == node);
+        match closed {
+            Some(_) => {
+                let pending: Vec<String> = serde_json::from_str(&pending).unwrap_or_default();
+                if let Some(n) = recorded.filter(|_| pending.iter().any(|p| p == node)) {
+                    out.push(WindowNotice { id, role, open: false, ends_at: ends, member: n.member });
+                }
+            }
+            None => {
+                let Some(p) = app.authz.policy(db, &tenant).await? else { continue };
+                let Some(def) = p.file.roles.get(&role).filter(|d| d.windowed()) else { continue };
+                if active(db, &tenant, &role, def.longest_ms()).await?.is_none() {
+                    continue;
+                }
+                let now_member =
+                    involved(app, &tenant, &p, &role).await?.into_iter().find(|n| n.home == home && n.node == node);
+                let member = match (&recorded, &now_member) {
+                    (None, None) if !watched.contains(&role) => continue,
+                    (r, m) => r.as_ref().is_some_and(|n| n.member) || m.as_ref().is_some_and(|n| n.member),
+                };
+                // A node that joins mid-window is recorded, so it must confirm the close too.
+                if recorded.is_none() {
+                    let all = union(nodes_of(&nodes), vec![NodeRef { home: home.into(), node: node.into(), member }]);
+                    sqlx::query("UPDATE role_windows SET nodes = ? WHERE id = ?")
+                        .bind(serde_json::to_string(&all)?)
+                        .bind(&id)
+                        .execute(db)
+                        .await?;
+                }
+                out.push(WindowNotice { id, role, open: true, ends_at: ends, member });
+            }
         }
     }
-    Ok(())
+    Ok(out)
 }
 
 /// Problems for `/healthz`: windows that ended without closing, or whose nodes haven't confirmed in time.
@@ -650,8 +772,8 @@ pub async fn open_now(db: &Db, tenant: &str, p: &Compiled, role: &str, hold: &st
     let id = format!("ap_{}", crate::db::new_id());
     let now = now_ms();
     sqlx::query(
-        "INSERT INTO approvals (tenant, id, subject, verb, target, status, hold_ms, created_at, decided_at, expires_at)
-         VALUES (?, ?, ?, 'activate', ?, 'approved', ?, ?, ?, ?)",
+        "INSERT INTO approvals (tenant, id, subject, verb, target, status, hold_ms, created_at, decided_at, expires_at,
+         decided_by) VALUES (?, ?, ?, 'activate', ?, 'approved', ?, ?, ?, ?, ?)",
     )
     .bind(tenant)
     .bind(&id)
@@ -661,6 +783,7 @@ pub async fn open_now(db: &Db, tenant: &str, p: &Compiled, role: &str, hold: &st
     .bind(now)
     .bind(now)
     .bind(now + hold_ms)
+    .bind(by)
     .execute(db)
     .await?;
     Ok(now + hold_ms)
@@ -687,7 +810,7 @@ mod tests {
     }
 
     async fn approve(app: &App, id: &str, hold: Option<i64>) {
-        crate::approvals::decide(&app.db, crate::db::DEFAULT_TENANT, id, true, hold).await.unwrap().unwrap();
+        crate::approvals::decide(&app.db, crate::db::DEFAULT_TENANT, id, true, hold, "person").await.unwrap().unwrap();
     }
 
     #[tokio::test]
@@ -764,5 +887,154 @@ mod tests {
         assert!(problems(&app.db).await[0].contains("hasn't been closed"));
         tick(&app).await.unwrap();
         assert!(problems(&app.db).await.is_empty(), "the loop closes it, and no node of the role is known");
+    }
+
+    async fn audit_lines(app: &App) -> Vec<String> {
+        sqlx::query("SELECT decision, reason FROM audit_log WHERE verb = 'activate' ORDER BY seq")
+            .fetch_all(&app.db)
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| format!("{} {}", r.get::<String, _>(0), r.get::<String, _>(1)))
+            .collect()
+    }
+
+    async fn add_node(app: &App, name: &str) {
+        sqlx::query("INSERT INTO nodes (tenant, name, token_hash, created_at) VALUES ('default', ?, 'h-' || ?, 0)")
+            .bind(name)
+            .bind(name)
+            .execute(&app.db)
+            .await
+            .unwrap();
+    }
+
+    async fn ask_and_approve(app: &App, hold: Option<i64>) -> String {
+        let t = crate::db::DEFAULT_TENANT;
+        let p = app.authz.policy(&app.db, t).await.unwrap().unwrap();
+        let id = request(app, t, &p, "ops@admin", "admin", "1h", None).await.unwrap().request.unwrap();
+        crate::approvals::decide(&app.db, t, &id, true, hold, "person:sam").await.unwrap().unwrap();
+        id
+    }
+
+    #[tokio::test]
+    async fn a_window_closed_before_the_loop_saw_it_is_still_recorded_and_audited_with_its_approver() {
+        let app = app().await;
+        let t = crate::db::DEFAULT_TENANT;
+        add_node(&app, "admin").await;
+        let id = ask_and_approve(&app, None).await;
+        // Closed within the loop's five seconds: no tick in between.
+        assert!(deactivate_db(&app.db, t, "admin", "person").await.unwrap());
+        tick(&app).await.unwrap();
+        let h = history(&app.db, t, 10).await.unwrap();
+        assert_eq!(h.len(), 1, "the window is recorded: {h:?}");
+        assert_eq!(h[0]["id"], id.as_str());
+        assert!(h[0]["closedAt"].is_i64());
+        let lines = audit_lines(&app).await;
+        assert!(lines.iter().any(|l| l.contains("opened") && l.contains("approved by person:sam")), "{lines:?}");
+        assert!(lines.iter().any(|l| l.starts_with("closed") && l.contains("closed early by person")), "{lines:?}");
+    }
+
+    #[tokio::test]
+    async fn an_approval_longer_than_the_window_doesnt_block_the_next_request() {
+        let app = app().await;
+        let t = crate::db::DEFAULT_TENANT;
+        let id = ask_and_approve(&app, Some(365 * 86_400_000)).await;
+        // Approved 13 hours ago; the role's longest is 12h, so the window is over.
+        sqlx::query("UPDATE approvals SET decided_at = decided_at - ? WHERE id = ?")
+            .bind(13 * 3_600_000_i64)
+            .bind(&id)
+            .execute(&app.db)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE role_windows SET opened_at = opened_at - ?, ends_at = ends_at - ? WHERE id = ?")
+            .bind(13 * 3_600_000_i64)
+            .bind(13 * 3_600_000_i64)
+            .bind(&id)
+            .execute(&app.db)
+            .await
+            .unwrap();
+        tick(&app).await.unwrap();
+        let p = app.authz.policy(&app.db, t).await.unwrap().unwrap();
+        let again = request(&app, t, &p, "ops@admin", "admin", "1h", None).await.unwrap();
+        assert_eq!(again.state, "pending", "a new request, not the old approval: {again:?}");
+    }
+
+    #[tokio::test]
+    async fn watchers_must_confirm_too_and_a_node_offline_for_days_still_hears_the_close() {
+        let app = app().await;
+        let t = crate::db::DEFAULT_TENANT;
+        add_node(&app, "admin").await;
+        add_node(&app, "runner").await;
+        watch(&app.db, t, "runner", &["admin".to_string()]).await.unwrap();
+        let id = ask_and_approve(&app, None).await;
+        tick(&app).await.unwrap();
+        deactivate(&app, t, "admin", "person").await.unwrap();
+        let h = history(&app.db, t, 10).await.unwrap();
+        let mut pending: Vec<String> = serde_json::from_value(h[0]["unconfirmed"].clone()).unwrap();
+        pending.sort();
+        assert_eq!(pending, ["admin", "runner"], "the watcher that removes the sudo rule must confirm too");
+        confirmed(&app, "admin", &WindowClosed { id: id.clone(), problem: None }).await.unwrap();
+        // Days later, the runner links: it's told the window closed, as a watcher.
+        sqlx::query("UPDATE role_windows SET closed_at = closed_at - ? WHERE id = ?")
+            .bind(3 * 86_400_000_i64)
+            .bind(&id)
+            .execute(&app.db)
+            .await
+            .unwrap();
+        let n = notices_on_link(&app, t, "runner", &["admin".to_string()]).await.unwrap();
+        assert_eq!(n.len(), 1, "{n:?}");
+        assert!(!n[0].open && !n[0].member);
+        assert!(problems(&app.db).await[0].contains("runner hasn't confirmed"));
+        confirmed(&app, "runner", &WindowClosed { id, problem: None }).await.unwrap();
+        assert!(problems(&app.db).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_policy_change_mid_window_closes_it_and_tells_the_nodes_it_had() {
+        let app = app().await;
+        let t = crate::db::DEFAULT_TENANT;
+        add_node(&app, "admin").await;
+        let id = ask_and_approve(&app, None).await;
+        tick(&app).await.unwrap();
+        sqlx::query("UPDATE approvals SET decided_at = decided_at - ? WHERE id = ?")
+            .bind(2 * 3_600_000_i64)
+            .bind(&id)
+            .execute(&app.db)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE role_windows SET opened_at = opened_at - ? WHERE id = ?")
+            .bind(2 * 3_600_000_i64)
+            .bind(&id)
+            .execute(&app.db)
+            .await
+            .unwrap();
+        // The role moves to another node and its longest drops to 1h: the window is over now, not at its old end.
+        let changed = "version: 2\ndefault: allow\nask: []\nroles:\n  admin: { who: \"*@other\", activation: window, longest: 1h }\n";
+        crate::authz::store(&app.db, t, changed).await.unwrap();
+        tick(&app).await.unwrap();
+        let h = history(&app.db, t, 10).await.unwrap();
+        assert!(h[0]["closedAt"].is_i64(), "{h:?}");
+        assert_eq!(h[0]["unconfirmed"], serde_json::json!(["admin"]), "the node it opened on is told");
+    }
+
+    #[tokio::test]
+    async fn nodes_confirming_at_the_same_moment_are_all_counted() {
+        let app = app().await;
+        let t = crate::db::DEFAULT_TENANT;
+        sqlx::query(
+            "INSERT INTO role_windows (tenant, id, role, requested_by, opened_at, ends_at, closed_at, pending_nodes)
+             VALUES (?, 'ap_c', 'admin', 'ops@admin', 0, 1, 1, '[\"a\",\"b\",\"c\"]')",
+        )
+        .bind(t)
+        .execute(&app.db)
+        .await
+        .unwrap();
+        let ok = |n: &'static str| {
+            let app = app.clone();
+            async move { confirmed(&app, n, &WindowClosed { id: "ap_c".into(), problem: None }).await.unwrap() }
+        };
+        tokio::join!(ok("a"), ok("b"), ok("c"));
+        let h = history(&app.db, t, 10).await.unwrap();
+        assert_eq!(h[0]["unconfirmed"], serde_json::json!([]), "{h:?}");
     }
 }

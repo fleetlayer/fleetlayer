@@ -156,6 +156,12 @@ Rotate the static keys it could reach on a schedule.
 
 ## What it doesn't cover
 
+- **The node's clean-up isn't a boundary.** The control plane's refusals are what's enforced: while the window is
+  closed, nothing Fleetlayer brokers reaches the role, whatever happens on its machine. Closing its sessions, removing
+  its delivered secrets and running its hook happen as the role's own Unix user, in its own home folder (the open
+  windows are kept in `~/.local/state/fleetlayer/windows.json` there), so the role could interfere with them. That's
+  why the sudo rule is removed by the runner's node, which the role can't touch, and why credentials that expire on
+  their own matter.
 - **A person on the machine.** Anyone who can log in as `admin` can start an agent there outside Fleetlayer. The window
   controls what Fleetlayer gives the role (sudo through the hook, secrets, tools, messages), not the Unix account.
 - **Processes started as root during the window.** Removing the rule stops new ones; one already running as root
