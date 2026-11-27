@@ -472,9 +472,8 @@ impl Hub {
 
     /// The environment for a `claude` run against a slot: nothing of the hub's own Claude settings, the hub's home.
     fn env(&self, slot: Option<&Path>) -> Vec<(String, String)> {
-        let mut env = crate::coordinator::deps::clean_env();
-        env.retain(|(k, _)| k != "HOME");
-        env.push(("HOME".into(), self.cfg.dir.join("home").display().to_string()));
+        let mut env =
+            crate::coordinator::deps::with_home(crate::coordinator::deps::clean_env(), &self.cfg.dir.join("home"));
         if let Some(s) = slot {
             env.extend(crate::claude::slot_env(&s.display().to_string()));
         }

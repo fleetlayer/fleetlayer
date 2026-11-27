@@ -57,3 +57,12 @@ It sees every session on its user's Rex server (labels, the program and folder i
 attach) and types into a terminal only to deliver a message or a first prompt, or when someone attaches without
 `--observe`, under the access policy. It runs `rex` with argv, never through a shell, and passes `--autostart=false`
 so it never starts a server.
+
+## Testing it
+
+`plugins/rex/e2e/run <rex> <fleetlayer-rex>` checks the plugin end to end against a real Rex server: listing and
+status, a refused message to a blocked agent, delivery, starting a session with a first prompt, `fleetlayer attach`,
+status changes from `rex events`, and closing. It runs in a throwaway sandbox (its own HOME, XDG folders and runtime
+folder, a cleared environment, a fake agent in place of Claude Code, the real home read-only where Linux allows it)
+and checks afterwards that the real home is untouched. It never downloads or installs anything: download Rex's release
+yourself.

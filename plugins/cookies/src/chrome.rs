@@ -493,6 +493,13 @@ mod tests {
     #[test]
     #[ignore = "writes to the default keychain: run it only where that's a throwaway one"]
     fn real_keychain_gives_the_v10_key() {
+        // It replaces Chrome's real key on a Mac that has Chrome, so `--ignored` alone isn't enough: only CI runs it.
+        if std::env::var_os("CI").is_none() {
+            eprintln!(
+                "skipped: it overwrites Chrome Safe Storage in the default keychain; CI=1 only where that's a throwaway one"
+            );
+            return;
+        }
         security_framework::passwords::set_generic_password("Chrome Safe Storage", "Chrome", b"ci-password").unwrap();
         let keys = keys(Browser::Chrome).unwrap();
         assert_eq!(keys.v10, vec![derive(b"ci-password", 1003)]);

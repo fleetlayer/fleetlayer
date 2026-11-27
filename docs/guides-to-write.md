@@ -698,7 +698,22 @@ managers, machines that sleep.
   session; Rex's terminal data stream has an unpublished wire format, so `fleetlayer attach` polls the documented
   `format` method; a Unix socket path over 108 bytes fails, so a test server needs a short `REX_RUNTIME_DIR`; pass
   `--autostart=false` or `rex` starts a server of its own. Written: `docs/rex.md`, `docs/plugins/rex.md`,
-  `plugins/rex/`.
+  `plugins/rex/` (the end-to-end check against a real server: `plugins/rex/e2e/run`).
+- **Testing against a real tool in a sandboxed HOME without breaking the real one.** A hand-run test pointed HOME and
+  every XDG_* folder at a folder in /tmp, then started a real Claude Code through a wrapper that set HOME back to the
+  real one and left XDG_DATA_HOME in the sandbox. Claude Code's self-update installed the new version under
+  XDG_DATA_HOME (the sandbox) and repointed `~/.local/bin/claude` (from HOME, the real one) at it; the next reboot
+  wiped /tmp and the machine had no `claude`, so every session start and token check failed. The rules: move HOME and
+  every XDG_* folder together or not at all (a program finds some files from one and some from the other), start
+  children with a cleared environment (`env -i`) so nothing like `CLAUDE_CONFIG_DIR` leaks in, put fakes first on PATH
+  and never run a real installer or self-updating CLI inside the sandbox (or set `DISABLE_AUTOUPDATER=1` for Claude
+  Code), mount the real home read-only where Linux user namespaces allow (`unshare --user --map-root-user --mount`,
+  `mount --rbind` then `mount -o remount,bind,ro`, then `unshare --user --map-user=<uid>` to drop back to your own
+  uid), and check afterwards that nothing in the real home links into the sandbox. A plugin that runs Claude Code
+  with a home of its own (the auth hub) drops the XDG_* variables, for the same reason. Where it lives:
+  `plugins/rex/e2e/run`, `plugins/claude-auth-manager/src/coordinator/deps.rs` (`with_home`, `clean_env`). Still to
+  write: the guide, and a note in the Claude accounts guide that a missing `claude` now shows as one local problem in
+  `fleetlayer status` instead of every account failing.
 - **Watch what a background plugin does, not only that it runs: `plugin.status`.** The summaries plugin waited
   forever after a usage limit (nothing retried it, and status stayed healthy), so an idle session's last stretch was
   never summarised. A plugin now reports whether it does its job (`_fleetlayer.dev/plugin/status`): its problem turns

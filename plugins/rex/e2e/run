@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# End-to-end check of fleetlayer-rex against a real Rex server, in a throwaway sandbox that nothing can write out of.
+#
+#   plugins/rex/e2e/run <rex binary> <fleetlayer-rex binary>
+#
+# Build fleetlayer-rex with `scripts/on-dev build -p fleetlayer-rex` and copy it here; download Rex's release yourself
+# into an empty folder (this script never downloads or installs anything). Linux or macOS.
+#
+# The sandbox: a fresh folder under /tmp holds HOME, every XDG_* folder, TMPDIR and Rex's runtime folder, and every
+# command runs with a cleared environment (no CLAUDE_*, no SSH agent, PATH = the sandbox's bin, then /usr/bin:/bin).
+# The agents are a fake `claude` (`fake-agent`), never a real Claude Code or any installer. Where Linux user
+# namespaces work, the real home folder is also mounted read-only for everything this runs. Either way, the real
+# home is checked afterwards: nothing in it may link into the sandbox, and ~/.local/bin must be as it was. (On 27 Nov
+# 2026 an earlier, hand-run version of this started a real Claude Code with HOME set back to the real one but
+# XDG_DATA_HOME still in the sandbox; Claude Code updated itself into the sandbox and repointed ~/.local/bin/claude
+# there, and a reboot that wiped /tmp left the machine without `claude`.)
+set -euo pipefail
+
+here=$(cd "$(dirname "$0")" && pwd)
+
+if [[ ${1:-} == --inside ]]; then
+  # In the sandbox, with the cleared environment.
+  shift
+  sb=$1
+  mkdir -p "$XDG_RUNTIME_DIR" "$REX_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR" "$REX_RUNTIME_DIR"
+  [[ $(command -v claude) == "$sb/bin/claude" ]] || { echo "claude isn't the sandbox's fake" >&2; exit 1; }
+  rex server start --json >/dev/null
+  trap 'rex server stop >/dev/null 2>&1 || true' EXIT
+  # By full path: Rex starts a terminal's program with its own PATH, not this one.
+  rex new planning --cwd "$HOME" --json -- "$sb/bin/claude" >/dev/null
+  rex new third --cwd "$HOME" --json -- "$sb/bin/claude" --blocked >/dev/null
+  sleep 2
+  status=0
+  python3 -I "$here/drive.py" "$sb/bin/fleetlayer-rex" "$sb/plugin.log" || status=$?
+  left=$(rex ls --json | python3 -I -c 'import json,sys; print(" ".join(sorted(s.get("label") or s["session_id"] for s in json.load(sys.stdin)["sessions"])))')
+  [[ $left == "planning third" ]] && echo "ok   the closed session is gone from Rex" || { echo "FAIL Rex still has: $left"; status=1; }
+  exit $status
+fi
+
+if [[ ${1:-} == --readonly-home ]]; then
+  # In a user namespace as root: mount the real home read-only, then drop back to the caller's own uid.
+  shift
+  uid=$1 gid=$2
+  shift 2
+  mount --rbind "$REAL_HOME" "$REAL_HOME"
+  mount -o remount,bind,ro "$REAL_HOME"
+  exec unshare --user --map-user="$uid" --map-group="$gid" "$0" --sandbox "$@"
+fi
+
+if [[ ${1:-} != --sandbox ]]; then
+  [[ $# -eq 2 && -x $1 && -x $2 ]] || { sed -n '2,8p' "$0" >&2; exit 2; }
+  rex=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
+  plugin=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")
+  export REAL_HOME=$HOME
+  links_before=$(ls -lA "$REAL_HOME/.local/bin" 2>/dev/null | awk '{print $1, $NF}' || true)
+  status=0
+  if [[ $(uname) == Linux ]] && unshare --user --map-root-user --mount true 2>/dev/null; then
+    echo "the real home folder is read-only for this run"
+    unshare --user --map-root-user --mount "$0" --readonly-home "$(id -u)" "$(id -g)" "$rex" "$plugin" || status=$?
+  else
+    echo "no user namespaces here: the real home is only checked afterwards"
+    "$0" --sandbox "$rex" "$plugin" || status=$?
+  fi
+  links_after=$(ls -lA "$REAL_HOME/.local/bin" 2>/dev/null | awk '{print $1, $NF}' || true)
+  into=$(find "$REAL_HOME" -xdev -maxdepth 4 -type l -lname '/tmp/flrex.*' 2>/dev/null || true)
+  if [[ $links_before != "$links_after" || -n $into ]]; then
+    echo "FAIL the real home changed: ${into:-~/.local/bin differs}" >&2
+    exit 1
+  fi
+  echo "ok   the real home is untouched"
+  exit $status
+fi
+
+# --sandbox: make it, run the check with a cleared environment, remove it.
+shift
+rex=$1 plugin=$2
+sb=$(mktemp -d /tmp/flrex.XXXXXX) # short: a Unix socket path must stay under 108 bytes
+case $sb in "$REAL_HOME"/*) echo "the sandbox can't be inside the real home" >&2; exit 1 ;; esac
+trap 'rm -rf "$sb"' EXIT
+mkdir -p "$sb/bin" "$sb/home"
+cp "$rex" "$sb/bin/rex"
+cp "$plugin" "$sb/bin/fleetlayer-rex"
+cp "$here/fake-agent" "$sb/bin/claude"
+chmod +x "$sb/bin/"*
+env -i \
+  HOME="$sb/home" \
+  XDG_CONFIG_HOME="$sb/home/.config" XDG_DATA_HOME="$sb/home/.local/share" XDG_STATE_HOME="$sb/home/.local/state" \
+  XDG_CACHE_HOME="$sb/home/.cache" XDG_RUNTIME_DIR="$sb/run" REX_RUNTIME_DIR="$sb/r" TMPDIR="$sb/tmp" \
+  PATH="$sb/bin:/usr/bin:/bin" TERM=xterm-256color LANG=C.UTF-8 \
+  bash -c 'mkdir -p "$TMPDIR" && exec "$0" --inside "$1"' "$0" "$sb"

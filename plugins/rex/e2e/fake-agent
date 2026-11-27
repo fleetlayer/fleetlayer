@@ -1,0 +1,20 @@
+#!/bin/sh
+# A stand-in for an agent, installed in the sandbox as `claude`: it reports its status with OSC 7501 the way Claude
+# Code does, and echoes what it's told. The end-to-end check never runs a real Claude Code: a real one, started with
+# any of HOME or XDG_* pointing at the sandbox, can update itself and repoint the real ~/.local/bin/claude there.
+osc() { printf '\033]7501;%s\033\\' "$1"; }
+if [ "${1:-}" = --blocked ]; then
+  osc 'state=blocked:app=claude-code'
+  printf 'Allow this command? (y/n) '
+  while IFS= read -r line; do echo "got: $line"; done
+  exit 0
+fi
+osc 'state=idle:app=claude-code'
+printf 'ready> '
+while IFS= read -r line; do
+  osc 'state=working:app=claude-code'
+  echo "heard: $line"
+  sleep 1
+  osc 'state=done:app=claude-code'
+  printf 'ready> '
+done

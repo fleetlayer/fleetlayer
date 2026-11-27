@@ -30,14 +30,30 @@ pub fn retry_after(header: Option<&str>, now: Ms) -> Option<Ms> {
 }
 
 /// The environment `claude` children get: the node's own, without what a Claude Code session sets for itself
-/// (which login it reads, its API endpoint), so a node a session started behaves as one launchd started.
+/// (which login it reads, its API endpoint), so a node a session started behaves as one launchd started. These runs
+/// never update Claude Code (`DISABLE_AUTOUPDATER`): an update moves `~/.local/bin/claude`, which is the person's to
+/// manage, not a background check's.
 pub fn clean_env() -> Vec<(String, String)> {
-    std::env::vars()
+    let mut env: Vec<(String, String)> = std::env::vars()
         .filter(|(name, _)| {
             name == "CLAUDE_ACCOUNT_ROTATOR_DIR"
-                || !(name.starts_with("CLAUDE_") || name.starts_with("ANTHROPIC_") || name == "CLAUDECODE")
+                || !(name.starts_with("CLAUDE_")
+                    || name.starts_with("ANTHROPIC_")
+                    || name == "CLAUDECODE"
+                    || name == "DISABLE_AUTOUPDATER")
         })
-        .collect()
+        .collect();
+    env.push(("DISABLE_AUTOUPDATER".into(), "1".into()));
+    env
+}
+
+/// `env` with its home moved to `home`: HOME, and no XDG_* folders, so everything Claude Code keeps follows HOME. A
+/// HOME moved while XDG_DATA_HOME stays put is how a Claude Code update ends up linking one home's
+/// `~/.local/bin/claude` into the other.
+pub fn with_home(mut env: Vec<(String, String)>, home: &std::path::Path) -> Vec<(String, String)> {
+    env.retain(|(k, _)| (k != "HOME" && !k.starts_with("XDG_")) || k == "XDG_RUNTIME_DIR");
+    env.push(("HOME".into(), home.display().to_string()));
+    env
 }
 
 /// Appends to the monitor's log, `coordinator.log`, moving it aside at 1 MB.
@@ -396,5 +412,25 @@ mod tests {
         assert_eq!(retry_after(Some("Mon, 09 Nov 2026 10:01:00 GMT"), now), Some(60_000));
         assert_eq!(retry_after(Some("soon"), now), None);
         assert_eq!(retry_after(None, now), None);
+    }
+
+    /// A run with its home moved takes everything Claude Code keeps along with HOME, and never updates Claude Code.
+    #[test]
+    fn a_moved_home_takes_the_xdg_folders_with_it() {
+        let env: Vec<(String, String)> = [
+            ("HOME", "/home/me"),
+            ("XDG_DATA_HOME", "/home/me/.local/share"),
+            ("XDG_CONFIG_HOME", "/home/me/.config"),
+            ("XDG_RUNTIME_DIR", "/run/user/1000"),
+            ("PATH", "/usr/bin"),
+        ]
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .into();
+        let mut moved = with_home(env, std::path::Path::new("/hub/home"));
+        moved.sort();
+        let names: Vec<&str> = moved.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(names, ["HOME", "PATH", "XDG_RUNTIME_DIR"]);
+        assert!(moved.contains(&("HOME".into(), "/hub/home".into())));
+        assert!(clean_env().contains(&("DISABLE_AUTOUPDATER".into(), "1".into())));
     }
 }
