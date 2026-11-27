@@ -577,6 +577,9 @@ impl Handler for FromNode {
                 }
                 answer(&crate::route::act_session(app, tenant, &self.node, r).await?)
             }
+            l::method::TRANSCRIPT_READ => {
+                answer(&crate::route::read_transcript(app, tenant, &self.node, params(p)?).await?)
+            }
             l::method::SESSION_START => {
                 answer(&crate::route::start_session(app, tenant, &self.node, params(p)?).await?)
             }

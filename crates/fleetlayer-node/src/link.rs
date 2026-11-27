@@ -220,6 +220,11 @@ impl Handler for FromControl {
             l::method::PAGES_SERVE => crate::pages::serve(self.node.clone(), params(p)?).await,
             l::method::SESSION_SERVE => crate::start::serve(&self.node, params(p)?).await,
             l::method::SESSION_ACT_SERVE => crate::act::serve(&self.node, params(p)?).await,
+            l::method::TRANSCRIPT_SERVE => {
+                let r: l::TranscriptServe = params(p)?;
+                tracing::info!(session = %r.session, caller = %r.caller, "transcript read");
+                answer(&crate::transcripts::read_here(&self.node, &r.session, &r.range).await?)
+            }
             l::method::CATCHUP => {
                 self.node.ask_observer(ext::method::SUMMARY_CATCHUP, &p, Duration::from_secs(480)).await
             }

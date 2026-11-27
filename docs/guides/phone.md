@@ -16,9 +16,11 @@ as a workspace named after it. The relay itself isn't changed.
   machine. Typing never resizes the session's terminal on its own machine, so your own window there stays as it was.
 - Closing a session on another machine, if you give the plugin `session.close`.
 - Everything the relay does for the machine it runs on, unchanged.
+- The Conversation view of other machines' Claude Code sessions, from copies of their transcripts kept beside the
+  plugin.
 
-Not yet for other machines' sessions: the Conversation view (it reads transcript files on the relay's machine; their
-Terminal view works), workspace files and diffs, starting agents and worktrees there. The phone shows those actions as
+Not yet for other machines' sessions: the Conversation view of agents other than Claude Code (their Terminal view
+works), workspace files and diffs, starting agents and worktrees there. The phone shows those actions as
 unavailable rather than failing.
 
 ## Set it up
@@ -32,31 +34,36 @@ Pick the machine the relay runs on: one that's always on, since the phone reache
    plugins:
      - name: herdr-fleet
        command: fleetlayer-herdr-fleet
-       grants: [fleet.query, session.close]
+       grants: [fleet.query, transcript.read, session.close]
    ```
+
+   Leave out `transcript.read` to keep other machines' transcripts off this one (no Conversation view for them), and
+   `session.close` to keep the phone from closing them.
 
    `fleetlayer status` shows `herdr-fleet` running; `~/.local/state/fleetlayer/herdr-fleet/bin/herdr agent list`
    lists every machine's agents.
-3. Point the relay at the plugin. Its systemd user service takes two more lines of environment, in a drop-in:
+3. Point the relay at the plugin. Its systemd user service takes three more lines of environment, in a drop-in:
 
    ```ini
    # ~/.config/systemd/user/herdr-mobile-relay.service.d/fleetlayer.conf
    [Service]
    Environment=HERDR_SOCKET_PATH=%h/.local/state/fleetlayer/herdr-fleet/herdr.sock
    Environment=HERDR_BIN=%h/.local/state/fleetlayer/herdr-fleet/bin/herdr
+   Environment=HERDR_CLAUDE_CONFIG_DIRS=%h/.local/state/fleetlayer/herdr-fleet/claude
    ```
 
-   then `systemctl --user daemon-reload && systemctl --user restart herdr-mobile-relay`. On a Mac, add the same two
+   then `systemctl --user daemon-reload && systemctl --user restart herdr-mobile-relay`. On a Mac, add the same three
    variables to the relay's `relay.env` and restart it.
 4. Open the app. The other machines appear as workspaces after this one's.
 
-To undo it, remove the drop-in (or the two lines) and restart the relay: it's back on the local herdr alone.
+To undo it, remove the drop-in (or the three lines) and restart the relay: it's back on the local herdr alone.
 
 ## Access
 
 The phone acts through the relay's machine, so the access policy sees it as that node: reading another machine's
-session needs `read`, typing into it `attach`, closing it `close`. If your policy asks you before attaching, the first
-prompt to each session waits for your approval, then passes for a while like any other. A policy that keeps a session
+session needs `read`, typing into it `attach`, closing it `close`, and copying its transcript for the Conversation view
+`read`. If your policy asks you before attaching, the first prompt to each session waits for your approval, then
+passes for a while like any other. A policy that keeps a session
 private keeps it off the phone too: it isn't listed at all.
 
 ## What it costs

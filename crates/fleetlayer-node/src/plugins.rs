@@ -478,6 +478,15 @@ impl Handler for FromPlugin {
                 }
                 answer(&json!({"sessions": self.node.registry.all().await, "ownMessages": own}))
             }
+            ext::method::TRANSCRIPT_READ => {
+                self.grant("transcript.read")?;
+                let to = p["to"].as_str().ok_or_else(|| RpcError::invalid_params("to"))?.to_string();
+                let why = p["why"].as_str().map(str::to_string);
+                let range: fleetlayer_protocol::link::TranscriptRange =
+                    serde_json::from_value(p.clone()).map_err(RpcError::invalid_params)?;
+                let caller = format!("plugin:{}", self.plugin.name());
+                answer(&crate::transcripts::read(&self.node, &to, range, caller, why).await?)
+            }
             ext::method::FLEET_QUERY => {
                 self.grant("fleet.query")?;
                 let peer = self.node.link.peer().await.ok_or_else(|| {

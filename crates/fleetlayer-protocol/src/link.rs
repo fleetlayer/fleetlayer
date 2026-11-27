@@ -84,6 +84,12 @@ pub mod method {
     pub const SESSION_ANSWER: &str = "link/session_answer";
     /// Control plane → node: close or answer one of its sessions for a caller. `SessionActServe` → `SessionActed`.
     pub const SESSION_ACT_SERVE: &str = "link/session_act_serve";
+    /// Node → control plane: part of a session's transcript on another node, after `read` on `<session>@<node>`.
+    /// `TranscriptRead` → `TranscriptChunk`.
+    pub const TRANSCRIPT_READ: &str = "link/transcript_read";
+    /// Control plane → node: part of one of its sessions' transcripts, for a caller. `TranscriptServe` →
+    /// `TranscriptChunk`.
+    pub const TRANSCRIPT_SERVE: &str = "link/transcript_serve";
     /// Node → control plane (notification): the tools this node shares, `Tools`, replacing its earlier list. Sent when
     /// it links and when an opt-in changes. Names, descriptions and folder names only: never paths or secrets.
     pub const TOOLS: &str = "link/tools";
@@ -693,4 +699,58 @@ pub struct SessionActed {
     pub tab: Option<String>,
     /// `closed` or `answered`.
     pub done: String,
+}
+
+/// Which part of a transcript to read: from byte `offset`, or the last `tail` bytes (starting at a line), at most
+/// `max` bytes (capped at [`TRANSCRIPT_CHUNK_MAX`]). Neither: from the start.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptRange {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tail: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<u64>,
+}
+
+/// The most a transcript read returns at once.
+pub const TRANSCRIPT_CHUNK_MAX: u64 = 1 << 20;
+
+/// `link/transcript_read`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptRead {
+    pub node: String,
+    /// Its tab or session ID on `node`.
+    pub session: String,
+    #[serde(flatten)]
+    pub range: TranscriptRange,
+    /// The calling session's name (its tab), `plugin:<name>` for a plugin, or `-` for a shell.
+    pub caller: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub justification: Option<String>,
+}
+
+/// `link/transcript_serve`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptServe {
+    pub session: String,
+    #[serde(flatten)]
+    pub range: TranscriptRange,
+    /// `<name>@<node>` of the caller.
+    pub caller: String,
+}
+
+/// Part of a transcript: `data` (base64) is the bytes from `offset`; `size` is the whole file's size now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptChunk {
+    pub session_id: String,
+    /// The harness's transcript format: `claude-jsonl`.
+    pub format: String,
+    pub size: u64,
+    pub offset: u64,
+    pub data: String,
 }

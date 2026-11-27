@@ -12,8 +12,11 @@
 //! - `herdr`: the real herdr (default: `herdr` on the node's PATH).
 //! - `local_socket`: this machine's herdr socket (default: what `herdr status server` reports).
 //! - `poll_seconds`: how often the fleet listing is read (default 3).
+//! - `transcript_tail_kb`: how much of an other machine's Claude Code transcript is copied when it's first seen (default
+//!   1024). Copying needs the grant `transcript.read` (`mirror.rs`).
 
 mod fleet;
+mod mirror;
 mod serve;
 mod shim;
 mod term;
@@ -40,6 +43,7 @@ struct Config {
     herdr: Option<PathBuf>,
     local_socket: Option<PathBuf>,
     poll_seconds: Option<u64>,
+    transcript_tail_kb: Option<u64>,
 }
 
 fn expand(home: &Path, p: PathBuf) -> PathBuf {
@@ -74,7 +78,38 @@ struct Health {
     fleet_ok_at: Mutex<Option<Timestamp>>,
     fleet_error: Mutex<Option<(Timestamp, String)>>,
     clients: AtomicUsize,
+    mirror: Mutex<Value>,
     self_check: Mutex<Option<String>>,
+}
+
+struct NodeReader(Peer);
+
+#[async_trait]
+impl mirror::Reader for NodeReader {
+    async fn read(
+        &self,
+        address: &str,
+        offset: Option<u64>,
+        tail: Option<u64>,
+    ) -> Result<mirror::Chunk, mirror::ReadError> {
+        use base64::Engine;
+        let p = json!({"to": address, "offset": offset, "tail": tail,
+            "why": "copying the transcript for a herdr client's conversation view (herdr-fleet)"});
+        let v: Value =
+            self.0.request_within(ext::method::TRANSCRIPT_READ, &p, Duration::from_secs(60)).await.map_err(|e| {
+                if e.code == fleetlayer_protocol::rpc::code::METHOD_NOT_FOUND {
+                    mirror::ReadError::NotGranted("this node is too old to read transcripts".into())
+                } else if e.message.contains("isn't granted") {
+                    mirror::ReadError::NotGranted(e.message)
+                } else {
+                    mirror::ReadError::Other(e.message)
+                }
+            })?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(v["data"].as_str().unwrap_or_default())
+            .map_err(|e| mirror::ReadError::Other(format!("the node's answer: {e}")))?;
+        Ok(mirror::Chunk { offset: v["offset"].as_u64().unwrap_or(0), size: v["size"].as_u64().unwrap_or(0), bytes })
+    }
 }
 
 struct NodeCloser(Peer);
@@ -164,6 +199,7 @@ async fn run(peer: Peer, node: NodeMeta, config: Config) -> anyhow::Result<()> {
         fleet_ok_at: Mutex::new(None),
         fleet_error: Mutex::new(None),
         clients: AtomicUsize::new(0),
+        mirror: Mutex::new(json!({})),
         self_check: Mutex::new(None),
     });
     tracing::info!(socket = %p.socket.display(), herdr = %herdr.display(), local = %local.display(), "serving");
@@ -207,6 +243,27 @@ async fn run(peer: Peer, node: NodeMeta, config: Config) -> anyhow::Result<()> {
                 break;
             }
             tokio::time::sleep(every).await;
+        }
+    });
+
+    // Other machines' Claude Code transcripts, for clients that read them from disk.
+    let (c, h, pr) = (ctx.clone(), health.clone(), peer.clone());
+    let tail = config.transcript_tail_kb.unwrap_or(1024).clamp(16, 64 * 1024) * 1024;
+    let root = p.state.join("claude");
+    tokio::spawn(async move {
+        let mut m = mirror::Mirror::new(root, tail);
+        let reader = NodeReader(pr.clone());
+        loop {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            if pr.is_closed() {
+                break;
+            }
+            let sessions: Vec<fleet::Remote> = c.model.read().await.panes().map(|p| p.remote.clone()).collect();
+            let r = m.round(&sessions, &reader).await;
+            for e in &r.errors {
+                tracing::debug!("copying a transcript: {e}");
+            }
+            *h.mirror.lock().await = json!({"copies": m.len(), "off": m.off, "lastErrors": r.errors.len()});
         }
     });
 
@@ -258,6 +315,7 @@ async fn report(ctx: &serve::Ctx, h: &Health) -> (Option<String>, Value) {
         "lastFleetAt": ok_at.map(|t| t.to_string()),
         "clients": h.clients.load(Ordering::Relaxed),
         "openStreams": ctx.pool.open_count().await,
+        "transcripts": h.mirror.lock().await.clone(),
     });
     (problem, detail)
 }

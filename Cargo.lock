@@ -1913,6 +1913,7 @@ version = "0.3.13"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.23.1",
  "fleetlayer-plugin",
  "fleetlayer-protocol",
  "jiff 1.0.3",
@@ -1932,6 +1933,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "base64 0.23.1",
  "clap",
  "fleetlayer-plugin",
  "fleetlayer-protocol",

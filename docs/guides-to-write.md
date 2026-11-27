@@ -17,15 +17,15 @@ managers, machines that sleep.
 - **One phone app for agents on many machines.** herdr's phone relay reaches the one herdr on its machine, so agents
   on a laptop, a server and a VPS meant a relay to install, pair and keep running on each. Solved with the herdr-fleet
   plugin, which serves herdr's own socket API for every herdr in the fleet (other machines as workspaces from `w1000`)
-  plus a HERDR_BIN shim, so the relay runs unchanged with two environment variables. To find what the relay really
+  plus a HERDR_BIN shim, so the relay runs unchanged with three environment variables. To find what the relay really
   calls, without reading its code (it's AGPL), a logging HERDR_BIN wrapper and a socket proxy that log method names,
   parameter keys and pane IDs only, never content: at rest it reads the whole history (`pane.read`,
   `recent_unwrapped`, 10,000 lines, ANSI) of every working agent about every seven seconds, keeps one lifecycle
   subscription open, and reorders workspaces with `tab.move` and `workspace.move_block` on start. herdr's
   `terminal.scrollback` comes back at the pane's width whatever the observer's size, so a 20 by 5 observer reads
-  history at a seventeenth of the frame traffic. Written: `docs/guides/phone.md`, `docs/plugins/herdr-fleet.md`. Not
-  yet: other machines' Claude transcripts for the relay's Conversation view (its `HERDR_CLAUDE_CONFIG_DIRS` can point at
-  a mirror folder).
+  history at a seventeenth of the frame traffic. Written: `docs/guides/phone.md`, `docs/plugins/herdr-fleet.md`. The relay's
+  Conversation view reads Claude Code transcripts from disk, and `HERDR_CLAUDE_CONFIG_DIRS` adds folders to look in:
+  herdr-fleet copies other machines' transcripts into one laid out like `~/.claude` (`link/transcript_read`).
 - **An MCP gateway's token is a key to everything, and agents held it.** An MCP server that holds sign-ins for many
   services (Executor) is usually added to each agent with a bearer token in its own config, so every agent, and
   anything that steers one, can send email as the person, and there's no per-call record of who did what. Solved by

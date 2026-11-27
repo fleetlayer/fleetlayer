@@ -29,8 +29,17 @@ and shows in the audit log with the reason "a herdr client (such as a phone app)
 through herdr-fleet". If your policy asks the person before attaching, the first prompt to a session waits for that
 approval.
 
-Conversation views that read an agent's own transcript files (Claude Code's `~/.claude/projects`) find this
-machine's sessions only, for now: other machines' transcripts aren't copied here yet. Their terminal is there.
+## Transcripts
+
+Clients that read an agent's own transcript files (Claude Code's `~/.claude/projects`, for the phone relay's
+Conversation view) find this machine's sessions on disk as usual. With the grant `transcript.read`, the plugin also
+copies the other machines' Claude Code transcripts into `<state_dir>/claude/projects/<folder>/<session id>.jsonl`, laid
+out as Claude Code lays out its own, so pointing the client at `<state_dir>/claude` finds them too (the relay:
+`HERDR_CLAUDE_CONFIG_DIRS`). A session seen for the first time gets the end of its transcript (`transcript_tail_kb`,
+1 MB by default, from a line start); after that only what's appended, while it works and once after each change of
+status. A copy is deleted when its session ends, and the folder is emptied when the plugin starts. Each read is checked
+as `read` on the session, and the control plane passes the bytes on without keeping them. Without the grant nothing
+is copied.
 
 ## Setup
 
@@ -40,12 +49,15 @@ In `node.yaml`, on the machine the client runs on:
 plugins:
   - name: herdr-fleet
     command: fleetlayer-herdr-fleet
-    grants: [fleet.query, session.close]   # session.close only if clients may close other machines' sessions
+    grants: [fleet.query, transcript.read, session.close]
+    # transcript.read: copy other machines' Claude Code transcripts here (below); session.close: let clients close
+    # other machines' sessions. Leave either out to turn it off.
     config:                                # all optional
       state_dir: ~/.local/state/fleetlayer/herdr-fleet
       herdr: /usr/local/bin/herdr          # the real herdr; default the first on the node's PATH
       local_socket: ~/.config/herdr/herdr.sock   # default: what `herdr status server` reports
       poll_seconds: 3                      # how often the fleet listing is read
+      transcript_tail_kb: 1024             # how much of a transcript is copied when it's first seen
 ```
 
 The plugin makes, in its state folder:
@@ -54,6 +66,7 @@ The plugin makes, in its state folder:
 - `bin/herdr`: the HERDR_BIN shim. It runs the real herdr against the merged socket, and streams other machines'
   terminals itself. With the plugin stopped it's the real herdr, unchanged.
 - `shim.json`: where the shim finds the real herdr and both sockets.
+- `claude/`: the other machines' Claude Code transcripts, with `transcript.read`.
 - `ids.json`: the workspace and pane numbers given to other machines' sessions, kept so a client's saved order and
   open views survive restarts.
 
@@ -62,6 +75,7 @@ Point the client at both, with full paths (the shim finds `shim.json` from the p
 ```sh
 HERDR_SOCKET_PATH=~/.local/state/fleetlayer/herdr-fleet/herdr.sock
 HERDR_BIN=~/.local/state/fleetlayer/herdr-fleet/bin/herdr
+HERDR_CLAUDE_CONFIG_DIRS=~/.local/state/fleetlayer/herdr-fleet/claude   # the phone relay's transcript folders
 ```
 
 For herdr's phone relay, that's two lines in its service's environment ([the phone guide](../guides/phone.md)).
@@ -84,13 +98,15 @@ and is small for full-screen agents (Claude Code's is about 8 KB).
 
 The plugin reports its status to the node every minute. It's `failing` when its own socket doesn't answer an
 `agent.list` (it asks itself, as a client would), or when it hasn't been able to read the fleet for two minutes. Its
-detail has `remoteSessions`, `lastFleetAt`, `clients` and `openStreams`. Read it anywhere with `fleetlayer readings
+detail has `remoteSessions`, `lastFleetAt`, `clients`, `openStreams` and `transcripts` (copies, and why copying is
+off when it is). Read it anywhere with `fleetlayer readings
 plugin.status`.
 
 ## Needs
 
 Both ends on Fleetlayer 0.3.13 or later: the client's node for the fleet listing (`_fleetlayer.dev/fleet/query`), and
-each other machine's node for reads (a watcher's `terminal.scrollback`) and typing (`input` mode). herdr 0.9 or later
+each other machine's node for reads (a watcher's `terminal.scrollback`), typing (`input` mode) and transcripts
+(`link/transcript_serve`), and the control plane for the fleet listing and transcripts. herdr 0.9 or later
 on each machine.
 
 ## Later

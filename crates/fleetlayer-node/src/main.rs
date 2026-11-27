@@ -24,6 +24,7 @@ mod start;
 mod sync;
 mod terminals;
 mod tools;
+mod transcripts;
 mod update;
 mod window;
 

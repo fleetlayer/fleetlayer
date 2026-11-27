@@ -13,16 +13,18 @@ platforms: [linux, macos]
 min_fleetlayer: 0.3.13
 protocol: 1
 needs: [herdr 0.9 or later (https://herdr.dev)]
-grants: [fleet.query, session.close]
+grants: [fleet.query, transcript.read, session.close]
 config: |
   plugins:
     - name: herdr-fleet
       command: fleetlayer-herdr-fleet
-      grants: [fleet.query, session.close]
+      grants: [fleet.query, transcript.read, session.close]
 security: >-
   Serves a socket only its Unix user can open (0600, in a 0700 folder). Whatever connects to it reads and types into
   other machines' sessions as this node, so the access policy checks every read (read), prompt or key (attach) and
-  close (close), and the audit log shows each. It sees the fleet listing this node may see, never more. Leave out
+  close (close), and the audit log shows each. With transcript.read it copies other machines' Claude Code
+  transcripts into its state folder (0700) while their sessions run, each read checked as read; leave it out to keep
+  them off this machine. It sees the fleet listing this node may see, never more. Leave out
   session.close to keep clients from closing other machines' sessions.
 docs: plugins/herdr-fleet
 description: |

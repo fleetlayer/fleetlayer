@@ -192,6 +192,32 @@ pub async fn act_session(
     Ok(done)
 }
 
+/// Part of a session's transcript on another node, for a caller on `from_node`, after `read` on `<session>@<node>`.
+/// The control plane passes the bytes on and keeps none of them.
+pub async fn read_transcript(
+    app: &App,
+    tenant: &str,
+    from_node: &str,
+    r: l::TranscriptRead,
+) -> Result<l::TranscriptChunk, RpcError> {
+    let caller = format!("{}@{from_node}", r.caller);
+    let target = format!("{}@{}", r.session, r.node);
+    crate::authz::check_why(app, tenant, &caller, "read", &target, r.justification.as_deref()).await?;
+    let server = app
+        .links
+        .peer(tenant, &r.node)
+        .await
+        .ok_or_else(|| RpcError::not_here(format!("node {} is offline", r.node)))?;
+    let serve = l::TranscriptServe { session: r.session, range: r.range, caller };
+    server.request_within(l::method::TRANSCRIPT_SERVE, &serve, Duration::from_secs(40)).await.map_err(|e| {
+        if e.code == fleetlayer_protocol::rpc::code::METHOD_NOT_FOUND {
+            RpcError::refused(format!("node {} is too old to read transcripts: update it", r.node))
+        } else {
+            e
+        }
+    })
+}
+
 /// A node gets up to two and a half minutes to start a session; this is a little more.
 const START_TIMEOUT: Duration = Duration::from_secs(160);
 
