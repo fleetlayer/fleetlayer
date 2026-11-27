@@ -211,6 +211,13 @@ default. Rate limits apply to whatever is allowed.
 | `acl suggest [--days 7]` | The smallest `only` rules that allow what each agent actually did, from the message log |
 | `acl log [--limit 30]` | Recent refusals, and what audit rules would have refused |
 
+On a server, let the control plane apply the policy itself instead of running `acl apply`: `fleetlayer-control serve
+--policy-file <path>` (or `FLEETLAYER_CONTROL_POLICY_FILE`) applies the file at start and again within 10 seconds of
+any change, with no restart. A broken file is refused, the stored policy keeps deciding, and `/healthz` says so until
+it's fixed. Keep the file in git, where the agents it limits can't change it, and check each change in CI with
+`acl apply <file> --check` and `acl test`. Several tenants, and the move from an init container, are in
+[the deploy notes](https://github.com/fleetlayer/fleetlayer/blob/main/deploy/README.md#the-access-policy).
+
 ## How it's built
 
 The decision engine is [Cedar](https://www.cedarpolicy.com) (Apache-2.0, from AWS, with a formally verified core):
