@@ -1,6 +1,7 @@
 //! The node's heartbeat: every `every` seconds it judges its own health and reports it to a URL, the way Gatus's
 //! external endpoints take results (`?success=true|false&error=…`, with a bearer token). Healthy means every enabled
-//! plugin is running, no sync has been refused for over an hour (`sync.rs`) and, when a control plane is configured, the
+//! plugin is running, no sync has been refused for over an hour (`sync.rs`), every remote MCP server it
+//! shares answers with its credentials (`gate.rs`) and, when a control plane is configured, the
 //! link to it is up. So the check fails when the node is up but has stopped doing its job, not only when it stops; and
 //! when the node dies, the heartbeat stops and the monitor's own timeout raises the alert.
 
@@ -36,6 +37,8 @@ pub async fn health(node: &Node, has_control: bool) -> Option<String> {
     problems.extend(node.secrets.problems());
     // A role window that didn't close cleanly here (a hook failed, a session wouldn't close).
     problems.extend(node.windows.problems().await);
+    // A remote MCP server this node shares that fails its check (down, or refusing the node's credentials).
+    problems.extend(node.gate.problems().await);
     if has_control && node.link.peer().await.is_none() {
         problems.push("not linked to the control plane".into());
     }

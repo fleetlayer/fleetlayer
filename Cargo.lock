@@ -1931,6 +1931,7 @@ dependencies = [
  "age",
  "anyhow",
  "async-trait",
+ "axum",
  "clap",
  "fleetlayer-plugin",
  "fleetlayer-protocol",

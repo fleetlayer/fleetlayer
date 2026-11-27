@@ -262,6 +262,82 @@ pub async fn send_owed(app: &App, tenant: &str, node: &str) {
     }
 }
 
+/// The longest a call target may be, and the most targets one call may name.
+const TARGET_MAX: usize = 300;
+const TARGETS_MAX: usize = 100;
+
+/// `link/tool_call`: the node serving a tool stream asks whether its caller may make a call. The caller and the tool
+/// are the stream's, as recorded when it was opened, and only the node serving it may ask.
+pub(crate) async fn tool_call(
+    app: &App,
+    tenant: &str,
+    node: &str,
+    c: l::ToolCall,
+) -> Result<l::ToolCallDecision, RpcError> {
+    use sqlx::Row;
+    let row = sqlx::query(
+        "SELECT tool, caller FROM tool_connections WHERE tenant = ? AND stream_id = ? AND server_node = ? AND closed_at IS NULL",
+    )
+    .bind(tenant)
+    .bind(&c.stream_id)
+    .bind(node)
+    .fetch_optional(&app.db)
+    .await
+    .map_err(RpcError::internal)?;
+    let Some(row) = row else {
+        return Err(RpcError::refused(format!("{node} serves no open tool stream with that ID")));
+    };
+    let (tool, caller): (String, String) = (row.get(0), row.get(1));
+    if let Some(id) = &c.peek {
+        let row = sqlx::query("SELECT status, expires_at FROM approvals WHERE tenant = ? AND id = ? AND subject = ?")
+            .bind(tenant)
+            .bind(id)
+            .bind(&caller)
+            .fetch_optional(&app.db)
+            .await
+            .map_err(RpcError::internal)?;
+        let Some(row) = row else { return Err(RpcError::refused(format!("no approval request {id} for {caller}"))) };
+        let (status, expires): (String, Option<i64>) = (row.get(0), row.get(1));
+        let live = expires.is_some_and(|e| e > crate::db::now_ms());
+        let (decision, reason) = match status.as_str() {
+            "pending" => ("pending", format!("waiting for the person to approve request {id}")),
+            "approved" if live => ("ready", format!("request {id} is approved")),
+            "denied" => ("denied", format!("the person refused request {id}")),
+            _ => ("denied", format!("request {id} has lapsed: make the call again to ask again")),
+        };
+        return Ok(l::ToolCallDecision { decision: decision.into(), approval: Some(id.clone()), reason });
+    }
+    if c.targets.is_empty() || c.targets.len() > TARGETS_MAX {
+        return Err(RpcError::invalid_params(format!("a call names 1 to {TARGETS_MAX} targets")));
+    }
+    if c.args_hash.len() > 128 || c.detail.as_ref().is_some_and(|d| d.len() > 8192) {
+        return Err(RpcError::invalid_params("argsHash or detail is too long"));
+    }
+    let mut targets = Vec::with_capacity(c.targets.len());
+    for t in &c.targets {
+        if t.is_empty() || t.len() > TARGET_MAX || t.contains('@') || t.chars().any(char::is_control) {
+            return Err(RpcError::invalid_params(format!(
+                "a call target is 1 to {TARGET_MAX} characters, with no @ or control characters"
+            )));
+        }
+        targets.push(format!("tool:{tool}/{t}@{node}"));
+    }
+    let call = crate::authz::CallContext { args_hash: &c.args_hash, detail: c.detail.as_deref() };
+    let mut reasons = vec![];
+    let mut approval = None;
+    for target in &targets {
+        let out = crate::authz::check_call(app, tenant, &caller, target, call, c.justification.as_deref()).await?;
+        if let Some(e) = out.refusal {
+            // The first refusal decides; a wait for approval names the request.
+            let decision = if out.pending.is_some() { "pending" } else { "denied" };
+            return Ok(l::ToolCallDecision { decision: decision.into(), approval: out.pending, reason: e.message });
+        }
+        reasons.push(format!("{target}: {}", out.because.join(", ")));
+        approval = approval.or(out.pending);
+    }
+    Ok(l::ToolCallDecision { decision: "allowed".into(), approval, reason: reasons.join("; ") })
+}
+
 /// When the person approves a `sync` request (from the hub, the API or `fleetlayer-control approvals approve`, which
 /// may run as another process), tell the source node at once, so the refused version goes out without waiting for its
 /// next retry. Checked every 15 seconds.
@@ -488,6 +564,10 @@ impl Handler for FromNode {
                     return Err(e);
                 }
                 answer(&l::ToolOpened { stream_id: id })
+            }
+            l::method::TOOL_CALL => {
+                let c: l::ToolCall = params(p)?;
+                answer(&tool_call(app, tenant, &self.node, c).await?)
             }
             l::method::SESSION_CLOSE | l::method::SESSION_ANSWER => {
                 let r: l::SessionActRequest = params(p)?;

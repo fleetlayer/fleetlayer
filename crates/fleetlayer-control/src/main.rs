@@ -195,7 +195,8 @@ enum ApprovalsCommand {
         #[arg(long)]
         all: bool,
     },
-    /// Approve a request: the same agent may do the same thing to the same target for its rule's time, or --for.
+    /// Approve a request: the same agent may do the same thing to the same target for its rule's time, or --for
+    /// (`10m`, `2h`, `30d`, `once`).
     Approve {
         id: String,
         #[arg(long = "for")]
@@ -931,6 +932,14 @@ async fn main() -> anyhow::Result<()> {
                             a["verb"].as_str().unwrap_or("?"),
                             a["to"].as_str().unwrap_or("?")
                         );
+                        // A tool call through the MCP gate: what it would do, as the person approves it.
+                        if let Some(d) = a["detail"].as_str() {
+                            let once = if a["once"] == true { " (approving allows this one call)" } else { "" };
+                            println!("    the call{once}:");
+                            for line in d.lines().take(40) {
+                                println!("      {line}");
+                            }
+                        }
                     }
                     Ok(())
                 }

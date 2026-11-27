@@ -9,7 +9,8 @@
 //!   recompute it. `audit verify` says which.
 //! - Optionally, an anchor (the newest row's position and hash, and the previous anchor's SHA-256) is written every
 //!   hour to a directory outside the database: another machine's disk, a git checkout, write-once storage.
-//! - Repeats of one denial within a minute are written as one row with a count, so a looping agent can't flood it.
+//! - Repeats of one denial (or one request waiting for approval) within a minute are written as one row with a count,
+//!   so a looping agent can't flood it.
 //! - SQL triggers make the table append-only.
 
 use std::collections::HashMap;
@@ -162,11 +163,12 @@ impl Audit {
         Ok(())
     }
 
-    /// Record a decision. A denial seen again within a minute is counted, and written as one row when the minute is
-    /// up ([`Audit::flush`]).
+    /// Record a decision. A denial, or a request still waiting for the person (an agent asking again, the MCP gate
+    /// waiting for an approval), seen again within a minute is counted, and written as one row when the minute is up
+    /// ([`Audit::flush`]).
     pub async fn record(&self, db: &Db, tenant: &str, e: Entry) -> anyhow::Result<()> {
-        if e.decision == "denied" {
-            let key = format!("{tenant}\u{1f}{}\u{1f}{}\u{1f}{}", e.subject, e.verb, e.target);
+        if e.decision == "denied" || e.decision == "asked" {
+            let key = format!("{tenant}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}", e.decision, e.subject, e.verb, e.target);
             let mut repeats = self.repeats.lock().await;
             if let Some(r) = repeats.get_mut(&key)
                 && now_ms() - r.0 < REPEAT_WINDOW_MS

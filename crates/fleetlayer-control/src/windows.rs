@@ -141,7 +141,7 @@ pub async fn request(
             message: format!("{role}'s window is open already, until {}", when(ends)),
         });
     }
-    let status = crate::approvals::check(app, tenant, who, "activate", &target(role), hold_ms)
+    let status = crate::approvals::check(app, tenant, who, "activate", &target(role), hold_ms, None)
         .await
         .map_err(RpcError::internal)?;
     let reason = match why {

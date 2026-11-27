@@ -37,6 +37,7 @@ nix = { version = "0.32.0", default-features = false, features = ["hostname", "u
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3.27.0"
+axum = "0.8.9"
 
 [lints]
 workspace = true

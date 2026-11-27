@@ -35,6 +35,7 @@ pub const LINK_METHODS: &[(&str, Option<&str>)] = &[
     (m::FLEET, Some("read")),
     (m::SUMMARIES_SEARCH, Some("read")),
     (m::TOOL_OPEN, Some("use_tool")),
+    (m::TOOL_CALL, Some("call")),
     (m::TERMINAL_OPEN, Some("read")),
     (m::SYNC_PUBLISH, Some("sync")),
     (m::READINGS, None),
@@ -171,6 +172,15 @@ pub struct Outcome {
     pub because: Vec<String>,
     /// The refusal to send back, when it isn't allowed.
     pub refusal: Option<RpcError>,
+    /// The approval request it waits for, when that's why it isn't allowed.
+    pub pending: Option<String>,
+}
+
+/// A tool call through the MCP gate: what an approval `for: once` is bound to, and what the person sees when asked.
+#[derive(Clone, Copy)]
+pub struct CallContext<'a> {
+    pub args_hash: &'a str,
+    pub detail: Option<&'a str>,
 }
 
 /// Whether `who` may `verb` `target`, publishing refusals and audit matches. Err is the refusal to send back.
@@ -192,11 +202,26 @@ pub async fn check_why(
     let fleet = app.authz.fleet(&app.db).await.map_err(RpcError::internal)?;
     let deciders: Vec<String> = fleet.deciders(who, target).iter().map(|t| t.id.clone()).collect();
     let reply = crate::acl::replying(&app.db, home, who, target).await.map_err(RpcError::internal)?;
-    let out = decide_in(app, &fleet, &deciders, Some(home), (who, verb, target), why, reply).await?;
+    let out = decide_in(app, &fleet, &deciders, Some(home), (who, verb, target), why, reply, None).await?;
     match out.refusal {
         Some(e) => Err(e),
         None => Ok(()),
     }
+}
+
+/// One tool call through the MCP gate (`link/tool_call`): verb `call` on `target`, decided, audited and filed for
+/// approval like any request, with the call's arguments hash and detail for an `ask:` rule.
+pub async fn check_call(
+    app: &App,
+    home: &str,
+    who: &str,
+    target: &str,
+    call: CallContext<'_>,
+    why: Option<&str>,
+) -> Result<Outcome, RpcError> {
+    let fleet = app.authz.fleet(&app.db).await.map_err(RpcError::internal)?;
+    let deciders: Vec<String> = fleet.deciders(who, target).iter().map(|t| t.id.clone()).collect();
+    decide_in(app, &fleet, &deciders, Some(home), (who, "call", target), why, false, Some(call)).await
 }
 
 /// A service asking about a person or agent in one tenant (`link/access_check`, `docs/sso.md`): answered only if the
@@ -255,7 +280,7 @@ pub async fn check_as(
         None => req.who.clone(),
     };
     let tenants = [tenant.id.clone()];
-    let out = decide_in(app, fleet, &tenants, None, (&who, &req.can, &req.to), req.why.as_deref(), false).await?;
+    let out = decide_in(app, fleet, &tenants, None, (&who, &req.can, &req.to), req.why.as_deref(), false, None).await?;
     let reason = match &out.refusal {
         Some(e) => e.message.clone(),
         None => out.because.join(", "),
@@ -265,6 +290,7 @@ pub async fn check_as(
 
 /// Decide a request in `tenants`: allowed only if every one allows it, each recording its own say in its audit log.
 /// `home` is where a refusal is published as `access.denied` (None: not published, for a service's checks).
+#[allow(clippy::too_many_arguments)]
 async fn decide_in(
     app: &App,
     fleet: &Fleet,
@@ -273,6 +299,7 @@ async fn decide_in(
     (who, verb, target): (&str, &str, &str),
     why: Option<&str>,
     reply: bool,
+    call: Option<CallContext<'_>>,
 ) -> Result<Outcome, RpcError> {
     let entry = |decision: &str, reason: String| crate::audit::Entry {
         decision: decision.into(),
@@ -301,6 +328,7 @@ async fn decide_in(
                 "{who} may not {verb} {target}: {because}. A tenant's admin admits agents with `fleetlayer-control \
                  agent admit`"
             ))),
+            pending: None,
         });
     }
     // Each tenant's say, from its rules alone.
@@ -336,6 +364,7 @@ async fn decide_in(
                 "{who} may not {verb} {target} (access control: {because}). If this stops you doing your job, report \
                  it to your person"
             ))),
+            pending: None,
         });
     }
     // Allowed by every tenant's rules: then any tenant's `justify:` and `ask:`.
@@ -352,6 +381,7 @@ async fn decide_in(
         }
     }
     let mut waiting: Vec<(String, String)> = vec![];
+    let mut pending: Option<String> = None;
     if no_reason.is_none() {
         for s in &says {
             let Some(p) = &s.policy else { continue };
@@ -360,10 +390,19 @@ async fn decide_in(
             if in_window(app, &s.tenant, p, who).await? {
                 continue;
             }
-            let held = crate::policy::approval_target(target);
-            match crate::approvals::check(app, &s.tenant, who, verb, &held, hold).await.map_err(RpcError::internal)? {
+            let mut held = crate::policy::approval_target(target);
+            // `for: once` on a tool call: approved for exactly these arguments.
+            if let (crate::policy::ONCE, Some(c)) = (hold, call) {
+                held = format!("{held}#{}", c.args_hash);
+            }
+            let detail = call.and_then(|c| c.detail);
+            match crate::approvals::check(app, &s.tenant, who, verb, &held, hold, detail)
+                .await
+                .map_err(RpcError::internal)?
+            {
                 crate::approvals::Status::Approved => {}
                 crate::approvals::Status::Pending(id) => {
+                    pending.get_or_insert(id.clone());
                     waiting.push((s.tenant.clone(), format!("waiting for the person to approve request {id}")))
                 }
                 crate::approvals::Status::Denied(id) => {
@@ -388,6 +427,7 @@ async fn decide_in(
             allowed: false,
             because,
             refusal: Some(RpcError::refused(format!("{who} may {verb} {target} only with a reason: {r}"))),
+            pending: None,
         });
     }
     if let Some((_, w)) = waiting.first() {
@@ -397,9 +437,10 @@ async fn decide_in(
             refusal: Some(RpcError::refused(format!(
                 "{who} needs its person's approval to {verb} {target}: {w}. Try again once they've approved it"
             ))),
+            pending,
         });
     }
-    Ok(Outcome { allowed: true, because, refusal: None })
+    Ok(Outcome { allowed: true, because, refusal: None, pending: None })
 }
 
 /// One tenant's say on a request, from its rules alone, with the audit rules that would have refused it. No side
@@ -741,6 +782,73 @@ mod tests {
         assert!(e.message.contains("is a member of any tenant"), "{}", e.message);
     }
 
+    /// The MCP gate: each call is decided as `call` on its targets for the stream's caller, audited, and an approval
+    /// `for: once` holds for one call with exactly the arguments the person saw.
+    #[tokio::test]
+    async fn gate_calls_are_decided_per_target_and_once_approvals_bind_to_arguments() {
+        use fleetlayer_protocol::link::ToolCall;
+        let (app, _) = example().await;
+        store(
+            &app.db,
+            "default",
+            "version: 2\ndefault: allow\nask:\n  - { who: \"*@laptop\", can: call, to: \"tool:executor/call/tools.*.send*@*\", for: once }\n\
+             deny:\n  - { who: \"*\", can: call, to: \"tool:executor/execute@*\" }\n",
+        )
+        .await
+        .unwrap();
+        let stream =
+            app.streams.create(&app.db, "default", "executor", "laptop", "laptop", "recipes@laptop").await.unwrap();
+        let call = |targets: &[&str], hash: &str| ToolCall {
+            stream_id: stream.clone(),
+            targets: targets.iter().map(|t| t.to_string()).collect(),
+            args_hash: hash.into(),
+            detail: Some("call {\"to\": \"sam@example.com\"}".into()),
+            justification: None,
+            peek: None,
+        };
+        let ask = |c: ToolCall| crate::link::tool_call(&app, "default", "laptop", c);
+        assert_eq!(ask(call(&["search"], "h0")).await.unwrap().decision, "allowed");
+        assert_eq!(ask(call(&["call/tools.google.gmail.search"], "h1")).await.unwrap().decision, "allowed");
+        let d = ask(call(&["execute"], "h2")).await.unwrap();
+        assert_eq!(d.decision, "denied", "{}", d.reason);
+        // One target needing approval holds up the whole call.
+        let d = ask(call(&["call/tools.google.gmail.search", "call/tools.google.gmail.send"], "h3")).await.unwrap();
+        assert_eq!(d.decision, "pending", "{}", d.reason);
+        let id = d.approval.unwrap();
+        let listed = crate::approvals::list(&app.db, "default", false).await.unwrap();
+        assert_eq!(
+            (listed[0]["detail"].as_str(), listed[0]["once"].as_bool()),
+            (Some("call {\"to\": \"sam@example.com\"}"), Some(true))
+        );
+        assert!(listed[0]["to"].as_str().unwrap().ends_with("@laptop#h3"), "{}", listed[0]["to"]);
+        // Asking again while it waits files nothing new.
+        assert_eq!(
+            ask(call(&["call/tools.google.gmail.send"], "h3")).await.unwrap().approval.as_deref(),
+            Some(id.as_str())
+        );
+        // A peek decides and records nothing.
+        let before = log(&app.db, "default").await.len();
+        let peek = |id: &str| ToolCall { peek: Some(id.into()), ..call(&["call/tools.google.gmail.send"], "h3") };
+        assert_eq!(ask(peek(&id)).await.unwrap().decision, "pending");
+        crate::approvals::decide(&app.db, "default", &id, true, None, "admin").await.unwrap();
+        assert_eq!(ask(peek(&id)).await.unwrap().decision, "ready");
+        assert_eq!(log(&app.db, "default").await.len(), before);
+        assert!(ask(peek("ap_other")).await.is_err());
+        // Other arguments aren't approved.
+        assert_eq!(ask(call(&["call/tools.google.gmail.send"], "other")).await.unwrap().decision, "pending");
+        // These arguments are, once.
+        let mixed = ["call/tools.google.gmail.search", "call/tools.google.gmail.send"];
+        assert_eq!(ask(call(&mixed, "h3")).await.unwrap().decision, "allowed");
+        assert_eq!(ask(call(&mixed, "h3")).await.unwrap().decision, "pending", "spent");
+        // Only the node serving the stream may ask, and the caller is the stream's.
+        let e = crate::link::tool_call(&app, "default", "web", call(&["search"], "h")).await.unwrap_err();
+        assert!(e.message.contains("no open tool stream"), "{}", e.message);
+        assert!(ask(call(&["x@y"], "h")).await.is_err(), "an @ in a target");
+        let logged = log(&app.db, "default").await;
+        assert!(logged.contains(&"allowed recipes@laptop call tool:executor/search@laptop".to_string()), "{logged:?}");
+        assert!(logged.contains(&"denied recipes@laptop call tool:executor/execute@laptop".to_string()), "{logged:?}");
+    }
+
     #[tokio::test]
     async fn a_fleet_with_no_policy_asks_before_sensitive_actions() {
         let (app, _) = example().await;
@@ -905,6 +1013,7 @@ mod tests {
             m::SUMMARY,
             m::SUMMARIES_SEARCH,
             m::TOOL_OPEN,
+            m::TOOL_CALL,
             m::TERMINAL_OPEN,
             m::SYNC_PUBLISH,
             m::READINGS,

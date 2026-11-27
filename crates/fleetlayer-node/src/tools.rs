@@ -10,6 +10,10 @@
 //!     allow: ["*@agents"]          # who may use it: <tab>@<node> patterns. Nobody when empty.
 //! ```
 //!
+//! A remote MCP server can be shared the same way, with `url:` in place of `command:` and its credentials in files
+//! that only this node's Unix user can read (`crate::mcp_http`); with `check_calls: true` each tool call is checked
+//! with the control plane first (`crate::gate`). That's the MCP gate: `docs/access-control.md`.
+//!
 //! A session elsewhere uses it as its MCP server: `fleetlayer mcp browser@laptop`. That connects to its own node's
 //! `node.tools.sock`; the node asks the control plane (`link/tool_open`), which checks access and asks this node to start
 //! the tool (`link/tool_serve`) with `{session}` replaced by the caller's tab. Both nodes then open a WebSocket to
@@ -40,7 +44,34 @@ pub struct ToolConfig {
     /// One line for agents choosing a tool (`fleetlayer me` shows it): "Nathan's Chrome, signed in to his sites".
     #[serde(default)]
     pub description: Option<String>,
+    /// The program to start (a stdio MCP server), or empty with `url:`.
+    #[serde(default)]
     pub command: String,
+    /// A remote MCP server (Streamable HTTP) instead of a program: `https://executor.example/mcp`.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Headers sent to `url` (not secrets: those go in `header_files` or `bearer_file`).
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+    /// Headers whose values are read from files when a connection opens (0600 files of this node's Unix user).
+    #[serde(default)]
+    pub header_files: HashMap<String, std::path::PathBuf>,
+    /// A file holding a bearer token for `url`: sent as `Authorization: Bearer <token>`.
+    #[serde(default)]
+    pub bearer_file: Option<std::path::PathBuf>,
+    /// Check every tool call with the control plane before the server sees it: decided as verb `call` on
+    /// `tool:<name>/<target>@<node>` by the policy file, audited with its caller, and held for the person's approval
+    /// when an `ask:` rule matches (`crate::gate`).
+    #[serde(default)]
+    pub check_calls: bool,
+    /// Argument rules: for a tool name, JSON pointers whose values become more of the call's target (`*` for each
+    /// item of a list). Executor: `{call: ["/calls/*/path"]}`, so a call is `call/tools.google.gmail.send`.
+    #[serde(default)]
+    pub call_targets: std::collections::BTreeMap<String, Vec<String>>,
+    /// How long a call that waits for the person is held before the agent is told it's still waiting (seconds,
+    /// default 120).
+    #[serde(default)]
+    pub approval_wait: Option<u64>,
     #[serde(default)]
     pub args: Vec<String>,
     #[serde(default)]
@@ -101,6 +132,70 @@ impl OnClose {
             ),
         }
     }
+}
+
+impl ToolConfig {
+    /// Whether the settings make sense together: a program or a URL, and the rest of what each takes.
+    pub fn check(&self) -> Result<(), String> {
+        match (&self.url, self.command.is_empty()) {
+            (Some(_), false) => return Err("give command: or url:, not both".into()),
+            (None, true) => return Err("give command: (a program) or url: (a remote MCP server)".into()),
+            (Some(u), true) => {
+                let parsed = reqwest::Url::parse(u).map_err(|e| format!("url {u}: {e}"))?;
+                if !matches!(parsed.scheme(), "https" | "http") {
+                    return Err(format!("url {u}: only http and https"));
+                }
+                if !self.args.is_empty() || !self.env.is_empty() || !self.env_files.is_empty() {
+                    return Err("args, env and env_files are for a program, not a url".into());
+                }
+            }
+            (None, false) => {
+                if !self.headers.is_empty() || !self.header_files.is_empty() || self.bearer_file.is_some() {
+                    return Err("headers, header_files and bearer_file are for a url, not a program".into());
+                }
+            }
+        }
+        if !self.call_targets.is_empty() && !self.check_calls {
+            return Err("call_targets name calls for the gate to check: set check_calls: true".into());
+        }
+        for (name, pointers) in &self.call_targets {
+            if pointers.is_empty() || pointers.iter().any(|p| !p.starts_with('/')) {
+                return Err(format!("call_targets.{name}: JSON pointers, each starting with /"));
+            }
+        }
+        Ok(())
+    }
+
+    fn wait(&self) -> Duration {
+        self.approval_wait.map(Duration::from_secs).unwrap_or(crate::gate::DEFAULT_WAIT).min(Duration::from_secs(600))
+    }
+}
+
+/// `~/x` in a setting means this node user's home.
+fn expand(node: &Node, p: &std::path::Path) -> std::path::PathBuf {
+    match p.strip_prefix("~") {
+        Ok(rest) => node.home.join(rest),
+        Err(_) => p.to_path_buf(),
+    }
+}
+
+/// A remote tool's address and headers, with the secret ones read from their files now.
+pub fn upstream(node: &Node, tool: &ToolConfig) -> Result<crate::mcp_http::Upstream, String> {
+    let url = tool.url.clone().ok_or("no url")?;
+    let mut headers: Vec<(String, String)> = tool.headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let read = |f: &std::path::Path| {
+        let f = expand(node, f);
+        std::fs::read_to_string(&f)
+            .map(|v| v.trim().to_string())
+            .map_err(|e| format!("{} can't connect: reading {}: {e}", tool.name, f.display()))
+    };
+    for (k, f) in &tool.header_files {
+        headers.push((k.clone(), read(f)?));
+    }
+    if let Some(f) = &tool.bearer_file {
+        headers.push(("authorization".into(), format!("Bearer {}", read(f)?)));
+    }
+    Ok(crate::mcp_http::Upstream { url, headers })
 }
 
 /// How long to wait for each cleanup call's reply.
@@ -198,7 +293,23 @@ pub enum Inbound {
 
 /// Look at one JSON-RPC line from the caller: a `tools/call` for a refused tool is answered with an MCP error result.
 pub fn inbound(filter: Option<&ToolFilter>, line: &str, node: &str, tool: &str) -> Inbound {
-    let Ok(v) = serde_json::from_str::<Value>(line) else { return Inbound::Forward(None) };
+    // Only single JSON objects pass: a batch (an array, which MCP no longer has) or text that isn't JSON could carry a
+    // tool call this check never saw, to a server that reads it differently.
+    let refuse = |why: &str| {
+        Inbound::Refuse(
+            serde_json::json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32600, "message": format!("{node}'s \
+                shared {tool} takes one JSON-RPC message per line: {why}")}})
+            .to_string(),
+        )
+    };
+    if line.trim().is_empty() {
+        return Inbound::Forward(None);
+    }
+    let v = match serde_json::from_str::<Value>(line) {
+        Ok(v @ Value::Object(_)) => v,
+        Ok(Value::Array(_)) => return refuse("batches aren't accepted"),
+        Ok(_) | Err(_) => return refuse("this line isn't a JSON-RPC message"),
+    };
     if v["method"] != "tools/call" {
         return Inbound::Forward(None);
     }
@@ -357,15 +468,20 @@ where
 }
 
 /// `pipe` for a tool's side of a stream, one JSON-RPC line at a time in both directions: refused tool calls are answered
-/// here and never reach the tool, `tools/list` results lose refused tools, and every tool call is logged.
-async fn mcp_pipe<S>(
-    stdout: tokio::process::ChildStdout,
-    mut stdin: tokio::process::ChildStdin,
+/// here and never reach the tool, `tools/list` results lose refused tools, and every tool call is logged. With
+/// `check_calls`, each call is checked with the control plane first (`crate::gate`), in a task of its own, so one call
+/// waiting for the person doesn't hold up the others.
+async fn mcp_pipe<R, W, S>(
+    stdout: R,
+    stdin: W,
     ws: S,
     config: ToolConfig,
-    node: String,
+    node: Arc<Node>,
     caller: String,
+    stream_id: String,
 ) where
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin + Send + 'static,
     S: futures::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
         + futures::Sink<Message>
         + Unpin
@@ -374,6 +490,8 @@ async fn mcp_pipe<S>(
 {
     let filter = config.tools.clone();
     let tool = config.name.clone();
+    let node_name = node.name.clone();
+    let stdin = Arc::new(tokio::sync::Mutex::new(stdin));
     let (mut ws_tx, mut ws_rx) = ws.split();
     let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<Message>(64);
     // Everything to the caller goes through one sender: tool output, refusals and pings.
@@ -394,6 +512,7 @@ async fn mcp_pipe<S>(
     // Tool to caller, line by line.
     let down_tx = out_tx.clone();
     let f2 = filter.clone();
+    let (down_node, down_ctx) = (node.clone(), format!("MCP result from tool:{tool}@{node_name} to {caller}"));
     // Replies to our own cleanup calls go here, not to the caller.
     let (close_tx, mut close_rx) = tokio::sync::mpsc::channel::<Value>(8);
     let down = tokio::spawn(async move {
@@ -407,16 +526,19 @@ async fn mcp_pipe<S>(
                 continue;
             }
             let line = outbound(f2.as_ref(), &line);
+            let line = crate::gate::scrub(&down_node, &line, &down_ctx);
             if down_tx.send(Message::Binary(format!("{line}\n").into_bytes().into())).await.is_err() {
                 break;
             }
         }
         let _ = down_tx.send(Message::Binary(Vec::new().into())).await;
     });
+    let up_ctx = format!("MCP call from {caller} to tool:{tool}@{node_name}");
+    let mut checks = tokio::task::JoinSet::new();
     // Caller to tool, line by line.
     let mut buf: Vec<u8> = Vec::new();
     let mut seq = 0u32;
-    while let Ok(Some(Ok(m))) = tokio::time::timeout(IDLE, ws_rx.next()).await {
+    'read: while let Ok(Some(Ok(m))) = tokio::time::timeout(IDLE, ws_rx.next()).await {
         let bytes = match m {
             Message::Binary(b) if b.is_empty() => break,
             Message::Binary(b) => b.to_vec(),
@@ -426,43 +548,93 @@ async fn mcp_pipe<S>(
         };
         buf.extend_from_slice(&bytes);
         while let Some(i) = buf.iter().position(|b| *b == b'\n') {
-            let line: Vec<u8> = buf.drain(..=i).collect();
-            let text = String::from_utf8_lossy(&line);
-            match inbound(filter.as_ref(), text.trim_end(), &node, &tool) {
+            let raw: Vec<u8> = buf.drain(..=i).collect();
+            let text = String::from_utf8_lossy(&raw).trim_end().to_string();
+            // A delivered secret in what the agent sends goes no further.
+            let text = crate::gate::scrub(&node, &text, &up_ctx).into_owned();
+            let line = format!("{text}\n");
+            match inbound(filter.as_ref(), &text, &node_name, &tool) {
                 Inbound::Forward(Some(n)) if config.close_with.contains(&n) => {
                     // The caller is done: close what it opened, the same way as when it disconnects.
-                    let made = cleanup(&mut stdin, &mut close_rx, &config.on_close, &mut seq).await;
+                    let made = {
+                        let mut w = stdin.lock().await;
+                        cleanup(&mut *w, &mut close_rx, &config.on_close, &mut seq).await
+                    };
                     tracing::info!(tool = %tool, caller = %caller, call = %n, calls = made, "closed on the caller's request");
-                    let id =
-                        serde_json::from_str::<Value>(text.trim_end()).map(|v| v["id"].clone()).unwrap_or_default();
+                    let id = serde_json::from_str::<Value>(&text).map(|v| v["id"].clone()).unwrap_or_default();
                     let reply = serde_json::json!({"jsonrpc": "2.0", "id": id, "result": {"content": [{"type": "text",
                         "text": format!("Closed what this session opened ({made} cleanup calls).")}]}});
                     let _ = out_tx.send(Message::Binary(format!("{reply}\n").into_bytes().into())).await;
+                }
+                Inbound::Forward(Some(n)) if config.check_calls => {
+                    let v: Value = serde_json::from_str(&text).unwrap_or_default();
+                    let args = v["params"]["arguments"].clone();
+                    let (node, out_tx, stdin) = (node.clone(), out_tx.clone(), stdin.clone());
+                    let (config, caller, stream_id, tool) =
+                        (config.clone(), caller.clone(), stream_id.clone(), tool.clone());
+                    checks.spawn(async move {
+                        let verdict = match crate::gate::targets(&n, &args, &config.call_targets) {
+                            Err(why) => crate::gate::Verdict::Refused(format!(
+                                "{} refused this call: {why}. If this stops you doing your job, report it to your person.",
+                                node.name
+                            )),
+                            Ok(targets) => {
+                                let detail = crate::gate::detail(&n, &args);
+                                let call = fleetlayer_protocol::link::ToolCall {
+                                    stream_id: stream_id.clone(),
+                                    targets,
+                                    args_hash: crate::gate::args_hash(&n, &args),
+                                    detail: Some(detail),
+                                    justification: None,
+                                    peek: None,
+                                };
+                                crate::gate::decide(&node, &stream_id, &call, config.wait()).await
+                            }
+                        };
+                        match verdict {
+                            crate::gate::Verdict::Allowed => {
+                                tracing::info!(tool = %tool, caller = %caller, call = %n, "tool call (checked)");
+                                let mut w = stdin.lock().await;
+                                let _ = w.write_all(line.as_bytes()).await;
+                                let _ = w.flush().await;
+                            }
+                            crate::gate::Verdict::Refused(why) => {
+                                tracing::warn!(tool = %tool, caller = %caller, call = %n, "refused a tool call: {why}");
+                                let reply = crate::gate::refusal(&v["id"], &why);
+                                let _ = out_tx.send(Message::Binary(format!("{reply}\n").into_bytes().into())).await;
+                            }
+                        }
+                    });
                 }
                 Inbound::Forward(name) => {
                     if let Some(n) = name {
                         tracing::info!(tool = %tool, caller = %caller, call = %n, "tool call");
                     }
-                    if stdin.write_all(&line).await.is_err() {
-                        break;
+                    let mut w = stdin.lock().await;
+                    if w.write_all(line.as_bytes()).await.is_err() {
+                        break 'read;
                     }
-                    let _ = stdin.flush().await;
+                    let _ = w.flush().await;
                 }
                 Inbound::Refuse(reply) => {
-                    tracing::warn!(tool = %tool, caller = %caller, line = %text.trim_end(), "refused a tool call");
+                    tracing::warn!(tool = %tool, caller = %caller, line = %text, "refused a tool call");
                     let _ = out_tx.send(Message::Binary(format!("{reply}\n").into_bytes().into())).await;
                 }
             }
         }
     }
+    // Calls still being checked are dropped with the caller: nobody is left to answer.
+    checks.abort_all();
     // Clean up after the session (close its browser tabs) before the server stops.
     // One call at a time, each waiting for its reply: an MCP server may run calls concurrently, and cleanup calls that
     // race each other leave things behind.
-    let made = cleanup(&mut stdin, &mut close_rx, &config.on_close, &mut seq).await;
+    let mut w = stdin.lock().await;
+    let made = cleanup(&mut *w, &mut close_rx, &config.on_close, &mut seq).await;
     if made > 0 {
         tracing::info!(tool = %tool, caller = %caller, calls = made, "cleaned up after the session");
     }
-    let _ = stdin.shutdown().await;
+    let _ = w.shutdown().await;
+    drop(w);
     drop(stdin);
     let _ = tokio::time::timeout(DRAIN, down).await;
     drop(out_tx);
@@ -470,8 +642,8 @@ async fn mcp_pipe<S>(
 }
 
 /// Run the `on_close` calls one at a time, each waiting for its reply; answers how many were made.
-async fn cleanup(
-    stdin: &mut tokio::process::ChildStdin,
+async fn cleanup<W: AsyncWrite + Unpin>(
+    stdin: &mut W,
     close_rx: &mut tokio::sync::mpsc::Receiver<Value>,
     on_close: &[OnClose],
     seq: &mut u32,
@@ -518,22 +690,28 @@ pub async fn serve(node: Arc<Node>, req: ToolServe) -> Result<Value, RpcError> {
         return Err(RpcError::refused(format!("{} may not use {} on {}", req.caller, tool.name, node.name)));
     }
     let name = session_name(&req.caller);
+    if tool.url.is_some() {
+        let up = upstream(&node, &tool).map_err(RpcError::refused)?;
+        let ws = connect_stream(&node, &req.stream_id, "serve").await.map_err(|e| RpcError::refused(e.to_string()))?;
+        tracing::info!(tool = %tool.name, caller = %req.caller, stream = %&req.stream_id[..8], "tool connection opened (remote server)");
+        let (r, w) = tokio::io::split(crate::mcp_http::start(up));
+        let (caller, stream_id) = (req.caller.clone(), req.stream_id.clone());
+        tokio::spawn(async move {
+            mcp_pipe(r, w, ws, tool.clone(), node.clone(), caller.clone(), stream_id).await;
+            tracing::info!(tool = %tool.name, caller = %caller, "tool connection closed");
+        });
+        return Ok(serde_json::json!({}));
+    }
     let args: Vec<String> = tool.args.iter().map(|a| a.replace("{session}", &name)).collect();
     let mut env = tool.env.clone();
     for (var, file) in &tool.env_files {
-        let file = match file.strip_prefix("~") {
-            Ok(rest) => node.home.join(rest),
-            Err(_) => file.clone(),
-        };
+        let file = expand(&node, file);
         let value = std::fs::read_to_string(&file)
             .map_err(|e| RpcError::refused(format!("{} can't start: reading {}: {e}", tool.name, file.display())))?;
         env.insert(var.clone(), value.trim().to_string());
     }
     let cwd = match &tool.cwd {
-        Some(c) => match c.strip_prefix("~") {
-            Ok(rest) => node.home.join(rest),
-            Err(_) => c.clone(),
-        },
+        Some(c) => expand(&node, c),
         None => node.home.join(".local/state/fleetlayer/tools").join(&tool.name),
     };
     std::fs::create_dir_all(&cwd).map_err(|e| RpcError::refused(format!("{}: {e}", cwd.display())))?;
@@ -562,9 +740,9 @@ pub async fn serve(node: Arc<Node>, req: ToolServe) -> Result<Value, RpcError> {
             }
         });
     }
-    let caller = req.caller.clone();
+    let (caller, stream_id) = (req.caller.clone(), req.stream_id.clone());
     tokio::spawn(async move {
-        mcp_pipe(stdout, stdin, ws, tool.clone(), node.name.clone(), caller.clone()).await;
+        mcp_pipe(stdout, stdin, ws, tool.clone(), node.clone(), caller.clone(), stream_id).await;
         let _ = child.kill().await;
         tracing::info!(tool = %tool.name, caller = %caller, "tool connection closed");
     });
@@ -674,6 +852,13 @@ mod tests {
             name: "browser".into(),
             description: None,
             command: "x".into(),
+            url: None,
+            headers: HashMap::new(),
+            header_files: HashMap::new(),
+            bearer_file: None,
+            check_calls: false,
+            call_targets: Default::default(),
+            approval_wait: None,
             args: vec![],
             env: HashMap::new(),
             env_files: HashMap::new(),
@@ -708,6 +893,12 @@ mod tests {
             Inbound::Forward(None)
         );
         assert_eq!(inbound(None, &call("anything"), "l", "b"), Inbound::Forward(Some("anything".into())));
+        // A batch, or a line that isn't one JSON object, can't slip a call past the checks.
+        let batch = format!("[{}]", call("browser_file_upload"));
+        for line in [batch.as_str(), "not json", "7", r#""tools/call""#] {
+            let Inbound::Refuse(r) = inbound(Some(&f), line, "l", "b") else { panic!("{line} passed") };
+            assert_eq!(serde_json::from_str::<Value>(&r).unwrap()["error"]["code"], -32600);
+        }
         let list =
             r#"{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"browser_navigate"},{"name":"browser_evaluate"}]}}"#;
         let out: Value = serde_json::from_str(&outbound(Some(&f), list)).unwrap();

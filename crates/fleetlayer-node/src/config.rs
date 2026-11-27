@@ -153,6 +153,9 @@ impl NodeConfig {
                 if let Some(h) = &c.heartbeat {
                     reqwest::Url::parse(&h.url).map_err(|e| anyhow::anyhow!("heartbeat url {}: {e}", h.url))?;
                 }
+                for t in &c.tools {
+                    t.check().map_err(|e| anyhow::anyhow!("{}: tool {}: {e}", path.display(), t.name))?;
+                }
                 Ok(c)
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(NodeConfig::default()),

@@ -5,10 +5,12 @@
 mod act;
 mod config;
 mod deliver;
+mod gate;
 mod heartbeat;
 mod keys;
 mod link;
 mod local;
+mod mcp_http;
 mod me;
 mod pages;
 mod plugins;
@@ -84,6 +86,8 @@ pub struct Node {
     pub identity: age::x25519::Identity,
     pub sync: sync::Sync,
     pub opt_ins: tools::OptIns,
+    /// The latest checks of the remote MCP servers this node shares.
+    pub gate: gate::Health,
     pub readings: readings::Readings,
     /// Every secret delivered to this node, redacted from what leaves it (`secrets.rs`).
     pub secrets: secrets::Secrets,
@@ -186,6 +190,7 @@ async fn run(cfg: NodeConfig) -> anyhow::Result<()> {
         identity: key,
         sync: sync::Sync::default(),
         opt_ins: tools::OptIns::default(),
+        gate: gate::Health::default(),
         readings: readings::Readings::default(),
         secrets: secrets::Secrets::new(config::home()),
         skills: skills::at_start(cfg.skills, &config::home(), env!("CARGO_PKG_VERSION")),
@@ -208,6 +213,7 @@ async fn run(cfg: NodeConfig) -> anyhow::Result<()> {
     tokio::spawn(secrets::run(node.clone()));
     // Windows saved as open: closed now if they ended while the node was stopped, otherwise timed to close.
     tokio::spawn(window::at_start(node.clone()));
+    tokio::spawn(gate::watch(node.clone()));
     tokio::spawn(act::fill_menus(node.clone()));
     let update = cfg.update.clone().unwrap_or(update::UpdateConfig { mode: None, every_hours: 6 });
     tokio::spawn(update::run(node.clone(), update));

@@ -26,6 +26,7 @@ use crate::directory::Fleet;
 pub const VERBS: &[&str] = &[
     "message",
     "use_tool",
+    "call",
     "sync",
     "read",
     "subscribe",
@@ -162,21 +163,28 @@ pub struct AskRule {
     pub to: Option<OneOrMany>,
     #[serde(default)]
     pub except: Option<OneOrMany>,
-    /// How long an approval holds: `10m`, `2h`, `30d`.
+    /// How long an approval holds: `10m`, `2h`, `30d`, or `once`: one use, with the same arguments (a tool call through
+    /// the MCP gate; for anything else, one use).
     #[serde(rename = "for")]
     pub hold: String,
 }
 
-/// `10m`, `2h`, `30d` in milliseconds.
+/// An approval `for: once`: held as 0 milliseconds, the strictest hold.
+pub const ONCE: i64 = 0;
+
+/// `10m`, `2h`, `30d` in milliseconds; `once` is [`ONCE`].
 pub fn parse_duration_ms(s: &str) -> anyhow::Result<i64> {
     let s = s.trim();
+    if s == "once" {
+        return Ok(ONCE);
+    }
     let (n, unit) = s.split_at(s.len().saturating_sub(1));
-    let n: i64 = n.parse().map_err(|_| anyhow::anyhow!("{s:?} isn't like 10m, 2h or 30d"))?;
+    let n: i64 = n.parse().map_err(|_| anyhow::anyhow!("{s:?} isn't like 10m, 2h, 30d or once"))?;
     Ok(n * match unit {
         "m" => 60_000,
         "h" => 3_600_000,
         "d" => 86_400_000,
-        _ => anyhow::bail!("{s:?} isn't like 10m, 2h or 30d"),
+        _ => anyhow::bail!("{s:?} isn't like 10m, 2h, 30d or once"),
     })
 }
 

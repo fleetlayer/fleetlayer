@@ -32,6 +32,10 @@ pub mod method {
     pub const TOOL_OPEN: &str = "link/tool_open";
     /// Control plane → node: start a shared tool for a caller and connect it to stream `streamId`. `ToolServe` → `{}`.
     pub const TOOL_SERVE: &str = "link/tool_serve";
+    /// Node → control plane: may the caller of one of this node's tool streams make this tool call (the MCP gate,
+    /// `docs/access-control.md`)? Decided as verb `call` on each target, audited, and filed for approval when an `ask:`
+    /// rule matches. `ToolCall` → `ToolCallDecision`.
+    pub const TOOL_CALL: &str = "link/tool_call";
     /// Node → control plane: open a stream to a session's terminal on another node. `TerminalOpen` → `ToolOpened`.
     pub const TERMINAL_OPEN: &str = "link/terminal_open";
     /// Control plane → node: start streaming one of its sessions' terminals into stream `streamId`. `TerminalServe` →
@@ -229,6 +233,39 @@ pub struct ToolServe {
     pub tool: String,
     /// `<tab>@<node>` of the caller.
     pub caller: String,
+}
+
+/// `link/tool_call`: the node serving a tool stream asks about one call its caller made. The caller and the tool come
+/// from the stream (the control plane recorded them when it was opened), never from the asking node.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolCall {
+    pub stream_id: String,
+    /// What the call does, each decided as `tool:<tool>/<target>@<node>`: the MCP tool's name, and with argument
+    /// rules more parts (`call/tools.google.gmail.send`). Every one must be allowed.
+    pub targets: Vec<String>,
+    /// A hash of the call's arguments: an approval `for: once` holds for exactly these arguments.
+    pub args_hash: String,
+    /// What the person sees when asked: the call, scrubbed of delivered secrets and cut short. Never in the audit log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub justification: Option<String>,
+    /// While waiting for the person: only look at this approval request (the stream's caller's), deciding and
+    /// recording nothing. Answers `pending`, `denied`, or `ready` once approved, when the node asks again in full.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peek: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolCallDecision {
+    /// `allowed`, `pending` (waiting for the person: `approval` names the request), `denied`, or for a peek `ready`.
+    pub decision: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<String>,
+    /// One line for the agent and the log.
+    pub reason: String,
 }
 
 /// One bundle, sealed to each target node's key by the publishing node. The control plane relays each copy and keeps

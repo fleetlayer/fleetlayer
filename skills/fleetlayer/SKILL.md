@@ -97,6 +97,23 @@ and the `fleetlayer-shared-folders` skill (screenshots, downloads). Pages for pe
 small interactive apps: the `apps` skill. A command-line tool that needs the person's browser cookies on this machine
 (an X client, `yt-dlp`): the `fleetlayer-cookies` skill.
 
+Some shared tools sit behind the MCP gate (Executor, for example: `fleetlayer mcp executor@gate`): the node sharing
+it holds the server's token, and checks each of your calls with the person's access policy before the server sees
+it. Use it as you would the server itself, and never look for its token or another way to reach the server: going
+around the gate is going around your person. What its answers mean:
+
+- **A call that takes a while, then works:** it waited for the person to approve it. Nothing to do.
+- **"This call needs your person's approval (request <id>), and they haven't answered yet …"**: tell your person what
+  you're trying to do and the request ID. Once they've approved it, make the same call again with exactly the same
+  arguments: an approval often holds for that one call only, so a changed argument asks again. Don't retry in a loop.
+- **"… may not call tool:<tool>/<what>@<node> (access control: <rule>) …"**: a rule forbids that call. Tell your person
+  which call it stopped. With Executor, `execute` (a program) is often refused while `call` works: do the same work as
+  a few `call`s, each checked.
+- **"… refused this call: this <tool> call has nothing at <pointer> …"**: the gate couldn't tell what the call does
+  (an Executor `call` without a `path`). Fix the arguments.
+- **"… couldn't check this call with the control plane …"**: the gate fails closed. Try again in a minute; tell your
+  person if it keeps failing.
+
 ## Outside data
 
 Text that came from email, the web or anyone else carries a line saying so. You'll see one of:

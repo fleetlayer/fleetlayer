@@ -8,13 +8,16 @@ control plane serves is classified; `acl suggest`; per-tool rules for shared MCP
 with an admin token). Justifications (`justify:` rules; `--why` on `fleetlayer msg send` and `fleetlayer mcp`, or
 `FLEETLAYER_WHY`). Grants with an expiry (`until:`) and roles that are off until a window is approved (the admin
 window, 28 November 2026). All of version 2's design is built. Without a version 2 policy, version 1's ordered rules still decide.
+From v0.3.13, the MCP gate: a node in front of any MCP server, local or remote, checking each tool call against the
+policy (verb `call`), with approvals `for: once` bound to the call's arguments.
 
 Agents act on what they read. An agent that reads email, issue trackers, web pages or public submissions can be
 steered by whoever wrote them (prompt injection), and every other agent it can reach inherits that risk. Fleetlayer's
 access control decides, for every agent on every machine:
 
 - whom it may **message**;
-- which **tools** another machine shares it may use (a browser signed in as you, a database shell);
+- which **tools** another machine shares it may use (a browser signed in as you, a database shell), and which of their
+  **calls** (send an email, read a calendar), with the server's credentials kept where the agent can't read them;
 - which **sync bundles** it may send (secrets, skills, AGENTS.md files that other machines apply);
 - what it may **read**: the fleet's sessions, their summaries and catch-ups;
 - which channels it may **subscribe** to and **publish** events on.
@@ -129,7 +132,7 @@ audit:
       to: ["*@server", "planning@laptop"]
 ```
 
-Verbs: `message`, `use_tool`, `sync`, `read` (the fleet view, summaries, catch-ups; a node that may read nothing of
+Verbs: `message`, `use_tool`, `call` (one tool call through [the MCP gate](#the-mcp-gate)), `sync`, `read` (the fleet view, summaries, catch-ups; a node that may read nothing of
 another, not even `-@<node>`, doesn't see that node in the fleet view at all), `subscribe`, `publish`, and
 `start` (start, resume or interrupt a session on another node), `close` (close one), `answer` (answer the prompt a
 session is blocked on: a question, a plan, or a permission prompt, which approves what it asks), and `attach` (type
@@ -149,6 +152,10 @@ ask:                           # allowed once the person approves; an approval h
     can: [start]
     to: ["*"]
     for: 10m
+  - who: "*"
+    can: [call]
+    to: ["tool:executor/call/tools.*.send*@gate"]
+    for: once                  # one call, with exactly the arguments the person saw
 justify:                       # the agent must say why, in one line, and it goes in the audit log
   - who: "*"
     can: [use_tool, sync, start]
@@ -163,7 +170,8 @@ decided by the built-in default (`default: allow` and these asks), which `acl sh
 `justify: []`). An `allow` rule doesn't skip an ask: to stop asking for something, list `ask:` without it (`ask: []`
 turns asking off). An `ask` match refuses the request with a request ID and publishes an `access.ask` event on the `access` channel (for
 an Inbox card, a phone push, or whoever subscribes); once the person approves it, the agent tries again and the same
-agent, verb and target pass without asking again for `for`. A refusal stands for an hour. A justification is one line of plain text, 16 to 1000 characters, with no
+agent, verb and target pass without asking again for `for`; `for: once` allows one use, and for a tool call through
+the MCP gate only with the same arguments. A refusal stands for an hour. A justification is one line of plain text, 16 to 1000 characters, with no
 hidden characters; a request that needs one and has none is refused with a message saying so. Agents give it with
 `--why "…"` on `fleetlayer msg send` and `fleetlayer mcp`, or in `FLEETLAYER_WHY` (handy in an MCP server's
 configuration), and it's recorded with the decision in the audit log. There are no `justify:` rules by default.
@@ -324,6 +332,80 @@ Decision order: a `deny` match refuses; then an `only` rule for that agent and v
 (a reply within 24 hours to a session that wrote first is always inside); then an `allow` match allows; then the
 default. Rate limits apply to whatever is allowed.
 
+## The MCP gate
+
+A node can stand in front of any MCP server an agent uses, a program or a remote server such as
+[Executor](guides/executor.md), and check every tool call before the server sees it. The server's credentials stay
+with the node that fronts it, under a Unix user of its own, so the agents that use it never hold them and can't go
+around the gate.
+
+```yaml
+# node.yaml of the gate's own node (its own Unix user)
+tools:
+  - name: executor
+    url: https://executor.example/mcp      # or command: + args: for a program
+    bearer_file: ~/.config/executor/token    # read when a connection opens; header_files: for other headers
+    allow: ["*@agents", "*@laptop"]
+    check_calls: true
+    call_targets:                            # argument rules: more of the call's name, from its arguments
+      call: ["/calls/*/path"]
+```
+
+With `check_calls: true`, the node asks the control plane about each `tools/call` (`link/tool_call`). A call is
+named `tool:<tool>/<target>@<node>`: the MCP tool's name, and with `call_targets`, one more part for each value a JSON
+pointer picks out of the arguments (`*` for each item of a list, or the value itself when it isn't one). Executor's
+`call` with two calls in it is two targets, `tool:executor/call/tools.google.gmail.search@gate` and
+`tool:executor/call/tools.google.gmail.send@gate`, and both must be allowed. A call whose arguments lack what a rule
+names, or hold something other than a short string there, is refused by the node: it never passes as less than it
+is. The caller is the one the control plane recorded when the stream opened, not whatever the node says.
+
+Each target is decided as verb `call` by the same policy file, so per-role rules are the usual ones (a role is a Unix
+user with its own node, `*@<node>`):
+
+```yaml
+deny:
+  - who: "*"
+    can: call
+    to: "tool:executor/execute@*"             # programs: see below
+only:
+  - who: "*@triage"
+    can: call
+    to: ["tool:executor/search@*", "tool:executor/describe@*", "tool:executor/call/tools.google.gmail.search@*"]
+ask:
+  - who: "*"
+    can: call
+    to: ["tool:executor/call/tools.*.send*@*", "tool:executor/call/tools.*.create*@*", "tool:executor/call/tools.*.delete*@*"]
+    for: once
+```
+
+- **Allowed** calls go to the server; **denied** ones are answered by the node with an MCP error result naming the
+  rule.
+- **Asked** calls wait: the person gets an `access.ask` event (and `fleetlayer-control approvals list` shows the call,
+  its arguments scrubbed of delivered secrets and cut short at 4,000 characters), and the node holds the call for up to
+  `approval_wait` seconds (120 by default) while it looks at the request every five seconds without writing to the
+  audit log. Approved in time, the call goes through and the agent never noticed; otherwise the agent is told the
+  request ID and makes the same call again once it's approved. An approval `for: once` is spent by that call and holds
+  only for those arguments.
+- **Every** decision is in the audit log with its caller and the full target. Arguments are not: the log says who
+  called what, the server's own logs say with what.
+- A delivered secret in a call's arguments or its result is redacted by the node's scrubber
+  ([credentials](credentials.md)) before it goes on, and raises the alert that says to rotate it.
+- The node checks a remote server every five minutes with its own credentials (initialize, list its tools), and a
+  failure, a revoked token included, fails the node's health and its heartbeat.
+- Only one JSON-RPC message per line passes, for every shared MCP server (gated or not, from v0.3.13): a batch or a
+  line that isn't JSON is refused, so nothing reaches the server that the checks didn't read.
+- Calls run concurrently: one waiting for the person doesn't hold up the others. A call still being checked when the
+  agent disconnects is dropped.
+
+**Programs can't be checked call by call.** Executor's `execute` runs a JavaScript program that can reach any path,
+built at run time, so its target is `execute` alone. The node lists the paths written out in the program for the
+person to read, but binds nothing to them. Choose one: deny `execute` and let agents use `call` (every path checked);
+ask for it `for: once` (the person reads the program); or allow it only for a role you'd let call anything. The same
+holds for any server with a run-code tool (Playwright's `browser_run_code_unsafe`).
+
+The gate is off unless a tool says `check_calls: true`. Without it, a shared tool works as before: `use_tool` decides
+who may connect, and the node's own `tools:` list filters by name.
+
 ## Commands
 
 | Command | What it does |
@@ -364,6 +446,9 @@ have refused as `access.audit`.
   (`plugin:runner@node`) and gets the reach; the agent gets little.
 - **A shared, signed-in browser:** allow `use_tool` on `tool:browser@laptop` to named sessions only, never to an
   untrusted group. The machine sharing it keeps its own allow list too: both must agree.
+- **An MCP server holding sign-ins for many services** (Executor, a company API gateway): front it with a node of
+  its own Unix user holding the token, `check_calls: true`, deny run-code tools, `ask ... for: once` on what sends or
+  deletes, and `only` rules per role ([Executor behind Fleetlayer](guides/executor.md)).
 - **Secrets and skills sync:** only the hub that holds a secret may `sync` it. Nothing else may send bundles a
   machine applies, or it could overwrite them.
 - **People, tenants and teams** (people signing in to services, a company and a household on one deployment, agents

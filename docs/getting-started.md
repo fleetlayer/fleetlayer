@@ -127,6 +127,12 @@ its own server, named after the calling session's tab (`{session}`), so each ses
 control plane checks access (`acl` rules on `tool:<name>@<node>`), joins the two nodes' streams and logs every
 connection (`fleetlayer-control tools`). It never reads what passes through.
 
+A remote MCP server can be shared the same way, with `url:` (Streamable HTTP) in place of `command:` and its token in a
+file only this node's user can read (`bearer_file:`, or `header_files:` for other headers). With `check_calls: true`
+each call is decided by the access policy before the server sees it, and calls that change things can wait for your
+approval: [the MCP gate](access-control.md#the-mcp-gate), and [Executor behind Fleetlayer](guides/executor.md) for
+the whole setup.
+
 A session finds the tools it may use with `fleetlayer me` (from v0.3.9): each one with its description, whether its
 first use still asks, its folders for `fleetlayer-shared-folders`, and the `claude mcp add` line that adds it. Tools a rule
 refuses it aren't listed. For agents to know they can, give them the skills and a few lines in their global

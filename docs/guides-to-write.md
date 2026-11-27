@@ -26,6 +26,20 @@ managers, machines that sleep.
   history at a seventeenth of the frame traffic. Written: `docs/guides/phone.md`, `docs/plugins/herdr-fleet.md`. Not
   yet: other machines' Claude transcripts for the relay's Conversation view (its `HERDR_CLAUDE_CONFIG_DIRS` can point at
   a mirror folder).
+- **An MCP gateway's token is a key to everything, and agents held it.** An MCP server that holds sign-ins for many
+  services (Executor) is usually added to each agent with a bearer token in its own config, so every agent, and
+  anything that steers one, can send email as the person, and there's no per-call record of who did what. Solved by
+  the MCP gate (v0.3.13): the token moves to a node of its own Unix user, which shares the server (`url:` +
+  `bearer_file:`), checks each call with the policy (`check_calls`, verb `call`, Executor paths named through
+  `call_targets: {call: ["/calls/*/path"]}`), holds calls that send or delete for an approval bound to their arguments
+  (`for: once`), audits every call with its caller, and redacts delivered secrets both ways. Footguns met on the way:
+  a program tool (`execute`, Playwright's run-code) can't be checked call by call, so deny it or ask for it once; a
+  call whose arguments lack what a rule names must be refused, not passed as the bare tool name; polling an approval
+  must not write the audit log every five seconds (a `peek` that records nothing); serde_json's key order depends on a
+  feature any crate in the build can turn on, so an arguments hash sorts keys itself; old agent tokens must be revoked
+  or they're a way around the gate. Self-hosted Executor already signs people in over OIDC (`SSO_DISCOVERY_URL` and
+  friends) but needs a verified email for a new account, which Fleetlayer's sign-in gives with the `email` scope.
+  Written: `docs/guides/executor.md`, `docs/access-control.md` ("The MCP gate"), the `fleetlayer` skill.
 - **A GitHub organization can't be created from the CLI or the API on github.com.** `POST /admin/organizations`
   exists only on GitHub Enterprise Server (it answers 404 on github.com, whatever the token's scopes). An agent can
   create repos with `gh repo create <org>/<name>`, but a person makes the organization once in the web UI

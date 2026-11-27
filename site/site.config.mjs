@@ -41,6 +41,7 @@ export const pages = [
   { file: "guides/phone", group: "Guides", label: "Every machine on your phone" },
   { file: "guides/untrusted-input", group: "Guides", label: "An agent that reads strangers' text" },
   { file: "guides/admin-window", group: "Guides", label: "An admin role that's off until you open it" },
+  { file: "guides/executor", group: "Guides", label: "Executor behind Fleetlayer" },
   { file: "guides/unattended-agents", group: "Guides", label: "Agents that run while you're away" },
   { file: "guides/egress", group: "Guides", label: "Keep agents to the hosts they need" },
   { file: "guides/pages", group: "Guides", label: "Pages instead of artifacts" },

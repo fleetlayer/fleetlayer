@@ -23,6 +23,7 @@ pub async fn check(
     verb: &str,
     target: &str,
     hold_ms: i64,
+    detail: Option<&str>,
 ) -> anyhow::Result<Status> {
     let db = &app.db;
     let now = now_ms();
@@ -40,6 +41,16 @@ pub async fn check(
         let (id, status, expires, hold): (String, String, Option<i64>, i64) = (r.get(0), r.get(1), r.get(2), r.get(3));
         match status.as_str() {
             "approved" if expires.is_some_and(|e| e > now) => {
+                // `for: once`: this use spends it.
+                if hold == crate::policy::ONCE {
+                    sqlx::query("UPDATE approvals SET expires_at = ? WHERE tenant = ? AND id = ?")
+                        .bind(now)
+                        .bind(tenant)
+                        .bind(&id)
+                        .execute(db)
+                        .await?;
+                    return Ok(Status::Approved);
+                }
                 if let Some(to) = renewal(verb, expires, hold, now) {
                     sqlx::query("UPDATE approvals SET expires_at = ? WHERE tenant = ? AND id = ?")
                         .bind(to)
@@ -58,7 +69,7 @@ pub async fn check(
     }
     let id = format!("ap_{}", new_id());
     sqlx::query(
-        "INSERT INTO approvals (tenant, id, subject, verb, target, status, hold_ms, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
+        "INSERT INTO approvals (tenant, id, subject, verb, target, status, hold_ms, created_at, detail) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
     )
     .bind(tenant)
     .bind(&id)
@@ -67,6 +78,7 @@ pub async fn check(
     .bind(target)
     .bind(hold_ms)
     .bind(now)
+    .bind(detail)
     .execute(db)
     .await?;
     let e = fleetlayer_protocol::ext::Event {
@@ -76,7 +88,8 @@ pub async fn check(
         at: jiff::Timestamp::now(),
         dedupe_key: Some(id.clone()),
         summary: format!("{who} asks to {verb} {target} (approval {id})"),
-        body: serde_json::json!({"id": id, "from": who, "verb": verb, "to": target, "approve_with": format!("fleetlayer-control approvals approve {id}")}),
+        body: serde_json::json!({"id": id, "from": who, "verb": verb, "to": target, "detail": detail,
+            "once": hold_ms == crate::policy::ONCE, "approve_with": format!("fleetlayer-control approvals approve {id}")}),
     };
     let _ = crate::route::publish(app, tenant, e, "fleetlayer access control").await;
     Ok(Status::Pending(id))
@@ -152,7 +165,12 @@ pub async fn decide(
     let hold = hold_ms.unwrap_or(r.get(0));
     let decided = Decided { subject: r.get(1), verb: r.get(2), target: r.get(3) };
     // A denial is remembered for an hour (expires_at), so the agent can't ask again at once.
-    let expires = if approve { now + hold } else { now + 3_600_000 };
+    // An approval `for: once` waits an hour to be used.
+    let expires = match (approve, hold) {
+        (true, crate::policy::ONCE) => now + 3_600_000,
+        (true, _) => now + hold,
+        (false, _) => now + 3_600_000,
+    };
     sqlx::query(
         "UPDATE approvals SET status = ?, decided_at = ?, expires_at = ?, hold_ms = ?, decided_by = ? WHERE tenant = ? AND id = ?",
     )
@@ -170,7 +188,7 @@ pub async fn decide(
 
 pub async fn list(db: &Db, tenant: &str, all: bool) -> anyhow::Result<Vec<serde_json::Value>> {
     let rows = sqlx::query(
-        "SELECT id, subject, verb, target, status, created_at, expires_at FROM approvals WHERE tenant = ?
+        "SELECT id, subject, verb, target, status, created_at, expires_at, detail, hold_ms FROM approvals WHERE tenant = ?
          AND (? = 1 OR status = 'pending') ORDER BY created_at DESC LIMIT 200",
     )
     .bind(tenant)
@@ -182,7 +200,8 @@ pub async fn list(db: &Db, tenant: &str, all: bool) -> anyhow::Result<Vec<serde_
         .map(|r| {
             serde_json::json!({"id": r.get::<String, _>(0), "from": r.get::<String, _>(1), "verb": r.get::<String, _>(2),
                 "to": r.get::<String, _>(3), "status": r.get::<String, _>(4), "createdAt": r.get::<i64, _>(5),
-                "expiresAt": r.get::<Option<i64>, _>(6)})
+                "expiresAt": r.get::<Option<i64>, _>(6), "detail": r.get::<Option<String>, _>(7),
+                "once": r.get::<i64, _>(8) == crate::policy::ONCE})
         })
         .collect())
 }

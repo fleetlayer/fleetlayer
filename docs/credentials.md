@@ -138,10 +138,11 @@ It refuses the live folders (`~/.claude/projects`, `~/.codex/sessions`): rewriti
 to loses its lines. [gitleaks](https://github.com/gitleaks/gitleaks) (MIT) catches secrets nobody delivered, such as
 a key pasted into a chat; it's optional, and has to be on `PATH`.
 
-Not scrubbed yet: what goes over a stream of its own rather than the node's link. A shared MCP server's calls and
-results will be, by the node's MCP gate (coming, below). Terminal attach (`fleetlayer attach`) isn't: it carries the
-terminal's raw bytes, where a value can be split between chunks, and it shows a person their own session. Pages and
-apps aren't either.
+A shared MCP server's calls and results are scrubbed too, from v0.3.13: the node sharing the tool redacts the
+secrets delivered to it from every line in both directions, before a call reaches the server and before a result
+reaches the agent ([the MCP gate](access-control.md#the-mcp-gate)). Not scrubbed yet: terminal attach (`fleetlayer attach`), which carries the
+terminal's raw bytes, where a value can be split between chunks, and shows a person their own session; nor pages and
+apps.
 
 | Reading | Key | Data |
 |---|---|---|
@@ -156,8 +157,11 @@ the fleet as a tool. Agents elsewhere call its tools through Fleetlayer and neve
 machine sharing it decides who may call it and which of its tools, refused calls never reach it, and every call is
 logged with its caller ([tools at the level of their own tools](access-control.md#tools-at-the-level-of-their-own-tools)).
 
-An MCP gateway that holds sign-ins for many services (Executor, for example) works the same way: agents call tools
-and never hold the services' tokens.
+An MCP gateway that holds sign-ins for many services (Executor, for example) works the same way, behind
+[the MCP gate](access-control.md#the-mcp-gate): its token stays with a node of its own Unix user, your policy decides
+each call by what it does (`tools.google.gmail.send`), calls that change things wait for your approval, every call is
+audited with its caller, and a delivered secret in a call or a result is redacted. [Executor behind
+Fleetlayer](guides/executor.md) sets it up.
 
 ### Network access per role
 
@@ -208,11 +212,6 @@ These are being designed or built now. Until each one ships, treat it as a plan,
 Where a service can mint short-lived credentials (a GitHub App's installation tokens, scoped cloud tokens), a broker
 holding the root credential will mint one per use instead of delivering a long-lived token. Storing a secret from an
 agent (`fleetlayer secrets put`, by grant and approval) is planned too.
-
-### Scrubbing a shared tool's calls
-
-The node's MCP gate will scrub delivered secrets from the calls and results of shared MCP servers, which travel on a
-stream of their own and aren't scrubbed yet.
 
 ## What none of this covers
 

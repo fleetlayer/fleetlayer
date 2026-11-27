@@ -1,0 +1,32 @@
+name: executor
+summary: One MCP server for Gmail, Calendar, Slack, your issue tracker and the rest, behind Fleetlayer's MCP gate so no agent holds its token.
+kind: shared_tool
+ships_with_fleetlayer: false
+status: beta
+licence: MIT
+maintainer: Useful Software (Executor's authors)
+source: https://github.com/UsefulSoftwareCo/executor
+install: {command: "docker run -d -p 127.0.0.1:4400:4400 -v executor-data:/app/data ghcr.io/usefulsoftwareco/executor-selfhost:<version>"}
+command: executor
+platforms: [linux, macos]
+min_fleetlayer: 0.3.13
+needs: [a node of its own Unix user (the gate)]
+config: |
+  tools:
+    - name: executor
+      url: https://executor.example.com/mcp
+      bearer_file: ~/.config/executor/token
+      allow: ["*@agents"]
+      check_calls: true
+      call_targets: { call: ["/calls/*/path"] }
+security: >-
+  Executor's token can do anything its signed-in accounts can (send email as you). Behind the gate it stays with a
+  node of its own Unix user; each call is decided by your policy per Executor path, calls that send or delete can
+  wait for your approval, and every call is audited with its caller. Its `execute` tool runs a program that can reach
+  any path, so the gate can't check it call by call: deny it, or ask for it once.
+docs: guides/executor
+description: |
+  Executor (MIT, self-hosted or cloud) holds the sign-ins for your remote services and exposes them to agents as
+  `search`, `describe`, `call` and `execute`. Shared from a Fleetlayer node with `check_calls`, each `call` is named by
+  the paths it calls (`tool:executor/call/tools.google.gmail.send@gate`), so the policy can allow, ask or deny it.
+  Self-hosted Executor signs people in with Fleetlayer's sign-in over OIDC.
