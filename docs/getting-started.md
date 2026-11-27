@@ -115,6 +115,7 @@ tools:
     # When a session's connection ends, close its tabs one at a time (browser_close only disconnects in extension
     # mode, leaving the tabs open in a grey group).
     on_close: [{ name: browser_tabs, arguments: { action: close, index: 0 }, repeat: 50 }]
+    close_with: [browser_close]   # from v0.3.9: browser_close only disconnects in extension mode, so it runs the cleanup instead
 ```
 
 In a session on another machine, the MCP server command is `fleetlayer mcp browser@laptop`. With `networks:` set, the

@@ -67,6 +67,7 @@ tools:
     tools:
       deny: [browser_run_code_unsafe]   # always on in Playwright MCP: arbitrary code in the server's process
     on_close: [{ name: browser_tabs, arguments: { action: close, index: 0 }, repeat: 50 }]
+    close_with: [browser_close]   # from v0.3.9: browser_close only disconnects in extension mode, so it runs the cleanup instead
 ```
 
 Restart the node (`fleetlayer-node install` again, or restart its service) and check `fleetlayer status`.
