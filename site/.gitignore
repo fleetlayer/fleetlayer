@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.astro/
+# Generated from ../docs by scripts/sync-docs.mjs
+src/content/docs/
+public/*.md
+public/plugins/
+public/guides/
+public/llms.txt
+public/llms-full.txt

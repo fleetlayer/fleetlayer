@@ -1,0 +1,279 @@
+---
+// The homepage. Its Markdown twin for agents is src/homepage.md (served as /index.md and at the top of
+// /llms-full.txt): change both together.
+import "../styles/home.css";
+import mark from "../assets/mark.svg?raw";
+import { site, repo } from "../../site.config.mjs";
+
+const title = "Fleetlayer: every agent on every machine, in one fleet";
+const description = site.summary;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="canonical" href={site.url + "/"} />
+    <link rel="alternate" type="text/markdown" href="/index.md" title="This page as Markdown" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={site.url + "/"} />
+    <meta property="og:type" content="website" />
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+    <header class="nav">
+      <div class="nav__inner">
+        <a class="wordmark" href="/" aria-label="Fleetlayer home">
+          <span class="wordmark__mark" set:html={mark} />
+          <span>Fleetlayer</span>
+        </a>
+        <nav class="nav__links" aria-label="Main">
+          <a href="/getting-started/">Docs</a>
+          <a href="/guides/backups/">Guides</a>
+          <a href={repo}>GitHub</a>
+        </nav>
+        <a class="btn btn--primary nav__cta" href="/getting-started/">Get started</a>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero__copy">
+          <p class="status-line"><span class="dot" aria-hidden="true"></span> Open source · early · built in public</p>
+          <h1 id="hero-title">Every agent on every machine, in one fleet.</h1>
+          <p class="lede">
+            Fleetlayer connects the agent sessions you already run, on your laptop, a home server or a VPS. See every
+            session in one list, send messages between them, and route a CI failure to the agent that wrote the branch.
+            It runs on machines you control.
+          </p>
+          <div class="actions">
+            <a class="btn btn--primary" href="/getting-started/">Install Fleetlayer</a>
+            <a class="btn btn--quiet" href={repo}>Read the source on GitHub</a>
+          </div>
+        </div>
+
+        <figure class="term" aria-label="Example output of fleetlayer fleet">
+          <figcaption class="term__bar">
+            <span>fleetlayer fleet</span>
+            <span class="term__tag">example</span>
+          </figcaption>
+<pre class="term__body"><code><span class="t-prompt">$</span> fleetlayer fleet
+<span class="t-node">laptop</span> <span class="t-dim">(macbook, online)</span>
+  api@laptop        claude  working  <span class="t-dim">Fixed the flaky upload test.</span>
+  docs@laptop       codex   idle     <span class="t-dim">Install guide rewritten.</span>
+<span class="t-node">mail</span> <span class="t-dim">(home-server, online)</span>
+  triage@mail       claude  idle     <span class="t-dim">3 emails need your reply.</span>
+<span class="t-node">home</span> <span class="t-dim">(home-server, online)</span>
+  infra@home        claude  working  <span class="t-dim">Backup check passed.</span>
+
+<span class="t-prompt">$</span> fleetlayer msg send --to api@laptop "the staging deploy is done"
+<span class="t-ok">Delivered to api@laptop</span> <span class="t-dim">(claude-code).</span></code></pre>
+        </figure>
+      </section>
+
+      <section class="map" aria-labelledby="map-title">
+        <div class="map__head">
+          <h2 id="map-title">A node on each machine. One control plane. Your session manager stays.</h2>
+          <p>
+            Fleetlayer attaches to the tools you use (herdr today, others through plugins) without taking them over.
+            Each machine, or each Unix user, runs a small node that keeps one outbound connection to the control plane,
+            so it works behind NAT with no ports to open.
+          </p>
+        </div>
+
+        <ol class="map__machines" aria-label="An example fleet">
+          <li class="machine">
+            <p class="machine__name">Laptop</p>
+            <div class="box box--manager">
+              <p class="box__label">herdr</p>
+              <ul class="sessions">
+                <li>api</li>
+                <li>docs</li>
+                <li>review</li>
+              </ul>
+            </div>
+            <div class="box box--node"><p class="box__label">node</p><p>delivers messages, runs plugins</p></div>
+          </li>
+          <li class="machine">
+            <p class="machine__name">Home server</p>
+            <div class="users">
+              <div class="box box--manager">
+                <p class="box__label">user triage</p>
+                <ul class="sessions"><li>triage</li></ul>
+                <p class="box__note">reads strangers' email, so it may message only you</p>
+              </div>
+              <div class="box box--manager">
+                <p class="box__label">user infra</p>
+                <ul class="sessions"><li>infra</li><li>backups</li></ul>
+              </div>
+            </div>
+            <div class="box box--node"><p class="box__label">a node per user</p><p>own key, own rules</p></div>
+          </li>
+          <li class="machine">
+            <p class="machine__name">VPS or the same laptop</p>
+            <div class="box box--service">
+              <p class="box__label">control plane</p>
+              <p>machines, sessions, messages, webhooks, access rules</p>
+            </div>
+            <div class="box box--service">
+              <p class="box__label">pages · sign-in · Claude accounts</p>
+              <p>each one a separate piece you can move</p>
+            </div>
+          </li>
+        </ol>
+
+        <div class="map__wire" aria-hidden="true"><span>one outbound connection per node</span></div>
+
+        <dl class="legend">
+          <div><dt><span class="key key--manager"></span>Session manager</dt><dd>yours, unchanged</dd></div>
+          <div><dt><span class="key key--node"></span>Node</dt><dd>one per machine or Unix user</dd></div>
+          <div><dt><span class="key key--service"></span>Service</dt><dd>run it anywhere, move it later</dd></div>
+        </dl>
+      </section>
+
+      <section class="does" aria-labelledby="does-title">
+        <h2 id="does-title">What you get</h2>
+        <ul class="does__list">
+          <li>
+            <h3>Every session in one list</h3>
+            <p>
+              Every machine and session, with a one-line summary of what each agent is doing, and a searchable record
+              of what it did. <code>fleetlayer attach api@laptop</code> watches or drives its terminal from anywhere.
+            </p>
+          </li>
+          <li>
+            <h3>Agents that message each other</h3>
+            <p>
+              On one machine or across machines, delivered through the agent's own channel and labelled with who sent
+              it. A misspelt name suggests the right one.
+            </p>
+          </li>
+          <li>
+            <h3>Webhooks that find the right agent</h3>
+            <p>
+              A CI failure goes to the session that wrote the branch, which already knows the code, instead of waking a
+              fresh agent with no context.
+            </p>
+          </li>
+          <li>
+            <h3>Many Claude accounts, many machines</h3>
+            <p>
+              Usage across all your accounts, shared with every session. Year-long tokens reach each machine sealed to
+              its own key. Your sign-ins stay on a machine you control.
+            </p>
+          </li>
+          <li>
+            <h3>Rules for agents you trust less</h3>
+            <p>
+              An agent that reads strangers' email gets its own Unix user, and the access policy limits whom it may
+              message and what it may use. Every refusal names the rule.
+            </p>
+          </li>
+          <li>
+            <h3>Tools that live on one machine</h3>
+            <p>
+              Your signed-in browser on the laptop, used by an agent on the server: <code
+                >fleetlayer mcp browser@laptop</code
+              >, limited to the callers you allow.
+            </p>
+          </li>
+        </ul>
+        <p class="does__more">
+          <a href="/getting-started/">See how to set it up</a>
+        </p>
+      </section>
+
+      <section class="band" aria-labelledby="band-title">
+        <div class="band__inner">
+          <div class="band__copy">
+            <h2 id="band-title">Start small, replace any component as you go.</h2>
+            <p>
+              Begin with everything on your laptop. When you outgrow it, move one piece to a home server or a VPS, or
+              swap it for the tool you'd rather use: your own proxy, your company's sign-in, another session manager.
+              Each piece keeps its state in one folder and speaks open protocols, so moving it is a copy and a new
+              address.
+            </p>
+            <p class="band__link"><a href="/getting-started/">Read the getting started guide</a></p>
+          </div>
+          <div class="band__code">
+            <p class="band__step">Install (Linux or macOS)</p>
+<pre><code><span class="t-prompt">$</span> curl -fsSL https://raw.githubusercontent.com/fleetlayer/fleetlayer/main/install.sh | sh</code></pre>
+            <p class="band__step">Run a node and look around</p>
+<pre><code><span class="t-prompt">$</span> fleetlayer-node install
+<span class="t-prompt">$</span> fleetlayer status
+<span class="t-prompt">$</span> fleetlayer sessions</code></pre>
+          </div>
+        </div>
+      </section>
+
+      <section class="why" aria-labelledby="why-title">
+        <div class="why__col">
+          <h2 id="why-title">Kind of like Nextcloud, for AI agents</h2>
+          <p>
+            Your own stack instead of a vendor's cloud. Unlike one big app, Fleetlayer is a few separate pieces that work
+            with the tools you already use, and you can swap any of them.
+          </p>
+          <p>
+            Keep using Anthropic's and OpenAI's own features for as long as they serve you. When you outgrow them
+            (several subscriptions, several machines, agents from more than one vendor), you give nothing up. When a
+            vendor ships its own version of a feature, Fleetlayer can support it too, and you can still change models
+            and harnesses whenever you like.
+          </p>
+        </div>
+        <div class="why__col">
+          <h2>For people who run many agents</h2>
+          <p>
+            Most agent setups serve one project. Fleetlayer is for running many side by side: personal errands, email
+            triage, product work, infrastructure, background workers, each with its own machine or Unix user and its
+            own permissions, all visible from your own terminal.
+          </p>
+          <p>
+            It's built for people whose work and life share the same agents, like a solo founder with a family: the
+            company's agents and the household's on one system. Companies get what they need too (single sign-on, teams,
+            separate organisations, audit), kept out of the way until they need it.
+          </p>
+        </div>
+      </section>
+
+      <section class="state" aria-labelledby="state-title">
+        <h2 id="state-title">Where it is today</h2>
+        <div class="state__grid">
+          <div>
+            <h3><span class="dot" aria-hidden="true"></span> Runs now</h3>
+            <p>
+              The node, the control plane and the command line; plugins for herdr, Claude Code, session summaries,
+              Claude accounts and pages; access rules with an audit log; releases that update every node themselves.
+            </p>
+          </div>
+          <div>
+            <h3><span class="dot dot--next" aria-hidden="true"></span> Being built</h3>
+            <p>
+              One sign-in for every service, a whole setup on a laptop with one command, the phone, moving a piece
+              with one command, and a server setup an agent can build for you.
+            </p>
+          </div>
+        </div>
+        <p class="state__note">
+          Expect breaking changes. Releases and notes are on <a href={`${repo}/releases`}>GitHub</a>.
+        </p>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <div class="foot__inner">
+        <a class="wordmark wordmark--small" href="/"><span class="wordmark__mark" set:html={mark} /><span>Fleetlayer</span></a>
+        <p>Apache 2.0</p>
+        <nav aria-label="Footer">
+          <a href="/getting-started/">Docs</a>
+          <a href={repo}>GitHub</a>
+          <a href="/llms.txt">llms.txt</a>
+        </nav>
+      </div>
+    </footer>
+  </body>
+</html>

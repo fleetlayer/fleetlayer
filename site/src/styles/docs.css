@@ -1,0 +1,66 @@
+/* The docs: Starlight's theme pointed at the site's tokens. */
+@import "./tokens.css";
+
+:root {
+  --sl-font: var(--font-body);
+  --sl-font-mono: var(--font-mono);
+  --sl-content-width: 46rem;
+  --sl-text-h1: var(--text-3xl);
+}
+
+/* Starlight's dark palette (its default :root) */
+:root {
+  --sl-color-accent-low: oklch(27% 0.05 258);
+  --sl-color-accent: oklch(62% 0.17 256);
+  --sl-color-accent-high: oklch(84% 0.08 256);
+  --sl-color-white: oklch(97% 0.004 255);
+  --sl-color-gray-1: oklch(90% 0.008 255);
+  --sl-color-gray-2: oklch(80% 0.012 256);
+  --sl-color-gray-3: oklch(66% 0.014 257);
+  --sl-color-gray-4: oklch(46% 0.016 258);
+  --sl-color-gray-5: oklch(31% 0.016 260);
+  --sl-color-gray-6: oklch(22% 0.014 260);
+  --sl-color-black: oklch(17.5% 0.012 260);
+}
+
+:root[data-theme="light"] {
+  --sl-color-accent-low: oklch(93% 0.035 256);
+  --sl-color-accent: oklch(52% 0.2 257);
+  --sl-color-accent-high: oklch(34% 0.14 258);
+  --sl-color-white: oklch(20% 0.02 258);
+  --sl-color-gray-1: oklch(28% 0.02 258);
+  --sl-color-gray-2: oklch(36% 0.018 257);
+  --sl-color-gray-3: oklch(50% 0.016 257);
+  --sl-color-gray-4: oklch(66% 0.012 256);
+  --sl-color-gray-5: oklch(86% 0.008 255);
+  --sl-color-gray-6: oklch(95% 0.006 252);
+  --sl-color-gray-7: oklch(97.5% 0.004 252);
+  --sl-color-black: oklch(98.5% 0.004 250);
+}
+
+.sl-markdown-content h1,
+.sl-markdown-content h2,
+.sl-markdown-content h3,
+h1#_top,
+.site-title {
+  font-family: var(--font-display);
+  letter-spacing: -0.02em;
+  font-style: normal;
+}
+
+.site-title {
+  font-weight: 600;
+}
+
+.sl-markdown-content :is(h2, h3) {
+  font-weight: 600;
+}
+
+.sl-markdown-content table {
+  font-size: var(--text-sm);
+}
+
+/* Code blocks: tight radius, hairline */
+.expressive-code .frame {
+  --ec-brdRad: var(--radius-sm);
+}
