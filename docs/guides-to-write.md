@@ -333,3 +333,8 @@ managers, machines that sleep.
   admits a new node's agents to the tenant it's run for (the first, unless `--tenant`) unless `--no-admit`. A node added with `--no-admit`, or a
   person's node after they leave every tenant, needs `fleetlayer-control agent admit "*@<node>"` in some tenant first.
   `acl explain --tenant <slug>` says which. Where it lives: `docs/sso.md` ("On the control plane").
+- **A shared tool has two gates: the node's `allow` list and the control plane's policy.** The sharing node's
+  `tools: allow:` decides who it will serve at all; the policy decides per caller on top. A list written for remote
+  callers only (`['*@agents']`) refused the sharing machine's own sessions, which looked like a policy denial. Prefer
+  `allow: ['*']` on the node and let the policy be the one place that says who (deny untrusted-input agents there).
+  The error names the node's list ("may not use browser on <node>") when it's the node refusing.
