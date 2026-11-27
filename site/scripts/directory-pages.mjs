@@ -13,7 +13,7 @@ const ROLE_NAMES = {
   observer: "Observer",
 };
 
-const KIND_NAMES = { plugin: "Plugin", tool: "Command-line tool", service: "Service" };
+const KIND_NAMES = { plugin: "Plugin", tool: "Command-line tool", shared_tool: "Shared tool", service: "Service" };
 
 function licenceText(id) {
   const kind = licenceKind(id);

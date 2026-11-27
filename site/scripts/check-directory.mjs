@@ -8,7 +8,7 @@ import { parse } from "yaml";
 const dir = resolve(dirname(fileURLToPath(import.meta.url)), "../../plugins-directory");
 const network = process.argv.includes("--network");
 
-export const KINDS = ["plugin", "tool", "service"];
+export const KINDS = ["plugin", "tool", "shared_tool", "service"];
 export const ROLES = ["session_manager", "harness", "event_source", "action", "sync_target", "sync_source", "observer"];
 export const STATUSES = ["stable", "beta", "experimental"];
 export const PLATFORMS = ["linux", "macos", "windows"];

@@ -12,7 +12,7 @@ Listing it is a pull request that adds one file here, `<name>.yaml`. Copy an exi
 |---|---|---|
 | `name` | yes | Unique, lower case with hyphens; what `node.yaml` calls it |
 | `summary` | yes | One line: what it does for the person |
-| `kind` | yes | `plugin` (the node starts it), `tool` (a command line) or `service` (a program of its own) |
+| `kind` | yes | `plugin` (the node starts it), `tool` (a command line), `shared_tool` (an MCP server a node shares with agents elsewhere, under `tools:` in `node.yaml`) or `service` (a program of its own) |
 | `roles` | plugins | `session_manager`, `harness`, `event_source`, `action`, `sync_target`, `sync_source`, `observer` |
 | `ships_with_fleetlayer` | yes | `true` only for what's in every release's archive |
 | `status` | yes | `stable`, `beta` or `experimental` |

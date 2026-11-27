@@ -134,6 +134,8 @@ sees Playwright MCP's tools, minus the denied ones, and its tabs open in a tab g
 
 `fleetlayer-control tools` on the control plane lists every connection: who used which tool, and when.
 
+The same mechanism shares other things on the laptop: [your screenshots and downloads](folders.md), for example.
+
 ## What you give up
 
 Claude in Chrome is built by Anthropic for Claude and shows what it's doing in Chrome's side panel. Playwright MCP is a

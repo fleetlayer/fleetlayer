@@ -442,3 +442,12 @@ managers, machines that sleep.
   user's token; `gh run watch` polls every 3 s by default (about 1,200 an hour per watcher), so a few agents watching
   CI exhaust it. Use `--interval 60`, no loops over `gh run list`, `gh api rate_limit` to check, webhooks instead of
   polling. Found 27 Nov 2026; in AGENTS.md (e3473b6). Written: `docs/guides/agents-building-software.md`.
+- **Agents elsewhere reading your Mac's screenshots and downloads.** `fleetlayer-folders`, a read-only MCP server
+  shared as a node tool (`fleetlayer mcp folders@<mac>`). Footguns: macOS privacy protection (TCC) keeps the node's
+  LaunchAgent, and every tool it starts, out of ~/Downloads, ~/Desktop and ~/Documents until its person allows the
+  node once under Files and Folders (or Full Disk Access); a folder of your own (~/Screenshots, set in Shift-Command-5
+  > Options) needs nothing. Each release is a new unsigned binary, so macOS may ask again after an update (to confirm
+  on a real Mac at the first deploy). iCloud/Dropbox placeholders are refused rather than downloaded. A reply is one
+  WebSocket message (16 MiB limit), so reads are capped at 8-10 MB and images downscaled to 1568 px. Downloads holds
+  strangers' files and private documents: decode images with limits, and share it as its own tool when it needs
+  stricter access than screenshots. Written: `docs/guides/folders.md`, `docs/plugins/folders.md`.
