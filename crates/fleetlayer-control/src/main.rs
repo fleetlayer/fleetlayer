@@ -34,9 +34,10 @@ use crate::db::{DEFAULT_TENANT, Db, Subscription};
 #[derive(Parser)]
 #[command(name = "fleetlayer-control", version, about = "Fleetlayer's control plane")]
 struct Cli {
-    /// The SQLite database.
-    #[arg(long, global = true, env = "FLEETLAYER_CONTROL_DB", default_value = "fleetlayer-control.db")]
-    db: PathBuf,
+    /// The SQLite database. Default: `./fleetlayer-control.db` if there is one (older setups), else
+    /// `~/.local/state/fleetlayer/control/control.db`, where `fleetlayer up` puts it.
+    #[arg(long, global = true, env = "FLEETLAYER_CONTROL_DB")]
+    db: Option<PathBuf>,
     /// The tenant (its slug) that people, teams, invites and agents commands act on; the deployment's first tenant
     /// when left out.
     #[arg(long, global = true, env = "FLEETLAYER_TENANT")]
@@ -450,7 +451,21 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
     let cli = Cli::parse();
-    let db = db::open(&cli.db).await?;
+    let path = match &cli.db {
+        Some(p) => p.clone(),
+        None => {
+            let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"));
+            let path = default_db(std::path::Path::new("fleetlayer-control.db"), &home);
+            // An admin command run from the wrong folder mustn't quietly start an empty control plane.
+            anyhow::ensure!(
+                path.exists() || matches!(cli.command, Command::Serve { .. }),
+                "no control plane database at {} (pass --db, or set FLEETLAYER_CONTROL_DB)",
+                path.display()
+            );
+            path
+        }
+    };
+    let db = db::open(&path).await?;
     let t = DEFAULT_TENANT;
     match cli.command {
         Command::Serve { listen, hooks_listen, admin_token_file, audit_key_file, audit_anchor_dir } => {
@@ -1013,4 +1028,22 @@ async fn serve(app: Arc<App>, listen: SocketAddr, hooks_listen: SocketAddr) -> a
         axum::serve(hooks_listener, hooks).await.map_err(anyhow::Error::from)
     },)?;
     Ok(())
+}
+
+/// The database to use when none is named: `./fleetlayer-control.db` when it exists, else the one `fleetlayer up`
+/// makes.
+fn default_db(cwd_db: &std::path::Path, home: &std::path::Path) -> PathBuf {
+    if cwd_db.exists() { cwd_db.to_path_buf() } else { home.join(".local/state/fleetlayer/control/control.db") }
+}
+
+#[cfg(test)]
+mod default_db_tests {
+    #[test]
+    fn an_existing_local_database_wins_else_the_one_up_makes() {
+        let d = tempfile::tempdir().unwrap();
+        let local = d.path().join("fleetlayer-control.db");
+        assert_eq!(super::default_db(&local, d.path()), d.path().join(".local/state/fleetlayer/control/control.db"));
+        std::fs::write(&local, "").unwrap();
+        assert_eq!(super::default_db(&local, d.path()), local);
+    }
 }
