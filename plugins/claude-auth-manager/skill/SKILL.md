@@ -35,7 +35,10 @@ One line per account and node: its kind, account ID, node, time and data.
   while it sleeps, so check `at`.
 - `claude.token_health`: `{"ok": true, "email": …, "claudeVersion": …}` means that node's token check passed;
   `"ok": false` with an `error` means the token in that slot doesn't work. Tell your person which account and node:
-  they fix it on the hub's page.
+  they fix it on the hub's page. When a node's checks stop and `fleetlayer status` there shows the auth manager's
+  problem `claude not found at <path>` (or `won't run`), the tokens are fine: that machine's Claude Code install is
+  broken (often `~/.local/bin/claude` linking to a version that's gone), so tell your person that, not to fix the
+  accounts.
 
 Add `--json` for the whole readings.
 

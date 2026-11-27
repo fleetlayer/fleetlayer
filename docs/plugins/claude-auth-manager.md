@@ -83,7 +83,11 @@ node leaves that alone.
   `claude -p` from each managed slot (a few seconds, one small request) when the slot is new or its token changed,
   after each Claude Code upgrade, a day after its last check and an hour after a failed one, and straight after a
   bundle is applied. Separate from applying: `applied: true` only says the write worked. The control plane can alert
-  on `ok: false` and on a reading that stops coming.
+  on `ok: false` and on a reading that stops coming. When Claude Code itself is missing or won't run (a deleted
+  binary, a `~/.local/bin/claude` link into a folder a reboot wiped), that's this machine's problem, not the tokens':
+  the plugin's status says `claude not found at <path>` (in `fleetlayer status`), no reading is published and no
+  account is marked as not working, and each account is checked once Claude Code is back (it's looked up again every
+  four minutes). These runs never update Claude Code (`DISABLE_AUTOUPDATER=1`).
 - The node half serves the rotator's coordinator API on its socket (`coordinator.sock` in `~/.claude/account-rotator`,
   `GET /state` long polls, `POST /readings`), moved from Quietdeck's usage module (`src/coordinator/`, API 0.7.1). It
   runs in **borrow mode**: nothing is polled, refreshed or signed in, since setup tokens can't read usage or profiles.

@@ -27,6 +27,9 @@ const TIMEOUT: Duration = Duration::from_secs(120);
 pub struct Outcome {
     pub ok: bool,
     pub error: Option<String>,
+    /// The check couldn't run on this machine (Claude Code is missing or won't start): it says nothing about the
+    /// token, so it's reported as the plugin's own problem and leaves the account alone.
+    pub local: bool,
 }
 
 /// The last check of a slot.
@@ -86,7 +89,7 @@ pub fn outcome_of(code: Option<i32>, stdout: &str, stderr: &str) -> Outcome {
     let is_error = answer.as_ref().and_then(|a| a["is_error"].as_bool());
     let text = answer.as_ref().and_then(|a| a["result"].as_str()).unwrap_or_default();
     if code == Some(0) && is_error == Some(false) {
-        return Outcome { ok: true, error: None };
+        return Outcome { ok: true, error: None, local: false };
     }
     let why = if !text.is_empty() {
         text.to_string()
@@ -95,7 +98,7 @@ pub fn outcome_of(code: Option<i32>, stdout: &str, stderr: &str) -> Outcome {
     } else {
         format!("claude exited {}", code.map_or("on a signal".into(), |c| c.to_string()))
     };
-    Outcome { ok: false, error: Some(why.chars().take(300).collect()) }
+    Outcome { ok: false, error: Some(why.chars().take(300).collect()), local: false }
 }
 
 /// Runs Claude Code.
@@ -109,21 +112,40 @@ impl Claude {
         for v in OVERRIDING_ENV {
             c.env_remove(v);
         }
+        // A check never updates Claude Code: that moves ~/.local/bin/claude, the person's to manage.
+        c.env("DISABLE_AUTOUPDATER", "1");
         c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         c
     }
 
-    /// `claude --version`'s number, or why it couldn't be run.
+    /// `claude --version`'s number, or why it couldn't be run: a problem on this machine, never a token's.
     pub async fn version(&self) -> Result<String, String> {
         let out = tokio::time::timeout(Duration::from_secs(30), self.command().arg("--version").output())
             .await
             .map_err(|_| format!("{} --version timed out", self.bin))?
-            .map_err(|e| format!("running {}: {e}", self.bin))?;
+            .map_err(|e| self.cant_run(&e))?;
         let text = String::from_utf8_lossy(&out.stdout);
-        text.split_whitespace()
-            .next()
-            .map(str::to_string)
-            .ok_or_else(|| format!("{} --version printed nothing", self.bin))
+        match text.split_whitespace().next() {
+            Some(v) if out.status.success() => Ok(v.to_string()),
+            _ => {
+                let err = String::from_utf8_lossy(&out.stderr);
+                let why = err.trim().lines().next().unwrap_or("it printed nothing");
+                Err(format!("{} --version failed: {}", self.bin, why.chars().take(200).collect::<String>()))
+            }
+        }
+    }
+
+    /// One line on why the binary couldn't be started.
+    fn cant_run(&self, e: &std::io::Error) -> String {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            if self.bin.contains('/') {
+                format!("claude not found at {}", self.bin)
+            } else {
+                format!("claude not found: no `{}` on the PATH or in ~/.local/bin", self.bin)
+            }
+        } else {
+            format!("{} won't run: {e}", self.bin)
+        }
     }
 
     /// One request from the slot, with nothing of the person's own setup loaded: no user settings (so no plugins or
@@ -146,7 +168,7 @@ impl Claude {
     async fn check_with(&self, slot: Option<&str>, token: Option<&str>) -> Outcome {
         let dir = scratch_dir();
         if let Err(e) = std::fs::create_dir_all(&dir) {
-            return Outcome { ok: false, error: Some(format!("making {}: {e}", dir.display())) };
+            return Outcome { ok: false, error: Some(format!("making {}: {e}", dir.display())), local: true };
         }
         let mut c = self.command();
         c.current_dir(&dir).args([
@@ -179,8 +201,10 @@ impl Claude {
         let out = tokio::time::timeout(TIMEOUT, c.output()).await;
         let _ = std::fs::remove_dir_all(&dir);
         match out {
-            Err(_) => Outcome { ok: false, error: Some(format!("claude -p took over {}s", TIMEOUT.as_secs())) },
-            Ok(Err(e)) => Outcome { ok: false, error: Some(format!("running {}: {e}", self.bin)) },
+            Err(_) => {
+                Outcome { ok: false, error: Some(format!("claude -p took over {}s", TIMEOUT.as_secs())), local: false }
+            }
+            Ok(Err(e)) => Outcome { ok: false, error: Some(self.cant_run(&e)), local: true },
             Ok(Ok(o)) => {
                 outcome_of(o.status.code(), &String::from_utf8_lossy(&o.stdout), &String::from_utf8_lossy(&o.stderr))
             }
@@ -198,6 +222,63 @@ fn scratch_dir() -> PathBuf {
 
 /// The checks already made, by slot.
 pub type History = BTreeMap<String, Last>;
+
+/// What one round of checks found.
+#[derive(Debug, Default)]
+pub struct Round {
+    pub readings: Vec<fleetlayer_protocol::ext::Reading>,
+    /// Each account checked, for the coordinator: (account UUID, ok, why).
+    pub checked: Vec<(String, bool, Option<String>)>,
+    /// A problem on this machine rather than with any account (Claude Code is missing or won't run): the plugin's
+    /// status says it, and no account is marked as failing or checked off.
+    pub problem: Option<String>,
+}
+
+/// Checks the managed slots that are due. `stored` gives a slot's stored credentials' fingerprint.
+pub async fn round(
+    claude: &Claude,
+    managed: &[Managed],
+    stored: impl Fn(&str) -> String,
+    history: &mut History,
+) -> Round {
+    let mut r = Round::default();
+    if managed.is_empty() {
+        return r;
+    }
+    let version = match claude.version().await {
+        Ok(v) => v,
+        Err(e) => {
+            r.problem = Some(e);
+            return r;
+        }
+    };
+    for m in managed {
+        let fingerprint = stored(&m.slot);
+        let now = jiff::Timestamp::now();
+        if !due(history.get(&m.slot), now.as_millisecond(), &version, &fingerprint) {
+            continue;
+        }
+        let outcome = claude.check(&m.slot).await;
+        if outcome.local {
+            // Not the token's fault, and not checked: it goes again next round.
+            r.problem = outcome.error;
+            break;
+        }
+        if outcome.ok {
+            tracing::info!(account = %m.email, "token check passed");
+        } else {
+            tracing::warn!(account = %m.email, error = ?outcome.error, "token check failed");
+        }
+        r.checked.push((m.account_uuid.clone(), outcome.ok, outcome.error.clone()));
+        r.readings.push(reading(m, &outcome, &version, now));
+        history.insert(
+            m.slot.clone(),
+            Last { at_ms: now.as_millisecond(), version: version.clone(), fingerprint, ok: outcome.ok },
+        );
+    }
+    history.retain(|slot, _| managed.iter().any(|m| &m.slot == slot));
+    r
+}
 
 #[cfg(test)]
 mod tests {
@@ -222,7 +303,7 @@ mod tests {
     #[test]
     fn reads_claude_answers() {
         let ok = r#"{"type":"result","subtype":"success","is_error":false,"result":"ok"}"#;
-        assert_eq!(outcome_of(Some(0), ok, ""), Outcome { ok: true, error: None });
+        assert_eq!(outcome_of(Some(0), ok, ""), Outcome { ok: true, error: None, local: false });
         // A rejected token, as Claude Code 2.1.332 reports it.
         let bad = r#"{"type":"result","subtype":"success","is_error":true,"result":"Failed to authenticate. API Error: 401 OAuth access token is invalid."}"#;
         let o = outcome_of(Some(1), bad, "");
@@ -239,17 +320,78 @@ mod tests {
             account_uuid: "uuid-2".into(),
             email: "a@example.com".into(),
         };
-        let r = reading(&m, &Outcome { ok: false, error: Some("401".into()) }, "2.1.332", jiff::Timestamp::UNIX_EPOCH);
+        let r = reading(
+            &m,
+            &Outcome { ok: false, error: Some("401".into()), local: false },
+            "2.1.332",
+            jiff::Timestamp::UNIX_EPOCH,
+        );
         assert_eq!((r.kind.as_str(), r.key.as_str()), (KIND, "uuid-2"));
         assert_eq!(r.data, json!({"ok": false, "email": "a@example.com", "claudeVersion": "2.1.332", "error": "401"}));
     }
 
-    /// Fails the way a missing binary does, without a real Claude Code.
+    fn managed(n: u32) -> Managed {
+        Managed {
+            number: n,
+            slot: format!("/h/.claude/accounts/{n}"),
+            account_uuid: format!("uuid-{n}"),
+            email: format!("{n}@example.com"),
+        }
+    }
+
+    /// A missing Claude Code (a deleted binary, a symlink into a folder a reboot wiped) is one problem on this
+    /// machine: no account is marked as failing, nothing is published that would page about tokens, and nothing is
+    /// recorded as checked, so each account is checked once Claude Code is back.
     #[tokio::test]
-    async fn a_missing_claude_is_a_failed_check() {
+    async fn a_missing_claude_is_a_local_problem_not_failed_tokens() {
         let c = Claude { bin: "/nonexistent/claude".into() };
-        assert!(c.version().await.is_err());
+        assert_eq!(c.version().await, Err("claude not found at /nonexistent/claude".into()));
         let o = c.check("/tmp/none").await;
-        assert!(!o.ok && o.error.unwrap().contains("running /nonexistent/claude"));
+        assert!(!o.ok && o.local);
+        let mut history = History::new();
+        let r = round(&c, &[managed(1), managed(2)], |_| "f".into(), &mut history).await;
+        assert_eq!(r.problem.as_deref(), Some("claude not found at /nonexistent/claude"));
+        assert!(r.readings.is_empty() && r.checked.is_empty() && history.is_empty());
+
+        let bare = Claude { bin: "fleetlayer-no-such-claude".into() };
+        assert!(bare.version().await.unwrap_err().starts_with("claude not found: no `fleetlayer-no-such-claude`"));
+    }
+
+    /// A binary that's there but broken (not executable, or `--version` fails) is local too; a token Claude Code
+    /// rejects is still the account's.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_broken_claude_is_local_and_a_rejected_token_is_not() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("fleetlayer-health-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |name: &str, body: &str, mode: u32| {
+            let p = dir.join(name);
+            std::fs::write(&p, body).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode)).unwrap();
+            p.display().to_string()
+        };
+        let not_exec = Claude { bin: write("noexec", "#!/bin/sh\n", 0o644) };
+        let mut history = History::new();
+        let r = round(&not_exec, &[managed(1)], |_| "f".into(), &mut history).await;
+        assert!(r.problem.unwrap().contains("won't run"));
+        assert!(r.checked.is_empty() && r.readings.is_empty());
+
+        let failing = Claude { bin: write("failing", "#!/bin/sh\necho 'cannot load' >&2\nexit 1\n", 0o755) };
+        assert!(failing.version().await.unwrap_err().ends_with("--version failed: cannot load"));
+
+        let rejecting = Claude {
+            bin: write(
+                "rejecting",
+                "#!/bin/sh\n[ \"$1\" = --version ] && { echo '2.1.332 (Claude Code)'; exit 0; }\n\
+                 echo '{\"type\":\"result\",\"is_error\":true,\"result\":\"API Error: 401\"}'\nexit 1\n",
+                0o755,
+            ),
+        };
+        let r = round(&rejecting, &[managed(1)], |_| "f".into(), &mut history).await;
+        assert_eq!(r.problem, None);
+        assert_eq!(r.checked, vec![("uuid-1".to_string(), false, Some("API Error: 401".to_string()))]);
+        assert_eq!(r.readings.len(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

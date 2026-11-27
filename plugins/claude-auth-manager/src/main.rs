@@ -257,12 +257,16 @@ impl Handler for Shared {
                     *self.0.kept.lock().await = Some(kept);
                     *self.0.home.lock().await = Some(home.clone());
                     *self.0.from.lock().await = config.from.clone();
-                    let claude = health::Claude { bin: find_claude(&home, config.claude.as_deref()) };
+                    let configured = config.claude.clone();
+                    let find = {
+                        let home = home.clone();
+                        move || find_claude(&home, configured.as_deref())
+                    };
                     *self.0.node.lock().await = node.node.clone();
                     let env = coordinator::NodeEnv {
                         rotator_dir: coordinator::rotator_dir(&home),
                         home: home.clone(),
-                        claude: PathBuf::from(&claude.bin),
+                        claude: PathBuf::from(find()),
                         node: node.node.clone(),
                     };
                     tokio::spawn(coordinator::run_node(
@@ -276,7 +280,7 @@ impl Handler for Shared {
                         peer.clone(),
                         layout,
                         store,
-                        claude,
+                        find,
                         self.0.applied.subscribe(),
                         self.0.coordinator.clone(),
                     ));
@@ -444,58 +448,51 @@ impl Handler for Shared {
 }
 
 /// Check each managed slot's token when it's due (`health::due`), and publish a `claude.token_health` reading for each
-/// check. Looks every ten minutes, and straight after a bundle is applied.
+/// check. Looks every four minutes, and straight after a bundle is applied, and reports the plugin's status each time
+/// (the node counts a plugin that reported and then goes quiet for five minutes as failing).
+///
+/// Claude Code is looked up again each round, so a binary that was missing or replaced is picked up. When it's
+/// missing or won't run, that's this machine's problem, not the tokens': the status says so and the accounts are
+/// left as they were.
 async fn health_loop(
     peer: Peer,
     layout: slots::Layout,
     store: Arc<dyn store::Store>,
-    claude: health::Claude,
+    find: impl Fn() -> String + Send + 'static,
     mut applied: tokio::sync::watch::Receiver<u64>,
     coordinator: coordinator::Slot,
 ) {
     let mut history = health::History::new();
     tokio::time::sleep(Duration::from_secs(20)).await;
     while !peer.is_closed() {
+        let claude = health::Claude { bin: find() };
         let managed = layout.managed();
-        if !managed.is_empty() {
-            let version = claude.version().await;
-            let mut readings = vec![];
-            for m in &managed {
-                let fingerprint = match store.read(&m.slot) {
-                    Ok(Some(stored)) => health::fingerprint(&stored),
-                    Ok(None) => "none".into(),
-                    Err(e) => format!("unreadable: {e}"),
-                };
-                let now = jiff::Timestamp::now();
-                let v = version.clone().unwrap_or_else(|e| format!("unknown ({e})"));
-                if !health::due(history.get(&m.slot), now.as_millisecond(), &v, &fingerprint) {
-                    continue;
-                }
-                let outcome = match &version {
-                    Err(e) => health::Outcome { ok: false, error: Some(e.clone()) },
-                    Ok(_) => claude.check(&m.slot).await,
-                };
-                if outcome.ok {
-                    tracing::info!(account = %m.email, "token check passed");
-                } else {
-                    tracing::warn!(account = %m.email, error = ?outcome.error, "token check failed");
-                }
-                if let Some(c) = coordinator::current(&coordinator) {
-                    c.token_checked(&m.account_uuid, outcome.ok, outcome.error.as_deref());
-                }
-                readings.push(health::reading(m, &outcome, &v, now));
-                history.insert(
-                    m.slot.clone(),
-                    health::Last { at_ms: now.as_millisecond(), version: v, fingerprint, ok: outcome.ok },
-                );
-            }
-            history.retain(|slot, _| managed.iter().any(|m| &m.slot == slot));
-            if !readings.is_empty() {
-                peer.notify(ext::method::READING_PUBLISH, &ext::Readings { readings });
+        let fingerprint = |slot: &str| match store.read(slot) {
+            Ok(Some(stored)) => health::fingerprint(&stored),
+            Ok(None) => "none".into(),
+            Err(e) => format!("unreadable: {e}"),
+        };
+        let round = health::round(&claude, &managed, fingerprint, &mut history).await;
+        if let Some(c) = coordinator::current(&coordinator) {
+            for (uuid, ok, why) in &round.checked {
+                c.token_checked(uuid, *ok, why.as_deref());
             }
         }
+        if !round.readings.is_empty() {
+            peer.notify(ext::method::READING_PUBLISH, &ext::Readings { readings: round.readings });
+        }
+        if let Some(p) = &round.problem {
+            tracing::warn!("token checks can't run: {p}");
+        }
+        peer.notify(
+            ext::method::PLUGIN_STATUS,
+            &ext::PluginStatusReport {
+                problem: round.problem,
+                detail: json!({"claude": claude.bin, "accounts": managed.len(), "checked": history.len()}),
+            },
+        );
         tokio::select! {
-            _ = tokio::time::sleep(Duration::from_secs(600)) => {}
+            _ = tokio::time::sleep(Duration::from_secs(240)) => {}
             _ = applied.changed() => {}
         }
     }
