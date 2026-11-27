@@ -55,11 +55,11 @@ fn home() -> PathBuf {
     std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
 }
 
-fn config_dir() -> PathBuf {
+pub fn config_dir() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".config")).join("fleetlayer")
 }
 
-fn state_dir() -> PathBuf {
+pub fn state_dir() -> PathBuf {
     home().join(".local/state/fleetlayer")
 }
 
@@ -68,7 +68,7 @@ fn macos() -> bool {
 }
 
 /// A binary on PATH, or next to this one.
-fn find_bin(name: &str) -> anyhow::Result<PathBuf> {
+pub fn find_bin(name: &str) -> anyhow::Result<PathBuf> {
     if let Ok(me) = std::env::current_exe()
         && let Some(dir) = me.parent()
         && dir.join(name).is_file()
@@ -95,14 +95,14 @@ fn find_bin(name: &str) -> anyhow::Result<PathBuf> {
     )
 }
 
-fn random_hex(bytes: usize) -> anyhow::Result<String> {
+pub fn random_hex(bytes: usize) -> anyhow::Result<String> {
     let mut buf = vec![0u8; bytes];
     std::io::Read::read_exact(&mut std::fs::File::open("/dev/urandom")?, &mut buf)?;
     Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// Write `text` to `path` (mode `mode`) unless it exists. True when written.
-fn create(path: &Path, text: &str, mode: u32) -> anyhow::Result<bool> {
+pub fn create(path: &Path, text: &str, mode: u32) -> anyhow::Result<bool> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     if let Some(dir) = path.parent() {
@@ -118,13 +118,13 @@ fn create(path: &Path, text: &str, mode: u32) -> anyhow::Result<bool> {
     }
 }
 
-fn private_dir(path: &Path) -> anyhow::Result<()> {
+pub fn private_dir(path: &Path) -> anyhow::Result<()> {
     use std::os::unix::fs::DirBuilderExt;
     std::fs::DirBuilder::new().recursive(true).mode(0o700).create(path)?;
     Ok(())
 }
 
-fn run(cmd: &mut Command) -> anyhow::Result<String> {
+pub fn run(cmd: &mut Command) -> anyhow::Result<String> {
     let out = cmd.output().map_err(|e| anyhow::anyhow!("{cmd:?}: {e}"))?;
     if !out.status.success() {
         anyhow::bail!("{cmd:?}: {}", String::from_utf8_lossy(&out.stderr).trim());
@@ -132,7 +132,7 @@ fn run(cmd: &mut Command) -> anyhow::Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-fn yaml_str(s: &str) -> String {
+pub fn yaml_str(s: &str) -> String {
     serde_json::to_string(s).expect("a string serialises")
 }
 
@@ -147,7 +147,7 @@ pub struct Unit {
 
 impl Unit {
     /// `dev.fleetlayer.control`, or `dev.fleetlayer.<instance>.control` for a second instance.
-    fn label(&self) -> String {
+    pub fn label(&self) -> String {
         fleetlayer_protocol::local::launchd_label(self.name, fleetlayer_protocol::local::instance().as_deref())
     }
 
@@ -290,7 +290,7 @@ impl Unit {
     }
 }
 
-fn uid() -> String {
+pub fn uid() -> String {
     run(Command::new("id").arg("-u")).map(|s| s.trim().to_string()).unwrap_or_else(|_| "501".into())
 }
 
@@ -302,17 +302,59 @@ pub struct Layout {
 }
 
 impl Layout {
-    fn node_yaml(&self) -> PathBuf {
+    pub fn node_yaml(&self) -> PathBuf {
         std::env::var_os("FLEETLAYER_CONFIG").map(PathBuf::from).unwrap_or_else(|| self.config.join("node.yaml"))
     }
-    fn gateway_yaml(&self) -> PathBuf {
+    pub fn gateway_yaml(&self) -> PathBuf {
         self.config.join("gateway.yaml")
     }
-    fn node_token(&self) -> PathBuf {
+    pub fn node_token(&self) -> PathBuf {
         self.config.join("node-token")
     }
-    fn control(&self) -> PathBuf {
+    pub fn control(&self) -> PathBuf {
         self.state.join("control")
+    }
+    pub fn control_yaml(&self) -> PathBuf {
+        self.config.join("control.yaml")
+    }
+}
+
+/// The control plane's settings file: everything `serve` takes, so it moves as one file with its state folder.
+pub fn control_yaml_text(dir: &Path, port: u16) -> String {
+    format!(
+        "# Written by `fleetlayer up`. Yours to edit: `fleetlayer up` never overwrites it.\ndb: {}\nlisten: 127.0.0.1:{port}\n# Webhooks only: the one listener to expose to the internet.\nhooks_listen: 127.0.0.1:{}\nadmin_token_file: {}\naudit_key_file: {}\n# policy_files: [~/fleet/policy.yaml]\n",
+        yaml_str(&dir.join("control.db").display().to_string()),
+        port.saturating_add(1),
+        yaml_str(&dir.join("admin-token").display().to_string()),
+        yaml_str(&dir.join("audit-key").display().to_string()),
+    )
+}
+
+/// The control plane's user service: `fleetlayer-control --config control.yaml serve`.
+pub fn control_unit(control_bin: &Path, control_yaml: &Path) -> Unit {
+    Unit {
+        name: "control",
+        description: "Fleetlayer control plane",
+        args: vec![
+            control_bin.display().to_string(),
+            "--config".into(),
+            control_yaml.display().to_string(),
+            "serve".into(),
+        ],
+    }
+}
+
+/// The gateway's user service.
+pub fn gateway_unit(gateway_bin: &Path, gateway_yaml: &Path) -> Unit {
+    Unit {
+        name: "gateway",
+        description: "Fleetlayer gateway",
+        args: vec![
+            gateway_bin.display().to_string(),
+            "--config".into(),
+            gateway_yaml.display().to_string(),
+            "serve".into(),
+        ],
     }
 }
 
@@ -526,7 +568,7 @@ fn node_name(node_bin: &Path) -> anyhow::Result<String> {
 }
 
 /// A GET over plain TCP to 127.0.0.1, without pulling an HTTP client into the CLI. The body, if it answered 2xx.
-async fn local_get(port: u16, host: &str, path: &str) -> Option<String> {
+pub async fn local_get(port: u16, host: &str, path: &str) -> Option<String> {
     let mut s = tokio::time::timeout(Duration::from_secs(2), tokio::net::TcpStream::connect(("127.0.0.1", port)))
         .await
         .ok()?
@@ -680,24 +722,11 @@ pub async fn up(mut a: UpArgs) -> anyhow::Result<()> {
             create(&token_file, token.trim(), 0o600)?;
             println!("Enrolled this machine as node {name} in the control plane.");
         }
-        units.push(Unit {
-            name: "control",
-            description: "Fleetlayer control plane",
-            args: vec![
-                control_bin.display().to_string(),
-                "--db".into(),
-                db.display().to_string(),
-                "serve".into(),
-                "--listen".into(),
-                format!("127.0.0.1:{}", a.control_port),
-                "--hooks-listen".into(),
-                format!("127.0.0.1:{}", a.control_port.saturating_add(1)),
-                "--admin-token-file".into(),
-                dir.join("admin-token").display().to_string(),
-                "--audit-key-file".into(),
-                dir.join("audit-key").display().to_string(),
-            ],
-        });
+        let control_yaml = l.control_yaml();
+        if create(&control_yaml, &control_yaml_text(&dir, a.control_port), 0o600)? {
+            println!("Wrote {}.", control_yaml.display());
+        }
+        units.push(control_unit(control_bin, &control_yaml));
     } else if a.join.is_some() && !token_file.exists() {
         anyhow::bail!("--join needs the node's token: --token-file <file>");
     } else if let Some(u) = existing_control.filter(|_| a.join.is_none()) {
@@ -718,16 +747,7 @@ pub async fn up(mut a: UpArgs) -> anyhow::Result<()> {
             gateway_yaml.display()
         ));
     }
-    units.push(Unit {
-        name: "gateway",
-        description: "Fleetlayer gateway",
-        args: vec![
-            gateway_bin.display().to_string(),
-            "--config".into(),
-            gateway_yaml.display().to_string(),
-            "serve".into(),
-        ],
-    });
+    units.push(gateway_unit(&gateway_bin, &gateway_yaml));
 
     for u in &units {
         u.install()?;

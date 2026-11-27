@@ -22,6 +22,7 @@ mod policy;
 mod policy_files;
 mod readings;
 mod route;
+mod settings;
 mod signin;
 mod streams;
 mod summaries;
@@ -45,6 +46,10 @@ struct Cli {
     /// `~/.local/state/fleetlayer/control/control.db`, where `fleetlayer up` puts it.
     #[arg(long, global = true, env = "FLEETLAYER_CONTROL_DB")]
     db: Option<PathBuf>,
+    /// The settings file (`control.yaml`, below): the database and what `serve` would otherwise take as flags. A flag
+    /// given as well wins. Default: `~/.config/fleetlayer/control.yaml` when it exists and --db isn't given.
+    #[arg(long, global = true, env = "FLEETLAYER_CONTROL_CONFIG")]
+    config: Option<PathBuf>,
     /// The tenant (its slug) that people, teams, invites and agents commands act on; the deployment's first tenant
     /// when left out.
     #[arg(long, global = true, env = "FLEETLAYER_TENANT")]
@@ -61,11 +66,13 @@ enum Command {
     /// Run the control plane.
     Serve {
         /// The API and node links.
-        #[arg(long, env = "FLEETLAYER_CONTROL_LISTEN", default_value = "127.0.0.1:7600")]
-        listen: SocketAddr,
+        /// Default 127.0.0.1:7600.
+        #[arg(long, env = "FLEETLAYER_CONTROL_LISTEN")]
+        listen: Option<SocketAddr>,
         /// Webhooks only; the one listener to expose to the internet.
-        #[arg(long, env = "FLEETLAYER_CONTROL_HOOKS_LISTEN", default_value = "127.0.0.1:7601")]
-        hooks_listen: SocketAddr,
+        /// Default 127.0.0.1:7601.
+        #[arg(long, env = "FLEETLAYER_CONTROL_HOOKS_LISTEN")]
+        hooks_listen: Option<SocketAddr>,
         /// A file holding the admin token for the read API. Without one, the API refuses every call.
         #[arg(long, env = "FLEETLAYER_CONTROL_ADMIN_TOKEN_FILE")]
         admin_token_file: Option<PathBuf>,
@@ -537,15 +544,19 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    let settings = settings::Settings::load(cli.config.as_deref(), cli.db.is_some())?;
+    if cli.db.is_none() {
+        cli.db = settings.db.clone();
+    }
     // `acl test` reads only its files: it works anywhere, with no database (CI runs it in a clean checkout), and never
     // opens the one --db names.
     let offline = matches!(&cli.command, Command::Acl { command: AclCommand::Test { .. } });
     let read_only = reads_only(&cli.command);
     let open = |p: PathBuf| async move { if read_only { db::open_read_only(&p).await } else { db::open(&p).await } };
-    let db = match &cli.db {
-        _ if offline => db::open_memory().await?,
-        Some(p) => open(p.clone()).await?,
+    let db_path = match &cli.db {
+        _ if offline => None,
+        Some(p) => Some(p.clone()),
         None => {
             let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"));
             let path = default_db(std::path::Path::new("fleetlayer-control.db"), &home);
@@ -555,12 +566,28 @@ async fn main() -> anyhow::Result<()> {
                 "no control plane database at {} (pass --db, or set FLEETLAYER_CONTROL_DB)",
                 path.display()
             );
-            open(path).await?
+            Some(path)
         }
+    };
+    let db = match &db_path {
+        None => db::open_memory().await?,
+        Some(p) => open(p.clone()).await?,
     };
     let t = DEFAULT_TENANT;
     match cli.command {
         Command::Serve { listen, hooks_listen, admin_token_file, audit_key_file, audit_anchor_dir, policy_files } => {
+            let listen = listen.or(settings.listen).unwrap_or(([127, 0, 0, 1], 7600).into());
+            let hooks_listen = hooks_listen.or(settings.hooks_listen).unwrap_or(([127, 0, 0, 1], 7601).into());
+            let admin_token_file = admin_token_file.or(settings.admin_token_file.clone());
+            let audit_key_file = audit_key_file.or(settings.audit_key_file.clone());
+            let audit_anchor_dir = audit_anchor_dir.or(settings.audit_anchor_dir.clone());
+            let policy_files = if policy_files.is_empty() { settings.policy_files.clone() } else { policy_files };
+            let moved_to = db_path.as_deref().and_then(|p| p.parent()).map(|d| d.join(settings::MOVED_TO));
+            // Written by a move while this copy runs; one left from before this start is stale (a move that died).
+            if let Some(f) = moved_to.as_deref().filter(|f| f.exists()) {
+                tracing::warn!(file = %f.display(), "removing a moved-to file left by an unfinished move");
+                let _ = std::fs::remove_file(f);
+            }
             let audit_key = read_key(audit_key_file.as_deref())?;
             let admin_token_hash = match admin_token_file {
                 Some(f) => Some(db::hash(std::fs::read_to_string(&f)?.trim())),
@@ -586,7 +613,7 @@ async fn main() -> anyhow::Result<()> {
                 policy_files::apply_all(&app, &policy_files).await;
                 tokio::spawn(policy_files::run(app.clone(), policy_files));
             }
-            serve(app, listen, hooks_listen).await
+            serve(app, listen, hooks_listen, moved_to).await
         }
         Command::Node { command: NodeCommand::Add { name, owner, no_admit } } => {
             let tenant = people::tenant_or_first(&db, cli.tenant.as_deref()).await?;
@@ -1289,7 +1316,12 @@ fn is_v2(path: &std::path::Path) -> bool {
         .is_some_and(|v| v["version"].as_i64() == Some(2))
 }
 
-async fn serve(app: Arc<App>, listen: SocketAddr, hooks_listen: SocketAddr) -> anyhow::Result<()> {
+async fn serve(
+    app: Arc<App>,
+    listen: SocketAddr,
+    hooks_listen: SocketAddr,
+    moved_to: Option<PathBuf>,
+) -> anyhow::Result<()> {
     let api = Router::new()
         .route("/healthz", get(api::healthz))
         .route("/v1/link", get(link::upgrade))
@@ -1323,6 +1355,13 @@ async fn serve(app: Arc<App>, listen: SocketAddr, hooks_listen: SocketAddr) -> a
         let app = app.clone();
         async move {
             shutdown_signal().await;
+            // `fleetlayer move control` leaves the new address here before stopping this copy: every linked node is
+            // told, tries it, and keeps it once it links there (else it comes back here).
+            if let Some(url) = moved_to.as_deref().and_then(settings::read_moved_to) {
+                let n = app.links.tell_moved(&url).await;
+                tracing::info!(%url, nodes = n, "moved: told the linked nodes the new address");
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
             tracing::info!("shutting down: closing node links and streams");
             app.links.close_all();
         }

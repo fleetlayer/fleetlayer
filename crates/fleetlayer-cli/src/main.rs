@@ -2,6 +2,7 @@
 
 mod mcp_bridge;
 mod pages;
+mod relocate;
 mod secrets;
 #[cfg(test)]
 mod skill_check;
@@ -38,6 +39,17 @@ enum Command {
     Up(up::UpArgs),
     /// Stop what `up` started. Every file stays.
     Down,
+    /// Move one piece (control, node, gateway, hub, pages, sign-in, any plugin) to another machine over SSH, keeping
+    /// its identity, keys and data: stop it here, copy it sealed and checked, start it there, point everything at it,
+    /// then remove the copy here. `--dry-run` prints the plan. docs/guides/moving.md.
+    Move(relocate::MoveArgs),
+    /// The destination's half of `fleetlayer move`, run over SSH.
+    #[command(name = "move-receive", hide = true)]
+    MoveReceive {
+        step: String,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Every service the gateway serves: its address and where it really runs.
     Services {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
@@ -723,6 +735,11 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Down => return up::down(),
         Command::Services { rest } => return up::services(rest),
+        Command::MoveReceive { step, args } => return relocate::receive(step, args).await,
+        Command::Move(_) => {
+            let Command::Move(a) = cli.command else { unreachable!() };
+            return relocate::run(a).await;
+        }
         _ => {}
     }
     if let Command::Secrets { command } = &cli.command
@@ -759,7 +776,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         json: cli.json,
     };
     match cli.command {
-        Command::Up(_) | Command::Down | Command::Services { .. } => unreachable!("handled before connecting"),
+        Command::Up(_) | Command::Down | Command::Services { .. } | Command::Move(_) | Command::MoveReceive { .. } => {
+            unreachable!("handled before connecting")
+        }
         Command::Status => {
             let v: Value = peer.request("node/status", &json!({})).await?;
             if cli.json {

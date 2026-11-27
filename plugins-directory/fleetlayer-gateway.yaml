@@ -24,3 +24,4 @@ description: |
   On a laptop it gives each service an address (`http://pages.localhost:7680`), checks each one's health every 30
   seconds, takes Gatus-style heartbeats, and tells you and an agent when something stops. On a server it writes
   Traefik and Gatus config from the same list.
+  To run it on another machine later, `fleetlayer move gateway <machine>` moves it with its keys and data.

@@ -380,7 +380,8 @@ pub(crate) async fn connect_stream(
 ) -> anyhow::Result<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>> {
     let control = node.control.as_ref().ok_or_else(|| anyhow::anyhow!("no control plane configured"))?;
     let token = std::fs::read_to_string(&control.token_file)?;
-    let mut req = stream_url(&control.url, id, side).into_client_request()?;
+    let url = node.link.url().await.unwrap_or_else(|| control.url.clone());
+    let mut req = stream_url(&url, id, side).into_client_request()?;
     req.headers_mut().insert("authorization", format!("Bearer {}", token.trim()).parse()?);
     let (ws, _) = tokio::time::timeout(Duration::from_secs(15), tokio_tungstenite::connect_async(req))
         .await

@@ -32,3 +32,4 @@ docs: plugins/pages
 description: |
   A page is a folder with `index.md` and its images, written by any agent; there's no publish step. The same plugin
   hosts apps. `fleetlayer up` starts it on a laptop with one space.
+  To run it on another machine later, `fleetlayer move pages <machine>` moves it with its keys and data.

@@ -146,16 +146,15 @@ other sites and open behind a notice).
 
 ### Moving it
 
-Every part of Fleetlayer can move between machines (a laptop today, a home server or a VPS later):
+`fleetlayer move pages <machine>` (or `apps`) moves it to another machine's node with its login key and its apps,
+and routes `pages` on this machine's gateway to it ([Moving a piece](../guides/moving.md)):
 
 - **Settings** are the plugin's section of the node's config: nothing about the machine is assumed. The addresses
-  (`base_url`, `apps_domain`) and folders are settings.
-- **State:** none yet that needs moving: sessions are kept in memory (moving signs everyone out once). The apps
-  database (step 2) will live in one state folder, set in the config, moved with it.
-- **The vault folders move with the share**, not with the service: the new machine mounts or syncs the same folders.
-- To move: install `fleetlayer-pages` on the new machine, copy the plugin's config section and the login file, mount
-  the vault folders there (with their `.fleetlayer-space` markers), point the proxy and DNS at it, check `/healthz`,
-  then stop the old one.
+  (`base_url`, `apps_domain`) and folders are settings; the move rewrites the folders for the other machine's home
+  and `listen` for its address.
+- **State:** the login file. Sessions are kept in memory, so moving signs everyone out once.
+- **The vault folders move with the share**, not with the service: a space folder the other machine already has
+  (mounted or synced, with its `.fleetlayer-space` marker) is left alone; one it hasn't is copied.
 
 ### Who writes where
 

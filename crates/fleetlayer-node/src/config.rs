@@ -190,6 +190,21 @@ impl NodeConfig {
     }
 }
 
+/// Save a moved control plane's link URL as `control.url` in node.yaml, keeping the rest of the file as it is (written
+/// to a temporary file and renamed into place, with the same permissions).
+pub fn set_control_url(path: &Path, url: &str) -> anyhow::Result<()> {
+    let text = std::fs::read_to_string(path)?;
+    let out = fleetlayer_protocol::yaml_text::set_in_section(&text, "control", "url", url)
+        .ok_or_else(|| anyhow::anyhow!("no control: block with a url: line in it"))?;
+    let check: NodeConfig = yaml_serde::from_str(&out)?;
+    anyhow::ensure!(check.control.is_some_and(|c| c.url == url), "the edit didn't take");
+    let tmp = path.with_extension("yaml.moving");
+    std::fs::write(&tmp, out)?;
+    std::fs::set_permissions(&tmp, std::fs::metadata(path)?.permissions())?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

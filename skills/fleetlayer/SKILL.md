@@ -187,6 +187,23 @@ it: tell your person which reference you need and why (`fleetlayer secrets grant
 redacts delivered secrets from your messages and summaries; if it does, it raises an alert to rotate that secret, so
 say so to your person too.
 
+## Moving a piece to another machine
+
+When the person asks to move a piece of Fleetlayer to another machine ("move pages to the server"), use
+`fleetlayer move <piece> <machine>`. The piece is `control`, `node`, `gateway`, `hub`, `pages` (with its apps),
+`sign-in`, or a plugin's name in node.yaml. The machine is an SSH destination with Fleetlayer installed. Run it with
+`--dry-run` first and show the person the plan, notes included. Then run it without. It stops the piece here, copies
+its files sealed and checked, starts it there, waits until it's healthy, points this machine at the new address, and
+only then deletes the copy here (`--keep-old` keeps it). If it fails before it's healthy, it puts everything back and
+says so.
+
+- A plugin needs a node on the other machine first, linked to the same control plane.
+- Behind a proxy with TLS, pass the public address with `--url` (`wss://control.example/v1/link`,
+  `https://pages.example`). `--port` and `--listen` set where it listens there.
+- Read the plan's notes aloud to the person: settings that name this machine's loopback, space folders that aren't
+  copied, and the passkey warning for sign-in.
+- The guide is docs/guides/moving.md.
+
 ## Files synced from another machine
 
 Skills and instructions may be kept the same on every machine by the file-sync plugin, from one source machine. A copy

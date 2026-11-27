@@ -59,8 +59,9 @@ and doesn't store it. Only numbers travel the other way: usage, health and sessi
 
 Each piece keeps all its state in one folder and its settings in one file, and never assumes it shares a machine with
 another piece. So you can start with everything on your laptop (`fleetlayer up`), then move the control plane, pages
-or the sign-in hub to an always-on machine when you outgrow it: stop it, copy its folder, start it there, point the
-others at its new address. A node keeps its key through a move, so secrets sealed to it stay readable.
+or the sign-in hub to an always-on machine when you outgrow it with one command (`fleetlayer move pages server`): it
+stops the piece, copies its folder sealed and checked, starts it there and points the others at its new address
+([Moving a piece](guides/moving.md)). A node keeps its key through a move, so secrets sealed to it stay readable.
 
 ## Rules that shape the design
 
@@ -77,5 +78,5 @@ others at its new address. A node keeps its key through a move, so secrets seale
 
 One sign-in for every service you run, with your company's provider or a simple built-in directory
 ([Sign-in and SSO](sso.md)); one deployment shared by a household or a team, each person with their own agents and
-data; reaching every session from your phone with one pairing; moving a piece with one command; and a server setup an
-agent can build for you on a fresh machine.
+data; reaching every session from your phone with one pairing; and a server setup an agent can build for you on a fresh
+machine.

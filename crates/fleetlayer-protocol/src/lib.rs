@@ -15,6 +15,7 @@ pub mod local;
 pub mod names;
 pub mod rpc;
 pub mod summary;
+pub mod yaml_text;
 
 /// The version of Fleetlayer's extensions this crate speaks (`protocol` in `fleetlayer.dev/node` and
 /// `fleetlayer.dev/plugin`).

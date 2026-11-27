@@ -111,6 +111,10 @@ pub mod method {
     pub const WINDOW: &str = "link/window";
     /// Node → control plane: a role's node finished closing a window (or says why it couldn't). `WindowClosed` → `{}`.
     pub const WINDOW_CLOSED: &str = "link/window_closed";
+    /// Control plane → node (notification), as it stops after `fleetlayer move control`: it now answers at
+    /// `Moved.url`. The node tries that address and keeps it (writing it to node.yaml) once it links there; until
+    /// then, and if it never answers within an hour, it keeps linking to the address it has.
+    pub const MOVED: &str = "link/moved";
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,6 +130,12 @@ pub struct Hello {
     /// Roles whose windows this node watches (its config's `windows:`), to run hooks when one opens or closes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub windows: Vec<String>,
+}
+
+/// `link/moved`: the control plane's new link URL (`wss://…/v1/link`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Moved {
+    pub url: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

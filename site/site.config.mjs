@@ -29,6 +29,7 @@ export const pages = [
   },
   { file: "guides/laptop", group: "Guides", label: "Start on your laptop" },
   { file: "guides/node-services", group: "Guides", label: "Add a machine" },
+  { file: "guides/moving", group: "Guides", label: "Move a piece to another machine" },
   { file: "guides/agents-vm", group: "Guides", label: "A server VM for your agents" },
   { file: "guides/day-to-day", group: "Guides", label: "Watch, steer and message" },
   { file: "guides/ci-results", group: "Guides", label: "CI results to the right agent" },

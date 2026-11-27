@@ -41,3 +41,4 @@ description: |
   pages, and most self-hosted apps. Who may use which service comes from the same access policy as your agents.
   Experimental: passkeys, invites, signing in to services, the admin pages, and signing in with Google Workspace or
   any OpenID Connect provider work; signing out everywhere at once and Workspace groups as teams come next.
+  To run it on another machine later, `fleetlayer move sign-in <machine>` moves it with its keys and data.

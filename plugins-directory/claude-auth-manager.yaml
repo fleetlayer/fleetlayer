@@ -32,3 +32,4 @@ description: |
   per account, polls usage, and sends the tokens to the machines you list. On every machine, the node half writes the
   tokens into account slots, checks each one works, and serves the Claude account rotator's coordinator. Early: it
   works, and it will be redesigned.
+  To run it on another machine later, `fleetlayer move hub <machine>` moves it with its keys and data.

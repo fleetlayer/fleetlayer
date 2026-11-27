@@ -66,6 +66,8 @@ enum Command {
 /// Everything the node's tasks share.
 pub struct Node {
     pub name: String,
+    /// node.yaml's path, for the one thing the node writes there: a moved control plane's address.
+    pub config_path: PathBuf,
     pub machine: String,
     pub user: String,
     pub home: PathBuf,
@@ -150,13 +152,13 @@ async fn main() -> anyhow::Result<()> {
             println!("{}", yaml_serde::to_string(&serde_json::json!({"plugins": cfg.plugins}))?);
             Ok(())
         }
-        Command::Run => run(cfg).await,
+        Command::Run => run(cfg, path).await,
         Command::Install { no_start } => service::install(&config::home(), &path, !no_start),
         Command::Uninstall => service::uninstall(&config::home()),
     }
 }
 
-async fn run(cfg: NodeConfig) -> anyhow::Result<()> {
+async fn run(cfg: NodeConfig, config_path: PathBuf) -> anyhow::Result<()> {
     let mut names = std::collections::HashSet::new();
     for p in &cfg.plugins {
         anyhow::ensure!(names.insert(p.name.clone()), "two plugins are called {} in node.yaml", p.name);
@@ -169,6 +171,7 @@ async fn run(cfg: NodeConfig) -> anyhow::Result<()> {
     let key = keys::load_or_create(&config::config_dir().join("node-key"))?;
     let node = Arc::new(Node {
         name: cfg.name(),
+        config_path,
         machine: cfg.machine(),
         user: cfg.user(),
         home: config::home(),

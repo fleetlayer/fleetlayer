@@ -33,7 +33,14 @@ pub struct Link {
     held: Mutex<std::collections::VecDeque<(String, Value)>>,
     /// The local address the link goes out from, while linked: which network this machine is on now.
     local_ip: Mutex<Option<std::net::IpAddr>>,
+    /// The control plane's link URL in use now, when it differs from node.yaml's (it moved, and saving failed).
+    url: Mutex<Option<String>>,
+    /// Where the control plane said it moved to (`link/moved`), and when: tried first for an hour.
+    moved_to: Mutex<Option<(String, std::time::Instant)>>,
 }
+
+/// How long a `link/moved` address is tried before the node gives up on it and stays with the one it has.
+const MOVED_TRY_FOR: Duration = Duration::from_secs(3600);
 
 impl Link {
     pub async fn peer(&self) -> Option<Peer> {
@@ -70,28 +77,72 @@ impl Link {
         *self.local_ip.lock().await
     }
 
+    /// The control plane's link URL now: a moved one once linked there, else None (node.yaml's).
+    pub async fn url(&self) -> Option<String> {
+        self.url.lock().await.clone()
+    }
+
+    async fn moved_to(&self) -> Option<String> {
+        let mut m = self.moved_to.lock().await;
+        if m.as_ref().is_some_and(|(_, at)| at.elapsed() > MOVED_TRY_FOR) {
+            tracing::warn!("the control plane's new address never answered; staying with the old one");
+            *m = None;
+        }
+        m.as_ref().map(|(u, _)| u.clone())
+    }
+
     pub async fn state(&self) -> Value {
         json!({"connected": self.peer().await.is_some(), "lastError": *self.last_error.lock().await})
     }
 }
 
-/// Stay linked for as long as the node runs.
-pub async fn run(node: Arc<Node>, cfg: ControlConfig) {
+/// Stay linked for as long as the node runs. After `link/moved`, the new address is tried first, and kept once it
+/// links; the old one is still tried after it, so a move that's rolled back costs nothing.
+pub async fn run(node: Arc<Node>, mut cfg: ControlConfig) {
     let mut backoff = Duration::from_secs(1);
     loop {
-        match connect_once(&node, &cfg).await {
-            Ok(()) => {
-                backoff = Duration::from_secs(1);
-                tracing::warn!("the control plane link closed; reconnecting");
-            }
-            Err(e) => {
-                tracing::warn!("linking to the control plane: {e}");
-                *node.link.last_error.lock().await = Some(e.to_string());
+        let mut urls = vec![];
+        if let Some(m) = node.link.moved_to().await.filter(|m| *m != cfg.url) {
+            urls.push(m);
+        }
+        urls.push(cfg.url.clone());
+        for url in urls {
+            let moved = url != cfg.url;
+            let attempt = ControlConfig { url: url.clone(), ..cfg.clone() };
+            match connect_once(&node, &attempt).await {
+                Ok(()) => {
+                    backoff = Duration::from_secs(1);
+                    if moved {
+                        cfg.url = url;
+                    }
+                    tracing::warn!("the control plane link closed; reconnecting");
+                    break;
+                }
+                Err(e) => {
+                    tracing::warn!(%url, "linking to the control plane: {e}");
+                    *node.link.last_error.lock().await = Some(e.to_string());
+                }
             }
         }
         *node.link.peer.lock().await = None;
         tokio::time::sleep(backoff).await;
         backoff = (backoff * 2).min(MAX_BACKOFF);
+    }
+}
+
+/// The control plane moved and this node has linked there: keep the address, in node.yaml when it can be written.
+async fn linked_at_moved(node: &Node, url: &str) {
+    *node.link.moved_to.lock().await = None;
+    *node.link.url.lock().await = Some(url.to_string());
+    match crate::config::set_control_url(&node.config_path, url) {
+        Ok(()) => {
+            tracing::info!(%url, path = %node.config_path.display(), "the control plane moved: saved its new address")
+        }
+        Err(e) => tracing::warn!(
+            %url,
+            "the control plane moved, but its new address couldn't be saved to {} ({e}): set control.url there by hand",
+            node.config_path.display()
+        ),
     }
 }
 
@@ -160,6 +211,9 @@ async fn connect_once(node: &Arc<Node>, cfg: &ControlConfig) -> anyhow::Result<(
         );
     }
     tracing::info!(url = %cfg.url, node = %welcome.node, "linked to the control plane");
+    if node.link.moved_to.lock().await.as_ref().is_some_and(|(u, _)| *u == cfg.url) {
+        linked_at_moved(node, &cfg.url).await;
+    }
     *node.link.peer.lock().await = Some(peer.clone());
     *node.link.last_error.lock().await = None;
 
@@ -248,6 +302,16 @@ impl Handler for FromControl {
     }
 
     async fn notification(&self, _peer: &Peer, method: &str, p: Value) {
+        if method == l::method::MOVED {
+            match serde_json::from_value::<l::Moved>(p) {
+                Ok(m) if m.url.starts_with("ws://") || m.url.starts_with("wss://") => {
+                    tracing::info!(url = %m.url, "the control plane is moving; trying its new address next");
+                    *self.node.link.moved_to.lock().await = Some((m.url, std::time::Instant::now()));
+                }
+                _ => tracing::warn!("ignored a link/moved without a ws:// or wss:// url"),
+            }
+            return;
+        }
         if method == l::method::READING_UPDATE {
             crate::readings::update(&self.node, &p).await;
             return;

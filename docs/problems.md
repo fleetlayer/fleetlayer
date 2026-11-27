@@ -108,8 +108,8 @@ Marked **(planned)** where it isn't built yet.
 21a. **Starting needs a server, or outgrowing a laptop means starting over.** Start with everything on your Mac and
     move any one piece (the control plane, sign-in, the Claude hub, pages) to a home server or a VPS when you outgrow
     it, by asking an agent: each piece keeps its state in one place and has a tested move. `fleetlayer up` starts
-    everything on a laptop at `<name>.localhost` with a status page, and the moves are written up
-    ([Start on your laptop](guides/laptop.md)); a tested move for each piece is **(planned)**
+    everything on a laptop at `<name>.localhost` with a status page, and `fleetlayer move <piece> <machine>` moves
+    one with its keys and data, tested for each piece ([Moving a piece](guides/moving.md))
 22. **Keeping every machine up to date.** Releases with notes, signed builds and self-update.
 
 ## The server setup (planned: `fleetlayer/server-iac-example`)

@@ -447,8 +447,9 @@ Every component can move (a Mac first, a home server or VPS later), and the sign
 
 - **All its state is one directory** (`dir`: `people.json`, `keys/`, sessions) and **all its settings one file**. It
   assumes no hostname: the issuer URL, the passkey relying party ID and the listen address are settings.
-- **Moving to another machine with the same address** (`signin.example` now points at the new machine): stop it,
-  copy the directory and the settings file, start it there. The signing key moves with it, so tokens services hold
+- **Moving to another machine with the same address** (`signin.example` now points at the new machine):
+  `fleetlayer move sign-in <machine>` stops it, copies the directory and its token, and starts it there
+  ([Moving a piece](guides/moving.md)). The signing key moves with it, so tokens services hold
   stay valid, passkeys keep working and clients change nothing. A test moves a directory between two instances and
   signs in with an existing passkey and token.
 - **Changing its address** is the hard case, because **a passkey is bound to the relying party ID it was made for**

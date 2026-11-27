@@ -43,7 +43,7 @@ change an existing gateway.yaml, so set `alerts.session` there), `--no-hub`, `--
 | Piece | Address | Its files |
 |---|---|---|
 | Gateway and status page | `http://fleetlayer.localhost:7680` | `~/.config/fleetlayer/gateway.yaml`, `~/.local/state/fleetlayer/gateway/` |
-| Control plane | `http://control.localhost:7680` | `~/.local/state/fleetlayer/control/` |
+| Control plane | `http://control.localhost:7680` | `~/.config/fleetlayer/control.yaml`, `~/.local/state/fleetlayer/control/` |
 | Node | (no web page: `fleetlayer status`) | `~/.config/fleetlayer/node.yaml`, `node-key`, `node-token` |
 | Claude sign-in hub | `http://claude-hub.localhost:7680` | `~/.local/state/fleetlayer/claude-hub/` |
 | Pages and apps | `http://pages.localhost:7680`, apps at `<app>--<space>.apps.localhost:7680` | `~/Fleetlayer/personal/` |
@@ -108,22 +108,18 @@ Who watches the gateway: launchd or systemd restart it, and the node's health in
 
 ## Moving a piece to a server
 
-Each piece keeps its state in one folder and its settings in one file, so a move is: stop it, copy the folder, start it
-on the other machine, point the laptop at its new address.
+Each piece keeps its state in one folder and its settings in one file, so any of them can move to an always-on
+machine with one command, keeping its identity, keys and data:
 
-- **Pages, the hub, any plugin:** run it on the server's node, then on the laptop either leave it out of node.yaml or
-  hide it, and route its name to the new address in gateway.yaml:
+```sh
+fleetlayer move pages server --dry-run   # the plan
+fleetlayer move pages server             # control, node, gateway, hub, pages, sign-in, or any plugin
+```
 
-  ```yaml
-  services:
-    pages: { url: "http://10.0.0.5:7670", health: /healthz }
-  ```
+It stops the piece here, copies it sealed and checked, starts it there, and points this machine at its new address: the
+gateway routes `pages` there, so `http://pages.localhost:7680` keeps working here. [Moving a piece](moving.md) has the
+details: what each piece carries, addresses, the control plane's nodes following it, and what happens if it fails.
 
-  `http://pages.localhost:7680` keeps working on the laptop, now served from the server. On the server, its own proxy
-  serves it at its real name (below).
-- **The control plane:** `fleetlayer down`, copy `~/.local/state/fleetlayer/control/` to the server, start
-  `fleetlayer-control serve` there behind TLS, then set `control.url` in each node's node.yaml to `wss://…/v1/link`.
-  Nodes keep their keys and tokens.
 - **Joining a fleet that already has a control plane:** on the server, `fleetlayer-control node add <laptop name>`
   prints a token; on the laptop, save it to a file and run
   `fleetlayer up --join wss://control.example/v1/link --token-file <file>`. No control plane starts on the laptop.

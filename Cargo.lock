@@ -1749,6 +1749,7 @@ dependencies = [
 name = "fleetlayer-cli"
 version = "0.3.13"
 dependencies = [
+ "age",
  "anyhow",
  "async-trait",
  "base64 0.23.1",
@@ -2019,6 +2020,7 @@ dependencies = [
  "jiff 1.0.3",
  "serde",
  "serde_json",
+ "yaml_serde",
 ]
 
 [[package]]

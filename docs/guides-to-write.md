@@ -762,3 +762,15 @@ managers, machines that sleep.
   destination leaves no copy to scrub, so stage it; a hit means the value already went to the model provider, so
   rotate it; already-synced archives need one backfill pass. Written: `docs/credentials.md` ("Scrubbing what leaves a
   node"). To write: a guide with a staged rsync hook and the backfill.
+- **Moving a self-hosted service to another machine without losing its identity.** A laptop that runs everything
+  outgrows itself, and moving a piece by hand goes wrong in quiet ways. A live SQLite database copied mid-write is
+  corrupt, and SQLite removes its `-wal`/`-shm` files as it closes, so the file list has to be taken again after the
+  stop. Absolute paths in settings point at the old home folder (`/Users/me` vs `/home/me`). A node that defaults
+  its name to the hostname comes back as a different node, so pin `name:`. Every client still points at the old
+  address. Secrets end up in a tarball in `/tmp`. A service started over SSH binds to an address that only works by
+  accident (or to every interface). The way that works: stop first; seal the copy to a key the destination makes for
+  this move; check every file by SHA-256 before moving any into place, and never write over a file that's different;
+  rewrite home-folder paths; bind to the address SSH came in on (`$SSH_CONNECTION`); health-check the new copy; only
+  then repoint and delete the old one; undo both sides on failure. For a control plane, the old copy tells linked
+  nodes the new address as it stops, and nodes keep it only once they've linked there. Where it lives:
+  `docs/guides/moving.md`, `crates/fleetlayer-cli/src/relocate/`.

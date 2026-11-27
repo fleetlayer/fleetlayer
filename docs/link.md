@@ -47,6 +47,7 @@ where `meta` is the `fleetlayer.dev/session` object from protocol section 4.
 | `link/pages_serve` | `{streamId, space, name, new?, date?, caller}` → `{}`. The node runs its pages plugin's `receive` command on stream `streamId` (`docs/plugins/pages.md`, "From another machine"). |
 | `link/session_serve` | `{tab?, cwd?, harness?, prompt?, resume?, caller}` → `{node, tab, address, sessionId, promptError}`. The node starts the session as [protocol.md](protocol.md#starting-sessions) describes, within two and a half minutes. |
 | `link/session_act_serve` | `{session, action, prompt?, answers?, caller}` → `{node, sessionId, tab, done}`. The node closes the session, or answers its prompt after checking on screen that the same prompt shows (`-32015` when not). |
+| `link/moved` | notification, `{url}`: the control plane has moved to this `ws://` or `wss://` link URL (`fleetlayer move control`). It's sent as the old copy stops. The node tries the new address first and the old one after it; once it links at the new one it saves it as `control.url` in node.yaml. If the new address never answers within an hour, the node stops trying it. From v0.3.13. |
 
 ## Access control
 

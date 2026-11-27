@@ -77,6 +77,12 @@ impl Links {
         until_closing(&mut self.closing()).await;
     }
 
+    /// Tell every linked node the control plane now answers at `url` (`link/moved`). How many were told.
+    pub async fn tell_moved(&self, url: &str) -> usize {
+        let nodes = self.nodes.lock().await;
+        nodes.values().filter(|c| c.peer.notify(l::method::MOVED, &l::Moved { url: url.to_string() })).count()
+    }
+
     pub async fn peer(&self, tenant: &str, node: &str) -> Option<Peer> {
         self.nodes.lock().await.get(&(tenant.to_string(), node.to_string())).map(|c| c.peer.clone())
     }

@@ -139,7 +139,9 @@ of its own, with its own node.
 
 ## Moving it
 
-All its state is the state directory, and its settings are the one file. Stop the node, copy both to the new machine
-(the same paths, or set `settings` and `state_dir`), add the plugin to that node's `node.yaml`, and start it. Fires
+All its state is the state directory, and its settings are the one file. `fleetlayer move scheduler <machine>`
+carries both to that machine's node ([Moving a piece](../guides/moving.md)); by hand: stop the node, copy both to the
+new machine (the same paths, or set `settings` and `state_dir`), add the plugin to that node's `node.yaml`, and start
+it. Fires
 due while it was stopped are handled by `catch_up`. Entries with a bare `<tab>` in `to` now look on the new node first,
 so write `<tab>@<node>` for a session on a particular machine.
