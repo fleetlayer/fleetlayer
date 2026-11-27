@@ -86,6 +86,12 @@ Marked **(planned)** where it isn't built yet.
   plain folders in your synced vault, written by any agent or model; Fleetlayer hosts whatever is there, with access
   per space. **(planned)**
 
+### Many people
+
+- **Every person who joins needs their own servers and setup.** One deployment serves a team or a household: each
+  person signs in separately, brings their own accounts and tools, and owns their agents, spaces and data, private by
+  default and shared on purpose. **(planned)**
+
 ### Running it
 
 20. **Background things stop working and nobody notices.** Every daemon, sync and scheduled job reports a heartbeat
