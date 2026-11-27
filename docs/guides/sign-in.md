@@ -16,6 +16,10 @@ The shape:
   request.
 - **One rule per service** in the policy says who may sign in to it.
 
+Status: `fleetlayer-signin` is experimental. Passkeys, invites, OpenID Connect services and signing in with your
+company's provider arrived in v0.3.9, and signing out everywhere (step 6) in v0.3.11. Forward-auth (step 5) and a
+provider's groups as teams (step 7) arrive in v0.3.12.
+
 Your agent does the steps on the server. The parts only you can do are marked **You:**. The reference for every
 setting is [Sign-in](../plugins/signin.md), and the design behind it is [Sign-in and SSO](../sso.md).
 
@@ -123,7 +127,7 @@ still the service's own business, unless it asks Fleetlayer ([For a service](../
 
 ## 5. A service that can't sign people in itself: forward-auth
 
-For a service with no OpenID Connect at all (a dashboard with no accounts, an admin tool), the reverse proxy asks the
+From v0.3.12. For a service with no OpenID Connect at all (a dashboard with no accounts, an admin tool), the reverse proxy asks the
 sign-in service about every request and lets it through only for people the policy allows. In the sign-in settings:
 
 ```yaml
@@ -182,7 +186,7 @@ Forward-auth services are signed out at once.
 ## 7. Your company's sign-in, and its groups
 
 A company's people can sign in with their Google Workspace or another OpenID Connect provider (Okta, Entra, Authentik)
-instead of a passkey, and the provider's groups can put them in your teams. Your agent adds an `upstreams` entry
+instead of a passkey, and the provider's groups can put them in your teams. (Groups as teams arrive in v0.3.12.) Your agent adds an `upstreams` entry
 ([Signing in with Google Workspace](../plugins/signin.md#signing-in-with-google-workspace-or-another-provider)).
 **You:** create the OAuth client in the provider's console, and for Google groups, the service account and its admin
 role, following the steps there.
