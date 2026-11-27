@@ -4,9 +4,10 @@
 #   scripts/release/sign-macos.sh <folder> <binary>...
 #
 # release.yml runs this on the macOS builds, before the tarball is made. A Developer ID signature gives each binary
-# an identity that stays the same from one release to the next (the team plus the identifier set here), so macOS keeps
-# a permission the person granted (Files and Folders, Local Network, the keychain) across upgrades. An unsigned binary
-# is known to macOS only by its path and its bytes, and both change with every release.
+# an identity that stays the same from one release to the next (the team plus the identifier set here). macOS files a
+# permission the person granted (Files and Folders, Local Network) under the binary's path and checks that identity,
+# so a new release at the same path keeps the permission; an unsigned one is checked by its exact bytes and never
+# does. A release at a new path is asked again either way (docs/releasing.md).
 #
 # Secrets, all optional (docs/releasing.md):
 #   CODESIGN_CERTIFICATE            the Developer ID Application certificate and its key, a .p12, base64-encoded

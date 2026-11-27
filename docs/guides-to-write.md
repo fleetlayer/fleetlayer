@@ -53,19 +53,25 @@ managers, machines that sleep.
   node retries with backoff, so it usually links once the person allows the prompt. If a fresh install keeps failing
   that way, check System Settings > Privacy & Security > Local Network. Seen installing the first Mac node, 26 Nov 2026.
   Written: `docs/guides/node-services.md`.
-- **macOS asks for the same permission again after every upgrade of an unsigned program.** macOS stores a privacy
-  answer (Files and Folders, Local Network) for an unsigned or ad-hoc signed binary by its path and code hash, and
-  each release has a new path (`~/.local/lib/fleetlayer/<version>/`) and new bytes. The prompt names the program
-  launchd started (the node), not the tool it runs, and the tool's call hangs until someone answers. Solved by signing
-  the macOS release binaries with a Developer ID: macOS then stores the designated requirement (team plus identifier),
-  which is the same in every release. Three things make it work: an explicit `--identifier` per binary (the linker's
-  default, `fleetlayer_node-<hash>`, changes every build), the hardened runtime (Apple won't notarise without it; Rust
-  binaries that start other programs need no entitlements), and `--timestamp`. Bare binaries can't be stapled, so
-  notarise a zip of them and let macOS look the ticket up online; curl and the node's update don't mark files as
-  downloaded, so they never need the lookup. In CI: a temporary keychain, `security set-key-partition-list` or
-  codesign waits for a dialog, and check the submission's status, not notarytool's exit code. The first signed
-  release still asks once, since the old answer belonged to a path. Where it lives: `scripts/release/sign-macos.sh`,
-  `docs/releasing.md`. Written: `docs/guides/shared-folders.md` (section 3).
+- **macOS asks for the same permission again after every upgrade, and signing alone doesn't stop it.** For a
+  command-line binary (no app bundle), macOS stores a privacy answer (Files and Folders, Local Network) under the
+  binary's real path, symlinks resolved, plus a check of the code found there: the exact code hash for an unsigned or
+  ad-hoc signed binary, the designated requirement (team plus identifier) for a Developer ID one. The prompt names
+  the program launchd started (the node), not the tool it runs, and the tool's call hangs until someone answers.
+  Tested with two signed, notarised releases, 28 Nov 2026: the second release in its own versioned folder was asked
+  again, although its designated requirement was identical; a different signed build copied to a path that already
+  had the permission was not asked. So it takes both: sign the builds, and keep the binary at one path across
+  upgrades (replace the files in a fixed folder; a symlink to a versioned folder doesn't count). Not done yet in
+  `install.sh` and the node's update, which use `~/.local/lib/fleetlayer/<version>/`. Untested: an app bundle, which
+  macOS knows by bundle ID. For the signing: an explicit `--identifier` per binary (the linker's default,
+  `fleetlayer_node-<hash>`, changes every build), the hardened runtime (Apple won't notarise without it; Rust binaries
+  that start other programs need no entitlements), and `--timestamp`. Bare binaries can't be stapled, so notarise a
+  zip of them and let macOS look the ticket up online; curl and the node's update don't mark files as downloaded, so
+  they never need the lookup. In CI: a temporary keychain, `security set-key-partition-list` or codesign waits for a
+  dialog, and check the submission's status, not notarytool's exit code. To see what macOS decided:
+  `log show --predicate 'subsystem == "com.apple.TCC"' --last 5m` and look for `AUTHREQ_PROMPTING` and the
+  `subject=` path. Where it lives: `scripts/release/sign-macos.sh`, `docs/releasing.md`. Written:
+  `docs/guides/shared-folders.md` (section 3).
 - **Testing a release's binaries beside a running node.** Before v0.3.9 a node ignores `FLEETLAYER_INSTANCE`, and any
   node started by hand binds the default socket: it removes the running node's socket file and takes its place, and
   when it stops, the real node is still running with no socket (`fleetlayer status` says it can't reach the node)
