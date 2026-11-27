@@ -48,4 +48,8 @@ that breaks someone's work, and say which it is.
 
 ## Git
 
-Commit and push only when Nathan asks. Quote commit hashes only from git output, after committing.
+Fleetlayer is built semi-autonomously: agent sessions commit, push to main, release and deploy as they go, without
+asking Nathan first (unlike projects where he reviews each change). Before pushing, tell the other sessions working in
+this repo what you're pushing and which files, and wait for them if they're mid-change in the same files. Each
+session works in its own git worktree (`git worktree add ../fleetlayer-<tab> main`), never in another session's
+checkout. Releases still follow the rhythm below. Quote commit hashes only from git output, after committing.
