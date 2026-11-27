@@ -138,7 +138,7 @@ async fn join(app: Arc<App>, id: String, side: Side, socket: WebSocket) {
                 Side::Use => (socket, other),
                 Side::Serve => (other, socket),
             };
-            let (to_tool, from_tool, why) = copy(use_ws, serve_ws).await;
+            let (to_tool, from_tool, why) = copy(use_ws, serve_ws, app.links.closing()).await;
             finish(&app, &id, to_tool, from_tool, why).await;
         }
     }
@@ -146,16 +146,29 @@ async fn join(app: Arc<App>, id: String, side: Side, socket: WebSocket) {
 
 /// Copy frames both ways, unchanged (an empty binary frame is a node's end-of-input marker, passed on like any other).
 /// Ends when both directions have ended, or 30 seconds after the first, or either socket closes. Returns the bytes
-/// each way and why it ended.
-async fn copy(use_ws: WebSocket, serve_ws: WebSocket) -> (i64, i64, &'static str) {
+/// each way and why it ended. When the control plane shuts down (`closing`), both sides get a "restarting" close frame.
+async fn copy(
+    use_ws: WebSocket,
+    serve_ws: WebSocket,
+    closing: tokio::sync::watch::Receiver<bool>,
+) -> (i64, i64, &'static str) {
     let (mut use_tx, mut use_rx) = use_ws.split();
     let (mut serve_tx, mut serve_rx) = serve_ws.split();
     let to_tool = Arc::new(AtomicI64::new(0));
     let from_tool = Arc::new(AtomicI64::new(0));
     let up = {
         let n = to_tool.clone();
+        let mut closing = closing.clone();
         async move {
-            while let Some(Ok(m)) = use_rx.next().await {
+            loop {
+                let m = tokio::select! {
+                    m = use_rx.next() => m,
+                    _ = crate::link::until_closing(&mut closing) => {
+                        let _ = serve_tx.send(crate::link::restarting()).await;
+                        break;
+                    }
+                };
+                let Some(Ok(m)) = m else { break };
                 if matches!(m, Message::Close(_)) {
                     break;
                 }
@@ -169,8 +182,17 @@ async fn copy(use_ws: WebSocket, serve_ws: WebSocket) -> (i64, i64, &'static str
     };
     let down = {
         let n = from_tool.clone();
+        let mut closing = closing.clone();
         async move {
-            while let Some(Ok(m)) = serve_rx.next().await {
+            loop {
+                let m = tokio::select! {
+                    m = serve_rx.next() => m,
+                    _ = crate::link::until_closing(&mut closing) => {
+                        let _ = use_tx.send(crate::link::restarting()).await;
+                        break;
+                    }
+                };
+                let Some(Ok(m)) = m else { break };
                 if matches!(m, Message::Close(_)) {
                     break;
                 }

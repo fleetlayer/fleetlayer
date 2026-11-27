@@ -28,6 +28,7 @@ mod summaries;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
 use axum::routing::get;
@@ -1129,14 +1130,86 @@ async fn serve(app: Arc<App>, listen: SocketAddr, hooks_listen: SocketAddr) -> a
         .route("/v1/signin/admin/view", axum::routing::post(signin::post_admin_view))
         .route("/v1/signin/admin/{action}", axum::routing::post(signin::post_admin_action))
         .with_state(app.clone());
-    let hooks = hooks::router(app);
+    let hooks = hooks::router(app.clone());
     let api_listener = tokio::net::TcpListener::bind(listen).await?;
     let hooks_listener = tokio::net::TcpListener::bind(hooks_listen).await?;
     tracing::info!(%listen, %hooks_listen, "fleetlayer-control listening");
-    tokio::try_join!(async { axum::serve(api_listener, api).await.map_err(anyhow::Error::from) }, async {
-        axum::serve(hooks_listener, hooks).await.map_err(anyhow::Error::from)
-    },)?;
+    tokio::spawn({
+        let app = app.clone();
+        async move {
+            shutdown_signal().await;
+            tracing::info!("shutting down: closing node links and streams");
+            app.links.close_all();
+        }
+    });
+    let stop = |app: Arc<App>| async move { app.links.closed().await };
+    let servers = async {
+        tokio::try_join!(
+            async {
+                axum::serve(api_listener, api)
+                    .with_graceful_shutdown(stop(app.clone()))
+                    .await
+                    .map_err(anyhow::Error::from)
+            },
+            async {
+                axum::serve(hooks_listener, hooks)
+                    .with_graceful_shutdown(stop(app.clone()))
+                    .await
+                    .map_err(anyhow::Error::from)
+            },
+        )
+    };
+    // Requests still open a few seconds after the signal are cut: Kubernetes, launchd and systemd all wait longer.
+    tokio::select! {
+        r = servers => { r?; }
+        _ = async {
+            app.links.closed().await;
+            tokio::time::sleep(SHUTDOWN_REQUESTS).await;
+        } => tracing::warn!("requests still open {SHUTDOWN_REQUESTS:?} after the signal; stopping anyway"),
+    }
+    // Each link sends its close frame and leaves the map; give them a moment.
+    let drained = tokio::time::timeout(SHUTDOWN_LINKS, async {
+        while !app.links.nodes.lock().await.is_empty() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    if drained.is_err() {
+        tracing::warn!("node links still open {SHUTDOWN_LINKS:?} after the signal; stopping anyway");
+    }
+    // Close the database's connections, so SQLite checkpoints its write-ahead log into the database file.
+    app.db.close().await;
+    tracing::info!("stopped");
     Ok(())
+}
+
+/// How long open requests get to finish after SIGTERM, and then node links to close.
+const SHUTDOWN_REQUESTS: Duration = Duration::from_secs(3);
+const SHUTDOWN_LINKS: Duration = Duration::from_secs(2);
+
+/// SIGTERM (Kubernetes, systemd, launchd) or SIGINT (Ctrl-C). Without a handler, the control plane as PID 1 in a
+/// container ignores SIGTERM and is killed only when the grace period ends.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = term.recv() => {}
+                    _ = tokio::signal::ctrl_c() => {}
+                }
+            }
+            Err(e) => {
+                tracing::warn!("can't listen for SIGTERM: {e}");
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 /// The database to use when none is named: `./fleetlayer-control.db` when it exists, else the one `fleetlayer up`

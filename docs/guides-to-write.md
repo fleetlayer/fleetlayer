@@ -480,6 +480,13 @@ managers, machines that sleep.
   user's token; `gh run watch` polls every 3 s by default (about 1,200 an hour per watcher), so a few agents watching
   CI exhaust it. Use `--interval 60`, no loops over `gh run list`, `gh api rate_limit` to check, webhooks instead of
   polling. Found 27 Nov 2026; in AGENTS.md (e3473b6). Written: `docs/guides/agents-building-software.md`.
+- **A server in a container that ignores SIGTERM.** A process running as PID 1 gets no default action for SIGTERM,
+  so without its own handler it keeps running until Kubernetes kills it when the grace period ends (30 s by default),
+  and every node sees 503s while the new pod waits. The control plane now handles SIGTERM and SIGINT: it stops taking
+  requests, closes node links and tool streams with close code 1012 ("service restart") so nodes reconnect at once,
+  closes the database (SQLite checkpoints its write-ahead log), and exits within a few seconds. The same applies to any
+  service someone writes for their fleet. Tested by `crates/fleetlayer-control/tests/shutdown.rs`. To write: a
+  section in the guide on running the control plane on Kubernetes.
 - **CI results for a shared branch reach every session on it.** When agents all push to main, a webhook subscription
   to `<repo>@main` hands each agent everyone's results. Solved with commit subscriptions (`fleetlayer subscribe ci
   --commit` after pushing): GitHub's workflow runs match `<repo>@<sha>` too, the control plane tracks each commit's runs

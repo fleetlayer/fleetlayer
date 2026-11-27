@@ -43,9 +43,40 @@ pub struct Links {
     /// so its tools show as offline; rebuilt as nodes link.
     pub tools: Mutex<HashMap<(String, String), Vec<l::ToolInfo>>>,
     next: AtomicU64,
+    /// True once the control plane is shutting down: links and streams close with "restarting" so nodes reconnect.
+    closing: tokio::sync::watch::Sender<bool>,
+}
+
+/// Resolves once `closing` turns true (without holding its value across an await, which isn't `Send`).
+pub async fn until_closing(closing: &mut tokio::sync::watch::Receiver<bool>) {
+    let _ = closing.wait_for(|c| *c).await;
+}
+
+/// The close frame links and streams get when the control plane shuts down: 1012, "service restart", so a node
+/// reconnects at once.
+pub fn restarting() -> Message {
+    Message::Close(Some(axum::extract::ws::CloseFrame {
+        code: axum::extract::ws::close_code::RESTART,
+        reason: "the control plane is restarting".into(),
+    }))
 }
 
 impl Links {
+    /// Start shutting down: every link and stream closes.
+    pub fn close_all(&self) {
+        self.closing.send_replace(true);
+    }
+
+    /// A receiver that turns true when the control plane starts shutting down.
+    pub fn closing(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.closing.subscribe()
+    }
+
+    /// Resolves once the control plane is shutting down.
+    pub async fn closed(&self) {
+        until_closing(&mut self.closing()).await;
+    }
+
     pub async fn peer(&self, tenant: &str, node: &str) -> Option<Peer> {
         self.nodes.lock().await.get(&(tenant.to_string(), node.to_string())).map(|c| c.peer.clone())
     }
@@ -79,10 +110,22 @@ async fn run(app: Arc<App>, (tenant, name): (String, String), socket: WebSocket)
     let (mut sink, mut stream) = socket.split();
     let (in_tx, in_rx) = mpsc::channel::<String>(256);
     let (out_tx, mut out_rx) = mpsc::channel::<String>(256);
+    let mut closing = app.links.closing();
     let writer = tokio::spawn(async move {
-        while let Some(frame) = out_rx.recv().await {
-            if sink.send(Message::Text(frame.into())).await.is_err() {
-                break;
+        loop {
+            tokio::select! {
+                frame = out_rx.recv() => match frame {
+                    Some(frame) => {
+                        if sink.send(Message::Text(frame.into())).await.is_err() {
+                            return;
+                        }
+                    }
+                    None => break,
+                },
+                _ = crate::link::until_closing(&mut closing) => {
+                    let _ = sink.send(restarting()).await;
+                    break;
+                }
             }
         }
         let _ = sink.close().await;
@@ -136,12 +179,21 @@ async fn run(app: Arc<App>, (tenant, name): (String, String), socket: WebSocket)
             }
         })
     };
-    tokio::select! {
-        _ = task => {}
-        _ = pinger => tracing::warn!(node = %name, "node missed {MISSED_PINGS} pings; dropping its link"),
-    }
+    let shutting_down = tokio::select! {
+        _ = task => false,
+        _ = pinger => {
+            tracing::warn!(node = %name, "node missed {MISSED_PINGS} pings; dropping its link");
+            false
+        }
+        _ = app.links.closed() => true,
+    };
     reader.abort();
-    writer.abort();
+    if shutting_down {
+        // Let the close frame out, so the node knows to reconnect.
+        let _ = tokio::time::timeout(Duration::from_secs(2), writer).await;
+    } else {
+        writer.abort();
+    }
     let mut nodes = app.links.nodes.lock().await;
     if nodes.get(&(tenant.clone(), name.clone())).is_some_and(|c| c.conn == conn) {
         nodes.remove(&(tenant.clone(), name.clone()));
