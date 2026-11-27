@@ -30,6 +30,13 @@ pub struct SpaceConfig {
     /// The tenant that owns the space, named in every access check once sign-in goes through Fleetlayer.
     #[serde(default)]
     pub tenant: Option<String>,
+    /// The space's apps folder: each folder in it is an app on a subdomain of its own. No apps when absent.
+    #[serde(default)]
+    pub apps: Option<PathBuf>,
+    /// The space's agent reads outside input (email, the web): its apps can't reach other sites, and opening one shows
+    /// a notice first.
+    #[serde(default)]
+    pub untrusted: bool,
 }
 
 /// A space name: lower case letters, digits and hyphens, not starting with `_` or `.` (those paths are the app's).
@@ -136,12 +143,20 @@ fn newest(dir: &Path) -> u64 {
 
 /// Whether the space's folder is there and readable (its marker present).
 pub fn check(name: &str, cfg: &SpaceConfig) -> Result<(), String> {
-    match std::fs::metadata(cfg.dir.join(MARKER)) {
-        Ok(_) => match std::fs::read_dir(&cfg.dir) {
+    check_dir(name, &cfg.dir)?;
+    if let Some(apps) = &cfg.apps {
+        check_dir(&format!("{name} (apps)"), apps)?;
+    }
+    Ok(())
+}
+
+fn check_dir(name: &str, dir: &Path) -> Result<(), String> {
+    match std::fs::metadata(dir.join(MARKER)) {
+        Ok(_) => match std::fs::read_dir(dir) {
             Ok(_) => Ok(()),
-            Err(e) => Err(format!("space {name}: can't read {}: {e}", cfg.dir.display())),
+            Err(e) => Err(format!("space {name}: can't read {}: {e}", dir.display())),
         },
-        Err(_) => Err(format!("space {name}: no {MARKER} in {} (the share may have dropped)", cfg.dir.display())),
+        Err(_) => Err(format!("space {name}: no {MARKER} in {} (the share may have dropped)", dir.display())),
     }
 }
 
@@ -206,7 +221,14 @@ mod tests {
     use super::*;
 
     fn cfg(d: &Path) -> SpaceConfig {
-        SpaceConfig { dir: d.to_path_buf(), title: None, owner: Some("person:nathan".into()), tenant: None }
+        SpaceConfig {
+            dir: d.to_path_buf(),
+            title: None,
+            owner: Some("person:nathan".into()),
+            tenant: None,
+            apps: None,
+            untrusted: false,
+        }
     }
 
     #[test]

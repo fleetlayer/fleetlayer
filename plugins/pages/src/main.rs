@@ -14,6 +14,7 @@
 //! Run by a node, it serves the web app as long as the node keeps it running. `fleetlayer-pages serve <config.json>`
 //! runs the same service on its own (the plugin config as JSON), for trying changes locally.
 
+mod apps;
 mod auth;
 mod render;
 mod space;
@@ -42,8 +43,11 @@ struct Config {
     listen: SocketAddr,
     /// The address people open, for the links the service prints (optional).
     #[serde(default)]
-    #[allow(dead_code)]
     base_url: Option<String>,
+    /// The domain apps live under (`apps.home.example`): app `recipes` of space `personal` is
+    /// `recipes--personal.apps.home.example`. No apps when absent.
+    #[serde(default)]
+    apps_domain: Option<String>,
     spaces: BTreeMap<String, SpaceConfig>,
     login_file: PathBuf,
     #[serde(default)]
@@ -78,6 +82,24 @@ fn build(mut cfg: Config, home: &Path) -> anyhow::Result<(Arc<web::App>, SocketA
             "space name {name:?}: use lower-case letters, digits and hyphens"
         );
         s.dir = expand(home, &s.dir);
+        s.apps = s.apps.as_ref().map(|a| expand(home, a));
+        if s.apps.is_some() {
+            anyhow::ensure!(apps::valid_name(name), "space {name:?} has apps, so its name can't contain \"--\"");
+            anyhow::ensure!(cfg.apps_domain.is_some(), "space {name:?} has apps: set apps_domain");
+        }
+    }
+    if let Some(b) = cfg.base_url.as_deref().and_then(|b| b.strip_prefix("http://")) {
+        let host = b.split(['/', ':']).next().unwrap_or_default();
+        anyhow::ensure!(
+            host == "localhost" || host.ends_with(".localhost") || host == "127.0.0.1",
+            "base_url uses plain http, which is only allowed on this machine (localhost); use https behind a proxy"
+        );
+    }
+    if cfg.apps_domain.is_some() {
+        anyhow::ensure!(
+            cfg.base_url.as_deref().is_some_and(|b| b.starts_with("https://") || b.starts_with("http://")),
+            "apps need base_url (the pages site's own address, such as https://pages.example)"
+        );
     }
     let login_file = expand(home, &cfg.login_file);
     let key = std::fs::read_to_string(&login_file)
@@ -88,6 +110,9 @@ fn build(mut cfg: Config, home: &Path) -> anyhow::Result<(Arc<web::App>, SocketA
         trusted_proxies: cfg.trusted_proxies,
         login_hint: cfg.login_hint,
         cache: Cache::default(),
+        base_url: cfg.base_url.map(|b| b.trim_end_matches('/').to_string()),
+        apps_domain: cfg.apps_domain.map(|d| d.trim_matches('.').to_ascii_lowercase()),
+        broker: apps::Broker::default(),
     };
     let heartbeat = cfg.heartbeat.map(|h| Heartbeat { token_file: expand(home, &h.token_file), ..h });
     Ok((Arc::new(app), cfg.listen, heartbeat))

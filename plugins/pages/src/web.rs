@@ -19,6 +19,7 @@ use axum::{Form, Router};
 use futures::Stream;
 use serde::Deserialize;
 
+use crate::apps;
 use crate::auth::{self, Auth, Viewer};
 use crate::render::{self, Kind, Rendered};
 use crate::space::{self, Cache, SpaceConfig, Summary};
@@ -29,6 +30,11 @@ pub struct App {
     pub trusted_proxies: Vec<IpAddr>,
     pub login_hint: Option<String>,
     pub cache: Cache,
+    /// The pages site's own address (`https://pages.example`): apps send people here to sign in.
+    pub base_url: Option<String>,
+    /// The domain apps live under: app `recipes` of space `personal` is `recipes--personal.<apps_domain>`.
+    pub apps_domain: Option<String>,
+    pub broker: apps::Broker,
 }
 
 type Ctx = State<Arc<App>>;
@@ -41,6 +47,8 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/_/logout", post(logout))
         .route("/_/assets/{name}", get(asset))
         .route("/_/events", get(events))
+        .route("/_/apps/authorize", get(authorize).post(authorize_confirmed))
+        .route("/_/apps/{space}/{name}/icon", get(app_icon))
         .route("/", get(spaces_page))
         .route("/{space}", get(add_slash))
         .route("/{space}/", get(space_page))
@@ -49,7 +57,27 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/{space}/{folder}/{*file}", get(file))
         .fallback(not_found_any)
         .layer(axum::middleware::map_response(security_headers))
+        .layer(axum::middleware::from_fn_with_state(app.clone(), by_host))
         .with_state(app)
+}
+
+/// Requests for an app's host go to the app; everything else is the pages site.
+async fn by_host(State(app): Ctx, req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    if let Some(domain) = &app.apps_domain {
+        let host = req
+            .headers()
+            .get(header::HOST)
+            .and_then(|h| h.to_str().ok())
+            .map(str::to_string)
+            .or_else(|| req.uri().host().map(str::to_string));
+        if let Some(host) = host
+            && let Some((space, name)) = apps::parse_host(&host, domain)
+        {
+            let host = apps::host_for(&space, &name, domain);
+            return apps::handle(app.clone(), host, space, name, req).await;
+        }
+    }
+    next.run(req).await
 }
 
 pub async fn serve(app: Arc<App>, listen: SocketAddr) -> anyhow::Result<()> {
@@ -121,6 +149,11 @@ async fn healthz(State(app): Ctx) -> Response {
 }
 
 impl App {
+    /// Cookies are Secure unless the site is served over plain HTTP (only allowed on loopback; see `main.rs`).
+    pub fn secure_cookies(&self) -> bool {
+        !self.base_url.as_deref().is_some_and(|b| b.starts_with("http://"))
+    }
+
     /// What's wrong with the spaces' folders, for `/healthz` and the heartbeat.
     pub fn problems(&self) -> Vec<String> {
         self.spaces.iter().filter_map(|(n, c)| space::check(n, c).err()).collect()
@@ -209,13 +242,13 @@ async fn login(
             .into_response();
     }
     let sid = key.start().await;
-    ([(header::SET_COOKIE, auth::cookie(&sid))], Redirect::to(&next)).into_response()
+    ([(header::SET_COOKIE, auth::cookie(&sid, app.secure_cookies()))], Redirect::to(&next)).into_response()
 }
 
 async fn logout(State(app): Ctx, headers: HeaderMap) -> Response {
     let Auth::LoginKey(key) = &app.auth;
     key.end(&headers).await;
-    ([(header::SET_COOKIE, auth::clear_cookie())], Redirect::to("/_/login")).into_response()
+    ([(header::SET_COOKIE, auth::clear_cookie(app.secure_cookies()))], Redirect::to("/_/login")).into_response()
 }
 
 /// The viewer, or the response that sends them to sign in.
@@ -463,18 +496,162 @@ async fn space_page(
     };
     let Some(cfg) = readable(&app, &v, &name).await else { return not_found("There's no space by that name.") };
     let pages = app.cache.list(cfg);
-    let list = space_list_html(&name, cfg, &pages);
+    let app_list = apps::list(&name, cfg);
+    let mut list = apps_html(&app, &app_list);
+    if !app_list.is_empty() && !pages.is_empty() {
+        list.push_str(r#"<h2 class="section-label">Pages</h2>"#);
+    }
+    if !(pages.is_empty() && !app_list.is_empty()) {
+        list.push_str(&space_list_html(&name, cfg, &pages));
+    }
     if q.fragment.is_some() {
         return Html(list).into_response();
     }
     let title = cfg.title.clone().unwrap_or_else(|| name.clone());
+    let mut sub = count(pages.len(), "page");
+    if !app_list.is_empty() {
+        sub.push_str(&format!(" · {}", count(app_list.len(), "app")));
+    }
     let body = format!(
         r#"<main class="wrap"><header class="page-head"><h1>{t}</h1><p class="page-sub">{c}</p></header><div id="content" class="space-list">{list}</div></main>"#,
         t = esc(&title),
-        c = count(pages.len(), "page"),
+        c = esc(&sub),
     );
     let crumbs = [Crumb { label: title.clone(), href: None }];
     html_page(StatusCode::OK, layout(&format!("{title} · Pages"), &crumbs, &body, Some(&name), true))
+}
+
+// ------------------------------------------------------------ apps
+
+/// The address of an app, with the pages site's scheme (and port, when it has one).
+fn app_url(app: &App, space: &str, name: &str) -> Option<String> {
+    let domain = app.apps_domain.as_deref()?;
+    Some(format!("{}/", app_origin(app, &apps::host_for(space, name, domain))))
+}
+
+fn app_origin(app: &App, host: &str) -> String {
+    let base = app.base_url.as_deref().unwrap_or("https://");
+    let (scheme, rest) = base.split_once("://").unwrap_or(("https", ""));
+    let authority = rest.split('/').next().unwrap_or_default();
+    match authority.rsplit_once(':') {
+        Some((_, port)) if port.chars().all(|c| c.is_ascii_digit()) && !port.is_empty() => {
+            format!("{scheme}://{host}:{port}")
+        }
+        _ => format!("{scheme}://{host}"),
+    }
+}
+
+/// A space's apps, above its pages. Nothing at all when it has none.
+fn apps_html(app: &App, list: &[apps::Info]) -> String {
+    if list.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from(r#"<h2 class="section-label">Apps</h2><ul class="apps">"#);
+    for a in list {
+        let url = app_url(app, &a.space, &a.name);
+        let host = url.as_deref().map(|u| u.split("://").nth(1).unwrap_or(u).trim_end_matches('/')).unwrap_or("");
+        let problems = if a.problems.is_empty() {
+            String::new()
+        } else {
+            let items: String = a.problems.iter().map(|p| format!("<li>{}</li>", esc(&p.message))).collect();
+            format!(r#"<ul class="app-problems">{items}</ul>"#)
+        };
+        let badge = if a.problems.is_empty() {
+            String::new()
+        } else {
+            format!(r#"<span class="badge badge-warn">{}</span>"#, count(a.problems.len(), "problem"))
+        };
+        let summary = a
+            .manifest
+            .description
+            .as_deref()
+            .map_or(String::new(), |d| format!(r#"<span class="row-summary">{}</span>"#, esc(d)));
+        let open = match &url {
+            Some(u) => format!(r#"href="{}" target="_blank" rel="noopener""#, esc(u)),
+            None => String::new(),
+        };
+        out.push_str(&format!(
+            r#"<li class="app-item"><a class="app-row" {open}><img class="app-icon" src="/_/apps/{s}/{n}/icon" alt="" width="40" height="40"><span class="app-text"><span class="row-title">{t}</span>{summary}<span class="row-meta"><span class="mono row-folder">{h}</span>{badge}</span></span></a>{problems}</li>"#,
+            s = url_seg(&a.space),
+            n = url_seg(&a.name),
+            t = esc(&a.title()),
+            h = esc(host),
+        ));
+    }
+    out.push_str("</ul>");
+    out
+}
+
+async fn app_icon(State(app): Ctx, headers: HeaderMap, UrlPath((space, name)): UrlPath<(String, String)>) -> Response {
+    let Some(v) = app.auth.viewer(&headers).await else { return StatusCode::UNAUTHORIZED.into_response() };
+    let Some(cfg) = readable(&app, &v, &space).await else { return StatusCode::NOT_FOUND.into_response() };
+    let Some(info) = apps::inspect(&space, cfg, &name) else { return StatusCode::NOT_FOUND.into_response() };
+    let file = info.manifest.icon.as_deref().and_then(|i| space::resolve(&info.root, i));
+    let (kind, body) = match file {
+        Some(f) => match tokio::fs::read(&f).await {
+            Ok(b) => (content_type(&f), b),
+            Err(_) => return StatusCode::NOT_FOUND.into_response(),
+        },
+        None => ("image/svg+xml", apps::default_icon(&info.title()).into_bytes()),
+    };
+    let mut res = (StatusCode::OK, body).into_response();
+    let h = res.headers_mut();
+    h.insert(header::CONTENT_TYPE, HeaderValue::from_static(kind));
+    h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(FILE_CSP));
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("private, no-cache"));
+    res
+}
+
+#[derive(Deserialize)]
+struct AuthorizeQuery {
+    app: String,
+    state: String,
+}
+
+/// The pages site's side of an app's sign-in: the person signs in here, the policy is checked, and the app's own host
+/// (worked out from its name) gets a one-time code. Apps from untrusted spaces show a notice first.
+async fn authorize(State(app): Ctx, headers: HeaderMap, Query(q): Query<AuthorizeQuery>) -> Response {
+    authorize_inner(&app, &headers, q, false).await
+}
+
+async fn authorize_confirmed(State(app): Ctx, headers: HeaderMap, Form(q): Form<AuthorizeQuery>) -> Response {
+    authorize_inner(&app, &headers, q, true).await
+}
+
+async fn authorize_inner(app: &App, headers: &HeaderMap, q: AuthorizeQuery, confirmed: bool) -> Response {
+    let here = format!(
+        "/_/apps/authorize?app={}&state={}",
+        form_urlencoded::byte_serialize(q.app.as_bytes()).collect::<String>(),
+        form_urlencoded::byte_serialize(q.state.as_bytes()).collect::<String>(),
+    );
+    let v = match viewer(app, headers, &here).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let Some((space, name)) = q.app.split_once('/') else { return not_found("There's no app by that name.") };
+    let (Some(domain), Some(cfg)) = (app.apps_domain.as_deref(), readable(app, &v, space).await) else {
+        return not_found("There's no app by that name.");
+    };
+    let Some(info) = apps::inspect(space, cfg, name) else { return not_found("There's no app by that name.") };
+    if q.state.len() < 32 || q.state.len() > 128 || !q.state.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return not_found("That sign-in link isn't valid: open the app again.");
+    }
+    if cfg.untrusted && !confirmed {
+        let crumbs = [Crumb { label: info.title(), href: None }];
+        return html_page(
+            StatusCode::OK,
+            layout(
+                &format!("Open {}? · Pages", info.title()),
+                &crumbs,
+                &apps::notice_html(&info, &q.state),
+                None,
+                true,
+            ),
+        );
+    }
+    let host = apps::host_for(space, name, domain);
+    let code = app.broker.issue(&host, &q.state, v).await;
+    Redirect::to(&format!("{}/_fl/callback?code={code}&state={}", app_origin(app, &host), q.state)).into_response()
 }
 
 // ------------------------------------------------------------ a page
@@ -571,7 +748,7 @@ async fn page_view(
 
 // ------------------------------------------------------------ files
 
-fn content_type(path: &Path) -> &'static str {
+pub(crate) fn content_type(path: &Path) -> &'static str {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or_default().to_ascii_lowercase();
     match ext.as_str() {
         "jpg" | "jpeg" => "image/jpeg",
@@ -583,7 +760,12 @@ fn content_type(path: &Path) -> &'static str {
         "css" => "text/css; charset=utf-8",
         "html" | "htm" => "text/html; charset=utf-8",
         "md" | "txt" | "log" | "csv" | "diff" | "patch" => "text/plain; charset=utf-8",
-        "json" => "application/json",
+        "json" | "map" => "application/json",
+        "js" | "mjs" => "text/javascript; charset=utf-8",
+        "wasm" => "application/wasm",
+        "webmanifest" => "application/manifest+json",
+        "ico" => "image/x-icon",
+        "xml" => "application/xml",
         "pdf" => "application/pdf",
         "mp4" => "video/mp4",
         "webm" => "video/webm",
@@ -651,7 +833,7 @@ async fn events(State(app): Ctx, headers: HeaderMap, Query(q): Query<EventsQuery
     Sse::new(watch(dir, every)).keep_alive(KeepAlive::new().interval(Duration::from_secs(20))).into_response()
 }
 
-fn watch(dir: std::path::PathBuf, every: Duration) -> impl Stream<Item = Result<Event, Infallible>> {
+pub(crate) fn watch(dir: std::path::PathBuf, every: Duration) -> impl Stream<Item = Result<Event, Infallible>> {
     futures::stream::unfold((dir, None::<String>), move |(dir, last)| async move {
         let mut last = last;
         loop {
@@ -673,6 +855,7 @@ fn watch(dir: std::path::PathBuf, every: Duration) -> impl Stream<Item = Result<
 }
 
 #[cfg(test)]
+#[allow(clippy::cloned_ref_to_slice_refs)]
 mod tests {
     use super::*;
     use axum::body::Body;
@@ -697,7 +880,14 @@ mod tests {
         let mut spaces = BTreeMap::new();
         spaces.insert(
             "personal".into(),
-            SpaceConfig { dir: d.path().to_path_buf(), title: None, owner: None, tenant: None },
+            SpaceConfig {
+                dir: d.path().to_path_buf(),
+                title: None,
+                owner: None,
+                tenant: None,
+                apps: None,
+                untrusted: false,
+            },
         );
         let app = App {
             spaces,
@@ -705,6 +895,9 @@ mod tests {
             trusted_proxies: vec![],
             login_hint: None,
             cache: Cache::default(),
+            base_url: None,
+            apps_domain: None,
+            broker: apps::Broker::default(),
         };
         (Arc::new(app), d)
     }
@@ -794,6 +987,249 @@ mod tests {
         let r = get(&app, "/healthz", None).await;
         assert_eq!(r.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert!(body(r).await.contains("personal"));
+    }
+
+    fn app_with_apps(untrusted: bool) -> (Arc<App>, tempfile::TempDir) {
+        let d = tempfile::tempdir().unwrap();
+        let pages = d.path().join("pages");
+        let appsdir = d.path().join("apps");
+        std::fs::create_dir_all(pages.join("2026-11-27-qa")).unwrap();
+        std::fs::write(pages.join("2026-11-27-qa/index.md"), "# QA\n\nS.\n").unwrap();
+        std::fs::create_dir_all(appsdir.join("recipes/node_modules/x")).unwrap();
+        std::fs::create_dir_all(appsdir.join("other")).unwrap();
+        for dir in [&pages, &appsdir] {
+            std::fs::write(dir.join(space::MARKER), "").unwrap();
+        }
+        std::fs::write(
+            appsdir.join("recipes/index.html"),
+            "<html><head><title>R</title></head><body><script src=\"app.js\"></script></body></html>",
+        )
+        .unwrap();
+        std::fs::write(appsdir.join("recipes/app.js"), "console.log(1)").unwrap();
+        std::fs::write(appsdir.join("recipes/node_modules/x/index.js"), "secret").unwrap();
+        std::fs::write(appsdir.join("recipes/app.json"), r#"{"name":"Recipes","network":["https://api.example.com"]}"#)
+            .unwrap();
+        std::fs::write(appsdir.join("other/index.html"), "<p>other</p>").unwrap();
+        let mut spaces = BTreeMap::new();
+        spaces.insert(
+            "personal".into(),
+            SpaceConfig { dir: pages, title: None, owner: None, tenant: None, apps: Some(appsdir), untrusted },
+        );
+        let app = App {
+            spaces,
+            auth: Auth::LoginKey(auth::LoginKey::new(KEY.into()).unwrap()),
+            trusted_proxies: vec![],
+            login_hint: None,
+            cache: Cache::default(),
+            base_url: Some("https://pages.test".into()),
+            apps_domain: Some("apps.test".into()),
+            broker: apps::Broker::default(),
+        };
+        (Arc::new(app), d)
+    }
+
+    async fn req(
+        app: &Arc<App>,
+        method: &str,
+        host: &str,
+        path: &str,
+        cookies: &[String],
+        form: Option<&str>,
+    ) -> Response {
+        let mut r = Request::builder().method(method).uri(path).header(header::HOST, host);
+        if !cookies.is_empty() {
+            r = r.header(header::COOKIE, cookies.join("; "));
+        }
+        let body = match form {
+            Some(f) => {
+                r = r.header(header::CONTENT_TYPE, "application/x-www-form-urlencoded");
+                Body::from(f.to_string())
+            }
+            None => Body::empty(),
+        };
+        let mut r = r.body(body).unwrap();
+        r.extensions_mut().insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 9))));
+        router(app.clone()).oneshot(r).await.unwrap()
+    }
+
+    fn location(r: &Response) -> String {
+        r.headers()[header::LOCATION].to_str().unwrap().to_string()
+    }
+
+    /// `name=value` from a response's Set-Cookie headers.
+    fn set_cookie(r: &Response, name: &str) -> String {
+        r.headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|v| v.to_str().unwrap().to_string())
+            .find(|c| c.starts_with(&format!("{name}=")))
+            .map(|c| c.split(';').next().unwrap().to_string())
+            .unwrap()
+    }
+
+    fn param(url: &str, key: &str) -> String {
+        let q = url.split_once('?').unwrap().1;
+        form_urlencoded::parse(q.as_bytes()).find(|(k, _)| k == key).unwrap().1.into_owned()
+    }
+
+    #[tokio::test]
+    async fn an_app_signs_in_through_the_pages_site_with_a_one_time_code() {
+        let (app, _d) = app_with_apps(false);
+        let host = "recipes--personal.apps.test";
+        let pages_cookie = format!("{}={}", auth::COOKIE, signed_in(&app).await);
+
+        // No session on the app: off to the pages site, with a state kept in a cookie on the app.
+        let r = req(&app, "GET", host, "/list?x=1", &[], None).await;
+        assert_eq!(r.status(), StatusCode::SEE_OTHER);
+        let to = location(&r);
+        assert!(to.starts_with("https://pages.test/_/apps/authorize?app=personal/recipes&state="), "{to}");
+        let state = param(&to, "state");
+        let state_cookie = set_cookie(&r, "__Host-fl_state");
+
+        // The pages site sends a code to the app's own host, worked out from its name.
+        let path = to.trim_start_matches("https://pages.test");
+        let r = req(&app, "GET", "pages.test", path, &[pages_cookie.clone()], None).await;
+        let back = location(&r);
+        assert!(back.starts_with(&format!("https://{host}/_fl/callback?code=")), "{back}");
+        let cb = back.trim_start_matches(&format!("https://{host}"));
+
+        // Exchanging it sets the app's own cookie and returns to where the person was going.
+        let r = req(&app, "GET", host, cb, &[state_cookie.clone()], None).await;
+        assert_eq!(location(&r), "/list?x=1");
+        let session = set_cookie(&r, "__Host-fl_app");
+        let raw = r
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|v| v.to_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(raw.contains("__Host-fl_app=") && raw.contains("Secure; HttpOnly; SameSite=Lax; Path=/"), "{raw}");
+
+        // The app works, with its own policy and the home-screen manifest added.
+        let r = req(&app, "GET", host, "/", &[session.clone()], None).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let csp = r.headers()[header::CONTENT_SECURITY_POLICY].to_str().unwrap().to_string();
+        assert!(csp.contains("connect-src 'self' https://api.example.com;"), "{csp}");
+        assert!(body(r).await.contains(r#"<link rel="manifest" href="/_fl/manifest.webmanifest">"#));
+        // A single-page app's own route gets index.html; node_modules and app.json never.
+        assert_eq!(req(&app, "GET", host, "/settings", &[session.clone()], None).await.status(), StatusCode::OK);
+        assert_eq!(
+            req(&app, "GET", host, "/node_modules/x/index.js", &[session.clone()], None).await.status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(req(&app, "GET", host, "/app.json", &[session.clone()], None).await.status(), StatusCode::NOT_FOUND);
+
+        // The code works once, only for its host and state.
+        assert_eq!(req(&app, "GET", host, cb, &[state_cookie.clone()], None).await.status(), StatusCode::BAD_REQUEST);
+        // The session doesn't open another app.
+        let r = req(&app, "GET", "other--personal.apps.test", "/", &[session.clone()], None).await;
+        assert_eq!(r.status(), StatusCode::SEE_OTHER);
+        assert!(location(&r).contains("app=personal/other"));
+        let _ = state;
+    }
+
+    #[tokio::test]
+    async fn a_code_for_one_app_doesn_t_open_another() {
+        let (app, _d) = app_with_apps(false);
+        let pages_cookie = format!("{}={}", auth::COOKIE, signed_in(&app).await);
+        let state = "a".repeat(64);
+        let r = req(
+            &app,
+            "GET",
+            "pages.test",
+            &format!("/_/apps/authorize?app=personal/recipes&state={state}"),
+            &[pages_cookie],
+            None,
+        )
+        .await;
+        let back = location(&r);
+        let code = param(&back, "code");
+        let state_cookie = format!("__Host-fl_state={state}.{}", hex::encode("/"));
+        let r = req(
+            &app,
+            "GET",
+            "other--personal.apps.test",
+            &format!("/_fl/callback?code={code}&state={state}"),
+            &[state_cookie],
+            None,
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn signing_in_to_an_app_needs_the_pages_login_and_a_real_app() {
+        let (app, _d) = app_with_apps(false);
+        let state = "b".repeat(64);
+        let r =
+            req(&app, "GET", "pages.test", &format!("/_/apps/authorize?app=personal/recipes&state={state}"), &[], None)
+                .await;
+        assert!(location(&r).starts_with("/_/login?next="), "{}", location(&r));
+        let pages_cookie = format!("{}={}", auth::COOKIE, signed_in(&app).await);
+        let r = req(
+            &app,
+            "GET",
+            "pages.test",
+            &format!("/_/apps/authorize?app=personal/nope&state={state}"),
+            &[pages_cookie.clone()],
+            None,
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::NOT_FOUND);
+        let r =
+            req(&app, "GET", "pages.test", "/_/apps/authorize?app=personal/recipes&state=short", &[pages_cookie], None)
+                .await;
+        assert_eq!(r.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn an_untrusted_space_s_app_shows_a_notice_and_reaches_no_other_site() {
+        let (app, _d) = app_with_apps(true);
+        let pages_cookie = format!("{}={}", auth::COOKIE, signed_in(&app).await);
+        let state = "c".repeat(64);
+        let r = req(
+            &app,
+            "GET",
+            "pages.test",
+            &format!("/_/apps/authorize?app=personal/recipes&state={state}"),
+            &[pages_cookie.clone()],
+            None,
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let b = body(r).await;
+        assert!(b.contains("reads messages from outside") && b.contains("can't reach any other site"), "{b}");
+        let r = req(
+            &app,
+            "POST",
+            "pages.test",
+            "/_/apps/authorize",
+            &[pages_cookie],
+            Some(&format!("app=personal%2Frecipes&state={state}")),
+        )
+        .await;
+        assert!(location(&r).contains("/_fl/callback?code="));
+        let info = apps::inspect("personal", &app.spaces["personal"], "recipes").unwrap();
+        assert!(info.network.is_empty());
+        assert!(apps::csp(&info).contains("connect-src 'self';"));
+        assert!(info.problems.iter().any(|p| p.message.contains("can't reach other sites")));
+    }
+
+    #[tokio::test]
+    async fn a_space_lists_its_apps_only_when_it_has_some() {
+        let (app, _d) = app_with_apps(false);
+        let sid = signed_in(&app).await;
+        let b = body(get_host(&app, "pages.test", "/personal/", &sid).await).await;
+        assert!(b.contains("Recipes") && b.contains("recipes--personal.apps.test"), "{b}");
+        let (app2, _d2) = self::app();
+        let sid2 = signed_in(&app2).await;
+        let b = body(get(&app2, "/personal/", Some(&sid2)).await).await;
+        assert!(!b.contains("Apps"), "{b}");
+    }
+
+    async fn get_host(app: &Arc<App>, host: &str, path: &str, sid: &str) -> Response {
+        req(app, "GET", host, path, &[format!("{}={sid}", auth::COOKIE)], None).await
     }
 
     #[test]

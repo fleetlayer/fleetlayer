@@ -250,3 +250,23 @@ managers, machines that sleep.
 - **Backups.** Written: docs/guides/backups.md (restic to Backblaze B2 from one backup host, one repository per
   source, separate accounts per owner, retention, heartbeats, a scheduled restore check, disaster recovery, what to
   leave out, agents and backups). Example taken from the author's home server.
+- **`node_modules` never goes into a synced or backed-up share.** Agents build apps in folders that are synced and
+  backed up; a dependency tree is hundreds of thousands of files that sync slowly, churn backups and can be rebuilt
+  from the lock file. Exclude it on every share (Syncthing `.stignore`, the backup excludes), with the usual build
+  caches (`.next`, `.turbo`, `.cache`, `target`, `.venv`, `__pycache__`). Rule from Nathan, 27 Nov 2026. Where it
+  lives: `docs/plugins/apps.md` ("Configuration"), the apps skill, the deploy notes.
+- **Secure cookies are refused on plain-HTTP subdomains of localhost.** A browser treats `http://localhost` as secure
+  enough for a `Secure` cookie but not `http://app.apps.localhost`, so a sign-in that sets `__Host-` cookies works in
+  production (HTTPS) and silently fails on a laptop. Pages drops `Secure` and the prefix when its address is plain
+  HTTP, and allows plain HTTP only for localhost. Where it lives: `plugins/pages/src/apps.rs` (`cookies`).
+- **A wildcard certificate covers one level.** `*.home.example` doesn't cover `app.apps.home.example`: per-app
+  subdomains need a wildcard for their own domain, or names one level under an existing wildcard
+  (`app--space.home.example`). Where it lives: `docs/plugins/apps.md`.
+- **Agent-written apps and a strict content policy.** Agents often write inline `<script>` blocks and load libraries
+  from CDNs; an app origin's policy that allows only its own script files blocks both, so the service lists them as
+  problems on the space's page and the apps skill tells agents up front (files only, bundle libraries). Where it
+  lives: `plugins/pages/src/apps.rs` (`check_html`), `plugins/pages/apps-skill/SKILL.md`.
+- **Isolated apps on sibling subdomains.** Each app on its own origin keeps scripts apart, but siblings share a site:
+  one can set a cookie for the parent domain and shadow another's. `__Host-` cookies (host-only, Secure, Path=/)
+  close that. Sign-in to many apps without registering each one: the pages site brokers OIDC-shaped one-time codes
+  bound to each app's host and a state value. Where it lives: `docs/plugins/apps.md` ("Sign-in").

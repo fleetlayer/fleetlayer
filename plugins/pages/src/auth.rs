@@ -105,12 +105,16 @@ pub fn session_id(headers: &HeaderMap) -> Option<String> {
     cookie.split(';').find_map(|c| c.trim().strip_prefix(&format!("{COOKIE}=")).map(str::to_string))
 }
 
-pub fn cookie(sid: &str) -> String {
-    format!("{COOKIE}={sid}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age={}", SESSION.as_secs())
+/// The session cookie. `secure` is false only when the site is served over plain HTTP on loopback (a laptop's
+/// `pages.localhost`), where browsers refuse Secure cookies on a subdomain.
+pub fn cookie(sid: &str, secure: bool) -> String {
+    let s = if secure { "; Secure" } else { "" };
+    format!("{COOKIE}={sid}; HttpOnly{s}; SameSite=Strict; Path=/; Max-Age={}", SESSION.as_secs())
 }
 
-pub fn clear_cookie() -> String {
-    format!("{COOKIE}=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0")
+pub fn clear_cookie(secure: bool) -> String {
+    let s = if secure { "; Secure" } else { "" };
+    format!("{COOKIE}=; HttpOnly{s}; SameSite=Strict; Path=/; Max-Age=0")
 }
 
 /// 32 random bytes from the kernel (`/dev/urandom` on Linux and macOS), hex.

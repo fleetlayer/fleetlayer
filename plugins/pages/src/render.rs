@@ -18,7 +18,7 @@ pub struct Problem {
 }
 
 impl Problem {
-    fn new(m: impl Into<String>) -> Self {
+    pub(crate) fn new(m: impl Into<String>) -> Self {
         Problem { message: m.into() }
     }
 }
@@ -399,7 +399,7 @@ fn meta_description(html: &str) -> Option<String> {
 }
 
 /// The values of `src=` and `href=` attributes (and `url(...)` in styles), for checking local files.
-fn references(html: &str) -> Vec<String> {
+pub(crate) fn references(html: &str) -> Vec<String> {
     let mut out = vec![];
     let lower = html.to_ascii_lowercase();
     for attr in ["src=", "href="] {
@@ -479,7 +479,7 @@ pub fn html(src: &str, space: &Path, page: &Path) -> Rendered {
     Rendered { kind: Kind::Html, title, summary: meta_description(src), body: String::new(), problems }
 }
 
-fn has_event_handler(lower: &str) -> bool {
+pub(crate) fn has_event_handler(lower: &str) -> bool {
     let b = lower.as_bytes();
     let mut i = 0;
     while let Some(p) = lower[i..].find(" on") {
@@ -516,7 +516,7 @@ fn is_image(l: &str) -> bool {
     matches!(ext(l), "jpg" | "jpeg" | "png" | "gif" | "webp" | "avif" | "svg")
 }
 
-fn is_asset(l: &str) -> bool {
+pub(crate) fn is_asset(l: &str) -> bool {
     is_image(l) || matches!(ext(l), "css" | "woff" | "woff2" | "ttf" | "otf" | "js")
 }
 

@@ -1,7 +1,8 @@
 # pages
 
-Status: being built (27 November 2026). The renderer, the web app and the login key first; `fleetlayer pages push` and
-sign-in through Fleetlayer next.
+Status: built (27 November 2026): the renderer, the web app, live updates and the login key. `fleetlayer pages push`
+and sign-in through Fleetlayer next. The same service hosts **apps** (interactive HTML and JavaScript, each on a
+subdomain of its own): `docs/plugins/apps.md`.
 
 Pages are for people to look at: QA screenshots, reports, mock-ups, decision write-ups. Any agent or script that can
 write files makes one (Claude, Codex, Gemini, Pi, a shell script), as a plain folder in a synced, backed-up vault.
@@ -114,10 +115,11 @@ plugins:
     command: fleetlayer-pages
     config:
       listen: 10.0.0.5:7670                     # behind a private HTTPS proxy, never the internet
-      base_url: https://pages.example           # optional: for the links the service prints
+      base_url: https://pages.example           # the site's own address; needed for apps
+      apps_domain: apps.example                 # optional: apps at <app>--<space>.apps.example (docs/plugins/apps.md)
       spaces:
-        personal: { dir: /srv/pages/personal, title: Personal }
-        triage:   { dir: /srv/pages/triage }
+        personal: { dir: /srv/pages/personal, title: Personal, owner: "person:alice", apps: /srv/apps/personal }
+        triage:   { dir: /srv/pages/triage, apps: /srv/apps/triage, untrusted: true }
       login_file: /etc/fleetlayer-pages/login   # at least 32 random characters, 0600
       trusted_proxies: [10.0.0.2]               # whose X-Forwarded-For is believed
       login_hint: "1Password: infra/pages-login"  # optional, shown under the login box; never the key
@@ -128,6 +130,23 @@ plugins:
 
 `fleetlayer-pages serve <config.json>` runs the same web service without a node (the config's JSON form), for trying
 a page format change locally.
+
+Space fields: `dir` (its pages), `title`, `owner` (`person:<name>` or `team:<name>`: private to them unless the policy
+shares it), `tenant`, `apps` (its apps folder) and `untrusted` (its agent reads outside input: its apps can't reach
+other sites and open behind a notice).
+
+### Moving it
+
+Every part of Fleetlayer can move between machines (a laptop today, a home server or a VPS later):
+
+- **Settings** are the plugin's section of the node's config: nothing about the machine is assumed. The addresses
+  (`base_url`, `apps_domain`) and folders are settings.
+- **State:** none yet that needs moving: sessions are kept in memory (moving signs everyone out once). The apps
+  database (step 2) will live in one state folder, set in the config, moved with it.
+- **The vault folders move with the share**, not with the service: the new machine mounts or syncs the same folders.
+- To move: install `fleetlayer-pages` on the new machine, copy the plugin's config section and the login file, mount
+  the vault folders there (with their `.fleetlayer-space` markers), point the proxy and DNS at it, check `/healthz`,
+  then stop the old one.
 
 ### Who writes where
 
@@ -171,4 +190,4 @@ callouts. No HTML, no scripts. Its address is `https://<pages address>/<space>/<
 no problems, then give the person that link.
 ```
 
-The `pages` skill (`plugins/pages/skill/SKILL.md`) is the longer version: install it as a skill, or sync it to every node with the files plugin.
+The `pages` skill (`plugins/pages/skill/SKILL.md`) is the longer version, and the `apps` skill (`plugins/pages/apps-skill/SKILL.md`) covers apps: install them as skills, or sync them to every node with the files plugin.
