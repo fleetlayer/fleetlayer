@@ -138,11 +138,11 @@ It refuses the live folders (`~/.claude/projects`, `~/.codex/sessions`): rewriti
 to loses its lines. [gitleaks](https://github.com/gitleaks/gitleaks) (MIT) catches secrets nobody delivered, such as
 a key pasted into a chat; it's optional, and has to be on `PATH`.
 
-A shared MCP server's calls and results are scrubbed too, from v0.3.13: the node sharing the tool redacts the
-secrets delivered to it from every line in both directions, before a call reaches the server and before a result
-reaches the agent ([the MCP gate](access-control.md#the-mcp-gate)). Not scrubbed yet: terminal attach (`fleetlayer attach`), which carries the
-terminal's raw bytes, where a value can be split between chunks, and shows a person their own session; nor pages and
-apps.
+A shared MCP server's calls and results are scrubbed too, from v0.3.13: the node sharing the tool redacts the secrets
+delivered to it from every line in both directions, before a call reaches the server and before a result reaches the
+agent ([the MCP gate](access-control.md#the-mcp-gate)). Not scrubbed yet: terminal attach (`fleetlayer attach`), which
+carries the terminal's raw bytes, where a value can be split between chunks, and shows a person their own session; nor
+pages and apps.
 
 | Reading | Key | Data |
 |---|---|---|
