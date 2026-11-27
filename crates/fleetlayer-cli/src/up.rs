@@ -391,9 +391,15 @@ pub fn node_yaml_text(
     if sessions.claude_code {
         y.push_str("  # Claude Code's own view of each session (status, transcript), and starting sessions.\n  - name: claude-code\n    command: fleetlayer-claude-code\n");
     }
+    let hint = if sessions.claude_code {
+        "# Flags for every session `fleetlayer session start` opens here (left out: Claude Code's default mode).\n# harnesses:\n#   claude: { args: [--permission-mode, auto] }\n"
+    } else {
+        ""
+    };
     if sessions.summaries {
         y.push_str("  # A short summary of each session as it goes (runs Claude Code, so it spends tokens).\n  - name: summaries\n    command: fleetlayer-summaries\n    grants: [sessions.watch, summary.publish]\n");
     }
+    y.push_str(hint);
     y
 }
 
@@ -816,6 +822,7 @@ mod tests {
         assert_eq!(v["plugins"][2]["name"], "herdr");
         assert_eq!(v["plugins"][3]["command"], "fleetlayer-claude-code");
         assert!(v["plugins"].get(4).is_none(), "summaries only when asked for");
+        assert!(y.contains("# harnesses:") && v.get("harnesses").is_none(), "a commented hint only");
         let y = node_yaml_text(
             "ws://x/v1/link",
             Path::new("/t"),
