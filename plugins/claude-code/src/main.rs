@@ -217,10 +217,18 @@ async fn start_hooks(plugin: Arc<Plugin>, peer: Peer, home: PathBuf, settings: P
         }
         return;
     }
+    // The hook runs this very binary, by absolute path.
+    let command = match std::env::current_exe().and_then(std::fs::canonicalize) {
+        Ok(exe) => hooks::command(&exe),
+        Err(e) => {
+            tracing::warn!("can't tell where fleetlayer-claude-code is ({e}); not installing the prompt hooks");
+            return;
+        }
+    };
     // Something else may rewrite the settings file (a config manager, a sync): put them back when they go missing.
     tokio::spawn(async move {
         loop {
-            match hooks::install(&settings) {
+            match hooks::install(&settings, &command) {
                 Ok(true) => tracing::info!("installed the prompt hooks in {}", settings.display()),
                 Ok(false) => {}
                 Err(e) => tracing::warn!("installing the prompt hooks in {}: {e}", settings.display()),
@@ -305,7 +313,7 @@ async fn main() {
         .with_ansi(false)
         .with_env_filter(tracing_subscriber::EnvFilter::from_env("FLEETLAYER_LOG"))
         .init();
-    // Claude Code runs `fleetlayer-claude-code hook` for each event the plugin installed a hook for.
+    // Claude Code runs `<this binary> hook` for each event the plugin installed a hook for.
     if std::env::args().nth(1).as_deref() == Some("hook") {
         hooks::run_hook();
         return;

@@ -13,8 +13,6 @@ use serde_json::{Map, Value};
 /// Mark `dir` trusted in the Claude Code config at `path`, keeping every other key. The file is replaced in one
 /// rename, so Claude Code never reads half of it. A missing file is created.
 pub fn mark_trusted(path: &Path, dir: &str) -> Result<(), String> {
-    // Through a symlink to the file it names, so a linked config stays linked.
-    let path = &std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let mut root: Value = match std::fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{} isn't JSON: {e}", path.display()))?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Value::Object(Map::new()),

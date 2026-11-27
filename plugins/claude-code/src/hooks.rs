@@ -1,7 +1,8 @@
 //! What a Claude Code session is waiting for, from Claude Code's own hooks rather than its screen.
 //!
 //! The plugin installs a few hooks in `~/.claude/settings.json` (every other key and hook kept, the file replaced in
-//! one rename). Each runs `fleetlayer-claude-code hook` asynchronously, so it can never hold Claude up or change what
+//! one rename, never through a symbolic link). Each runs the plugin's own binary by absolute path (`'…/fleetlayer-claude-code'
+//! hook`) asynchronously, so it can never hold Claude up or change what
 //! it does: the hook passes its JSON to the plugin's socket and exits 0 with no output, and exits 0 too when the
 //! plugin isn't running or isn't installed on that machine.
 //!
@@ -19,9 +20,14 @@ use jiff::Timestamp;
 use serde_json::{Map, Value, json};
 
 /// What marks a hook as this plugin's, so installing again replaces it and nothing else.
-const MARK: &str = "fleetlayer-claude-code hook";
-/// The hook's command: quiet and successful whatever happens, so a machine without the plugin sees no errors.
-pub const COMMAND: &str = "fleetlayer-claude-code hook 2>/dev/null || true";
+const MARK: &str = "fleetlayer-claude-code";
+
+/// The hook's command: this plugin's own binary by absolute path (never whatever `fleetlayer-claude-code` comes first
+/// on a PATH), quiet and successful whatever happens.
+pub fn command(exe: &Path) -> String {
+    let quoted = exe.to_string_lossy().replace('\'', "'\\''");
+    format!("'{quoted}' hook 2>/dev/null || true")
+}
 
 /// The events it listens to, with their tool matcher (None: the event has none).
 const EVENTS: &[(&str, Option<&str>)] = &[
@@ -59,29 +65,33 @@ pub fn run_hook() {
     }
 }
 
-/// Make sure the hooks are in `settings` (Claude Code's `settings.json`). True when the file changed.
-pub fn install(settings: &Path) -> Result<bool, String> {
-    edit(settings, true)
+/// Make sure the hooks, running `command`, are in `settings` (Claude Code's `settings.json`). True when the file
+/// changed.
+pub fn install(settings: &Path, command: &str) -> Result<bool, String> {
+    edit(settings, Some(command))
 }
 
 /// Take the plugin's hooks out of `settings` again, leaving everyone else's.
 pub fn uninstall(settings: &Path) -> Result<bool, String> {
-    edit(settings, false)
+    edit(settings, None)
 }
 
 fn ours(entry: &Value) -> bool {
-    entry["hooks"]
-        .as_array()
-        .is_some_and(|hs| hs.iter().any(|h| h["command"].as_str().is_some_and(|c| c.contains(MARK))))
+    entry["hooks"].as_array().is_some_and(|hs| {
+        hs.iter().any(|h| h["command"].as_str().is_some_and(|c| c.contains(MARK) && c.contains(" hook")))
+    })
 }
 
-fn edit(settings: &Path, want: bool) -> Result<bool, String> {
-    // Through a symlink to the file it names, so a synced or linked settings file stays linked.
-    let path = std::fs::canonicalize(settings).unwrap_or_else(|_| settings.to_path_buf());
+fn edit(settings: &Path, want: Option<&str>) -> Result<bool, String> {
+    // Never through a link: a settings file that's a symlink is left alone, and the person adds the hooks by hand.
+    if std::fs::symlink_metadata(settings).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(format!("{} is a symbolic link, so Fleetlayer won't write to it", settings.display()));
+    }
+    let path = settings.to_path_buf();
     let before: Value = match std::fs::read(&path) {
         Ok(b) => serde_json::from_slice(&b).map_err(|e| format!("{} isn't JSON: {e}", path.display()))?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            if !want {
+            if want.is_none() {
                 return Ok(false);
             }
             Value::Object(Map::new())
@@ -96,8 +106,8 @@ fn edit(settings: &Path, want: bool) -> Result<bool, String> {
         let list = hooks.entry(*event).or_insert_with(|| Value::Array(vec![]));
         let list = list.as_array_mut().ok_or_else(|| format!("hooks.{event} in {} isn't a list", path.display()))?;
         list.retain(|e| !ours(e));
-        if want {
-            let mut entry = json!({"hooks": [{"type": "command", "command": COMMAND, "async": true, "timeout": 5}]});
+        if let Some(command) = want {
+            let mut entry = json!({"hooks": [{"type": "command", "command": command, "async": true, "timeout": 5}]});
             if let Some(m) = matcher {
                 entry["matcher"] = json!(m);
             }
@@ -359,7 +369,9 @@ mod tests {
             {"matcher": "Bash", "hooks": [{"type": "command", "command": "/usr/local/bin/guard", "timeout": 15}]}
         ]}});
         std::fs::write(&p, serde_json::to_vec(&theirs).unwrap()).unwrap();
-        assert!(install(&p).unwrap());
+        let cmd = command(Path::new("/opt/fleet layer/bin/fleetlayer-claude-code"));
+        assert_eq!(cmd, "'/opt/fleet layer/bin/fleetlayer-claude-code' hook 2>/dev/null || true");
+        assert!(install(&p, &cmd).unwrap());
         let v: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
         assert_eq!(v["theme"], "dark");
         let pre = v["hooks"]["PreToolUse"].as_array().unwrap();
@@ -368,22 +380,27 @@ mod tests {
         assert_eq!(pre[1]["matcher"], "AskUserQuestion|ExitPlanMode");
         assert_eq!(pre[1]["hooks"][0]["async"], true);
         assert!(v["hooks"]["Stop"][0].get("matcher").is_none());
-        assert!(!install(&p).unwrap(), "already there: unchanged");
+        assert_eq!(pre[1]["hooks"][0]["command"], cmd);
+        assert!(!install(&p, &cmd).unwrap(), "already there: unchanged");
+        // A moved binary replaces its own hooks, not anyone else's.
+        assert!(install(&p, &command(Path::new("/usr/local/bin/fleetlayer-claude-code"))).unwrap());
+        let v: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+        assert_eq!(v["hooks"]["PreToolUse"].as_array().unwrap().len(), 2);
         assert!(uninstall(&p).unwrap());
         let v: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
         assert_eq!(v, theirs, "back to exactly what it was");
     }
 
     #[test]
-    fn a_linked_settings_file_stays_linked() {
+    fn a_linked_settings_file_is_never_written() {
         let d = tempfile::tempdir().unwrap();
         let real = d.path().join("real.json");
         std::fs::write(&real, "{}").unwrap();
         let link = d.path().join("settings.json");
         std::os::unix::fs::symlink(&real, &link).unwrap();
-        install(&link).unwrap();
+        let e = install(&link, &command(Path::new("/x/fleetlayer-claude-code"))).unwrap_err();
+        assert!(e.contains("symbolic link"), "{e}");
         assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
-        let v: Value = serde_json::from_slice(&std::fs::read(&real).unwrap()).unwrap();
-        assert!(v["hooks"]["Stop"].is_array());
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "{}");
     }
 }

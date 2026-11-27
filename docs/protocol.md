@@ -224,10 +224,10 @@ overseer agent speaking for them) can answer from anywhere:
   not known).
 
 Claude Code's plugin gets these from hooks it installs in `~/.claude/settings.json` (every other key and hook kept,
-the file replaced in one rename, put back if something rewrites the file; `hooks: false` in its config takes them
-out): `PreToolUse` for `AskUserQuestion` and `ExitPlanMode`, `PermissionRequest`, then `PostToolUse`,
+the file replaced in one rename and never written through a symbolic link, put back if something rewrites the file;
+`hooks: false` in its config takes them out): `PreToolUse` for `AskUserQuestion` and `ExitPlanMode`, `PermissionRequest`, then `PostToolUse`,
 `PostToolUseFailure`, `PermissionDenied`, `UserPromptSubmit`, `Stop` (with its `background_tasks`) and `SessionEnd`
-to clear. Each runs `fleetlayer-claude-code hook` asynchronously: it passes the event to the plugin's socket and exits
+to clear. Each runs the plugin's own binary by absolute path (`'…/fleetlayer-claude-code' hook`) asynchronously: it passes the event to the plugin's socket and exits
 0 with no output, so it never holds Claude up or changes what it does.
 
 **Answering.** `fleetlayer session answer <session> --prompt <id> --pick N …` asks its node with
