@@ -21,7 +21,6 @@
 //! closes.
 
 use std::collections::HashMap;
-use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -101,6 +100,11 @@ pub struct ToolConfig {
     /// tabs open and the cleanup at disconnect no longer sees them.
     #[serde(default)]
     pub close_with: Vec<String>,
+    /// For a stdio MCP server: start it at the caller's first tool call, answering `initialize` and `tools/list` from
+    /// what it answered last time (`lazy.rs`), not when the caller connects. Sessions connect at launch whether or not
+    /// they'll use the tool. Default true; false starts it on connect.
+    #[serde(default = "yes")]
+    pub lazy: bool,
     /// The directory the tool runs in. Default: an empty directory of its own
     /// (`~/.local/state/fleetlayer/tools/<name>`), never the node's, since tools often confine file access to it.
     #[serde(default)]
@@ -197,6 +201,10 @@ pub fn upstream(node: &Node, tool: &ToolConfig) -> Result<crate::mcp_http::Upstr
         headers.push(("authorization".into(), format!("Bearer {}", read(f)?)));
     }
     Ok(crate::mcp_http::Upstream { url, headers })
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// How long to wait for each cleanup call's reply.
@@ -929,36 +937,21 @@ pub async fn serve(node: Arc<Node>, req: ToolServe) -> Result<Value, RpcError> {
         None => node.home.join(".local/state/fleetlayer/tools").join(&tool.name),
     };
     std::fs::create_dir_all(&cwd).map_err(|e| RpcError::refused(format!("{}: {e}", cwd.display())))?;
-    let mut child = tokio::process::Command::new(&tool.command)
-        .args(&args)
-        .envs(&env)
-        .current_dir(&cwd)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
+    // The server starts at the caller's first tool call when what it answered last time is cached (`lazy.rs`).
+    let key = crate::lazy::key(&tool.command, &tool.args, &tool.env, &cwd);
+    let cache_path = cwd.with_extension("mcp-cache.json");
+    let cache = if tool.lazy { crate::lazy::load(&cache_path, &key) } else { None };
+    let spawn = crate::lazy::Spawn { tool: tool.name.clone(), command: tool.command.clone(), args, env, cwd };
+    let started = cache.is_none();
+    let (stdout, stdin) = crate::lazy::serve(spawn, cache, cache_path, key)
         .map_err(|e| RpcError::refused(format!("starting {}: {e}", tool.command)))?;
     let ws = connect_stream(&node, &req.stream_id, "serve").await.map_err(|e| RpcError::refused(e.to_string()))?;
-    tracing::info!(tool = %tool.name, caller = %req.caller, session = %name, stream = %&req.stream_id[..8], "tool connection opened");
-    let (stdin, stdout, stderr) = (child.stdin.take(), child.stdout.take(), child.stderr.take());
-    let (Some(stdin), Some(stdout)) = (stdin, stdout) else {
-        return Err(RpcError::internal("the tool's pipes didn't open"));
-    };
-    if let Some(stderr) = stderr {
-        let tool_name = tool.name.clone();
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                tracing::info!(tool = %tool_name, "stderr: {line}");
-            }
-        });
-    }
+    tracing::info!(tool = %tool.name, caller = %req.caller, session = %name, stream = %&req.stream_id[..8], started,
+        "tool connection opened");
     let (caller, stream_id) = (req.caller.clone(), req.stream_id.clone());
     let conn = node.tool_connections.open(&tool.name, &caller);
     tokio::spawn(async move {
         mcp_pipe(stdout, stdin, ws, tool.clone(), node.clone(), caller.clone(), stream_id, conn).await;
-        let _ = child.kill().await;
         tracing::info!(tool = %tool.name, caller = %caller, "tool connection closed");
     });
     Ok(serde_json::json!({}))
@@ -1100,6 +1093,7 @@ mod tests {
             networks: vec![],
             on_close: vec![],
             close_with: vec![],
+            lazy: true,
             cwd: None,
         };
         assert!(!allowed(&t, "ci@agents"));
@@ -1163,6 +1157,7 @@ mod tests {
 mod liveness_tests {
     use super::*;
     use futures::{SinkExt, StreamExt};
+    use std::process::Stdio;
     use tokio::io::{AsyncReadExt, duplex};
     use tokio_tungstenite::WebSocketStream;
     use tokio_tungstenite::tungstenite::protocol::Role;

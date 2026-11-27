@@ -154,7 +154,9 @@ managers, machines that sleep.
   connection first, and a `tool.connections` reading counts unfinished cleanups. The extension can't reach another
   client's tabs, so old grey groups are closed by hand. Groups named "session" came from sessions herdr resumed after a
   reboot: they start their MCP servers before the node has listed them, so the caller had no tab name; the node now
-  waits up to 10 s for it. Written: `docs/guides/browser.md` ("Leftover tabs").
+  waits up to 10 s for it. And every connected session cost an idle Playwright process on the laptop (50-80 MB each):
+  the node now answers `initialize` and `tools/list` from a cache and starts the server at the first tool call
+  (`lazy`, on by default). Written: `docs/guides/browser.md` ("Leftover tabs").
 - **A LaunchAgent can't find `claude`.** launchd gives agents a PATH without `~/.local/bin`, where Claude Code's
   installer puts it, so anything a node runs that calls `claude` fails with "No such file or directory". The
   claude-auth-manager plugin looks on PATH and then in the installers' places (`~/.local/bin`, `~/.claude/local`,

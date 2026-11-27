@@ -8,6 +8,7 @@ mod deliver;
 mod gate;
 mod heartbeat;
 mod keys;
+mod lazy;
 mod link;
 mod local;
 mod mcp_http;

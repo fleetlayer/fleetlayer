@@ -86,6 +86,12 @@ What each line is for:
   restart), before it stops the server. From v0.3.13 it runs only for a session that made a tool call: Playwright MCP
   connects to Chrome, and opens a tab, at its first call of any kind, so a cleanup call for a session that never used
   the browser would open the very tab it meant to close.
+- **Nothing runs until it's used:** a session connects at launch whether or not it will use the browser. From
+  v0.3.13 the node answers a new connection from what Playwright MCP answered last time (kept in
+  `~/.local/state/fleetlayer/tools/browser.mcp-cache.json`) and starts the process only at the session's first browser
+  call, so twenty idle sessions cost nothing on the laptop. When Playwright MCP is upgraded, the first call after it
+  notices the new tools, rewrites that file and tells the session. `lazy: false` starts it at every connection
+  instead.
 - **`networks`:** away from home, the browser is refused unless you opt in on purpose with
   `fleetlayer tools enable browser --for 2h` (at most a day; `fleetlayer tools disable browser` ends it early).
 
