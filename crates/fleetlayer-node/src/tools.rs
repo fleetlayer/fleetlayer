@@ -62,6 +62,11 @@ pub struct ToolConfig {
     /// Playwright MCP in extension mode: `[{name: browser_tabs, arguments: {action: close, index: 0}, repeat: 50}]`.
     #[serde(default)]
     pub on_close: Vec<OnClose>,
+    /// Tool calls that run the `on_close` cleanup instead of reaching the server, answered as done. Playwright MCP in
+    /// extension mode: `[browser_close]`, which only disconnects there, so a caller that "closes" first leaves its
+    /// tabs open and the cleanup at disconnect no longer sees them.
+    #[serde(default)]
+    pub close_with: Vec<String>,
     /// The directory the tool runs in. Default: an empty directory of its own
     /// (`~/.local/state/fleetlayer/tools/<name>`), never the node's, since tools often confine file access to it.
     #[serde(default)]
@@ -402,6 +407,7 @@ async fn mcp_pipe<S>(
     });
     // Caller to tool, line by line.
     let mut buf: Vec<u8> = Vec::new();
+    let mut seq = 0u32;
     while let Some(Ok(m)) = ws_rx.next().await {
         let bytes = match m {
             Message::Binary(b) if b.is_empty() => break,
@@ -415,6 +421,16 @@ async fn mcp_pipe<S>(
             let line: Vec<u8> = buf.drain(..=i).collect();
             let text = String::from_utf8_lossy(&line);
             match inbound(filter.as_ref(), text.trim_end(), &node, &tool) {
+                Inbound::Forward(Some(n)) if config.close_with.contains(&n) => {
+                    // The caller is done: close what it opened, the same way as when it disconnects.
+                    let made = cleanup(&mut stdin, &mut close_rx, &config.on_close, &mut seq).await;
+                    tracing::info!(tool = %tool, caller = %caller, call = %n, calls = made, "closed on the caller's request");
+                    let id =
+                        serde_json::from_str::<Value>(text.trim_end()).map(|v| v["id"].clone()).unwrap_or_default();
+                    let reply = serde_json::json!({"jsonrpc": "2.0", "id": id, "result": {"content": [{"type": "text",
+                        "text": format!("Closed what this session opened ({made} cleanup calls).")}]}});
+                    let _ = out_tx.send(Message::Binary(format!("{reply}\n").into_bytes().into())).await;
+                }
                 Inbound::Forward(name) => {
                     if let Some(n) = name {
                         tracing::info!(tool = %tool, caller = %caller, call = %n, "tool call");
@@ -434,12 +450,29 @@ async fn mcp_pipe<S>(
     // Clean up after the session (close its browser tabs) before the server stops.
     // One call at a time, each waiting for its reply: an MCP server may run calls concurrently, and cleanup calls that
     // race each other leave things behind.
-    let mut seq = 0u32;
+    let made = cleanup(&mut stdin, &mut close_rx, &config.on_close, &mut seq).await;
+    if made > 0 {
+        tracing::info!(tool = %tool, caller = %caller, calls = made, "cleaned up after the session");
+    }
+    let _ = stdin.shutdown().await;
+    drop(stdin);
+    let _ = tokio::time::timeout(DRAIN, down).await;
+    drop(out_tx);
+    let _ = tokio::time::timeout(Duration::from_secs(2), sender).await;
+}
+
+/// Run the `on_close` calls one at a time, each waiting for its reply; answers how many were made.
+async fn cleanup(
+    stdin: &mut tokio::process::ChildStdin,
+    close_rx: &mut tokio::sync::mpsc::Receiver<Value>,
+    on_close: &[OnClose],
+    seq: &mut u32,
+) -> u32 {
     let mut made = 0u32;
-    'calls: for c in &config.on_close {
+    'calls: for c in on_close {
         let (name, arguments, times) = c.call();
         for _ in 0..times {
-            seq += 1;
+            *seq += 1;
             let id = format!("fleetlayer-close-{seq}");
             let call = serde_json::json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
                 "params": {"name": name, "arguments": arguments}});
@@ -455,14 +488,7 @@ async fn mcp_pipe<S>(
             }
         }
     }
-    if made > 0 {
-        tracing::info!(tool = %tool, caller = %caller, calls = made, "cleaned up after the session");
-    }
-    let _ = stdin.shutdown().await;
-    drop(stdin);
-    let _ = tokio::time::timeout(DRAIN, down).await;
-    drop(out_tx);
-    let _ = tokio::time::timeout(Duration::from_secs(2), sender).await;
+    made
 }
 
 // ---------------------------------------------------------------- serving a tool this node shares
@@ -648,6 +674,7 @@ mod tests {
             tools: None,
             networks: vec![],
             on_close: vec![],
+            close_with: vec![],
             cwd: None,
         };
         assert!(!allowed(&t, "ci@agents"));
