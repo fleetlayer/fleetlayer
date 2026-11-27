@@ -18,6 +18,7 @@
 //! ```
 
 mod chrome;
+mod disclaim;
 mod write;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -659,8 +660,24 @@ async fn status_loop(plugin: Arc<Plugin>, peer: Peer) {
     }
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
+    // Before any thread starts: on macOS, start again as its own responsible process (src/disclaim.rs).
+    disclaim::relaunch();
+    // `fleetlayer-cookies responsible`: whether macOS holds this program itself responsible for what it reads, after
+    // that relaunch, for checking a setup (docs/plugins/cookies.md).
+    if std::env::args().nth(1).as_deref() == Some("responsible") {
+        let me = std::process::id() as i32;
+        match disclaim::responsible_pid() {
+            Some(pid) if pid == me => println!("fleetlayer-cookies (pid {me}) is its own responsible process"),
+            Some(pid) => println!("pid {pid} is responsible for fleetlayer-cookies (pid {me})"),
+            None => println!("this system doesn't say which process is responsible (only macOS does)"),
+        }
+        return;
+    }
+    tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("a Tokio runtime").block_on(serve());
+}
+
+async fn serve() {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_ansi(false)

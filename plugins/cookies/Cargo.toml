@@ -30,6 +30,12 @@ psl = "2.1.265"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3.7.0"
+libc = "0.2.191"
 
-[lints]
-workspace = true
+# The workspace's lints, except that unsafe code is denied rather than forbidden, so src/disclaim.rs (macOS foreign
+# calls, and nothing else) can allow it.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+dbg_macro = "deny"

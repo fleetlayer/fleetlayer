@@ -18,11 +18,23 @@ looks: a `cookies.txt`, a JSON file, or an env file such as `AUTH_TOKEN=…` and
 
 Chrome, Chromium, Brave and Microsoft Edge, on macOS and Linux.
 
-- **macOS:** the browser encrypts cookies with a key it keeps in your login Keychain ("Chrome Safe Storage"). The first
-  time the plugin reads it, macOS asks whether `fleetlayer-cookies` may use that item: type your login password and
-  choose **Always Allow**. Release builds are signed with a fixed identity (`dev.fleetlayer.cookies`), so the answer
-  holds across upgrades. A build you made yourself asks again after every rebuild. If you click **Deny**, the plugin
-  reports it and doesn't ask again until it restarts (`fleetlayer status` shows it as failing).
+- **macOS:** two things to allow, once each, both for `fleetlayer-cookies` alone (never the node, so no other
+  plugin or tool gets them). Release builds are signed with a fixed identity (`dev.fleetlayer.cookies`), so both
+  answers hold across upgrades; a build you made yourself is asked again after every rebuild.
+  1. **The browser's key.** Chrome encrypts cookies with a key in your login Keychain ("Chrome Safe Storage"). The
+     first time the plugin reads it, macOS asks whether `fleetlayer-cookies` may use that item: type your login
+     password and choose **Always Allow**. If you click **Deny**, the plugin reports it and doesn't ask again until it
+     restarts.
+  2. **The cookie file.** macOS protects other apps' data, and since macOS 27 it blocks reading Chrome's folder
+     without asking: a "Data Access Blocked" notification, and the plugin reports "macOS blocked reading …". Open
+     System Settings, Privacy & Security, **Full Disk Access**, click **+**, press Cmd-Shift-G, paste
+     `~/.local/lib/fleetlayer/fleetlayer-cookies` (the path the plugin's message names) and turn it on. The plugin
+     tries again every few minutes; if it's still refused, `fleetlayer-node install` restarts the node.
+
+  Full Disk Access goes to `fleetlayer-cookies` only because the plugin starts itself again as its own *responsible
+  process* (macOS otherwise holds the program that started it, the node, responsible for what it reads, and the grant
+  would have to cover the node and everything it runs). `fleetlayer-cookies responsible` checks it: it should say "is
+  its own responsible process".
 - **Linux:** it uses the browser's fixed key, or the key in your desktop keyring through `secret-tool` (libsecret) when
   the browser keeps one there. KWallet isn't supported yet.
 - **Windows** isn't supported. Chrome's app-bound encryption there lets only Chrome itself open its cookies.
@@ -122,7 +134,7 @@ was offline gets the latest version when it's back, while the source is online.
 
 The plugin reports whether it does its job (`fleetlayer status`, the `plugin.status` reading, the node's heartbeat):
 
-- **Source:** it can't read the browser (Keychain denied, no cookie database), or a required cookie is missing or
+- **Source:** it can't read the browser (Keychain denied, macOS blocking the cookie file, no cookie database), or a required cookie is missing or
   expired, which usually means you've signed out of the site. The message says what to do.
 - **Target:** a required cookie has expired or wasn't sent, a file couldn't be written, or nothing has arrived for
   `stale_hours` (the source machine is asleep or offline, or its sync to this node isn't approved).

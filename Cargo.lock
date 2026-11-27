@@ -1789,6 +1789,7 @@ dependencies = [
  "fleetlayer-protocol",
  "hex",
  "jiff 1.0.3",
+ "libc",
  "pbkdf2 0.12.2",
  "psl",
  "rusqlite",

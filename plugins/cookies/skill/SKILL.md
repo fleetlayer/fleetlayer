@@ -27,7 +27,9 @@ Never print, copy, paste or send a cookie's value: in a message, a log, a commit
 it can act as the person on that site. Read the file only into the tool that needs it.
 
 When a reading has a `problem` (a cookie expired, nothing arrived for days), tell the person what it says: usually they
-need to sign in to the site again in their browser, or wake the laptop. A tool that answers "unauthorised" while the
+need to sign in to the site again in their browser, or wake the laptop. On the machine with the browser, the
+`cookies.share` reading's problem may say macOS blocked the Keychain or the cookie file: only the person can allow
+those (Always Allow when macOS asks; Full Disk Access for `fleetlayer-cookies` alone, never for the node or a terminal). A tool that answers "unauthorised" while the
 reading looks fine also means signing in again.
 
 ## Asking for a site's cookies

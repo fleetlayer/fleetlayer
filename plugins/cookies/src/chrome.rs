@@ -204,7 +204,9 @@ pub fn read(db: &Path, keys: &Keys, domains: &[String]) -> anyhow::Result<Vec<Co
     anyhow::ensure!(db.exists(), "there's no cookie database at {}", db.display());
     let tmp = tempfile::tempdir()?;
     let copy = tmp.path().join("Cookies");
-    std::fs::copy(db, &copy)?;
+    if let Err(e) = std::fs::copy(db, &copy) {
+        anyhow::bail!("{}", copy_error(db, &e));
+    }
     for suffix in ["-wal", "-journal"] {
         let side = PathBuf::from(format!("{}{suffix}", db.display()));
         if side.exists() {
@@ -270,6 +272,22 @@ pub fn read(db: &Path, keys: &Keys, domains: &[String]) -> anyhow::Result<Vec<Co
     }
     out.sort();
     Ok(out)
+}
+
+/// Why the database couldn't be copied, saying what to do when it's macOS's protection of other apps' data.
+fn copy_error(db: &Path, e: &std::io::Error) -> String {
+    if cfg!(target_os = "macos") && e.kind() == std::io::ErrorKind::PermissionDenied {
+        let exe =
+            std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "fleetlayer-cookies".into());
+        format!(
+            "macOS blocked reading {} (data from other apps): give fleetlayer-cookies Full Disk Access in System \
+             Settings, Privacy & Security, Full Disk Access (+, then {exe}); it tries again every few minutes, \
+             and `fleetlayer-node install` restarts the node if it's still refused",
+            db.display()
+        )
+    } else {
+        format!("copying {}: {e}", db.display())
+    }
 }
 
 /// The keys for `browser` on this system. On macOS this reads the Keychain, which asks the person the first time

@@ -431,6 +431,14 @@ managers, machines that sleep.
   `security add-generic-password -A` belongs to Apple's tools' partition, so reading it from your own binary still
   prompts (and hangs a CI runner); make the test item from the test binary itself. Where it lives:
   `docs/plugins/cookies.md`, `plugins/cookies/src/chrome.rs`.
+- **macOS 27 blocks reading another app's data folder without asking, and blames the responsible process.** Reading
+  Chrome's cookie file is refused (TCC's "data from other apps", a "Data Access Blocked" notification, no prompt), and
+  the grant that fixes it, Full Disk Access, is checked against the *responsible process*: for a plugin, the node that
+  started it, so granting it would cover every plugin and tool the node runs. Solved by having `fleetlayer-cookies`
+  start itself again through `posix_spawn` with `responsibility_spawnattrs_setdisclaim` (a private API terminals and
+  LLDB use; looked up at run time), so it's responsible for itself and the person grants Full Disk Access to it alone.
+  `fleetlayer-cookies responsible` checks it. Any other tool that reads another app's files needs the same pattern.
+  Where it lives: `plugins/cookies/src/disclaim.rs`, `docs/plugins/cookies.md`.
 - **Reading Chrome's cookies: the format's traps.** Values are AES-128-CBC under a PBKDF2-SHA1 key (salt `saltysalt`,
   1003 iterations from the Keychain on macOS; one iteration and the fixed password `peanuts`, or the keyring's, on
   Linux), and since the database's meta version 24 each plaintext starts with the SHA-256 of the cookie's host key,
