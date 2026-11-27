@@ -205,14 +205,21 @@ what the access policy gives them:
 - **Set it up:** add pages as a client of the sign-in service, named `pages`, with
   `redirect_uris: [https://<pages address>/_/auth/callback]`,
   `post_logout_redirect_uris: [https://<pages address>/_/signed-out]` and a `secret_file`. Give the pages plugin the
-  same secret (`signin.secret_file`) and the `access.check` grant in the node's config. Then allow people in, in the
-  policy:
+  same secret (`signin.secret_file`) and the `access.check` grant in the node's config. Then, in the policy, say who
+  owns each space and let people in:
 
   ```yaml
+  owners:
+    "page:personal/*": person:alice      # alice's own space: she reads it, nobody else unless a rule shares it
+    "app:personal/*": person:alice
+    "page:family/*": team:family         # the family team's members read it
+    "app:family/*": team:family
   allow:
-    - { who: role:admin, can: [sign_in], to: ["service:pages"] }
-    - { who: team:family, can: [read], to: ["page:family/*", "app:family/*"] }
+    - { who: team:family, can: [sign_in], to: ["service:pages"] }
   ```
+
+  A tenant's admins may sign in by default, but being an admin doesn't open anyone's pages: like everyone, an admin
+  reads their own spaces, their teams' spaces, and what a rule shares.
 
 - **What they see:** a space appears when they may read `page:<space>/*`, a page when they may read
   `page:<space>/<folder>`, an app when they may read `app:<space>/<name>`. Anything else is "not found". The service
