@@ -5,9 +5,10 @@ use super::*;
 fn fake_op(dir: &Path) -> Op {
     std::fs::create_dir_all(dir.join("values")).unwrap();
     let script = dir.join("op");
+    let source = dir.join("op.sh");
     let d = dir.display();
     std::fs::write(
-        &script,
+        &source,
         format!(
             r#"#!/bin/sh
 echo "$*" >> {d}/calls
@@ -26,8 +27,12 @@ esac
         ),
     )
     .unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // The executable is written by a child process, never by this one: a test thread here forking at the moment this
+    // process held the file open for writing would leave that descriptor in its child, and running the script then
+    // fails with "Text file busy" (ETXTBSY). Tests run in parallel threads that spawn processes all the time.
+    let installed =
+        std::process::Command::new("install").arg("-m").arg("0755").arg(&source).arg(&script).status().unwrap();
+    assert!(installed.success());
     std::fs::write(dir.join("vaults.json"), r#"[{"id":"v1","name":"github"}]"#).unwrap();
     Op { bin: script.display().to_string() }
 }
@@ -111,7 +116,7 @@ async fn an_ambiguous_item_holds_back_only_itself() {
     value(d.path(), TOKEN, "ghp_first_value_0001");
     let refs: BTreeSet<String> = [TOKEN.to_string(), "op://github/twin/token".into()].into();
     let r = collect(&op, &[Some("t".into())], &refs, &mut SourceState::default()).await;
-    assert_eq!(r.values[TOKEN].value, "ghp_first_value_0001", "the other item still goes");
+    assert_eq!(r.values.get(TOKEN).map(|v| v.value.as_str()), Some("ghp_first_value_0001"), "{:?}", r.problems);
     assert!(r.stuck.contains("op://github/twin/token"));
     assert!(r.problems.iter().any(|p| p.contains("2 items called")), "{:?}", r.problems);
 }
