@@ -89,7 +89,7 @@ The service checks every page as it shows it and lists what's wrong in a box at 
 the page:
 
 - no `# Title` on the first line, or no summary paragraph after it (`<title>` for HTML);
-- an image or link to a file that isn't in the folder, or a path that leaves the space;
+- an image or link to a file that isn't in the folder, or a path that points outside the space's folder;
 - raw HTML in Markdown (shown as text);
 - in `index.html`: a script, an `on…=` attribute, a `javascript:` link, or a file from another site;
 - an image over 5 MB;

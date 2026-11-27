@@ -304,7 +304,7 @@ fn html_page(status: StatusCode, s: String) -> Response {
 
 fn not_found_body(what: &str) -> String {
     format!(
-        r#"<main class="wrap empty-page"><div class="empty"><h1>Not here</h1><p>{}</p><a class="btn" href="/">All spaces</a></div></main>"#,
+        r#"<main class="wrap empty-page"><div class="empty"><h1>Not here</h1><p>{}</p><a class="btn" href="/">All pages</a></div></main>"#,
         esc(what)
     )
 }
@@ -340,7 +340,7 @@ async fn spaces_page(State(app): Ctx, headers: HeaderMap) -> Response {
     }
     let mut body = String::from(r#"<main class="wrap"><header class="page-head"><h1>Spaces</h1></header>"#);
     if rows.is_empty() {
-        body.push_str(r#"<div class="empty"><h2>No spaces you can read</h2><p>Ask whoever runs this service to share a space with you.</p></div>"#);
+        body.push_str(r#"<div class="empty"><h2>Nothing shared with you yet</h2><p>Ask whoever runs this service to share some pages with you.</p></div>"#);
     } else {
         body.push_str(r#"<ul class="spaces">"#);
         for (name, cfg, pages) in rows {
@@ -412,7 +412,7 @@ fn url_seg(s: &str) -> String {
 fn space_list_html(name: &str, cfg: &SpaceConfig, pages: &[Summary]) -> String {
     if pages.is_empty() {
         return format!(
-            r#"<div class="empty"><h2>No pages yet</h2><p>A page is a folder in this space with an <code>index.md</code> or <code>index.html</code>. It shows here as soon as it's saved.</p><p class="empty-path mono">{}/&lt;date&gt;-&lt;name&gt;/index.md</p></div>"#,
+            r#"<div class="empty"><h2>No pages yet</h2><p>A page is a folder here with an <code>index.md</code> or <code>index.html</code> in it. It shows up as soon as it's saved.</p><p class="empty-path mono">{}/&lt;date&gt;-&lt;name&gt;/index.md</p></div>"#,
             esc(name)
         );
     }
