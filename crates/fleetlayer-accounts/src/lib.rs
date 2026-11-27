@@ -72,6 +72,14 @@ pub fn main(p: &Provider) -> ! {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let (out, code) = match args.as_slice() {
+        ["--help"] | ["-h"] => {
+            print!("{}", help(p));
+            std::process::exit(0);
+        }
+        [] => {
+            eprint!("{}", help(p));
+            std::process::exit(2);
+        }
         ["--version"] | ["-V"] => {
             println!("{} {}", p.bin, env!("CARGO_PKG_VERSION"));
             std::process::exit(0);
@@ -88,10 +96,30 @@ pub fn main(p: &Provider) -> ! {
             .json(),
             2,
         ),
-        _ => (fail("Usage", format!("usage: {} --list --json | --version", p.bin)).json(), 2),
+        _ => (fail("Usage", format!("usage: {} --list --json | --version | --help", p.bin)).json(), 2),
     };
     println!("{out}");
     std::process::exit(code);
+}
+
+fn help(p: &Provider) -> String {
+    format!(
+        "{bin} {version}: every account a Fleetlayer hub manages, with its usage, as claude-swap's account list
+(schema v1), for menu bar apps such as CodexBar (\"Read accounts from claude-swap\", with this as the executable).
+
+Usage:
+  {bin} --list --json    print the account list (an error prints {{schemaVersion, error}} and exits 1)
+  {bin} --version        print the version
+  {bin} --help           print this
+
+It reads the readings {accounts}, {usage} and the token checks from this machine's node
+(socket: $FLEETLAYER_SOCKET, else the node's default). Switching accounts isn't supported: --switch-to fails.
+",
+        bin = p.bin,
+        version = env!("CARGO_PKG_VERSION"),
+        accounts = p.accounts,
+        usage = p.usage,
+    )
 }
 
 fn run(p: &Provider) -> Result<Value, Failure> {
