@@ -63,6 +63,15 @@ elsewhere, without private names or hostnames.
 The docs in `docs/` are the source of fleetlayer.ai (`site/`). A new doc starts with a `# Title` line (no
 frontmatter) and gets an entry in `site/site.config.mjs`; links between docs stay relative `.md` paths.
 
+## Skills: what agents are told
+
+Agents on a Fleetlayer machine learn what it gives them from skills: the core one in `skills/fleetlayer/`, one per
+shared tool that isn't a plugin (`skills/fleetlayer-browser/`), and one beside each plugin an agent acts through
+(`plugins/<name>/skill/SKILL.md`, `plugins/pages/apps-skill/`). A change to a command, a plugin's tools or a message an
+agent sees (a refusal, an outside-data line) that changes what an agent should do updates its skill in the same
+commit. Check every command and flag against the code before writing it down. A test in `crates/fleetlayer-cli`
+(`skill_commands.rs`) fails when a skill names a `fleetlayer` command or flag that doesn't exist.
+
 ## Releases
 
 Deployers get one release per set of features: a version tag (`v0.2.0`) with release notes, not every build. Each

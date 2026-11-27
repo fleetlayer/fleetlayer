@@ -1,6 +1,8 @@
 //! fleetlayer: the command line. It talks to this machine's node over its local socket.
 
 mod pages;
+#[cfg(test)]
+mod skill_commands;
 mod up;
 
 use std::path::PathBuf;
