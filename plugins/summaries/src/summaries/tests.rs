@@ -166,8 +166,14 @@ fn home() -> Home {
     Home { home, state, _dir: dir }
 }
 
+/// The tests' "now": noon in Auckland (the tests' time zone), so "30 minutes ago" is the same local day whatever the
+/// real clock and the machine's time zone say. The engine files periods against it too (`Config::now`).
+fn now() -> Timestamp {
+    "2026-11-25T23:00:00Z".parse().unwrap()
+}
+
 fn ts(ago_minutes: i64) -> String {
-    (Timestamp::now() - SignedDuration::from_mins(ago_minutes)).to_string()
+    (now() - SignedDuration::from_mins(ago_minutes)).to_string()
 }
 
 fn human(sid: &str, text: &str, ago: i64) -> Value {
@@ -202,6 +208,7 @@ fn append(h: &Home, sid: &str, records: &[Value]) -> PathBuf {
 fn config(h: &Home) -> Config {
     let mut c = Config::new(&h.home, &h.state, "Sam");
     c.tz = auckland();
+    c.now = Some(now());
     c
 }
 

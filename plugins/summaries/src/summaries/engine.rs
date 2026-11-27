@@ -23,6 +23,8 @@ pub const MAX_FAILURES: u32 = 3;
 
 #[derive(Debug, Clone)]
 pub struct Config {
+    /// A fixed "now" for the periods summaries are filed under (tests); the real clock when None.
+    pub now: Option<Timestamp>,
     pub roots: Roots,
     pub state_file: PathBuf,
     pub user_name: String,
@@ -48,6 +50,7 @@ pub struct Config {
 impl Config {
     pub fn new(home: &Path, state_dir: &Path, user_name: &str) -> Config {
         Config {
+            now: None,
             roots: Roots::from_home(home),
             state_file: state_dir.join("summaries.json"),
             user_name: user_name.to_owned(),
@@ -338,7 +341,7 @@ impl Engine {
         }
 
         let tz = &self.config.tz;
-        let now = Timestamp::now();
+        let now = self.config.now.unwrap_or_else(Timestamp::now);
         for chunk in condense::chunk_by_period(&res.events, self.config.daily_days, now, tz) {
             let chunk_end = chunk.last().expect("chunks aren't empty").end;
             if !condense::is_real(&chunk) {
