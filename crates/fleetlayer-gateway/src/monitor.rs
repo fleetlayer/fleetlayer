@@ -51,6 +51,9 @@ pub struct State {
     /// Alert messages the node couldn't take yet (it was down).
     #[serde(default)]
     pub queued: Vec<String>,
+    /// Why the last alert message couldn't be delivered, when the node refused it.
+    #[serde(default)]
+    pub delivery_error: Option<String>,
 }
 
 fn key(kind: &Kind, name: &str) -> String {
@@ -226,26 +229,38 @@ impl Monitor {
         let cfg = &self.reg.cfg;
         for a in &alerts {
             tracing::warn!(alert = a.as_str());
-            if cfg.alerts.desktop {
-                crate::notify::desktop(a);
-            }
+        }
+        // One round's changes are one alert: stopping the control plane takes the node's link with it.
+        if !alerts.is_empty() && cfg.alerts.desktop {
+            crate::notify::desktop(&alerts.join(" "));
         }
         let Some(session) = cfg.alerts.session.clone() else { return };
         let mut s = self.state.lock().await;
-        let page = cfg.address(crate::registry::STATUS);
-        s.queued.extend(alerts.into_iter().map(|a| format!("Fleetlayer gateway: {a} Status: {page}")));
+        if !alerts.is_empty() {
+            let page = cfg.address(crate::registry::STATUS);
+            s.queued.push(format!("Fleetlayer gateway: {} Status: {page}", alerts.join(" ")));
+        }
         let mut kept = vec![];
-        let queued = std::mem::take(&mut s.queued);
-        let mut node_down = false;
-        for text in queued {
-            if node_down {
+        let mut node_unreachable = false;
+        for text in std::mem::take(&mut s.queued) {
+            if node_unreachable {
                 kept.push(text);
                 continue;
             }
-            if let Err(e) = crate::node::send(&cfg.node_socket(), &session, &text).await {
-                tracing::warn!("alert to {session} not sent yet: {e}");
-                node_down = true;
-                kept.push(text);
+            match crate::node::send(&cfg.node_socket(), &session, &text).await {
+                Ok(()) => s.delivery_error = None,
+                // The node is down or restarting: keep it for when it's back.
+                Err(crate::node::SendError::Unreachable(e)) => {
+                    tracing::warn!("alert to {session} waits for the node: {e}");
+                    node_unreachable = true;
+                    kept.push(text);
+                }
+                // The node answered and refused (no such session, not allowed): retrying won't help. Shown on the
+                // status page, where whoever set alerts.session sees it.
+                Err(crate::node::SendError::Refused(e)) => {
+                    tracing::error!("alert to {session} not delivered: {e}");
+                    s.delivery_error = Some(format!("{e} ({})", jiff::Timestamp::now()));
+                }
             }
         }
         // Keep the newest 50: an alert storm while the node is down shouldn't grow without end.

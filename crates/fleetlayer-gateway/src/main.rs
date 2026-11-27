@@ -112,14 +112,16 @@ pub fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
 }
 
+/// The innermost cause, which is the one a person can act on ("Connection refused (os error 111)"), rather than
+/// every layer's restatement of it.
 pub fn error_chain(e: &dyn std::error::Error) -> String {
-    let mut msg = e.to_string();
+    let mut last = e.to_string();
     let mut src = e.source();
     while let Some(s) = src {
-        msg = format!("{msg}: {s}");
+        last = s.to_string();
         src = s.source();
     }
-    msg
+    last
 }
 
 async fn handle(

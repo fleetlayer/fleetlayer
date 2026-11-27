@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use fleetlayer_plugin::{Handler, Peer};
-use fleetlayer_protocol::rpc::RpcError;
+use fleetlayer_protocol::rpc::{RpcError, code};
 use serde_json::{Value, json};
 
 use crate::registry::Announced;
@@ -50,7 +50,33 @@ pub async fn health(socket: &Path) -> Result<(), String> {
     }
 }
 
+pub enum SendError {
+    /// The node didn't answer: try again later.
+    Unreachable(String),
+    /// The node answered no.
+    Refused(String),
+}
+
 /// Send a Fleetlayer message to a session.
-pub async fn send(socket: &Path, to: &str, text: &str) -> anyhow::Result<()> {
-    call(socket, "_fleetlayer.dev/message/send", json!({"to": to, "text": text})).await.map(|_| ())
+pub async fn send(socket: &Path, to: &str, text: &str) -> Result<(), SendError> {
+    let stream = tokio::time::timeout(Duration::from_secs(5), tokio::net::UnixStream::connect(socket))
+        .await
+        .map_err(|_| SendError::Unreachable("the node's socket didn't answer".into()))?
+        .map_err(|e| SendError::Unreachable(format!("can't reach the node ({e})")))?;
+    let (r, w) = stream.into_split();
+    let (peer, task) = fleetlayer_plugin::connect(r, w, Arc::new(NoRequests));
+    let res = peer
+        .request_within::<_, Value>(
+            "_fleetlayer.dev/message/send",
+            &json!({"to": to, "text": text}),
+            Duration::from_secs(30),
+        )
+        .await;
+    task.abort();
+    match res {
+        Ok(_) => Ok(()),
+        // Timeouts and a closed connection come back as internal errors; the node's own refusals carry their codes.
+        Err(e) if e.code == code::INTERNAL_ERROR || e.code == code::CLOSED => Err(SendError::Unreachable(e.message)),
+        Err(e) => Err(SendError::Refused(e.message)),
+    }
 }

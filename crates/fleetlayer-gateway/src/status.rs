@@ -24,7 +24,7 @@ pub async fn api_status(app: &App) -> Response {
             "health": r.health, "hosts": r.hosts, "source": r.source})
         })
         .collect();
-    axum::Json(json!({"services": services, "checks": checks, "queuedAlerts": s.queued.len()})).into_response()
+    axum::Json(json!({"services": services, "checks": checks, "queuedAlerts": s.queued.len(), "deliveryError": s.delivery_error})).into_response()
 }
 
 pub async fn healthz(app: &App) -> Response {
@@ -145,11 +145,14 @@ pub async fn page(app: &App, unknown: Option<&str>) -> Response {
         }
         (None, false) => "<b>nowhere</b>: set <code>alerts.session</code> in gateway.yaml".into(),
     };
-    let queued = if s.queued.is_empty() {
+    let mut queued = if s.queued.is_empty() {
         String::new()
     } else {
         format!("<p class=note>{} alert message(s) wait for the node to come back.</p>", s.queued.len())
     };
+    if let Some(e) = &s.delivery_error {
+        queued.push_str(&format!("<p class=note>The last alert message wasn't delivered: {}</p>", esc(e)));
+    }
     let missing = unknown
         .map_or(String::new(), |n| format!("<p class=note>Nothing called <b>{}</b> runs here. These do:</p>", esc(n)));
     let mut advanced = String::new();

@@ -1,5 +1,7 @@
 //! fleetlayer: the command line. It talks to this machine's node over its local socket.
 
+mod up;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -24,6 +26,16 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Start everything on this machine as user services: the control plane (or --join one elsewhere), the node with
+    /// the Claude sign-in hub and pages, and the gateway (http://<name>.localhost:7680 and a status page).
+    Up(up::UpArgs),
+    /// Stop what `up` started. Every file stays.
+    Down,
+    /// Every service the gateway serves: its address and where it really runs.
+    Services {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
+        rest: Vec<String>,
+    },
     /// The node and its plugins.
     Status,
     /// Every session on this node.
@@ -369,6 +381,15 @@ async fn main() {
 }
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
+    match &cli.command {
+        Command::Up(_) => {
+            let Command::Up(a) = cli.command else { unreachable!() };
+            return up::up(a).await;
+        }
+        Command::Down => return up::down(),
+        Command::Services { rest } => return up::services(rest),
+        _ => {}
+    }
     let socket = cli.socket.clone().unwrap_or_else(default_socket);
     if let Command::Attach { target, observe, raw, why } = &cli.command {
         return attach(&socket.with_extension("tools.sock"), target, *observe, *raw, why.as_deref()).await;
@@ -391,6 +412,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         json: cli.json,
     };
     match cli.command {
+        Command::Up(_) | Command::Down | Command::Services { .. } => unreachable!("handled before connecting"),
         Command::Status => {
             let v: Value = peer.request("node/status", &json!({})).await?;
             if cli.json {
