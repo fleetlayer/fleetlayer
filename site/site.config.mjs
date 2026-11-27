@@ -2,6 +2,10 @@
 // at build time, so a new doc isn't forgotten.
 export const repo = "https://github.com/fleetlayer/fleetlayer";
 
+// Every docs page is published under /docs/ (fleetlayer.ai's root is for the product). The repo's docs/ folder and its
+// relative links don't change: docs/guides/laptop.md is /docs/guides/laptop/ and /docs/guides/laptop.md.
+export const docsBase = "docs";
+
 export const site = {
   url: "https://fleetlayer.ai",
   title: "Fleetlayer",

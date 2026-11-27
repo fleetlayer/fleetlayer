@@ -9,7 +9,7 @@ description: Set up, run and look after Fleetlayer's sign-in service (fleetlayer
 their company's provider, and from there to every service that's one of its clients. Before it sends anyone back to a
 service, it asks the control plane whether the policy gives them `sign_in` on `service:<name>`.
 
-The reference for every setting is `docs/plugins/signin.md` in the Fleetlayer repo (fleetlayer.ai/plugins/signin),
+The reference for every setting is `docs/plugins/signin.md` in the Fleetlayer repo (fleetlayer.ai/docs/plugins/signin),
 the walk-through is `docs/guides/sign-in.md`, and the design is `docs/sso.md`. Read the reference before changing
 settings: this skill covers what to do, not every field.
 

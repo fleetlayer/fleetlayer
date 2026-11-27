@@ -1,24 +1,31 @@
 // Turns the repo's docs/ folder (the one source of truth, plain GitHub-readable Markdown with no frontmatter) into
 // the site's content, and writes the Markdown copies agents read:
 //
-//   src/content/docs/<slug>.md   Starlight pages: title from the first "# " heading, links rewritten to site URLs
-//   public/<slug>.md             the page as Markdown, links pointing at the other .md copies
-//   public/llms.txt              an index of every page (llmstxt.org)
-//   public/llms-full.txt         every page in one file
+//   src/content/docs/docs/<slug>.md   Starlight pages at /docs/<slug>/: title from the first "# " heading, links
+//                                     rewritten to site URLs
+//   src/content/docs/docs/index.md    /docs/: every page, by sidebar group
+//   public/docs/<slug>.md             the page as Markdown, links pointing at the other .md copies
+//   public/llms.txt                   an index of every page (llmstxt.org), at the site's root by convention
+//   public/llms-full.txt              every page in one file
 //
 // Run before `astro dev` and `astro build` (package.json does it). Generated files are gitignored.
 
 import { readFile, writeFile, mkdir, rm, readdir } from "node:fs/promises";
 import { dirname, join, relative, resolve, posix } from "node:path";
 import { fileURLToPath } from "node:url";
-import { site as SITE, pages as PAGES, repo as REPO } from "../site.config.mjs";
+import { site as SITE, pages as PAGES, repo as REPO, docsBase as BASE } from "../site.config.mjs";
 import { directoryPages } from "./directory-pages.mjs";
 
 const siteDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoDir = resolve(siteDir, "..");
 const docsDir = join(repoDir, "docs");
-const contentDir = join(siteDir, "src/content/docs");
-const publicDir = join(siteDir, "public");
+const contentRoot = join(siteDir, "src/content/docs");
+const contentDir = join(contentRoot, BASE);
+const publicDir = join(siteDir, "public", BASE);
+const publicRoot = join(siteDir, "public");
+// A doc's address on the site, and its Markdown copy's.
+const pageUrl = (slug) => `/${BASE}/${slug}/`;
+const mdUrl = (slug) => `${SITE.url}/${BASE}/${slug}.md`;
 
 async function walk(dir) {
   const out = [];
@@ -83,7 +90,8 @@ function rewriteLinks(body, file, toUrl) {
 }
 
 async function main() {
-  await rm(contentDir, { recursive: true, force: true });
+  await rm(contentRoot, { recursive: true, force: true });
+  await rm(publicDir, { recursive: true, force: true });
   await mkdir(contentDir, { recursive: true });
 
   const files = await walk(docsDir);
@@ -106,7 +114,7 @@ async function main() {
     const { title, body } = splitTitle(source, relative(repoDir, file));
     const description = page.description ?? describe(body);
 
-    const siteBody = rewriteLinks(body, file, (s) => `/${s}/`);
+    const siteBody = rewriteLinks(body, file, pageUrl);
     const front = [
       "---",
       `title: ${JSON.stringify(page.title ?? title)}`,
@@ -122,7 +130,7 @@ async function main() {
     await mkdir(dirname(out), { recursive: true });
     await writeFile(out, front + siteBody);
 
-    const mdBody = rewriteLinks(body, file, (s) => `${SITE.url}/${s}.md`);
+    const mdBody = rewriteLinks(body, file, mdUrl);
     const markdown = `# ${page.title ?? title}\n\n${mdBody}`;
     const mdOut = join(publicDir, `${slug}.md`);
     await mkdir(dirname(mdOut), { recursive: true });
@@ -133,7 +141,7 @@ async function main() {
 
   // The plugin directory, generated from ../plugins-directory/*.yaml.
   const children = [];
-  for (const d of await directoryPages({ siteUrl: SITE.url, repo: REPO })) {
+  for (const d of await directoryPages({ pageUrl, mdUrl, repo: REPO })) {
     const page = published.get(d.slug);
     const front = [
       "---",
@@ -181,18 +189,31 @@ async function main() {
       "",
       `## ${g.name}`,
       "",
-      ...g.docs.map((d) => `- [${d.title}](${SITE.url}/${d.slug}.md)${d.description ? `: ${d.description}` : ""}`),
+      ...g.docs.map((d) => `- [${d.title}](${mdUrl(d.slug)})${d.description ? `: ${d.description}` : ""}`),
     ]),
     "",
   ].join("\n");
-  await writeFile(join(publicDir, "llms.txt"), index);
-  await writeFile(join(publicDir, "index.md"), homepage);
+  await writeFile(join(publicRoot, "llms.txt"), index);
+  await writeFile(join(publicRoot, "index.md"), homepage);
+
+  // /docs/: every page by group, so the address works on its own.
+  const listing = groups
+    .filter((g) => g.name !== "Plugin directory entries")
+    .map((g) => [`## ${g.name}`, "", ...g.docs.map((d) => `- [${d.title}](LINK:${d.slug})${d.description ? `: ${d.description}` : ""}`)].join("\n"))
+    .join("\n\n");
+  const intro = `Everything about running Fleetlayer: start with [getting started](LINK:getting-started), then the guides for what you want to do.`;
+  const docsIndex = (link) => `${intro}\n\n${listing}\n`.replace(/LINK:([a-z0-9/-]+)/g, (_, s) => link(s));
+  await writeFile(
+    join(contentDir, "index.md"),
+    `---\ntitle: "Documentation"\ndescription: "Every page of Fleetlayer's docs and guides."\nsidebar:\n  hidden: true\n---\n\n${docsIndex(pageUrl)}`,
+  );
+  await writeFile(join(publicRoot, `${BASE}.md`), `# Documentation\n\n${docsIndex(mdUrl)}`);
 
   const ordered = [...PAGES.map((p) => docs.find((d) => d.slug === p.file)), ...children];
-  const full = [homepage.trim(), ...ordered.map((d) => `<!-- ${SITE.url}/${d.slug}/ -->\n\n${d.markdown.trim()}`)].join(
+  const full = [homepage.trim(), ...ordered.map((d) => `<!-- ${SITE.url}${pageUrl(d.slug)} -->\n\n${d.markdown.trim()}`)].join(
     "\n\n---\n\n",
   );
-  await writeFile(join(publicDir, "llms-full.txt"), full + "\n");
+  await writeFile(join(publicRoot, "llms-full.txt"), full + "\n");
 
   console.log(`sync-docs: ${docs.length + children.length} pages`);
 }

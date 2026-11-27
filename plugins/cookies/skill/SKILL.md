@@ -43,7 +43,7 @@ up, or tell an agent on the laptop to:
 - on this machine, a `receive:` entry naming the same set and the files to write;
 - then they approve the first delivery when Fleetlayer asks.
 
-`docs/plugins/cookies.md` in the Fleetlayer repository (fleetlayer.ai, Plugins, Cookies) has the configuration.
+`docs/plugins/cookies.md` in the Fleetlayer repository (https://fleetlayer.ai/docs/plugins/cookies/) has the configuration.
 
 Prefer the person's shared browser (the `fleetlayer-browser` skill) when you only need to look at a page or click
 through it: nothing is copied there. Don't read a browser's cookie database or the Keychain yourself, and don't ask for

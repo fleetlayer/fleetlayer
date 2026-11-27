@@ -13,9 +13,9 @@ server or a VPS when you outgrow it, or swap it for the tool you'd rather use.
 outgrow them, you give nothing up: Fleetlayer works with any agent and any model, and when a vendor ships its own
 version of a feature, Fleetlayer can support it too.
 
-**Docs: [fleetlayer.ai](https://fleetlayer.ai)** · [Getting started](https://fleetlayer.ai/getting-started/) ·
-[Guides](https://fleetlayer.ai/guides/laptop/) ·
-[Plugin directory](https://fleetlayer.ai/directory/) · for agents: [llms.txt](https://fleetlayer.ai/llms.txt)
+**Docs: [fleetlayer.ai](https://fleetlayer.ai)** · [Getting started](https://fleetlayer.ai/docs/getting-started/) ·
+[Guides](https://fleetlayer.ai/docs/guides/laptop/) ·
+[Plugin directory](https://fleetlayer.ai/docs/directory/) · for agents: [llms.txt](https://fleetlayer.ai/llms.txt)
 
 ## Status
 

@@ -87,7 +87,7 @@ Fleetlayer routes messages and events to the agents in them, under your rules.
 ## What works today
 
 `fleetlayer-rex` ships with Fleetlayer from v0.3.9 ([its directory
-entry](https://fleetlayer.ai/directory/fleetlayer-rex/)). With it, the Claude Code, Codex and other
+entry](https://fleetlayer.ai/docs/directory/fleetlayer-rex/)). With it, the Claude Code, Codex and other
 agents in your Rex terminals join the fleet by their Rex session names, with their status, messages and webhooks,
 starting and closing sessions from anywhere in the fleet, and `fleetlayer attach` on Rex terminals. Rex and herdr can
 also run side by side on one machine, each with its plugin. [The plugin's page](plugins/rex.md) has the setup.

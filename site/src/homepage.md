@@ -22,10 +22,10 @@ and this starts happening:
 
 ## Fleetlayer solves all of this, and much more
 
-- **Fleetlayer Pages and Apps.** Claude, Codex and Gemini agents write pages and interactive apps as plain folders, and Fleetlayer hosts them behind one sign-in. [How](https://fleetlayer.ai/guides/pages/)
-- **Messages between any two agents.** Claude or Codex, on the same machine or another one: `fleetlayer msg send --to api@laptop`. [How](https://fleetlayer.ai/guides/day-to-day/)
-- **Any agent can control your browser.** Agents on any machine and any Claude account can use the Chrome on your Mac, signed in as you (via Playwright MCP). [How](https://fleetlayer.ai/guides/browser/)
-- **Every account in one place.** Year-long sign-ins on every machine, and every account's usage shared with every session. [How](https://fleetlayer.ai/guides/claude-accounts/)
+- **Fleetlayer Pages and Apps.** Claude, Codex and Gemini agents write pages and interactive apps as plain folders, and Fleetlayer hosts them behind one sign-in. [How](https://fleetlayer.ai/docs/guides/pages/)
+- **Messages between any two agents.** Claude or Codex, on the same machine or another one: `fleetlayer msg send --to api@laptop`. [How](https://fleetlayer.ai/docs/guides/day-to-day/)
+- **Any agent can control your browser.** Agents on any machine and any Claude account can use the Chrome on your Mac, signed in as you (via Playwright MCP). [How](https://fleetlayer.ai/docs/guides/browser/)
+- **Every account in one place.** Year-long sign-ins on every machine, and every account's usage shared with every session. [How](https://fleetlayer.ai/docs/guides/claude-accounts/)
 
 ## How it fits
 
@@ -68,7 +68,7 @@ team would ask for, an agent sets them up for you, and each one can be switched 
 - **One sign-in, one sign-out.** One sign-in for your self-hosted services (experimental), and signing out of one
   signs you out of all of them.
 
-[Coming next](https://fleetlayer.ai/credentials.md): secrets granted by role and scrubbed from everything that leaves a machine; an allowlist of where agents
+[Coming next](https://fleetlayer.ai/docs/credentials.md): secrets granted by role and scrubbed from everything that leaves a machine; an allowlist of where agents
 may connect, with you approving new hosts; an admin role that stays switched off until you open a time-limited window.
 
 ## A foundation for your own agent workflows
@@ -100,7 +100,7 @@ Fleetlayer is the layer between your agents and the tools around them. Each part
 - **Files:** Syncthing, Obsidian Sync, Obsidian LiveSync, or any file syncing solution
 - **Network:** Tailscale, Cloudflare Tunnel
 - **Services:** Gatus for health checks, Traefik for addresses
-- **Backups:** restic (https://fleetlayer.ai/guides/backups.md)
+- **Backups:** restic (https://fleetlayer.ai/docs/guides/backups.md)
 - **Mobile:** herdr-mobile-relay (https://github.com/0cv/herdr-mobile-relay)
 
 ## Start small, replace any component as you go
@@ -116,7 +116,7 @@ fleetlayer up        # everything on this machine; status page at http://fleetla
 fleetlayer sessions
 ```
 
-Next: https://fleetlayer.ai/guides/laptop.md
+Next: https://fleetlayer.ai/docs/guides/laptop.md
 
 ## No vendor lock-in
 

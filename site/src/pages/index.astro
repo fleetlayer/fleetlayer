@@ -39,11 +39,11 @@ const description = site.summary;
           <span>Fleetlayer</span>
         </a>
         <nav class="nav__links" aria-label="Main">
-          <a href="/getting-started/">Docs</a>
-          <a href="/guides/backups/">Guides</a>
+          <a href="/docs/getting-started/">Docs</a>
+          <a href="/docs/guides/backups/">Guides</a>
           <a href={repo}>GitHub</a>
         </nav>
-        <a class="btn btn--primary nav__cta" href="/getting-started/">Get started</a>
+        <a class="btn btn--primary nav__cta" href="/docs/getting-started/">Get started</a>
       </div>
     </header>
 
@@ -61,7 +61,7 @@ const description = site.summary;
             own access rules.
           </p>
           <div class="actions">
-            <a class="btn btn--primary" href="/getting-started/">Install Fleetlayer</a>
+            <a class="btn btn--primary" href="/docs/getting-started/">Install Fleetlayer</a>
             <a class="btn btn--quiet" href={repo}>Read the source on GitHub</a>
           </div>
         </div>
@@ -111,25 +111,25 @@ const description = site.summary;
             <p class="fix__was"><span class="fix__x" aria-hidden="true">✕</span> “access denied” on artifacts</p>
             <h3>Fleetlayer Pages and Apps</h3>
             <p>Claude, Codex and Gemini agents write pages and interactive apps as plain folders, and Fleetlayer hosts them behind one sign-in.</p>
-            <a class="fix__link" href="/guides/pages/">Set up pages <span aria-hidden="true">→</span></a>
+            <a class="fix__link" href="/docs/guides/pages/">Set up pages <span aria-hidden="true">→</span></a>
           </li>
           <li class="fix">
             <p class="fix__was"><span class="fix__x" aria-hidden="true">✕</span> sessions that can’t reach each other</p>
             <h3>Messages between any two agents</h3>
             <p>Claude or Codex, on the same machine or another one: <code>fleetlayer msg send --to api@laptop</code>.</p>
-            <a class="fix__link" href="/guides/day-to-day/">Send a message <span aria-hidden="true">→</span></a>
+            <a class="fix__link" href="/docs/guides/day-to-day/">Send a message <span aria-hidden="true">→</span></a>
           </li>
           <li class="fix">
             <p class="fix__was"><span class="fix__x" aria-hidden="true">✕</span> signing the extension in and out</p>
             <h3>Any agent can control your browser</h3>
             <p>Agents on any machine and any Claude account can use the Chrome on your Mac, signed in as you (via Playwright MCP).</p>
-            <a class="fix__link" href="/guides/browser/">Share your browser <span aria-hidden="true">→</span></a>
+            <a class="fix__link" href="/docs/guides/browser/">Share your browser <span aria-hidden="true">→</span></a>
           </li>
           <li class="fix">
             <p class="fix__was"><span class="fix__x" aria-hidden="true">✕</span> an account that runs out mid-task</p>
             <h3>Every account in one place</h3>
             <p>Year-long sign-ins on every machine, and every account’s usage shared with every session.</p>
-            <a class="fix__link" href="/guides/claude-accounts/">Add your accounts <span aria-hidden="true">→</span></a>
+            <a class="fix__link" href="/docs/guides/claude-accounts/">Add your accounts <span aria-hidden="true">→</span></a>
           </li>
         </ul>
       </section>
@@ -242,7 +242,7 @@ const description = site.summary;
           </li>
         </ul>
         <p class="does__more">
-          <a href="/getting-started/">See how to set it up</a>
+          <a href="/docs/getting-started/">See how to set it up</a>
         </p>
       </section>
 
@@ -286,7 +286,7 @@ const description = site.summary;
           </li>
         </ul>
         <p class="secure__next">
-          <a href="/credentials/">Coming next</a>: secrets granted by role and scrubbed from everything that leaves a machine; an allowlist of
+          <a href="/docs/credentials/">Coming next</a>: secrets granted by role and scrubbed from everything that leaves a machine; an allowlist of
           where agents may connect, with you approving new hosts; an admin role that stays switched off until you open
           a time-limited window.
         </p>
@@ -371,7 +371,7 @@ const description = site.summary;
           </li>
           <li class="stack__row">
             <span class="stack__role">Backups</span>
-            <span class="stack__parts"><a href="/guides/backups/">restic</a></span>
+            <span class="stack__parts"><a href="/docs/guides/backups/">restic</a></span>
           </li>
           <li class="stack__row">
             <span class="stack__role">Mobile</span>
@@ -390,7 +390,7 @@ const description = site.summary;
               Each piece keeps its state in one folder and speaks open protocols, so moving it is a copy and a new
               address.
             </p>
-            <p class="band__link"><a href="/guides/laptop/">Start on your laptop</a></p>
+            <p class="band__link"><a href="/docs/guides/laptop/">Start on your laptop</a></p>
           </div>
           <div class="band__code">
             <p class="band__step">Ask your agent</p>
@@ -464,7 +464,7 @@ const description = site.summary;
         <a class="wordmark wordmark--small" href="/"><span class="wordmark__mark" set:html={mark} /><span>Fleetlayer</span></a>
         <p>Apache 2.0</p>
         <nav aria-label="Footer">
-          <a href="/getting-started/">Docs</a>
+          <a href="/docs/getting-started/">Docs</a>
           <a href={repo}>GitHub</a>
           <a href="/llms.txt">llms.txt</a>
         </nav>

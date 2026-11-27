@@ -1,13 +1,13 @@
 import { defineConfig } from "astro/config";
 import starlight from "@astrojs/starlight";
-import { site, pages, repo } from "./site.config.mjs";
+import { site, pages, repo, docsBase } from "./site.config.mjs";
 
 // Sidebar groups in the order site.config.mjs lists them. Advanced starts collapsed.
 const groups = [];
 for (const p of pages) {
   let g = groups.find((x) => x.label === p.group);
   if (!g) groups.push((g = { label: p.group, items: [], collapsed: p.group === "Advanced" }));
-  g.items.push(p.file);
+  g.items.push(`${docsBase}/${p.file}`);
 }
 
 export default defineConfig({

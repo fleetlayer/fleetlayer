@@ -1,7 +1,7 @@
 # Plugin directory
 
 Every plugin, tool and service that works with Fleetlayer, including the ones that ship with it. The site builds
-[fleetlayer.ai/directory](https://fleetlayer.ai/directory/) from these files.
+[fleetlayer.ai/docs/directory](https://fleetlayer.ai/docs/directory/) from these files.
 
 ## Add yours
 

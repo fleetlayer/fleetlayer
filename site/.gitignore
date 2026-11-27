@@ -4,8 +4,6 @@ dist/
 # Generated from ../docs by scripts/sync-docs.mjs
 src/content/docs/
 public/*.md
-public/plugins/
-public/guides/
-public/directory/
+public/docs/
 public/llms.txt
 public/llms-full.txt

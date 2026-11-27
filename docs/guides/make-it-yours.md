@@ -26,7 +26,7 @@ harness, an event source or a service of your own all fit there.
 Change the core when a plugin can't do it: a new kind of request the node or the control plane has to understand, a
 bug, a missing option.
 
-When your plugin works, list it in the [plugin directory](https://fleetlayer.ai/directory/) so others can find it: a pull request
+When your plugin works, list it in the [plugin directory](https://fleetlayer.ai/docs/directory/) so others can find it: a pull request
 that adds one file, `plugins-directory/<name>.yaml` (the fields are in that folder's README).
 
 ## 3. Build it

@@ -30,4 +30,4 @@ description: |
   with their status from program status reports (OSC 7501), streams changes from `rex events`, opens and closes
   sessions, delivers messages by pasting them in when nothing better is available, and lets `fleetlayer attach` watch
   and drive Rex terminals. It uses only Rex's public command line and API. More in [Fleetlayer and
-  Rex](https://fleetlayer.ai/rex/).
+  Rex](https://fleetlayer.ai/docs/rex/).

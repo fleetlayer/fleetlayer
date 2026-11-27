@@ -1,5 +1,5 @@
-// Builds the plugin directory's pages from ../plugins-directory/*.yaml: an index (/directory/) and one page per entry
-// (/directory/<name>/). Each comes in two forms, for the site and for the Markdown copies agents read; `link` makes
+// Builds the plugin directory's pages from ../plugins-directory/*.yaml: an index (/docs/directory/) and one page per
+// entry (/docs/directory/<name>/). Each comes in two forms, for the site and for the Markdown copies agents read; `link` makes
 // the address of another directory page in the right form.
 import { loadEntries, licenceKind, ROLES } from "./check-directory.mjs";
 
@@ -97,15 +97,15 @@ function indexPage(entries, { link, contributing }) {
   return parts.join("\n\n") + "\n";
 }
 
-export async function directoryPages({ siteUrl, repo }) {
+export async function directoryPages({ pageUrl, mdUrl, repo }) {
   // Alphabetical by name, or by sort_as where an entry belongs next to another (shared-folders after file-sync).
   const key = (e) => e.sort_as ?? e.name;
   const entries = (await loadEntries()).sort((a, b) => key(a).localeCompare(key(b)));
   const forms = {
-    site: { link: (n) => `/directory/${n}/`, docsLink: (d) => (/^https?:/.test(d) ? d : `[the docs](/${d}/)`) },
+    site: { link: (n) => pageUrl(`directory/${n}`), docsLink: (d) => (/^https?:/.test(d) ? d : `[the docs](${pageUrl(d)})`) },
     md: {
-      link: (n) => `${siteUrl}/directory/${n}.md`,
-      docsLink: (d) => (/^https?:/.test(d) ? d : `${siteUrl}/${d}.md`),
+      link: (n) => mdUrl(`directory/${n}`),
+      docsLink: (d) => (/^https?:/.test(d) ? d : mdUrl(d)),
     },
   };
   const contributing = `[the directory's README](${repo}/blob/main/plugins-directory/README.md)`;
