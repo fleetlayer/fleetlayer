@@ -177,15 +177,17 @@ fleetlayer-control acl apply policy.yaml
 The first should allow, the second deny.
 
 **You approve the first sync to each target.** Unless your policy turns asking off (`ask: []`), Fleetlayer asks before
-a node's first `sync` to each target, and the approval holds 30 days. List the waiting requests and approve them:
+a node's first `sync` to each target. List the waiting requests and approve them:
 
 ```sh
 fleetlayer-control approvals list
-fleetlayer-control approvals approve <id> --for 365d
+fleetlayer-control approvals approve <id>
 ```
 
-Until a fix that's on its way, the source doesn't retry a version that was refused, so after approving, restart the
-source node (`fleetlayer-node install`) or change a file in the folder, and the next version goes out.
+From the release after v0.3.8 (on the source, the targets and the control plane), the source sends within about 15
+seconds of your approval, and the approval renews each time it's used, so it lapses only after 30 days without a
+sync. A target that hasn't got the latest version is retried with backoff (a minute, doubling to an hour). A refusal
+by your access rules, or a request you denied, waits for the next version instead. Upgrade targets before sources.
 
 ## 3. Per-machine instructions
 
@@ -238,6 +240,17 @@ heartbeats:
 Do the same for the vault: each machine writes its own file (`sync-check/laptop.txt`) and checks the others'. One
 check covers one path, so give each set and each pair of machines you depend on its own.
 
+For the files plugin, Fleetlayer also reports on itself (from the release after v0.3.8). Each bundle and target has a
+`sync.status` reading (its state, the error, and what to do about it, such as the approve command to run), and each
+set a `files.set` reading (its files, what was skipped and why, its version):
+
+```sh
+fleetlayer readings sync.status files.set
+```
+
+The node's own heartbeat fails when a sync has waited on a person (an approval, a changed key, an access rule) for
+over an hour, so an alert reaches you without a check of your own.
+
 ## Who writes where
 
 - **The vault:** anyone, anywhere. Two-way tools handle edits to different files well. Two edits to the same file
@@ -269,19 +282,20 @@ check covers one path, so give each set and each pair of machines you depend on 
   rules. On the target, `leaving … alone` means a hand-made file is in the way.
 - **Nothing publishes at all.** One file over 1 MB, or a set over 20 MB, stops the whole set, and the source logs
   `reading <dir>: … is over 1 MB` every interval. Move large files out of the set.
-- **A file is missing on the target, with no error on the source.** Symlinks are left out, so a skills folder made of
-  links into another folder publishes nothing: publish the folder the links point to. Files that aren't valid UTF-8
-  text (images, binaries) are skipped with `skipping … (not text)`, and anything whose name starts with `.` is left
-  out.
-- **A script in a skill won't run on the target** (for now). Files are written as plain files, so the executable bit doesn't
-  travel. Have the skill call its scripts through their interpreter (`sh script.sh`, `python3 tool.py`).
-- **Sync stops after a month** (until a fix that's on its way: approvals will renew while they're used). The default
-  approval for `sync` holds 30 days, and the next version is then refused until someone approves again. The heartbeat in step 4 catches it. Approve with a longer `--for`, or turn asking off
-  for a fleet of agents you trust (`ask: []`).
-- **A target that was offline doesn't catch up** (a fix is on its way). The control plane keeps no copy. When the target comes back, the
-  control plane asks the source to send the latest version again, which works only if the source is online then. A
-  laptop as the source can be asleep at that moment, and the target then waits until the folder next changes. Put the
-  source on an always-on machine, or restart the source node after both are back.
+- **A file is missing on the target.** Files that aren't valid UTF-8 text (images, binaries) are skipped, and anything
+  whose name starts with `.` is left out. A symlink that points inside the folder arrives as the same symlink; one that
+  points outside it, to nothing, or to a hidden file is skipped. So a skills folder made of links into a repository
+  publishes nothing: publish the folder the links point to. The `files.set` reading lists what was skipped and why
+  (older releases skip every symlink without saying so).
+- **A script in a skill won't run on the target:** the target runs a release older than the one after v0.3.8, which
+  writes plain files and drops the executable bit. Upgrade it, or have the skill call its scripts through their
+  interpreter (`sh script.sh`, `python3 tool.py`).
+- **Sync stopped and nobody noticed:** on releases up to v0.3.8, an approval held 30 days whether used or not, and a
+  refused version waited for the folder to change. Upgrade the source, the targets and the control plane; the
+  `sync.status` reading then says what each target is waiting for.
+- **A target waits while its source is offline.** Bundles are sealed to each target and never stored, so a target
+  that comes back gets the latest version only once the source is linked too (from the release after v0.3.8, the
+  control plane asks the source to resend whenever either side links). Keep the source on an always-on machine.
 - **Something that watches a synced folder misses changes.** Filesystem events (inotify) see only writes made through
   the local kernel, so a folder written over a network share, or shared into a VM, never fires an event for writes made
   on the other side. Anything that reacts to new files there has to poll; [Pages](pages.md#when-it-doesnt-work) does.
