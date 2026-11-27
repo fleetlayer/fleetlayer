@@ -22,6 +22,11 @@ Hub login key: ~/.local/state/fleetlayer/claude-hub-login
 Pages login key: ~/.local/state/fleetlayer/pages/login  Pages go in ~/Fleetlayer/personal/pages/
 ```
 
+It also adds your sessions to the fleet: the herdr plugin when [herdr](https://herdr.dev) is installed and the Claude
+Code plugin when Claude Code is, and says which it added or skipped and why. Then `fleetlayer sessions` lists them,
+other machines can message them, and `fleetlayer session start` opens new ones. Session summaries stay off, since
+each one runs Claude Code and spends tokens: `fleetlayer up --summaries` turns them on.
+
 Open the status page. It shows each service, whether it's answering, and where alerts go. The hub and pages ask for
 their login key the first time (the file's contents); Fleetlayer's own sign-in replaces the keys when it ships.
 
@@ -31,7 +36,7 @@ out. `fleetlayer down` stops them all and keeps every file; `fleetlayer up` agai
 
 Useful flags: `--alerts-to planning` (a session that hears when something goes down; on a later `up` it doesn't
 change an existing gateway.yaml, so set `alerts.session` there), `--no-hub`, `--no-pages`,
-`--port 7680`.
+`--port 7680`, `--summaries`.
 
 ## What's running
 

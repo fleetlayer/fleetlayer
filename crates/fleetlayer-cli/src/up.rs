@@ -32,6 +32,9 @@ pub struct UpArgs {
     /// Don't run pages here.
     #[arg(long)]
     pub no_pages: bool,
+    /// Also summarise this machine's sessions (it runs Claude Code for each summary, so it spends tokens).
+    #[arg(long)]
+    pub summaries: bool,
     /// The session (`tab` or `tab@node`) that hears about anything going down.
     #[arg(long)]
     pub alerts_to: Option<String>,
@@ -319,12 +322,22 @@ impl Layout {
 }
 
 /// The node.yaml `up` writes for a machine that has none.
+/// The session plugins `up` adds: herdr's when herdr is installed, Claude Code's when Claude Code is, summaries when
+/// asked for.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SessionPlugins {
+    pub herdr: bool,
+    pub claude_code: bool,
+    pub summaries: bool,
+}
+
 pub fn node_yaml_text(
     control_url: &str,
     token_file: &Path,
     gateway: &str,
     hub: Option<&Path>,
     pages: Option<(&Path, &Path, u16)>,
+    sessions: SessionPlugins,
 ) -> String {
     let mut y = format!(
         "# Written by `fleetlayer up`. Yours to edit: `fleetlayer up` never overwrites it.\ncontrol:\n  url: {}\n  token_file: {}\n# The gateway's own health is part of this node's (`fleetlayer status`).\ngateway: {}\nplugins:\n",
@@ -372,7 +385,49 @@ pub fn node_yaml_text(
             yaml_str(&space.join("apps").display().to_string()),
         ));
     }
+    if sessions.herdr {
+        y.push_str("  # Your herdr tabs, so the fleet sees and reaches every session in them.\n  - name: herdr\n    command: fleetlayer-herdr\n");
+    }
+    if sessions.claude_code {
+        y.push_str("  # Claude Code's own view of each session (status, transcript), and starting sessions.\n  - name: claude-code\n    command: fleetlayer-claude-code\n");
+    }
+    if sessions.summaries {
+        y.push_str("  # A short summary of each session as it goes (runs Claude Code, so it spends tokens).\n  - name: summaries\n    command: fleetlayer-summaries\n    grants: [sessions.watch, summary.publish]\n");
+    }
     y
+}
+
+/// A program on PATH.
+fn on_path(name: &str) -> bool {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path).any(|d| d.join(name).is_file())
+}
+
+/// Which session plugins this machine can run, and a line for each one left out.
+fn detect_sessions(want_summaries: bool) -> (SessionPlugins, Vec<String>) {
+    let mut skipped = vec![];
+    let herdr = on_path("herdr") && find_bin("fleetlayer-herdr").is_ok();
+    if !herdr {
+        skipped.push(if on_path("herdr") {
+            "herdr: fleetlayer-herdr isn't installed next to fleetlayer".to_string()
+        } else {
+            "herdr: not installed (https://herdr.dev), so the fleet sees no herdr tabs".to_string()
+        });
+    }
+    let claude = on_path("claude") || home().join(".claude/local/claude").is_file();
+    let claude_code = claude && find_bin("fleetlayer-claude-code").is_ok();
+    if !claude_code {
+        skipped.push(if claude {
+            "claude-code: fleetlayer-claude-code isn't installed next to fleetlayer".to_string()
+        } else {
+            "claude-code: Claude Code isn't installed".to_string()
+        });
+    }
+    let summaries = want_summaries && claude && find_bin("fleetlayer-summaries").is_ok();
+    if want_summaries && !summaries {
+        skipped.push("summaries: needs Claude Code and fleetlayer-summaries".into());
+    }
+    (SessionPlugins { herdr, claude_code, summaries }, skipped)
 }
 
 /// `local_control`: the port of a control plane running here, if one does.
@@ -499,12 +554,27 @@ pub async fn up(mut a: UpArgs) -> anyhow::Result<()> {
             }
         }
         let pages = (!a.no_pages).then_some((pages_login.as_path(), space.as_path(), a.port));
+        let (sessions, skipped) = detect_sessions(a.summaries);
         create(
             &node_yaml,
-            &node_yaml_text(&control_url, &token_file, &gateway_url, hub_login.as_deref(), pages),
+            &node_yaml_text(&control_url, &token_file, &gateway_url, hub_login.as_deref(), pages, sessions),
             0o600,
         )?;
         println!("Wrote {}.", node_yaml.display());
+        let added: Vec<&str> =
+            [("herdr", sessions.herdr), ("claude-code", sessions.claude_code), ("summaries", sessions.summaries)]
+                .into_iter()
+                .filter_map(|(n, on)| on.then_some(n))
+                .collect();
+        if !added.is_empty() {
+            println!("Session plugins: {}.", added.join(", "));
+        }
+        for s in skipped {
+            println!("Skipped {s}.");
+        }
+        if !a.summaries && sessions.claude_code {
+            notes.push("Session summaries are off (they spend tokens): `fleetlayer up --summaries` on a fresh setup, or add the summaries plugin to node.yaml (docs/plugins/summaries.md).".into());
+        }
     } else {
         let text = std::fs::read_to_string(&node_yaml)?;
         if !text.lines().any(|l| l.starts_with("gateway:")) {
@@ -526,7 +596,14 @@ pub async fn up(mut a: UpArgs) -> anyhow::Result<()> {
                 token_file.display()
             ));
         }
-        for (plugin, flag) in [("claude-auth-manager", a.no_hub), ("pages", a.no_pages)] {
+        let (sessions, _) = detect_sessions(a.summaries);
+        for (plugin, flag) in [
+            ("claude-auth-manager", a.no_hub),
+            ("pages", a.no_pages),
+            ("herdr", !sessions.herdr),
+            ("claude-code", !sessions.claude_code),
+            ("summaries", !sessions.summaries),
+        ] {
             if !flag && !text.contains(&format!("name: {plugin}")) {
                 notes.push(format!(
                     "{} existed, so `up` left its plugins alone: {plugin} isn't in it. See docs/guides/laptop.md for the section to add.",
@@ -729,12 +806,27 @@ mod tests {
             "http://127.0.0.1:7680",
             Some(Path::new("/h/.local/state/fleetlayer/claude-hub-login")),
             Some((Path::new("/h/.local/state/fleetlayer/pages/login"), Path::new("/h/Fleetlayer/personal"), 7680)),
+            SessionPlugins { herdr: true, claude_code: true, summaries: false },
         );
         let v: serde_json::Value = yaml_serde_from(&y);
         assert_eq!(v["gateway"], "http://127.0.0.1:7680");
         assert_eq!(v["plugins"][0]["config"]["hub"]["listen"], "127.0.0.1:0");
         assert_eq!(v["plugins"][1]["config"]["base_url"], "http://pages.localhost:7680");
         assert_eq!(v["plugins"][1]["config"]["spaces"]["personal"]["dir"], "/h/Fleetlayer/personal/pages");
+        assert_eq!(v["plugins"][2]["name"], "herdr");
+        assert_eq!(v["plugins"][3]["command"], "fleetlayer-claude-code");
+        assert!(v["plugins"].get(4).is_none(), "summaries only when asked for");
+        let y = node_yaml_text(
+            "ws://x/v1/link",
+            Path::new("/t"),
+            "http://g",
+            None,
+            None,
+            SessionPlugins { summaries: true, ..Default::default() },
+        );
+        let v: serde_json::Value = yaml_serde_from(&y);
+        assert_eq!(v["plugins"][0]["name"], "summaries");
+        assert_eq!(v["plugins"][0]["grants"][1], "summary.publish");
         let g: serde_json::Value = yaml_serde_from(&gateway_yaml_text(7680, Some(7600), Some("planning")));
         assert_eq!(g["listen"], "127.0.0.1:7680");
         assert_eq!(g["services"]["control"]["url"], "http://127.0.0.1:7600");
