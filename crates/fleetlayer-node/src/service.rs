@@ -96,7 +96,12 @@ pub fn install(home: &Path, config: &Path, start: bool) -> anyhow::Result<()> {
     crate::config::NodeConfig::load(config)?;
     let values = Values {
         bin: stable_bin()?,
-        path: std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into()),
+        path: fleetlayer_protocol::local::service_path(
+            &std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into()),
+            fleetlayer_protocol::local::instance().as_deref(),
+            home,
+            nix::unistd::User::from_uid(nix::unistd::getuid()).ok().flatten().map(|u| u.dir).as_deref(),
+        ),
         log: home.join("Library/Logs/fleetlayer-node.log"),
     };
     let file = service_file(home);

@@ -12,6 +12,7 @@ name = "fleetlayer"
 path = "src/main.rs"
 
 [dependencies]
+nix = { version = "0.32.0", default-features = false, features = ["user"] }
 fleetlayer-protocol.workspace = true
 fleetlayer-plugin.workspace = true
 serde.workspace = true

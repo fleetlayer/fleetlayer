@@ -234,7 +234,12 @@ impl Unit {
 
     /// Write the file and (re)start the service.
     pub fn install(&self) -> anyhow::Result<()> {
-        let path_env = std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into());
+        let path_env = fleetlayer_protocol::local::service_path(
+            &std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into()),
+            fleetlayer_protocol::local::instance().as_deref(),
+            &home(),
+            nix::unistd::User::from_uid(nix::unistd::getuid()).ok().flatten().map(|u| u.dir).as_deref(),
+        );
         let file = self.file();
         std::fs::create_dir_all(file.parent().expect("a unit file has a directory"))?;
         std::fs::write(&file, self.render(&path_env))?;
