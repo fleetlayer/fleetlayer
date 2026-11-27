@@ -17,6 +17,11 @@ across machines and tools:
 
 Fleetlayer is a small set of components you run, and a large set of guides on plugging them into what you already use.
 
+**No vendor lock-in.** Keep using Anthropic's and OpenAI's own tools and features for as long as they serve you. When
+you outgrow them (several subscriptions, several machines, several accounts, agents from more than one vendor), you
+don't have to give anything up: Fleetlayer's parts work with any agent and any model, run on machines you control, and
+speak open protocols.
+
 ## Status
 
 Early. Being built in public, starting from parts of [Quietdeck](https://quietdeck.ai) that already run one person's

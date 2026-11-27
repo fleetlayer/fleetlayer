@@ -6,6 +6,11 @@ Unix user and its own permissions, while you still see and steer all of them fro
 agent can set the whole thing up, adding a new agent, or a whole isolated worker with its own permissions, takes
 minutes.
 
+One driver runs through all of it: **no vendor lock-in**. You can keep using Anthropic's and OpenAI's tooling and
+built-in features (connectors, artifacts, remote control, their apps). When you outgrow them and hit their limits, you
+don't have to give anything up: each problem below has an answer that works with any agent, any model and any vendor,
+on machines you control.
+
 Three pieces, each solving its own set of problems:
 
 - **Fleetlayer**: connects the agent sessions you already run, on every machine, into one fleet you control.
