@@ -161,6 +161,30 @@ The footguns:
    Otherwise the program keeps running until its own timeout. The hub's handler calls `preventDefault()` and then the
    same cancel function as its Cancel button, which sends `DELETE /api/flows/<id>`.
 
+## Many agents share one GitHub API limit
+
+The trap: CI checks start failing with "API rate limit exceeded", in every session at once, and nothing works on
+GitHub from the command line until the hour turns over.
+
+Why: GitHub allows 5,000 API requests an hour per user, and every session that runs `gh` as you draws from the same
+5,000. `gh run watch` polls every 3 seconds by default, about 1,200 requests an hour for each run being watched. Five
+agents watching CI after a push use the whole allowance in under an hour, and a loop over `gh run list` does it faster.
+
+The fix:
+
+- **Watch with a long interval, once per run, with a timeout:**
+
+  ```sh
+  timeout 1020 gh run watch <run-id> --interval 60 --exit-status
+  ```
+
+  Sixty seconds is plenty for a CI run that takes minutes. Never poll `gh run list` in a loop.
+- **Check the allowance** when something fails oddly: `gh api rate_limit` shows what's left and when it resets.
+- **Let CI tell the agent instead of asking.** A webhook on the repository can deliver each result to the session
+  that owns the branch, with no polling at all ([Watch, steer and message your agents](day-to-day.md), "Webhooks").
+- **Put the rule in the agents' shared instructions** (`AGENTS.md`), since every new session would otherwise start
+  with the default.
+
 ## `pkill -f` can match your own shell
 
 The trap: an agent stops the processes its tests started with something like `pkill -f fleetlayer-node`, and its own

@@ -438,3 +438,7 @@ managers, machines that sleep.
   server-to-server calls `127.0.0.1:<port>` (the sign-in service's `control_plane`), or resolve `*.localhost` to
   loopback in the client, as pages does. Found by the pages tab testing against a real sign-in service. Where it
   lives: `docs/plugins/signin.md` (Settings) and pages' HTTP client.
+- **Many agents share one GitHub API limit.** 5,000 requests an hour per user, shared by every session using that
+  user's token; `gh run watch` polls every 3 s by default (about 1,200 an hour per watcher), so a few agents watching
+  CI exhaust it. Use `--interval 60`, no loops over `gh run list`, `gh api rate_limit` to check, webhooks instead of
+  polling. Found 27 Nov 2026; in AGENTS.md (e3473b6). Written: `docs/guides/agents-building-software.md`.
