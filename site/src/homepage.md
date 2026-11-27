@@ -9,9 +9,9 @@ you control. Open source under Apache 2.0, early, built in public: https://githu
 ## How it fits
 
 A node on each machine, or each Unix user, keeps one outbound connection to the control plane, so it works behind NAT
-with no ports to open. Fleetlayer attaches to your session manager (herdr today, others through plugins) without
-taking it over: your apps and terminals keep working beside it. Plugins are separate processes in any language,
-speaking the Agent Client Protocol plus Fleetlayer's extensions.
+with no ports to open. It works with herdr, with tmux and T3 Code to come, and doesn't replace them: your apps and
+terminals keep working beside it. Plugins are separate processes in any language, speaking the Agent Client Protocol
+plus Fleetlayer's extensions.
 
 The pieces: `fleetlayer-node` (one per machine or Unix user), plugins (herdr, Claude Code, summaries, Claude accounts,
 pages), `fleetlayer-control` (the control plane: machines, sessions, messages, webhooks, access rules; it holds no

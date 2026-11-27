@@ -78,9 +78,9 @@ const description = site.summary;
 
       <section class="map" aria-labelledby="map-title">
         <div class="map__head">
-          <h2 id="map-title">A node on each machine. One control plane. Your session manager stays.</h2>
+          <h2 id="map-title">A node on each machine, one control plane. Works with herdr, with tmux and T3 Code to come.</h2>
           <p>
-            Fleetlayer attaches to the tools you use (herdr today, others through plugins) without taking them over.
+            Fleetlayer attaches to herdr without taking it over, so its app and your terminals keep working as before.
             Each machine, or each Unix user, runs a small node that keeps one outbound connection to the control plane,
             so it works behind NAT with no ports to open.
           </p>
@@ -130,7 +130,7 @@ const description = site.summary;
         <div class="map__wire" aria-hidden="true"><span>one outbound connection per node</span></div>
 
         <dl class="legend">
-          <div><dt><span class="key key--manager"></span>Session manager</dt><dd>yours, unchanged</dd></div>
+          <div><dt><span class="key key--manager"></span>Session manager</dt><dd>herdr today, others to come</dd></div>
           <div><dt><span class="key key--node"></span>Node</dt><dd>one per machine or Unix user</dd></div>
           <div><dt><span class="key key--service"></span>Service</dt><dd>run it anywhere, move it later</dd></div>
         </dl>
