@@ -15,6 +15,13 @@ tokens, private repo names, customer data or anything from Nathan's private note
   stored there.
 - **Build on ACP, don't fork it.** Extensions use ACP's own rules: `_meta` keys and `_`-prefixed methods under the
   `fleetlayer.dev/` namespace. Never add fields at the root of an ACP type.
+- **Simple first, depth when it's needed.** Nobody should have to learn what SSO, OpenID, tenants or teams are to get
+  started. One person starts with one tenant, one team and the built-in sign-in, created for them and never named in
+  the interface. The moment they need a second team, a second tenant or their company's sign-in provider, it's already
+  there and just works. In pages, the hub and the docs: plain words, the enterprise features summed up in one line
+  ("everything a company needs: single sign-on, teams, separate organisations, audit"), and their settings under an
+  **Advanced** section, collapsed by default. Never show an empty "Tenants" or "Identity providers" screen to someone
+  who has one of each.
 - **Everything in the background is monitored.** Every daemon, sync or scheduled job gets a health check or heartbeat
   that catches real failure (it stopped doing its job, not only that it stopped running), in the same change.
 
