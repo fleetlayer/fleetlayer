@@ -448,7 +448,7 @@ impl Compiled {
                     &mut enforced,
                     &mut notes,
                     "default_admins".into(),
-                    Some("the tenant's admins may sign in to and administer its services"),
+                    Some("the built-in default for admins: a tenant's admins sign in to and administer its services"),
                     "permit(principal, action in [Action::\"sign_in\", Action::\"admin\"], resource) when { \
                      principal.person && principal in Role::\"admin\" && resource.name like \"service:*\" && \
                      !(resource.name like \"service:*/*\") };"
@@ -562,8 +562,12 @@ impl Compiled {
 
     /// Whether `name` isn't a member of the scope's tenant (`outside`). Never true without a scope.
     fn outside(scope: Option<Scope>, name: &str) -> bool {
-        scope.is_some_and(|s| !name.starts_with("service:") && !s.tenant.is_member(s.fleet, name))
-            && (crate::directory::is_agent_side(name) || name.starts_with("person:"))
+        // Who can be outside: agents, people, and a service sending as itself (`service:<name>`, not someone's data
+        // in a service, `service:<name>/<owner>/…`).
+        let principal = crate::directory::is_agent_side(name)
+            || name.starts_with("person:")
+            || (name.starts_with("service:") && !name.contains('/'));
+        principal && scope.is_some_and(|s| !s.tenant.is_member(s.fleet, name))
     }
 
     /// Whether `name`, on `side`, matches one term; `other` is the request's other side (for `owner`).
@@ -1156,6 +1160,18 @@ owners:
         assert!(!own.decide_in(s, "recipes@laptop", "message", "billing@laptop", false).unwrap().allowed);
         assert!(!own.decide_in(s, "billing@laptop", "message", "recipes@laptop", false).unwrap().allowed);
         assert!(own.decide_in(s, "billing@laptop", "message", "x@c-vm", false).unwrap().allowed);
+    }
+
+    #[test]
+    fn a_service_from_another_tenant_is_outside() {
+        let mut f = crate::directory::tests::example();
+        f.tenants.iter_mut().find(|t| t.slug == "acme").unwrap().services.push("service:deck".into());
+        let p = Compiled::parse("version: 2\ndefault: allow\ndeny:\n  - { who: outside, can: message }\n").unwrap();
+        let home = Some(Scope { fleet: &f, tenant: f.tenant("home").unwrap() });
+        let d = p.decide_in(home, "service:deck", "message", "recipes@laptop", false).unwrap();
+        assert!(!d.allowed, "Acme's service is outside Home");
+        assert!(p.decide_in(Some(acme(&f)), "service:deck", "message", "billing@laptop", false).unwrap().allowed);
+        assert!(!p.decide_in(Some(acme(&f)), "service:other", "message", "billing@laptop", false).unwrap().allowed);
     }
 
     #[test]
