@@ -5,24 +5,30 @@
 //! - a socket something answers on means another node: refuse to start, naming its pid, once it has kept answering for
 //!   10 seconds (a restart or self-update can start the new node while the old one is still shutting down);
 //! - a socket nothing answers on is stale (a node that crashed): remove it and bind;
-//! - on exit, remove the socket file only if it is still the one this node created.
+//! - on exit, remove the socket file only if it is still the one this node created and nothing answers on it (one still
+//!   listening, such as this node's tools socket while its task winds down, is left for the next start to clear).
 
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 
-/// The socket file this node created; dropping it removes the file, unless something else has replaced it since.
+/// The socket file this node created; dropping it removes the file, unless something else has replaced it since or
+/// something answers on it. Both checks, since a filesystem may give a new file the inode number (and, with coarse
+/// timestamps, the change time) of one just deleted: a socket another node listens on is never removed.
 pub struct SocketFile {
     path: PathBuf,
-    dev: u64,
-    ino: u64,
+    id: (u64, u64, i64, i64),
+}
+
+fn identity(m: &std::fs::Metadata) -> (u64, u64, i64, i64) {
+    (m.dev(), m.ino(), m.ctime(), m.ctime_nsec())
 }
 
 impl Drop for SocketFile {
     fn drop(&mut self) {
         if let Ok(m) = std::fs::symlink_metadata(&self.path)
-            && m.dev() == self.dev
-            && m.ino() == self.ino
+            && identity(&m) == self.id
+            && UnixStream::connect(&self.path).is_err()
         {
             let _ = std::fs::remove_file(&self.path);
         }
@@ -88,7 +94,7 @@ fn try_claim(path: &Path) -> Result<(UnixListener, SocketFile), Claim> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     listener.set_nonblocking(true)?;
     let m = std::fs::symlink_metadata(path)?;
-    Ok((listener, SocketFile { path: path.to_path_buf(), dev: m.dev(), ino: m.ino() }))
+    Ok((listener, SocketFile { path: path.to_path_buf(), id: identity(&m) }))
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
