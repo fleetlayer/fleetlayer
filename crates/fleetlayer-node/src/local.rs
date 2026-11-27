@@ -4,6 +4,7 @@
 //! Methods:
 //! - `node/status` → the node's name, machine, version and plugins.
 //! - `node/sessions` → every session the node knows.
+//! - `node/readings` `{kinds}` → `{readings}`: the newest of each kind from every node this one may read.
 //! - `_fleetlayer.dev/message/send` `{to, text, caller?: {sessionId?, address?}}` → `{via}`.
 //!
 //! Only the node's own Unix user can open the socket, so the caller's claim about which session it runs in
@@ -157,6 +158,7 @@ impl Handler for Local {
                 };
                 peer.request::<_, Value>(m, &p).await
             }
+            "node/readings" => crate::readings::latest(node, &p).await,
             "node/sessions" => answer(&json!({"node": node.name, "sessions": node.registry.all().await})),
             ext::method::MESSAGE_SEND => {
                 let s: Send = params(p)?;

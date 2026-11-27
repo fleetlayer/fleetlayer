@@ -34,6 +34,12 @@ enum Command {
     },
     /// Every node and session in the fleet, from the control plane.
     Fleet,
+    /// The newest readings of these kinds (`claude.usage`, `claude.token_health`...) from every node this one may
+    /// read, one line each; --json for the whole readings.
+    Readings {
+        #[arg(required = true)]
+        kinds: Vec<String>,
+    },
     /// Subscribe this session (or --target) to a channel's events, or to one subject on it.
     Subscribe(SubscribeArgs),
     /// Undo a subscription.
@@ -464,6 +470,23 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                         s["summary"]["sentence"].as_str().unwrap_or("")
                     );
                 }
+            }
+        }
+        Command::Readings { kinds } => {
+            let v: Value = peer.request("node/readings", &json!({"kinds": kinds})).await?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&v["readings"])?);
+                return Ok(());
+            }
+            for r in v["readings"].as_array().into_iter().flatten() {
+                println!(
+                    "{:<24} {:<38} {:<20} {:<24} {}",
+                    r["kind"].as_str().unwrap_or("?"),
+                    r["key"].as_str().unwrap_or("?"),
+                    r["node"].as_str().unwrap_or("?"),
+                    r["at"].as_str().unwrap_or("?"),
+                    r["data"]
+                );
             }
         }
         Command::Subscribe(a) | Command::Unsubscribe(a) => {

@@ -35,6 +35,7 @@ pub const LINK_METHODS: &[(&str, Option<&str>)] = &[
     (m::SYNC_PUBLISH, Some("sync")),
     (m::READINGS, None),
     (m::READING_SUBSCRIBE, Some("read")),
+    (m::READING_LATEST, Some("read")),
 ];
 
 #[derive(Default)]
@@ -280,6 +281,7 @@ mod tests {
             m::SYNC_PUBLISH,
             m::READINGS,
             m::READING_SUBSCRIBE,
+            m::READING_LATEST,
         ];
         for method in node_to_control {
             assert!(listed.contains(&method), "{method} isn't in LINK_METHODS");

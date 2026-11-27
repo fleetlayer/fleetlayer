@@ -625,14 +625,25 @@ impl Hub {
     }
 
     /// The readings the hub publishes about its accounts: sign-in and setup-token ages, with warnings.
+    #[cfg(test)]
     pub async fn readings(&self) -> Vec<Value> {
+        self.readings_with(&HashMap::new()).await
+    }
+
+    /// The same, with why the last poll found an account needs signing in again (by account number).
+    /// `claude.signin_age` also carries the account's number, the number it has on every machine, and whether it's
+    /// signed in on the hub at all, so programs that list accounts (`fleetlayer-claude-accounts`) need nothing else.
+    async fn readings_with(&self, sign_in_needed: &HashMap<u32, String>) -> Vec<Value> {
         let st = self.state_json().await;
         let now = Timestamp::now().to_string();
         let mut out = vec![];
         for a in st["accounts"].as_array().into_iter().flatten() {
             let Some(uuid) = a["accountUuid"].as_str() else { continue };
+            let number = a["slot"].as_u64().map(|n| n as u32);
+            let why = number.and_then(|n| sign_in_needed.get(&n));
             out.push(json!({"kind": "claude.signin_age", "key": uuid, "at": now, "data": {
-                "email": a["email"], "daysLeft": a["signInDaysLeft"], "warn": a["signInWarn"]}}));
+                "email": a["email"], "daysLeft": a["signInDaysLeft"], "warn": a["signInWarn"],
+                "number": number, "signedIn": !a["signedInAt"].is_null(), "signInNeeded": why}}));
             if a["hasToken"] == true {
                 out.push(json!({"kind": "claude.setup_token_age", "key": uuid, "at": now, "data": {
                     "email": a["email"], "daysLeft": a["tokenDaysLeft"], "warn": a["tokenWarn"]}}));
@@ -684,6 +695,7 @@ impl Hub {
             self.store.lock().await.accounts.iter().map(|(k, v)| (*k, v.clone())).collect();
         let mut readings = vec![];
         let mut problems = vec![];
+        let mut sign_in_needed = HashMap::new();
         for (slot, a) in accounts {
             let (Some(uuid), Some(_)) = (a.account_uuid.clone(), a.signed_in_at) else { continue };
             let path = self.slot_path(slot).display().to_string();
@@ -692,12 +704,14 @@ impl Hub {
                 Stored::Present(Some(c)) => c,
                 _ => {
                     problems.push(format!("account {slot}: no sign-in stored"));
+                    sign_in_needed.insert(slot, "no sign-in stored".to_string());
                     continue;
                 }
             };
             if cred.expires_at <= now + 60_000 {
                 if !deps.refresh_token(&path).await {
                     problems.push(format!("account {slot}: the sign-in couldn't be refreshed; sign it in again"));
+                    sign_in_needed.insert(slot, "the sign-in couldn't be refreshed".to_string());
                     continue;
                 }
                 match deps.read_stored(&path).await {
@@ -720,14 +734,15 @@ impl Hub {
                     }
                 }
                 UsageAnswer::Rejected => {
-                    problems.push(format!("account {slot}: the usage endpoint refused the sign-in; sign it in again"))
+                    problems.push(format!("account {slot}: the usage endpoint refused the sign-in; sign it in again"));
+                    sign_in_needed.insert(slot, "the usage endpoint refused the sign-in".to_string());
                 }
                 UsageAnswer::Failed { status, .. } => {
                     problems.push(format!("account {slot}: the usage endpoint answered {status}"))
                 }
             }
         }
-        for v in self.readings().await {
+        for v in self.readings_with(&sign_in_needed).await {
             if let Ok(r) = serde_json::from_value::<ext::Reading>(v) {
                 readings.push(r);
             }
@@ -1126,7 +1141,10 @@ mod tests {
         assert!(!page.contains("sk-ant"), "the page never carries a token");
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(std::fs::metadata(hub.tokens_file()).unwrap().permissions().mode() & 0o777, 0o600);
-        assert_eq!(hub.readings().await.len(), 2, "sign-in age and token age for the account with a UUID");
+        let readings = hub.readings().await;
+        assert_eq!(readings.len(), 2, "sign-in age and token age for the account with a UUID");
+        let signin = readings.iter().find(|r| r["kind"] == "claude.signin_age").unwrap();
+        assert!(signin["data"]["number"].as_u64().is_some(), "the account's number, for account lists");
         // Deleting account 2 drops it from the tokens file.
         assert!(hub.delete(2).await.unwrap());
         assert!(!hub.delete(2).await.unwrap());

@@ -49,6 +49,9 @@ pub mod method {
     /// Node → control plane: the reading kinds this node's plugins want, replacing its earlier list. `{kinds}` →
     /// `{readings}` (the newest of each it may read).
     pub const READING_SUBSCRIBE: &str = "link/reading_subscribe";
+    /// Node → control plane: the newest readings of `kinds` this node may read, without changing its subscription
+    /// (`fleetlayer readings`, `fleetlayer-claude-accounts`). `{kinds}` → `{readings}`.
+    pub const READING_LATEST: &str = "link/reading_latest";
     /// Control plane → node (notification): new readings of kinds it subscribed to. `{readings}`.
     pub const READING_UPDATE: &str = "link/reading_update";
     /// Control plane → node: deliver to one of its sessions. `DeliverRequest` → `Delivered`.

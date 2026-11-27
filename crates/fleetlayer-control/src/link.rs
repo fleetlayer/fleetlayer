@@ -303,10 +303,12 @@ impl Handler for FromNode {
                 }
                 answer(&json!({"results": results}))
             }
-            l::method::READING_SUBSCRIBE => {
+            l::method::READING_SUBSCRIBE | l::method::READING_LATEST => {
                 let kinds: Vec<String> =
                     serde_json::from_value(p["kinds"].clone()).map_err(RpcError::invalid_params)?;
-                app.links.reading_kinds.lock().await.insert((tenant.to_string(), self.node.clone()), kinds.clone());
+                if method == l::method::READING_SUBSCRIBE {
+                    app.links.reading_kinds.lock().await.insert((tenant.to_string(), self.node.clone()), kinds.clone());
+                }
                 let me = self.me();
                 let mut out = vec![];
                 for r in crate::readings::latest(&app.db, tenant, &kinds).await.map_err(RpcError::internal)? {

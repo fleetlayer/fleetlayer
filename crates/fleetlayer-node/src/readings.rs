@@ -59,6 +59,27 @@ pub async fn subscribe(node: &Node, plugin: &str, p: &Value) -> Result<Value, Rp
     Ok(json!({"readings": mine}))
 }
 
+/// The newest readings of `kinds` (`{kinds}`) from every node this one may read, for local programs
+/// (`node/readings`). The node keeps no copy of its own: it asks the control plane, which filters by `read`.
+pub async fn latest(node: &Node, p: &Value) -> Result<Value, RpcError> {
+    let kinds: Vec<String> = serde_json::from_value(p["kinds"].clone()).map_err(RpcError::invalid_params)?;
+    if kinds.is_empty() {
+        return Err(RpcError::invalid_params("kinds: name at least one reading kind"));
+    }
+    let peer = node
+        .link
+        .peer()
+        .await
+        .ok_or_else(|| RpcError::not_here(format!("{} isn't linked to a control plane now", node.name)))?;
+    peer.request(l::READING_LATEST, &json!({"kinds": kinds})).await.map_err(|e| {
+        if e.code == fleetlayer_protocol::rpc::code::METHOD_NOT_FOUND {
+            RpcError::not_here("the control plane is older than 0.3.4, which lists readings: update it")
+        } else {
+            e
+        }
+    })
+}
+
 /// After linking: renew the subscription, and pass the newest readings to the plugins that want them.
 pub async fn resubscribe(node: &Node, peer: &fleetlayer_plugin::Peer) {
     let kinds = node.readings.kinds().await;

@@ -92,7 +92,10 @@ node leaves that alone.
 - The hub polls each signed-in account's usage every five minutes and publishes it as `claude.usage` with
   `source: poll`. When an access token has expired it has Claude Code refresh it first (`claude -p /usage` from that
   sign-in), which revokes the old one: nothing but the hub may read its sign-ins.
-- Kind `claude.signin_age`, keyed by account UUID, `data` `{email, daysLeft, warn}`. A normal sign-in's refresh token
+- Kind `claude.signin_age`, keyed by account UUID, `data` `{email, daysLeft, warn, number, signedIn, signInNeeded}`:
+  `number` is the account's number on every machine, `signedIn` whether the hub holds a normal sign-in for it, and
+  `signInNeeded` why the last poll found it needs signing in again (null when it doesn't). One per account the hub
+  manages, so it doubles as the fleet's account list (`fleetlayer-claude-accounts`, below). A normal sign-in's refresh token
   expires about 30 days after the sign-in, on a fixed date that refreshing doesn't move, and the usage endpoint doesn't
   say when. The hub takes the date from the stored credential when it's there, else counts 30 days from the sign-in,
   and sets `warn` from day 25, so an agent can ask the person to sign in again before polling stops.
@@ -161,3 +164,31 @@ every sign-in there. Both of Claude Code's flows work that way:
 - Still to confirm with a real sign-in: that the page shows a code after signing in when the hub's localhost callback
   can't be reached, and that the pasted code lands in the account's folder. Sign-in URLs and codes are as sensitive as
   tokens: never logged or published.
+
+## Every account in a menu bar: `fleetlayer-claude-accounts` for CodexBar
+
+CodexBar (a macOS menu bar app for AI usage limits) can show several Claude accounts from an external program that
+prints claude-swap's account list. `fleetlayer-claude-accounts` is that program for the accounts the hub manages: one
+row per `claude.signin_age` reading, with the newest `claude.usage` from any node, so every account shows on every
+machine whether or not it holds a sign-in.
+
+Set it up in CodexBar: Settings > Providers > Claude, turn on "Read accounts from claude-swap", put the binary's full
+path (`~/.local/bin/fleetlayer-claude-accounts`, expanded) in "claude-swap executable", and leave Source on
+claude-swap. It needs this machine's node running and linked, a control plane and a hub of 0.3.4 or later, and this
+node allowed to `read` the hub's node.
+
+- `--list --json`: claude-swap's schema v1, `supportsAccountSwitching: false` and no active account (each session's
+  account is the rotator's choice, not one machine-wide account). Windows the account doesn't have are left out (no
+  5-hour window on some plans); each model's own week (`Fable`) is a `scoped` row; reset times are normalised to whole
+  seconds, and one that isn't a time is dropped, since CodexBar refuses the whole list over a bad one.
+  `usageFetchedAt` is when the usage was measured, so an old reading doesn't look fresh.
+- **Status:** `token_expired` when this machine's `claude.token_health` check fails or the setup token's year is up;
+  `relogin_required` when the hub has no sign-in for the account or its last poll needed one (the hub can't poll its
+  usage); `unavailable` with no usage reading yet; else `ok`.
+- **Failures** print `{schemaVersion: 1, error: {type, message}}` and exit non-zero: `NodeUnreachable`,
+  `NodeTooOld`, `NoAccounts` (no hub readings this node may read), `HubTooOld` (readings without account numbers),
+  `Timeout` (10 seconds). `--switch-to` always fails with `SwitchingUnsupported`.
+- It's a short run on each refresh, nothing in the background: what keeps the figures fresh is the hub's poll, which
+  has its own heartbeat.
+- Codex and Gemini get their own binary over the same code (`crates/fleetlayer-accounts`, a `Provider` naming the
+  reading kinds) once they're Fleetlayer plugins, and once CodexBar takes an external account list for them.

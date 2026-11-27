@@ -398,6 +398,10 @@ Numbers, never secrets, flow with readings: account usage and reset times, healt
   `_fleetlayer.dev/reading/update` `{readings[]}` with readings from **every node in the fleet** it's allowed to see:
   the control plane fans them out to subscribers on any node, filtered by its ACLs. On subscribing, it gets the latest
   of each first.
+- **Local programs read them through the node**: `node/readings` `{kinds}` on the node's local socket (or
+  `fleetlayer readings <kind>...`) answers the newest of each kind, key and source node this node may read, asked of
+  the control plane (`link/reading_latest`, filtered by `read` like a subscription, and without changing it). The
+  node keeps no copy of its own, so it answers only while linked. `fleetlayer-claude-accounts` is built on it.
 - What `data` holds is defined by the kind's plugin. Serving those figures to local programs in their own API (the
   Claude account rotator's coordinator socket, say) is the plugin's job, not the node's.
 

@@ -30,7 +30,7 @@ lib="$HOME/.local/lib/fleetlayer"
 mkdir -p "$lib" "$HOME/.local/bin"
 rm -rf "${lib:?}/$version"
 mv "$tmp/$name" "$lib/$version"
-for b in fleetlayer fleetlayer-node fleetlayer-herdr fleetlayer-claude-code fleetlayer-summaries fleetlayer-files fleetlayer-claude-auth-manager; do
+for b in fleetlayer fleetlayer-node fleetlayer-herdr fleetlayer-claude-code fleetlayer-summaries fleetlayer-files fleetlayer-claude-auth-manager fleetlayer-claude-accounts; do
   ln -sfn "$lib/$version/$b" "$HOME/.local/bin/$b"
 done
 echo "Installed Fleetlayer $version in $lib/$version, linked from ~/.local/bin."

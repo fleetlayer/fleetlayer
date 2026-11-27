@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "activeAccountNumber": 2,
+  "accounts": [
+    {
+      "number": 1,
+      "email": "work@example.com",
+      "organizationName": "",
+      "organizationUuid": "",
+      "isOrganization": false,
+      "active": false,
+      "usageStatus": "ok",
+      "usage": {
+        "fiveHour": {"pct": 25.0, "resetsAt": "2026-06-22T23:29:59Z", "countdown": "1h"},
+        "sevenDay": {"pct": 16.5, "resetsAt": "2026-06-26T17:59:59Z"},
+        "scoped": [
+          {"pct": 33.0, "name": "Fable", "resetsAt": "2026-06-26T17:59:59Z"}
+        ]
+      },
+      "usageFetchedAt": "2026-06-22T20:00:00Z",
+      "usageAgeSeconds": 42.0
+    },
+    {
+      "number": 2,
+      "email": "personal@example.com",
+      "active": true,
+      "usageStatus": "ok",
+      "usage": {"fiveHour": {"pct": 80}}
+    }
+  ]
+}

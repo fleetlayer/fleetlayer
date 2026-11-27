@@ -168,3 +168,17 @@ managers, machines that sleep.
     database directly, both worse than a file in git. It may move towards agent access (an API, MCP), so the guide
     shouldn't rule it out; it's a fine choice for someone who wants a UI first. Where it lives now: the author's
     home-server setup (Gatus external endpoints for heartbeats, alerts to a chat room an agent listens to).
+- **Showing every account's usage in a menu bar app (CodexBar) without signing each machine in.** CodexBar reads
+  several Claude accounts from an external program that prints claude-swap's account list (`--list --json`, schema
+  v1); `fleetlayer-claude-accounts` prints the hub's accounts and usage that way, from readings. Footguns: CodexBar
+  rejects the whole list over one malformed `resetsAt` (so normalise times, drop bad ones); the list needs
+  `activeAccountNumber` present (null) and `supportsAccountSwitching: false` when the program can't switch, or
+  CodexBar offers a switch that can't work; a GUI app on macOS has no `XDG_RUNTIME_DIR`, so the program must find the
+  node's socket the same way the node does. Where it lives now: docs/plugins/claude-auth-manager.md ("Every account
+  in a menu bar").
+- **A new binary in a release isn't on PATH after a self-update.** The updating node links only the binaries the
+  *old* version knew, so a binary added in the new release stayed unlinked. Fixed: on start, a node running from the
+  installer's release folder links any of its release's binaries that have no link in `~/.local/bin` yet, and never
+  touches an existing file or link there. A node installed some other way (a package, Ansible, `/opt`) does nothing:
+  whatever installed it puts its binaries on PATH, and lists each binary by name, so a new binary has to be added
+  there too. Where it lives now: crates/fleetlayer-node/src/update.rs (`link_missing`).

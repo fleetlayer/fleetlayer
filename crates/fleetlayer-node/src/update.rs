@@ -34,6 +34,7 @@ pub const BINARIES: &[&str] = &[
     "fleetlayer-summaries",
     "fleetlayer-files",
     "fleetlayer-claude-auth-manager",
+    "fleetlayer-claude-accounts",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
@@ -106,6 +107,18 @@ struct Asset {
 
 pub async fn run(node: Arc<Node>, cfg: UpdateConfig) {
     let installed = self_installed(&node.home);
+    // The node that installed this release linked only the binaries it knew of: link any this one ships that it
+    // didn't (a new plugin or tool), so they're on PATH from the first start. Only for the installer's releases: a
+    // node installed some other way (a package, Ansible) has its binaries put on PATH by that.
+    if installed
+        && let Some(dir) = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.canonicalize().ok())
+            .and_then(|p| p.parent().map(Path::to_path_buf))
+        && let Err(e) = link_missing(&dir, &node.home.join(".local/bin"))
+    {
+        tracing::warn!("linking this release's binaries into ~/.local/bin: {e}");
+    }
     let mode = cfg.mode.unwrap_or(if installed { Mode::Auto } else { Mode::Notify });
     if mode == Mode::Off {
         return;
@@ -209,6 +222,23 @@ pub fn link_binaries(dir: &Path, bin: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Link `<bin>/<name>` to `<dir>/<name>` for each binary `dir` has that `bin` has no link to yet (or a dangling one).
+/// Leaves existing links alone: a person who pointed one elsewhere keeps it.
+pub fn link_missing(dir: &Path, bin: &Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(bin)?;
+    for b in BINARIES {
+        let (src, link) = (dir.join(b), bin.join(b));
+        if !src.is_file() || link.exists() {
+            continue;
+        }
+        let tmp = bin.join(format!(".{b}.new"));
+        let _ = std::fs::remove_file(&tmp);
+        std::os::unix::fs::symlink(&src, &tmp)?;
+        std::fs::rename(&tmp, &link)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,6 +266,25 @@ mod tests {
         link_binaries(&v1, &bin).unwrap();
         link_binaries(&v2, &bin).unwrap();
         assert_eq!(std::fs::read_link(bin.join("fleetlayer-node")).unwrap(), v2.join("fleetlayer-node"));
+    }
+
+    #[test]
+    fn a_binary_the_old_node_didnt_link_is_linked_on_start() {
+        let d = tempfile::tempdir().unwrap();
+        let (v, bin) = (d.path().join("v2"), d.path().join("bin"));
+        std::fs::create_dir_all(&v).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+        for b in BINARIES {
+            std::fs::write(v.join(b), "x").unwrap();
+        }
+        std::fs::write(d.path().join("mine"), "x").unwrap();
+        std::os::unix::fs::symlink(d.path().join("mine"), bin.join("fleetlayer")).unwrap();
+        link_missing(&v, &bin).unwrap();
+        assert_eq!(std::fs::read_link(bin.join("fleetlayer")).unwrap(), d.path().join("mine"), "left alone");
+        assert_eq!(
+            std::fs::read_link(bin.join("fleetlayer-claude-accounts")).unwrap(),
+            v.join("fleetlayer-claude-accounts")
+        );
     }
 
     #[test]

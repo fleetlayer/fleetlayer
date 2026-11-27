@@ -1163,6 +1163,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5905ec755cc8386d7928353e4d356d2be3e89e81e5ca01fe630a1ca4d08dc175"
 
 [[package]]
+name = "fleetlayer-accounts"
+version = "0.3.3"
+dependencies = [
+ "async-trait",
+ "fleetlayer-plugin",
+ "fleetlayer-protocol",
+ "jiff 1.0.3",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "fleetlayer-claude-auth-manager"
 version = "0.3.3"
 dependencies = [
