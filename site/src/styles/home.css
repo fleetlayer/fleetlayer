@@ -45,6 +45,18 @@ p {
   margin: 0;
 }
 
+/* No single word left on a line of its own; headings balance their lines. */
+p,
+li,
+figcaption {
+  text-wrap: pretty;
+}
+h1,
+h2,
+h3 {
+  text-wrap: balance;
+}
+
 a {
   color: var(--color-accent);
   text-underline-offset: 0.2em;
