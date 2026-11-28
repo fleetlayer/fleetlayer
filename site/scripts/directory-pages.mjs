@@ -18,6 +18,7 @@ const KIND_NAMES = { plugin: "Plugin", tool: "Command-line tool", shared_tool: "
 function licenceText(id) {
   const kind = licenceKind(id);
   if (kind === "copyleft") return `${id} (copyleft)`;
+  if (kind === "source-available") return `${id} (source-available)`;
   if (kind === "proprietary") return `${id} (not an open-source licence Fleetlayer recognises)`;
   return id;
 }

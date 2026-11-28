@@ -15,6 +15,8 @@ export const STATUSES = ["stable", "beta", "experimental", "in progress"];
 export const PLATFORMS = ["linux", "macos", "windows"];
 // Open-source licences listed as-is; copyleft ones are marked on the page. Anything else is listed as proprietary.
 export const PERMISSIVE = ["Apache-2.0", "MIT", "BSD-2-Clause", "BSD-3-Clause", "ISC", "0BSD", "Unlicense", "Zlib"];
+// Source-available licences that become open source after a delay: listed as they are.
+export const SOURCE_AVAILABLE = ["FSL-1.1-ALv2", "FSL-1.1-MIT", "BUSL-1.1"];
 export const COPYLEFT = ["GPL-2.0-only", "GPL-2.0-or-later", "GPL-3.0-only", "GPL-3.0-or-later", "AGPL-3.0-only",
   "AGPL-3.0-or-later", "LGPL-2.1-only", "LGPL-2.1-or-later", "LGPL-3.0-only", "LGPL-3.0-or-later", "MPL-2.0", "EUPL-1.2"];
 
@@ -28,6 +30,7 @@ export async function loadEntries() {
 export function licenceKind(id) {
   if (PERMISSIVE.includes(id)) return "open";
   if (COPYLEFT.includes(id)) return "copyleft";
+  if (SOURCE_AVAILABLE.includes(id)) return "source-available";
   return "proprietary";
 }
 

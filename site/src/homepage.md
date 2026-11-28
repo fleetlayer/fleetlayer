@@ -4,7 +4,7 @@ An open framework for running AI agents securely and at scale.
 
 Fleetlayer connects the Claude Code and Codex sessions you already run in [herdr](https://herdr.dev/), on your laptop, a
 home server or a VPS. Any agent can message any other agent, webhooks can be routed to specific agents, and each agent
-gets its own access rules. Open source under Apache 2.0, early, built in public:
+gets its own access rules. Source-available, early, built in public:
 https://github.com/fleetlayer/fleetlayer
 
 ## Your whole fleet on one page

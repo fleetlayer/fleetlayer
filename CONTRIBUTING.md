@@ -21,11 +21,12 @@ both.
 A plugin of your own needs no fork of Fleetlayer and no change here: it's a separate program the node starts. To list
 it in the [plugin directory](https://fleetlayer.ai/docs/directory/), open a pull request that adds one file,
 `plugins-directory/<name>.yaml`. [plugins-directory/README.md](plugins-directory/README.md) lists the fields, and CI
-checks them. Any open-source licence is listed; copyleft and proprietary ones are marked on the page.
+checks them. Any open-source or source-available licence is listed; copyleft and proprietary ones are marked on the page.
 
 ## Licence
 
-Fleetlayer is licensed under [Apache 2.0](LICENSE), and contributions are accepted under the same licence.
+Fleetlayer is licensed under the [Functional Source License (FSL-1.1-ALv2)](LICENSE), and contributions are accepted
+under the same licence.
 
 To run your own build of Fleetlayer while a change is in review (or forever), see [Make it
 yours](https://fleetlayer.ai/docs/guides/make-it-yours/).

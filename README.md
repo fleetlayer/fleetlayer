@@ -38,4 +38,5 @@ from them on every push to main. Work on Fleetlayer is described in [AGENTS.md](
 
 ## Licence
 
-Apache 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+The Functional Source License, Version 1.1, ALv2 Future License (FSL-1.1-ALv2): each release becomes Apache 2.0
+two years after it ships. See [LICENSE](LICENSE) and [NOTICE](NOTICE).

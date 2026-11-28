@@ -63,7 +63,7 @@ and every session manager you use:
 - **Shared tools.** One machine's MCP servers, such as the browser on your laptop, used by agents on other machines
   ([Share your browser](guides/browser.md)).
 
-Fleetlayer is open source under Apache 2.0 and self-hosted: you run the control plane yourself, on your laptop to
+Fleetlayer is source-available and self-hosted: you run the control plane yourself, on your laptop to
 start or on a server later.
 
 ## How they fit

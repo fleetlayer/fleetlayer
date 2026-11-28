@@ -1,7 +1,8 @@
 # Fleetlayer
 
-Fleetlayer is open source under Apache 2.0, built in public: everything in this repo is public, so no hostnames,
-tokens, private repo names, customer data or anything from Nathan's private notes goes into it.
+Fleetlayer is source-available under the Functional Source License (FSL-1.1-ALv2), built in public: everything in this
+repo is public, so no hostnames, tokens, private repo names, customer data or anything from Nathan's private notes goes
+into it.
 
 ## Rules that shape the design
 

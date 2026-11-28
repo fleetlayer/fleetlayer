@@ -105,8 +105,8 @@ open a pull request. A good one:
 - **Takes no GPL or AGPL code,** not even a snippet. Apache 2.0 and MIT code can be borrowed with its notice kept and
   an entry in `NOTICE`.
 
-Fleetlayer is licensed under Apache 2.0, and a contribution is offered under the same licence (section 5 of the
-licence). [CONTRIBUTING.md](https://github.com/fleetlayer/fleetlayer/blob/main/CONTRIBUTING.md) has the short
+Fleetlayer is licensed under the Functional Source License (FSL-1.1-ALv2), and a contribution is offered under the
+same licence. [CONTRIBUTING.md](https://github.com/fleetlayer/fleetlayer/blob/main/CONTRIBUTING.md) has the short
 version.
 
 ## When it doesn't work

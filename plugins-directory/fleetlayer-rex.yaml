@@ -4,7 +4,7 @@ kind: plugin
 roles: [session_manager]
 ships_with_fleetlayer: true
 status: beta
-licence: Apache-2.0
+licence: FSL-1.1-ALv2
 maintainer: Fleetlayer
 source: https://github.com/fleetlayer/fleetlayer/tree/main/plugins/rex
 install: bundled
