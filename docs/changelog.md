@@ -26,6 +26,10 @@ Most releases need only the installer or a node's own update. These need more, o
 - **tmux** (`fleetlayer-tmux`): puts the Claude Code, Codex and other agents in your tmux panes in the fleet, with
   their status, messages, blocked prompts, sessions started and closed remotely, and `fleetlayer attach`. It uses only
   tmux's own command line and never attaches a client, so your layout stays as it is. It ships in v0.4.2.
+- **Presence** (`fleetlayer-presence`): whether the person is at their desk, on their phone, away or asleep, from
+  their laptop's screen lock and idle time, their looks at pages on the phone, what they told any session, planned
+  absences and their night. Agents check `fleetlayer presence` before background work nobody may read, and record it
+  when the person says they're going out. It ships in v0.4.2.
 
 ## v0.4.1 (28 November 2026)
 
