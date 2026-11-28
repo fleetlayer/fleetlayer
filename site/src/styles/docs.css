@@ -69,3 +69,12 @@ h1#_top,
 .sl-markdown-content table td:first-child a[href^="/docs/directory/"] {
   white-space: nowrap;
 }
+
+/* No single word left on a line of its own; headings balance their lines. */
+.sl-markdown-content :is(p, li) {
+  text-wrap: pretty;
+}
+.sl-markdown-content :is(h1, h2, h3, h4),
+h1#_top {
+  text-wrap: balance;
+}
