@@ -354,14 +354,27 @@ fn github_body(kind: &str, j: &Value) -> Value {
             ])
             .map(|r| r.strip_prefix("refs/heads/").unwrap_or(r)),
         ),
-        ("sha", first(&["/check_suite/head_sha", "/check_run/head_sha", "/pull_request/head/sha", "/after"])),
+        ("sha", first(&["/check_suite/head_sha", "/check_run/head_sha", "/pull_request/head/sha", "/after", "/sha"])),
         ("conclusion", first(&["/check_suite/conclusion", "/check_run/conclusion"])),
-        ("url", first(&["/check_run/html_url", "/pull_request/html_url", "/issue/html_url", "/compare"])),
+        // A commit status (CircleCI and others report each job as one): its job and state
+        ("context", first(&["/context"]).filter(|_| kind == "status")),
+        ("state", first(&["/state"]).filter(|_| kind == "status")),
+        (
+            "url",
+            first(&["/check_run/html_url", "/pull_request/html_url", "/issue/html_url", "/compare", "/target_url"]),
+        ),
     ];
     for (k, v) in fields {
         if let Some(v) = v {
             out.insert(k.into(), json!(v));
         }
+    }
+    // A pull request's number and whether it merged, so a subscriber knows which PR changed and how it ended
+    if let Some(n) = j.pointer("/pull_request/number").and_then(Value::as_i64) {
+        out.insert("number".into(), json!(n));
+    }
+    if let Some(m) = j.pointer("/pull_request/merged").and_then(Value::as_bool) {
+        out.insert("merged".into(), json!(m));
     }
     Value::Object(out)
 }
@@ -804,5 +817,26 @@ mod tests {
             let left = db::subscriptions(&app.db, "default").await.unwrap();
             assert_eq!(left, vec![branch], "the commit's ended, the branch's stays");
         }
+    }
+
+    #[test]
+    fn a_commit_status_and_a_pull_request_keep_what_a_queue_needs() {
+        let status = json!({"sha": "1a2b3c", "context": "ci/example: deploy_staging", "state": "failure",
+            "target_url": "https://ci.example.com/job/9", "repository": {"full_name": "org/app"},
+            "commit": {"commit": {"message": "a long message nobody needs"}}});
+        let b = github_body("status", &status);
+        assert_eq!(b["sha"], "1a2b3c");
+        assert_eq!(b["context"], "ci/example: deploy_staging");
+        assert_eq!(b["state"], "failure");
+        assert_eq!(b["url"], "https://ci.example.com/job/9");
+        assert!(b.get("commit").is_none(), "the body stays small: {b}");
+        let pr = json!({"action": "closed", "repository": {"full_name": "org/app"},
+            "pull_request": {"number": 1093, "merged": true, "head": {"ref": "feature", "sha": "9f8e"},
+                "html_url": "https://github.com/org/app/pull/1093"}});
+        let b = github_body("pull_request", &pr);
+        assert_eq!((b["number"].as_i64(), b["merged"].as_bool()), (Some(1093), Some(true)));
+        assert_eq!((b["branch"].as_str(), b["sha"].as_str()), (Some("feature"), Some("9f8e")));
+        // A push's own fields aren't read as a status
+        assert!(github_body("push", &json!({"state": "x", "after": "abc"})).get("state").is_none());
     }
 }

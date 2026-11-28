@@ -113,7 +113,8 @@ followed by the details (workflow, conclusion, branch, commit, run URL, attempt)
 someone pushed on top, and a workflow that cancels older runs stopped this one: the agent fetches and subscribes to the
 newer commit. Sessions never get GitHub's raw
 payload, which is long and full of URLs (a ping's includes the webhook's own URL, secret path and all): other GitHub
-events arrive as a short summary of the same fields, a ping as one line, and the endpoint's secret is removed from
+events arrive as a short summary of the same fields (a commit status, which CircleCI and others send per job,
+keeps its `context` and `state`; a pull request its `number` and whether it `merged`), a ping as one line, and the endpoint's secret is removed from
 anything delivered. Only completed runs are delivered;
 `endpoint add --all-actions` delivers `requested` and `in_progress` too. GitHub's workflow run events don't list the
 jobs, so the message names the workflow, not which job failed: the agent opens the run (`gh run view <id>
