@@ -20,6 +20,13 @@ pub mod method {
     pub const SUBSCRIBE: &str = "link/subscribe";
     pub const UNSUBSCRIBE: &str = "link/unsubscribe";
     pub const SUBSCRIPTIONS: &str = "link/subscriptions";
+    /// Node → control plane: a watch for one of its sessions: the first matching event, once, or a notice at the
+    /// deadline. `WatchRequest` → `{id, expiresAt}`, or `{fired: true, summary, event}` when it already holds.
+    pub const WATCH: &str = "link/watch";
+    /// Node → control plane: remove one of its sessions' watches. `{id}` → `{removed}`.
+    pub const UNWATCH: &str = "link/unwatch";
+    /// Node → control plane: its sessions' watches. `{}` → `{watches}`.
+    pub const WATCHES: &str = "link/watches";
     /// Node → control plane: the events one of its sessions missed (delivery failed: offline, busy) since it last
     /// read them, or with `all` every event it was sent; `peek` leaves them unread. `EventsRequest` → `{events}`.
     pub const EVENTS: &str = "link/events";
@@ -425,6 +432,27 @@ pub struct TargetResult {
     pub ok: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+/// A watch: the first event on `channel` (about `subject`, of one of `kinds`) goes to `target`, once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct WatchRequest {
+    pub channel: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    /// Event kinds that fire it (`session.idle`); empty: any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kinds: Vec<String>,
+    /// `<tab>@<node>`: a session of the asking node (the node fills it in from the caller).
+    #[serde(default)]
+    pub target: String,
+    /// What the watcher wants it for, shown when it fires or ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// How long it lasts, in seconds (default a day, at most 30 days).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub for_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

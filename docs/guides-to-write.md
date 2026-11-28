@@ -966,3 +966,13 @@ managers, machines that sleep.
   --no-focus`, and `herdr workspace create` first when herdr has no workspace yet, renaming its numbered first tab),
   then start the agent in it with `herdr agent start <name> --kind <harness> --pane <pane> -- <args>`, closing the tab
   when the start fails. Written: `plugins/herdr/src/herdr.rs`, `docs/requirements.md`.
+- **Agents waiting on each other poll, or forget.** An agent waiting for another session to finish (or for a run, an
+  alert) either checks back in a loop, spending tokens and API calls, or says "I'll check later" and never does; a
+  deck that shows the fleet live read the whole fleet every few seconds. Solved with the `session.status` channel
+  (an event per status change, with what started each turn: a person, a message, a scheduler entry or nothing seen),
+  watches (`fleetlayer watch --session <tab>@<node>`: one message when it stops working, or at a deadline), and a
+  cursor feed for services (`GET /v1/events?after=&wait=`). Footguns met: the harness's prompt hook arrives a moment
+  after the session manager says "working", so status events wait three seconds for it; a message typed into a
+  terminal by a messaging tool looks to Claude Code like the person typing, so the node's own record of what it
+  delivered wins for ten seconds; a flapping session must not flood subscribers, so events are capped per session,
+  with the last change held, never dropped. Written: `docs/events.md`, the fleetlayer skill's Watches section.

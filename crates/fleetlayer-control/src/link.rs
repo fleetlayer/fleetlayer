@@ -572,6 +572,26 @@ impl Handler for FromNode {
                 let removed = db::unsubscribe(&app.db, tenant, &s).await.map_err(RpcError::internal)?;
                 Ok(json!({"removed": removed}))
             }
+            l::method::WATCH => {
+                let w: l::WatchRequest = params(p)?;
+                self.own(&w.target)?;
+                if w.target.starts_with("plugin:") {
+                    return Err(RpcError::refused("a plugin subscribes to channels; watches are for sessions"));
+                }
+                crate::authz::check(app, tenant, &w.target, "subscribe", &format!("channel:{}", w.channel)).await?;
+                crate::watches::add(app, tenant, &w).await
+            }
+            l::method::UNWATCH => {
+                let id = p["id"].as_str().ok_or_else(|| RpcError::invalid_params("id"))?;
+                let removed =
+                    crate::watches::remove(&app.db, tenant, id, &self.node).await.map_err(RpcError::internal)?;
+                Ok(json!({"removed": removed}))
+            }
+            l::method::WATCHES => {
+                let watches =
+                    crate::watches::list(&app.db, tenant, Some(&self.node)).await.map_err(RpcError::internal)?;
+                Ok(json!({"watches": watches}))
+            }
             l::method::EVENTS => {
                 let r: l::EventsRequest = params(p)?;
                 self.own(&r.target)?;

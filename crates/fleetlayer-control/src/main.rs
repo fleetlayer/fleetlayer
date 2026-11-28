@@ -29,6 +29,7 @@ mod status;
 mod stepup;
 mod streams;
 mod summaries;
+mod watches;
 mod windows;
 
 use std::net::SocketAddr;
@@ -632,6 +633,7 @@ async fn main() -> anyhow::Result<()> {
             tokio::spawn(link::sync_approved(app.clone()));
             tokio::spawn(windows::run(app.clone()));
             tokio::spawn(status::prune_events(app.clone()));
+            tokio::spawn(watches::run(app.clone()));
             if !policy_files.is_empty() {
                 // Applied before the server answers, so it never decides with an older policy than the file's.
                 policy_files::apply_all(&app, &policy_files).await;

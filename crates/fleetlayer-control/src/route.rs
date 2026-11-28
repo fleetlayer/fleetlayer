@@ -573,38 +573,42 @@ pub async fn publish_matching(
         db::targets(&app.db, tenant, &e.channel, subjects.first().copied()).await
     }
     .map_err(RpcError::internal)?;
+    // The watches it fires, taken (removed) now so each fires once.
+    let fired = crate::watches::take_matching(&app.db, tenant, &e).await.map_err(RpcError::internal)?;
     if targets.is_empty()
+        && fired.is_empty()
         && let Some(f) = db::fallback(&app.db, tenant, &e.channel).await.map_err(RpcError::internal)?
     {
         targets.push(f);
     }
     // An event about a session goes only to those who may read that session.
-    if e.channel == crate::status::CHANNEL
-        && let Some(about) = e.subject.as_deref()
-    {
-        // Under every name the session goes by (its ID, its tabs now and before), as transcript search checks.
-        let mut names = vec![about.to_string()];
-        if let (Some(id), Some(node)) = (e.body["sessionId"].as_str(), e.body["node"].as_str()) {
-            names.extend(crate::authz::session_names(app, &format!("{id}@{node}")).await);
-        }
-        names.sort();
-        names.dedup();
+    let about_session = (e.channel == crate::status::CHANNEL).then(|| e.subject.clone()).flatten().map(|about| {
+        (about, e.body["sessionId"].as_str().map(str::to_string), e.body["node"].as_str().map(str::to_string))
+    });
+    if let Some((about, id, node)) = &about_session {
         let mut readable = vec![];
         for t in targets {
-            let mut all = true;
-            for n in &names {
-                if !crate::authz::may_read(app, tenant, &t, n).await {
-                    all = false;
-                    break;
-                }
-            }
-            if all {
+            if may_read_session(app, tenant, &t, about, id.as_deref(), node.as_deref().unwrap_or_default()).await {
                 readable.push(t);
             }
         }
         targets = readable;
     }
     let mut deliveries = vec![];
+    for f in fired {
+        if let Some((about, sid, node)) = &about_session
+            && !may_read_session(app, tenant, &f.target, about, sid.as_deref(), node.as_deref().unwrap_or_default())
+                .await
+        {
+            continue;
+        }
+        // A target that subscribes too gets the event once, through its subscription.
+        if targets.contains(&f.target) {
+            continue;
+        }
+        let line = crate::watches::fired_line(&f);
+        deliveries.push(deliver_event_with(app, tenant, id, &e, source, f.target.clone(), Some(&line)).await);
+    }
     for target in targets {
         deliveries.push(deliver_event(app, tenant, id, &e, source, target).await);
     }
@@ -615,9 +619,48 @@ pub async fn publish_matching(
     Ok((Some(id), PublishResult { duplicate: false, deliveries }))
 }
 
+/// Whether `who` may read the session an event is about, under every name it goes by (its ID, its tabs now and before),
+/// as transcript search checks.
+pub async fn may_read_session(
+    app: &App,
+    tenant: &str,
+    who: &str,
+    about: &str,
+    session_id: Option<&str>,
+    node: &str,
+) -> bool {
+    let mut names = vec![about.to_string()];
+    if let Some(id) = session_id
+        && !node.is_empty()
+    {
+        names.extend(crate::authz::session_names(app, &format!("{id}@{node}")).await);
+    }
+    names.sort();
+    names.dedup();
+    for n in &names {
+        if !crate::authz::may_read(app, tenant, who, n).await {
+            return false;
+        }
+    }
+    true
+}
+
 /// Deliver stored event `id` to one target, as outside data: a session gets it as text, a plugin
 /// (`plugin:<name>@<node>`) as the event itself.
 pub async fn deliver_event(app: &App, tenant: &str, id: i64, e: &Event, source: &str, target: String) -> TargetResult {
+    deliver_event_with(app, tenant, id, e, source, target, None).await
+}
+
+/// [`deliver_event`], with a line of Fleetlayer's own after the event for a session (a fired watch says so).
+pub async fn deliver_event_with(
+    app: &App,
+    tenant: &str,
+    id: i64,
+    e: &Event,
+    source: &str,
+    target: String,
+    line: Option<&str>,
+) -> TargetResult {
     if let Some((name, node)) = split_target(&target)
         && let Some(plugin) = name.strip_prefix("plugin:")
     {
@@ -631,7 +674,10 @@ pub async fn deliver_event(app: &App, tenant: &str, id: i64, e: &Event, source: 
         subkind: Some(e.kind.clone()),
         untrusted: true,
         from: From { label: format!("{source} via Fleetlayer"), ..Default::default() },
-        text: render_event(e, source),
+        text: match line {
+            Some(l) => format!("{}\n\n{l}", render_event(e, source)),
+            None => render_event(e, source),
+        },
     };
     let r = deliver(app, tenant, &target, d).await;
     TargetResult { target, ok: r.is_ok(), error: r.err().map(|e| e.message) }

@@ -11,6 +11,29 @@ as data ([Plugin protocol](protocol.md#receiving-events-plugins-as-subscribers))
 copying a room into another app. The [CI results guide](guides/ci-results.md) shows the whole path for one kind
 of event.
 
+## Watches: tell me once
+
+A watch is a subscription that fires once. The session that sets it gets the first event that matches, with a line
+saying it was the watch, or a message at the deadline if nothing matched, and the watch ends either way:
+
+```sh
+fleetlayer watch --session review@server --note "merge once it's reviewed"    # it stops working
+fleetlayer watch --session review@server --status blocked --for 2h            # it needs the person
+fleetlayer watch ci --subject org/repo@main --kind github.workflow_run --for 30m
+fleetlayer watches
+fleetlayer unwatch <id>
+```
+
+- A watch matches like a subscription (the channel, and the subject if given), and only the event kinds given
+  (`--kind`, any when none). `--session <tab>@<node>` is a watch on `session.status` about that session, for
+  `--status idle,done,blocked,gone` by default: it stopped working.
+- A session already in one of those statuses fires at once, and no watch is set.
+- It lasts `--for` (a day by default, 30 days at most). `--note` is shown when it fires or ends.
+- Watches are for the session that sets them, and need `subscribe` on the channel. A session gets a
+  `session.status` watch's event only when it may `read` that session. Each session can have 100 at once.
+- A watch takes the place of polling and of "check back later" loops: an agent waiting for another to finish, or for
+  a run to complete, sets one and carries on.
+
 ## Session status: `session.status`
 
 The control plane puts an event on the `session.status` channel each time a session's status changes, on any node:

@@ -149,6 +149,16 @@ enum Command {
     Unsubscribe(SubscribeArgs),
     /// Every subscription in the fleet.
     Subscriptions,
+    /// Tell this session once when something happens: the first matching event on a channel, or another session
+    /// stopping work (`--session planning@laptop`), with a message at the deadline if nothing did.
+    Watch(WatchArgs),
+    /// This node's sessions' watches.
+    Watches,
+    /// Remove a watch before it fires.
+    Unwatch {
+        /// Its ID (`w_…`), from `fleetlayer watch` or `fleetlayer watches`.
+        id: String,
+    },
     /// The channel events this session missed (its delivery failed: it was offline, or waiting on a person) since it
     /// last asked, oldest first, and marks them read. Looks back 7 days.
     Events {
@@ -437,6 +447,68 @@ struct SubscribeArgs {
     /// `<tab>@<node>`. Default: the session this runs in.
     #[arg(long)]
     target: Option<String>,
+}
+
+#[derive(clap::Args)]
+struct WatchArgs {
+    /// The channel to watch (`ci`, `alerts`). Not needed with --session.
+    #[arg(required_unless_present = "session", conflicts_with = "session")]
+    channel: Option<String>,
+    /// Only events about this subject.
+    #[arg(long, conflicts_with = "session")]
+    subject: Option<String>,
+    /// Only events of these kinds (repeat it, or separate with commas). Default: any.
+    #[arg(long = "kind", value_delimiter = ',', conflicts_with = "session")]
+    kinds: Vec<String>,
+    /// A session to watch (`<tab>@<node>`): tell me when its status becomes one of --status.
+    #[arg(long)]
+    session: Option<String>,
+    /// With --session, the statuses that fire it (idle, done, blocked, working, gone). Default: idle, done, blocked,
+    /// gone (it stopped working). One it has already fires at once.
+    #[arg(long, value_delimiter = ',', requires = "session")]
+    status: Vec<String>,
+    /// How long to wait before giving up with a message: 30m, 2h, 7d (at most 30d).
+    #[arg(long = "for", default_value = "1d")]
+    duration: String,
+    /// What you want it for, shown when it fires or ends.
+    #[arg(long)]
+    note: Option<String>,
+}
+
+/// `30m`, `2h`, `7d` in seconds.
+fn duration_secs(d: &str, flag: &str) -> anyhow::Result<u64> {
+    let d = d.trim();
+    let (n, unit) = d.split_at(d.len().saturating_sub(1));
+    let n: u64 = n.parse().map_err(|_| anyhow::anyhow!("{flag} is like 30m, 2h or 1d"))?;
+    Ok(match unit {
+        "m" => n * 60,
+        "h" => n * 3600,
+        "d" => n * 86400,
+        _ => anyhow::bail!("{flag} is like 30m, 2h or 1d"),
+    })
+}
+
+/// What `fleetlayer watch` asks the node for: --session as a watch on `session.status`.
+fn watch_request(a: &WatchArgs) -> anyhow::Result<Value> {
+    const STATUSES: [&str; 6] = ["idle", "done", "blocked", "working", "unknown", "gone"];
+    let (channel, subject, kinds) = match &a.session {
+        Some(s) => {
+            anyhow::ensure!(s.contains('@'), "--session is <tab>@<node>");
+            let statuses: Vec<String> = if a.status.is_empty() {
+                ["idle", "done", "blocked", "gone"].map(String::from).to_vec()
+            } else {
+                a.status.iter().map(|s| s.trim().to_string()).collect()
+            };
+            if let Some(bad) = statuses.iter().find(|s| !STATUSES.contains(&s.as_str())) {
+                anyhow::bail!("--status {bad}: one of {}", STATUSES.join(", "));
+            }
+            let kinds: Vec<String> = statuses.iter().map(|s| format!("session.{s}")).collect();
+            ("session.status".to_string(), Some(s.clone()), kinds)
+        }
+        None => (a.channel.clone().unwrap_or_default(), a.subject.clone(), a.kinds.clone()),
+    };
+    Ok(json!({"channel": channel, "subject": subject, "kinds": kinds, "note": a.note,
+        "forSecs": duration_secs(&a.duration, "--for")?, "caller": caller()}))
 }
 
 #[derive(Subcommand)]
@@ -1505,6 +1577,60 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                     None => s["channel"].as_str().unwrap_or("?").to_string(),
                 };
                 println!("{on:<40} {}", s["target"].as_str().unwrap_or("?"));
+            }
+        }
+        Command::Watch(a) => {
+            let v: Value = peer.request("node/watch", &watch_request(&a)?).await?;
+            if cli.json {
+                println!("{v}");
+            } else if v["fired"].as_bool() == Some(true) {
+                println!("Already: {}. No watch was set.", v["summary"].as_str().unwrap_or("it matches now"));
+            } else {
+                println!(
+                    "Watching ({}) until {}. One message comes when it happens, or at the deadline if it doesn't. \
+                     `fleetlayer unwatch {}` removes it.",
+                    v["id"].as_str().unwrap_or("?"),
+                    v["expiresAt"].as_str().unwrap_or("?"),
+                    v["id"].as_str().unwrap_or("?")
+                );
+            }
+        }
+        Command::Watches => {
+            let v: Value = peer.request("node/watches", &json!({})).await?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&v)?);
+                return Ok(());
+            }
+            let list = v["watches"].as_array().cloned().unwrap_or_default();
+            if list.is_empty() {
+                println!("No watches.");
+            }
+            for w in list {
+                let mut on = w["channel"].as_str().unwrap_or("?").to_string();
+                if let Some(s) = w["subject"].as_str() {
+                    on.push_str(&format!(" about {s}"));
+                }
+                if let Some(k) = w["kinds"].as_array().filter(|k| !k.is_empty()) {
+                    let k: Vec<&str> = k.iter().filter_map(Value::as_str).collect();
+                    on.push_str(&format!(" ({})", k.join(", ")));
+                }
+                let note = w["note"].as_str().map(|n| format!(": {n}")).unwrap_or_default();
+                println!(
+                    "{}  {}  {on}, until {}{note}",
+                    w["id"].as_str().unwrap_or("?"),
+                    w["target"].as_str().unwrap_or("?"),
+                    w["expiresAt"].as_str().unwrap_or("?")
+                );
+            }
+        }
+        Command::Unwatch { id } => {
+            let v: Value = peer.request("node/unwatch", &json!({"id": id})).await?;
+            if cli.json {
+                println!("{v}");
+            } else if v["removed"].as_bool() == Some(true) {
+                println!("Removed {id}.");
+            } else {
+                println!("There's no watch {id} on this node (it may have fired or ended).");
             }
         }
         Command::Summaries { query, session, limit, long, mentions, import } => {

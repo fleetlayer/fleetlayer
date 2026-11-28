@@ -1,6 +1,6 @@
 ---
 name: fleetlayer
-description: Work with the other agent sessions and shared tools on a Fleetlayer fleet. Use when you need to message another session or reply to one, find out what other sessions are doing or have done, start or resume a session on this or another machine, use a tool another machine shares (a signed-in browser, a laptop's screenshots and downloads), run a command another machine shares (a deploy tool that needs the person's laptop, `fleetlayer run`), read usage readings, hear a channel's events (alerts, CI results, chat rooms) or catch up on the ones you missed, use a secret delivered to your role (an `op://` reference, `fleetlayer secrets run`), or when a message says it carries outside data or a call is waiting for the person's approval or was refused by access control.
+description: Work with the other agent sessions and shared tools on a Fleetlayer fleet. Use when you need to message another session or reply to one, find out what other sessions are doing or have done, start or resume a session on this or another machine, use a tool another machine shares (a signed-in browser, a laptop's screenshots and downloads), run a command another machine shares (a deploy tool that needs the person's laptop, `fleetlayer run`), read usage readings, hear a channel's events (alerts, CI results, chat rooms, other sessions' status) or catch up on the ones you missed, be told once when something happens (another session finishing, a CI run, an alert: `fleetlayer watch`), use a secret delivered to your role (an `op://` reference, `fleetlayer secrets run`), or when a message says it carries outside data or a call is waiting for the person's approval or was refused by access control.
 ---
 
 # Fleetlayer
@@ -104,6 +104,26 @@ fleetlayer unsubscribe infrastructure-alerts
   everything sent to you, delivered or not. Run it when you start or resume work that subscribes to a channel.
 - **Matrix rooms** are channels too (the `fleetlayer-matrix` skill): a message in the room arrives as an event with
   its sender, its text and a link, and the event says how to post a reply to the room.
+- **Other sessions' status** is a channel: `session.status` has an event each time a session starts working (with
+  what started it: a person, a message, a scheduler entry or nothing seen), goes idle or done, gets blocked on a
+  prompt, or goes away. The subject is `<tab>@<node>`.
+
+## Watches: tell me once when something happens
+
+Instead of checking back on another session or waiting for an event in a loop, set a watch. You get one message
+when it happens, or one at the deadline if it doesn't, and the watch ends either way:
+
+```sh
+fleetlayer watch --session review@server --note "merge once the review is done"   # it stops working: idle, done, blocked or gone
+fleetlayer watch --session review@server --status blocked --for 2h               # only when it needs the person
+fleetlayer watch ci --subject fleetlayer/fleetlayer@main --kind github.workflow_run --for 30m
+fleetlayer watches
+fleetlayer unwatch w_3f9c…
+```
+
+- A session already in a status you name fires at once ("Already: review@server is idle"), and no watch is set.
+- `--for` defaults to a day (at most 30d). `--note` is shown back to you when it fires or ends: write what you'll do.
+- A watch is for the session that sets it. For every event on a channel, subscribe instead.
 
 ## Start or resume a session (from v0.3.9)
 

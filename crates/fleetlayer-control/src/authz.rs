@@ -32,6 +32,12 @@ pub const LINK_METHODS: &[(&str, Option<&str>)] = &[
     (m::SUBSCRIBE, Some("subscribe")),
     (m::UNSUBSCRIBE, Some("subscribe")),
     (m::SUBSCRIPTIONS, Some("read")),
+    // `subscribe` on the channel, for one of the asking node's own sessions; fired only for those that may read the
+    // session a `session.status` event is about.
+    (m::WATCH, Some("subscribe")),
+    // Only the asking node's own sessions' watches.
+    (m::UNWATCH, None),
+    (m::WATCHES, None),
     // Only the asking node's own sessions, and only events already sent to them.
     (m::EVENTS, None),
     (m::FLEET, Some("read")),

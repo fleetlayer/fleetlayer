@@ -207,6 +207,28 @@ impl Handler for Local {
                 };
                 peer.request::<_, Value>(m, &p).await
             }
+            "node/watch" | "node/unwatch" | "node/watches" => {
+                let peer =
+                    node.link.peer().await.ok_or_else(|| {
+                        RpcError::not_here(format!("{} isn't linked to a control plane now", node.name))
+                    })?;
+                match method {
+                    "node/watch" => {
+                        // Always for the calling session: a watch's note is its own words, never another's.
+                        let c = self
+                            .caller(p.get("caller").and_then(|c| serde_json::from_value(c.clone()).ok()).as_ref())
+                            .await
+                            .ok_or_else(|| {
+                                RpcError::refused("run this from a session: a watch tells the session that set it")
+                            })?;
+                        let mut w: l::WatchRequest = serde_json::from_value(p).map_err(RpcError::invalid_params)?;
+                        w.target = format!("{}@{}", c.tab().unwrap_or(&c.session_id), node.name);
+                        peer.request::<_, Value>(l::method::WATCH, &w).await
+                    }
+                    "node/unwatch" => peer.request::<_, Value>(l::method::UNWATCH, &json!({"id": p["id"]})).await,
+                    _ => peer.request::<_, Value>(l::method::WATCHES, &json!({})).await,
+                }
+            }
             "node/events" => {
                 let peer =
                     node.link.peer().await.ok_or_else(|| {
