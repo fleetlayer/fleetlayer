@@ -83,7 +83,8 @@ pub fn scrollback_of(content: &str, lines: usize, ansi: bool) -> (String, bool) 
     let text = if ansi { content.to_string() } else { strip_escapes(content) };
     let all: Vec<&str> = text.split("\r\n").flat_map(|l| l.split('\n')).collect();
     let mut end = all.len();
-    while end > 0 && all[end - 1].trim().is_empty() {
+    // Blank lines at the end don't count, nor a line holding only escapes (the cursor's position, in `ansi`).
+    while end > 0 && strip_escapes(all[end - 1]).trim().is_empty() {
         end -= 1;
     }
     let start = end.saturating_sub(lines);
