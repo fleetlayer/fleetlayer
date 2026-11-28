@@ -308,6 +308,15 @@ goes in as it is.
 
 - `close` and `cancel` on a session that isn't there answer `-32010`.
 
+**A plugin starts sessions** (a runner carrying out an approved "start a session for this" action) with
+`_fleetlayer.dev/session/start` `{on?, tab?, cwd?, harness?, prompt?, resume?, model?, effort?, why?}` → the same
+answer, with the grant `session.start`. It always goes through the control plane, even for its own node (`on` defaults
+to it), so the policy decides `start` for `plugin:<name>@<node>`, an `ask:` rule waits for the person's approval like
+any other, the policy's start limits apply (`starts_per_hour`, `starts_per_day` in `limits:`), and it's audited. The
+`prompt` arrives as a message from the plugin. A node that isn't linked can't. Calls on the node's socket are decided as
+the node's shell, `-@<node>`, so a runner that should be limited and approved as itself uses this method, not the
+socket.
+
 ### Transcript search
 
 `fleetlayer transcript-search <text> [--on <nodes> | --all]` asks its node `node/transcript_search` `{text, limit?,
@@ -672,6 +681,7 @@ Numbers, never secrets, flow with readings: account usage and reset times, healt
 | `_fleetlayer.dev/plugin/status` `{problem, detail}` | A notification: whether this plugin does its job (below) |
 | `_fleetlayer.dev/session/answer` `{to, prompt, answers, why?}` | Answer a session's blocked prompt, here or on another node (grant `session.answer`; [Blocked prompts](#blocked-prompts-what-a-session-waits-for-and-answering-it)) |
 | `_fleetlayer.dev/session/close` `{to, why?}` | Close a session, here or on another node (grant `session.close`) |
+| `_fleetlayer.dev/session/start` `{on?, tab?, cwd?, harness?, prompt?, resume?, model?, effort?, why?}` | Start or resume a session, always decided by the control plane as the plugin, with the policy's start limits (grant `session.start`; [Starting sessions](#starting-sessions)) |
 | `_fleetlayer.dev/session/command` `{to, command, why?}` | Type an allowlisted slash command into an idle session, here or on another node (grant `session.command`) |
 
 Each is allowed only if the node's config grants it to that plugin (`grants:` in its plugin section), and the control

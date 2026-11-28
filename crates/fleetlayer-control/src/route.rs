@@ -142,13 +142,36 @@ pub async fn start_session(
     app: &App,
     tenant: &str,
     from_node: &str,
-    mut t: l::SessionStart,
+    t: l::SessionStart,
 ) -> Result<l::SessionStarted, RpcError> {
+    // The caller is one of the node's sessions (its tab), its shell (`-`), or one of its plugins (`plugin:<name>`).
+    let plugin_ok = |n: &str| {
+        !n.is_empty() && n.len() <= 64 && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    };
+    if t.caller.contains('@') || (t.caller.contains(':') && !t.caller.strip_prefix("plugin:").is_some_and(plugin_ok)) {
+        return Err(RpcError::invalid_params("caller is a tab, -, or plugin:<name>"));
+    }
     let caller = format!("{}@{from_node}", t.caller);
     // A resume may not name its tab: the policy sees the session ID in its place.
     let name = t.spec.tab.clone().or(t.spec.resume.clone()).unwrap_or_default();
     let target = format!("{name}@{}", t.node);
     crate::authz::check_why(app, tenant, &caller, "start", &target, t.justification.as_deref()).await?;
+    let record = crate::authz::reserve_start(app, tenant, &caller, &target).await?;
+    let started = serve_start(app, tenant, &caller, t).await;
+    if started.is_err() {
+        crate::authz::start_failed(app, record).await;
+    }
+    started
+}
+
+/// Start or resume a session on `t.node` for `caller`, already allowed.
+async fn serve_start(
+    app: &App,
+    tenant: &str,
+    caller: &str,
+    mut t: l::SessionStart,
+) -> Result<l::SessionStarted, RpcError> {
+    let caller = caller.to_string();
     let server = app
         .links
         .peer(tenant, &t.node)
@@ -815,6 +838,9 @@ mod tests {
                     return Ok(json!({}));
                 }
                 assert_eq!(method, l::method::SESSION_SERVE);
+                if p["tab"] == "broken" {
+                    return Err(RpcError::refused("herdr couldn't open a tab"));
+                }
                 Ok(json!({"node": "home", "tab": p["tab"], "address": "w1-1", "sessionId": "s1", "promptError": null}))
             }
         }
@@ -929,6 +955,29 @@ mod tests {
             let r = publish(&app, "default", e, "fleetlayer session status").await.unwrap();
             let targets: Vec<_> = r.deliveries.iter().map(|d| d.target.as_str()).collect();
             assert_eq!(targets, vec!["other@home"]);
+        }
+
+        #[tokio::test]
+        async fn a_plugins_starts_are_decided_as_the_plugin_and_capped_by_the_policy() {
+            let (app, home) = fleet().await;
+            let policy = "version: 2\ndefault: allow\nask: []\nlimits:\n  - { who: \"plugin:runner@laptop\", starts_per_day: 2 }\n";
+            crate::authz::store(&app.db, "default", policy).await.unwrap();
+            let by = |caller: &str, tab: &str| req(caller, tab);
+            start_session(&app, "default", "laptop", by("plugin:runner", "one")).await.unwrap();
+            // A start that fails doesn't count.
+            assert!(start_session(&app, "default", "laptop", by("plugin:runner", "broken")).await.is_err());
+            start_session(&app, "default", "laptop", by("plugin:runner", "two")).await.unwrap();
+            let e = start_session(&app, "default", "laptop", by("plugin:runner", "three")).await.unwrap_err();
+            assert!(e.message.contains("limit"), "{}", e.message);
+            let served = home.served.lock().await.clone();
+            let callers: Vec<_> = served.iter().filter_map(|p| p["caller"].as_str()).collect();
+            assert_eq!(callers, vec!["plugin:runner@laptop"; 3], "decided and served as the plugin");
+            // Another caller has its own count; a caller that names another node or isn't a plugin is refused.
+            start_session(&app, "default", "laptop", by("planning", "four")).await.unwrap();
+            for bad in ["x@home", "service:deck", "plugin:", "plugin:a b"] {
+                let e = start_session(&app, "default", "laptop", by(bad, "five")).await.unwrap_err();
+                assert!(e.message.contains("caller"), "{bad}: {}", e.message);
+            }
         }
 
         #[tokio::test]

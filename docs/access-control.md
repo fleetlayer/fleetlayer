@@ -125,11 +125,13 @@ allow:
 # Messages from these agents are delivered as outside data.
 untrusted: [group:untrusted-input]
 
-# How much an agent may send.
+# How much an agent may send, and how many sessions it may start.
 limits:
   - who: group:untrusted-input
     messages_per_hour: 60
     distinct_recipients_per_hour: 10
+  - who: "plugin:runner@*"
+    starts_per_day: 3          # at most 3 sessions started or resumed in any 24 hours
 
 # Rules that record what they would refuse, without refusing it. Promote them once the log is quiet.
 audit:
@@ -149,6 +151,14 @@ and `attach` (type into a session's terminal;
 watching it is `read`; for a person, also saying something in a session through `POST /v1/sessions/say`), and `connect` (reach an internet host, `host:<name>[:<port>]`, asked by
 the [egress plugin](egress.md) for a role's node: `-@<node>`). Give an overseer that answers for the person `answer` by name, never
 through a broad rule: `allow: [{ who: "plugin:runner@<node>", can: answer }]` with `answer` denied to everyone else.
+
+**Limits.** `messages_per_hour` and `distinct_recipients_per_hour` count messages; `starts_per_hour` and
+`starts_per_day` count sessions started or resumed through the control plane (from another node, or by a plugin with
+`session.start`, whatever node it starts on). Where several rules match, the tightest of each applies. A start past
+its limit is refused with the limit named, and published as an `access.denied` event; a start that fails doesn't count.
+Start counts are kept in the control plane's database, so a daily limit holds across a restart. A session started from
+a shell or a session on its own node, through the node's socket, isn't decided by the control plane and isn't counted:
+give a runner the plugin method so its starts are decided and counted as `plugin:<name>@<node>`.
 
 ## Asking the person: approval and justification
 

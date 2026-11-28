@@ -76,6 +76,10 @@ pub mod method {
     /// Plugin → node: close a session, here or on another node (grant `session.close`). `{to, why?}` →
     /// `link::SessionActed`.
     pub const SESSION_CLOSE: &str = "_fleetlayer.dev/session/close";
+    /// Plugin → node: start or resume a session, here or on another node (grant `session.start`), always decided by
+    /// the control plane as `plugin:<name>@<node>` (verb `start`, and the policy's start limits). `{on?, tab?, cwd?,
+    /// harness?, prompt?, resume?, model?, effort?, why?}` → `link::SessionStarted`.
+    pub const SESSION_START: &str = "_fleetlayer.dev/session/start";
     /// Plugin → node: type an allowlisted slash command into an idle session, here or on another node (grant
     /// `session.command`). `{to, command, why?}` →
     /// `link::SessionActed`.

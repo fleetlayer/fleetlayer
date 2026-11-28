@@ -488,6 +488,37 @@ async fn plugin_events(node: &Node, plugin: &str, method: &str, p: Value) -> Res
     }
 }
 
+/// A plugin starts or resumes a session, here or on another node. Always through the control plane, even here, so
+/// the policy decides it as the plugin (`start` for `plugin:<name>@<node>`, with its start limits) and it's audited;
+/// a node without a control plane can't. The first prompt arrives as a message from the plugin.
+async fn plugin_start(
+    node: &Node,
+    plugin: &str,
+    p: Value,
+) -> Result<fleetlayer_protocol::link::SessionStarted, RpcError> {
+    use fleetlayer_protocol::link as l;
+    let mut spec: l::StartSpec = serde_json::from_value(p.clone()).map_err(RpcError::invalid_params)?;
+    let on = p["on"].as_str().filter(|n| !n.is_empty()).unwrap_or(&node.name).to_string();
+    let why = p["why"].as_str().map(str::to_string);
+    if let Some(text) = spec.prompt.take() {
+        let from = ext::From {
+            label: format!("plugin {plugin} ({})", node.name),
+            name: Some(format!("plugin:{plugin}")),
+            node: Some(node.name.clone()),
+            session_id: None,
+        };
+        spec.prompt = Some(crate::deliver::render_message(&from, &text, None));
+    }
+    let peer = node.link.peer().await.ok_or_else(|| {
+        RpcError::not_here(format!(
+            "{} isn't linked to a control plane now, and a plugin's start is always decided there",
+            node.name
+        ))
+    })?;
+    let req = l::SessionStart { node: on, spec, caller: format!("plugin:{plugin}"), justification: why };
+    peer.request_within(l::method::SESSION_START, &req, crate::start::REMOTE_TIMEOUT).await
+}
+
 /// What's wrong with a plugin's event, if anything.
 fn event_problem(e: &ext::Event) -> Option<String> {
     let name_ok =
@@ -606,6 +637,10 @@ impl Handler for FromPlugin {
                 };
                 let caller = format!("plugin:{}", self.plugin.name());
                 answer(&crate::act::act(&self.node, &to, action, why, caller).await?)
+            }
+            ext::method::SESSION_START => {
+                self.grant("session.start")?;
+                answer(&plugin_start(&self.node, self.plugin.name(), p).await?)
             }
             ext::method::LOG => {
                 tracing::info!(

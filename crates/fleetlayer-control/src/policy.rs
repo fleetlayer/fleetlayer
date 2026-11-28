@@ -144,6 +144,12 @@ pub struct Limit {
     pub messages_per_hour: Option<u32>,
     #[serde(default)]
     pub distinct_recipients_per_hour: Option<u32>,
+    /// Sessions it may start or resume through the control plane in any hour.
+    #[serde(default)]
+    pub starts_per_hour: Option<u32>,
+    /// Sessions it may start or resume through the control plane in any 24 hours.
+    #[serde(default)]
+    pub starts_per_day: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
@@ -882,6 +888,20 @@ impl Compiled {
         (per_hour, distinct)
     }
 
+    /// The tightest start limits that apply to `who`: (per hour, per day).
+    pub fn start_limits_for(&self, who: &str) -> (Option<u32>, Option<u32>) {
+        let tightest = |a: Option<u32>, b: Option<u32>| match (a, b) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        let (mut hour, mut day) = (None, None);
+        for l in self.file.limits.iter().filter(|l| self.matches(&l.who.items(), who)) {
+            hour = tightest(hour, l.starts_per_hour);
+            day = tightest(day, l.starts_per_day);
+        }
+        (hour, day)
+    }
+
     /// Decide whether `who` may `verb` `target`, without a tenant's membership. `reply` is true when `target` messaged
     /// `who` within the reply window.
     pub fn decide(&self, who: &str, verb: &str, target: &str, reply: bool) -> anyhow::Result<Decided> {
@@ -1216,6 +1236,13 @@ audit:
         assert_eq!(p.limits_for("x@scraper"), (Some(20), Some(3)));
         assert_eq!(p.limits_for("x@triage"), (Some(60), None));
         assert_eq!(p.limits_for("x@laptop"), (None, None));
+        assert_eq!(p.start_limits_for("x@laptop"), (None, None));
+        let starts = Compiled::parse(
+            "version: 2\ndefault: allow\nlimits:\n  - { who: \"plugin:runner@*\", starts_per_day: 3 }\n  - { who: \"*\", starts_per_hour: 10, starts_per_day: 5 }\n",
+        )
+        .unwrap();
+        assert_eq!(starts.start_limits_for("plugin:runner@agents"), (Some(10), Some(3)), "the tightest of each");
+        assert_eq!(starts.start_limits_for("planning@laptop"), (Some(10), Some(5)));
     }
 
     #[test]
