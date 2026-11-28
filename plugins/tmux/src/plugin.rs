@@ -61,7 +61,11 @@ impl Settings {
             tmux: Tmux { program: config.program.unwrap_or_else(|| "tmux".into()), socket },
             session: config.session.unwrap_or_else(|| "fleetlayer".into()),
             shell: config.shell.or_else(|| login_shell(user)).unwrap_or_else(|| "/bin/sh".into()),
-            claude_sessions: config.claude_dir.unwrap_or_else(|| tmux::claude_dir(home)).join("sessions"),
+            claude_sessions: config
+                .claude_dir
+                .map(|d| tmux::expand_home(home, d))
+                .unwrap_or_else(|| tmux::claude_dir(home))
+                .join("sessions"),
         }
     }
 }

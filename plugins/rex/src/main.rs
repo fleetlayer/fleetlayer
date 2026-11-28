@@ -240,7 +240,11 @@ impl Handler for Shared {
                 let home = PathBuf::from(&node.home);
                 let settings = Settings {
                     rex: Rex { program: config.program.unwrap_or_else(|| "rex".into()), server: config.server },
-                    claude_sessions: config.claude_dir.unwrap_or_else(|| rex::claude_dir(&home)).join("sessions"),
+                    claude_sessions: config
+                        .claude_dir
+                        .map(|d| rex::expand_home(&home, d))
+                        .unwrap_or_else(|| rex::claude_dir(&home))
+                        .join("sessions"),
                 };
                 *plugin.settings.lock().await = Some(Arc::new(settings));
                 let role = SessionManagerRole {

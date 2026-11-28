@@ -487,6 +487,14 @@ pub fn claude_dir(home: &Path) -> PathBuf {
     std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from).unwrap_or_else(|| home.join(".claude"))
 }
 
+/// A configured path with a leading `~` (`~` or `~/…`) as a path in the person's home; any other path as it is.
+pub fn expand_home(home: &Path, p: PathBuf) -> PathBuf {
+    match p.strip_prefix("~") {
+        Ok(rest) => home.join(rest),
+        Err(_) => p,
+    }
+}
+
 // ---------------------------------------------------------------- events
 
 /// One server event, in the plugin's terms.
@@ -693,5 +701,18 @@ mod tests {
         let joined = r#"{"type":"client_joined","payload":{"client":{"client_id":"client:x"}}}"#;
         assert_eq!(parse_event(joined), Event::Other);
         assert_eq!(parse_event("not json"), Event::Other);
+    }
+
+    #[test]
+    fn a_claude_dir_with_a_tilde_is_in_the_home() {
+        let home = Path::new("/home/ada");
+        assert_eq!(expand_home(home, "~/.claude".into()), PathBuf::from("/home/ada/.claude"));
+        assert_eq!(expand_home(home, "~".into()), PathBuf::from("/home/ada"));
+        assert_eq!(expand_home(home, "/srv/claude".into()), PathBuf::from("/srv/claude"));
+        assert_eq!(
+            expand_home(home, "~bob/.claude".into()),
+            PathBuf::from("~bob/.claude"),
+            "another user's home isn't guessed"
+        );
     }
 }

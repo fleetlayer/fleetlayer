@@ -630,6 +630,14 @@ pub fn claude_dir(home: &Path) -> PathBuf {
     std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from).unwrap_or_else(|| home.join(".claude"))
 }
 
+/// A configured path with a leading `~` (`~` or `~/…`) as a path in the person's home; any other path as it is.
+pub fn expand_home(home: &Path, p: PathBuf) -> PathBuf {
+    match p.strip_prefix("~") {
+        Ok(rest) => home.join(rest),
+        Err(_) => p,
+    }
+}
+
 /// A Codex session's ID, from the transcript its process has open (`rollout-<time>-<uuid>.jsonl`). Linux only:
 /// elsewhere a Codex session stays unnamed (`@<address>`) and is still listed and reachable.
 pub fn codex_session(pid: u32) -> Option<String> {
@@ -836,5 +844,18 @@ mod tests {
     fn new_windows_run_the_agent_through_the_login_shell_without_splicing() {
         let c = window_command("/bin/zsh", "claude", &["--name".into(), "a b; rm -rf ~".into()]);
         assert_eq!(c, ["/bin/zsh", "-lc", "exec \"$0\" \"$@\"", "claude", "--name", "a b; rm -rf ~"]);
+    }
+
+    #[test]
+    fn a_claude_dir_with_a_tilde_is_in_the_home() {
+        let home = Path::new("/home/ada");
+        assert_eq!(expand_home(home, "~/.claude".into()), PathBuf::from("/home/ada/.claude"));
+        assert_eq!(expand_home(home, "~".into()), PathBuf::from("/home/ada"));
+        assert_eq!(expand_home(home, "/srv/claude".into()), PathBuf::from("/srv/claude"));
+        assert_eq!(
+            expand_home(home, "~bob/.claude".into()),
+            PathBuf::from("~bob/.claude"),
+            "another user's home isn't guessed"
+        );
     }
 }
