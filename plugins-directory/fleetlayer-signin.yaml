@@ -3,7 +3,7 @@ summary: One sign-in, with passkeys or your company's provider, for every web se
 kind: plugin
 roles: []
 ships_with_fleetlayer: true
-status: experimental
+status: beta
 licence: FSL-1.1-ALv2
 maintainer: Fleetlayer
 source: https://github.com/fleetlayer/fleetlayer/tree/main/plugins/signin
@@ -24,22 +24,23 @@ config: |
         issuer: https://signin.example.com
         control_plane: https://control.example.com
         token_file: ~/.config/fleetlayer/signin-token
-        listen: 127.0.0.1:7680
+        listen: 127.0.0.1:7650
         clients:
           - name: hub
-            redirect_uris: [https://hub.example.com/auth/callback]
+            redirect_uris: [https://hub.example.com/_/auth/callback]
             secret_file: ~/.config/fleetlayer/signin-clients/hub
 security: >-
   Signs people in to your other services, so whoever controls it can sign in as anyone: run it on an always-on machine
-  you administer, behind HTTPS (plain HTTP only on *.localhost). Its control plane token may look up who belongs where,
-  use invites, ask access checks and record sign-ins, and nothing else; fleetlayer-control signin revoke stops it at
-  once. Every client must use PKCE, and sign_in is checked against your access policy before any code is issued. Its
-  folder (dir) holds the token-signing key and everyone's passkeys: keep it readable only by its user, and treat any
-  backup of it like a secret.
+  you administer, behind HTTPS (plain HTTP only on *.localhost). Its control plane token may look up who belongs
+  where, use invites, ask access checks and record sign-ins; it also reports passkey uses that unlock changes to
+  people, confirms an admin's passkey for a request, adds people an upstream provider vouches for and sets teams from
+  a provider's groups. fleetlayer-control signin revoke stops it at once. Every client must use PKCE, and sign_in is
+  checked against your access policy before any code is issued. Its folder (dir) holds the token-signing key and
+  everyone's passkeys: keep it readable only by its user, and treat any backup of it like a secret.
 docs: plugins/signin
 description: |
   People sign in once, with a passkey, and use every service that speaks OpenID Connect: the Claude sign-in hub,
   pages, and most self-hosted apps. Who may use which service comes from the same access policy as your agents.
-  Experimental: passkeys, invites, signing in to services, the admin pages, and signing in with Google Workspace or
-  any OpenID Connect provider work; signing out everywhere at once and Workspace groups as teams come next.
+  It covers passkeys, invites, signing in with Google Workspace or any OpenID Connect provider, a provider's groups
+  as teams, and signing out everywhere at once. People, invites and teams are managed on the dashboard.
   To run it on another machine later, `fleetlayer move sign-in <machine>` moves it with its keys and data.

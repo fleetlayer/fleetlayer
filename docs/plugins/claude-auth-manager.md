@@ -12,8 +12,9 @@ only relays them sealed to each node's key ([protocol section 8](../protocol.md#
   year, inference only). It signs in and refreshes by running Claude Code's own binary, never by calling Anthropic's
   OAuth endpoints itself, and serves a small web UI for the sign-ins (showing each machine's key fingerprint there is
   planned; today the hub's node pins each key in `known-keys.json`).
-- **On every node** (`sync_target`), it writes the setup tokens into account slots, serves the rotator plugin's
-  coordinator API, and checks that each token works.
+- **On every node** (`sync_target`), it writes the setup tokens into account slots, serves the coordinator API that
+  the account rotator reads, and checks that each token works. The rotator is a separate Claude Code plugin that moves
+  sessions to another account before one runs out ([Claude accounts guide](../guides/claude-accounts.md)).
 
 ## Token facts that shape it (tested November 2026)
 
@@ -88,28 +89,28 @@ node leaves that alone.
   account is marked as not working, and each account is checked once Claude Code is back (it's looked up again every
   four minutes). These runs never update Claude Code (`DISABLE_AUTOUPDATER=1`).
 - The node half serves the rotator's coordinator API on its socket (`coordinator.sock` in `~/.claude/account-rotator`,
-  `GET /state` long polls, `POST /readings`), moved from Quietdeck's usage module (`src/coordinator/`, API 0.7.1). It
-  runs in **borrow mode**: nothing is polled, refreshed or signed in, since setup tokens can't read usage or profiles.
-  Its accounts are the managed slots (the rotator's ID is the slot number); add, remove and sign-in answer 409. Its
-  state says `managedBy: "the auth hub"`, so the rotator (0.7.7 and later) offers no Sign in, Add or Remove.
-  Readings sessions post are published as `claude.usage` keyed by account UUID, `data` the coordinator's reading shape
-  `{fiveHour?, sevenDay?, models?, at, source}`; readings from elsewhere (the hub's polls, other nodes' sessions) come
-  in by subscription and the newest whole reading wins, keeping model weeks. A token a session saw rejected, or a
-  failed `token_health` check, shows the account as not working until a response or a passing check says otherwise; an
-  account that leaves the bundle goes once its sessions have moved off. The version starts at the clock in
-  milliseconds. It needs rotator 0.7.6 or later (which leaves `/hello` name `fleetlayer-claude-auth-manager` alone and
-  handles a restarted coordinator). A rotator's own coordinator holding `coordinator.lock` is asked to shut down, and a
-  `claude.coordinator` reading says who holds it. (Quietdeck no longer takes the lock.)
+  `GET /state` long polls, `POST /readings`; the rotator's coordinator API 0.7.1). It runs in **borrow mode**: nothing
+  is polled, refreshed or signed in, since setup tokens can't read usage or profiles. Its accounts are the managed
+  slots (the rotator's ID is the slot number); add, remove and sign-in answer 409. Its state says `managedBy: "the
+  auth hub"`, so the rotator offers no Sign in, Add or Remove. Readings sessions post are published as `claude.usage`
+  keyed by account UUID, `data` the coordinator's reading shape `{fiveHour?, sevenDay?, models?, at, source}`;
+  readings from elsewhere (the hub's polls, other nodes' sessions) come in by subscription and the newest whole
+  reading wins, keeping model weeks. A token a session saw rejected, or a failed `token_health` check, shows the
+  account as not working until a response or a passing check says otherwise; an account that leaves the bundle goes
+  once its sessions have moved off. The version starts at the clock in milliseconds. A rotator's own coordinator
+  holding `coordinator.lock` is asked to shut down, and a `claude.coordinator` reading says who holds it.
+- It needs the rotator 0.7.6 or later; from 0.7.7 the rotator also hides Sign in, Add and Remove.
 - The hub polls each signed-in account's usage every five minutes and publishes it as `claude.usage` with
   `source: poll`. When an access token has expired it has Claude Code refresh it first (`claude -p /usage` from that
   sign-in), which revokes the old one: nothing but the hub may read its sign-ins.
-- Kind `claude.signin_age`, keyed by account UUID, `data` `{email, daysLeft, warn, number, signedIn, signInNeeded}`:
-  `number` is the account's number on every machine, `signedIn` whether the hub holds a normal sign-in for it, and
-  `signInNeeded` why the last poll found it needs signing in again (null when it doesn't). One per account the hub
-  manages, so it doubles as the fleet's account list (`fleetlayer-claude-accounts`, below). A normal sign-in's refresh token
-  expires about 30 days after the sign-in, on a fixed date that refreshing doesn't move, and the usage endpoint doesn't
-  say when. The hub takes the date from the stored credential when it's there, else counts 30 days from the sign-in,
-  and sets `warn` from day 25, so an agent can ask the person to sign in again before polling stops.
+- Kind `claude.signin_age`, keyed by account UUID, `data` `{email, daysLeft, warn, number, signedIn, signInNeeded,
+  tier}`: `number` is the account's number on every machine, `signedIn` whether the hub holds a normal sign-in for it,
+  `signInNeeded` why the last poll found it needs signing in again (null when it doesn't), and `tier` the
+  organisation's rate-limit tier from the profile (`default_claude_max_20x`). One per account the hub manages, so it
+  doubles as the fleet's account list (`fleetlayer-claude-accounts`, below). A normal sign-in's refresh token expires
+  about 30 days after the sign-in, on a fixed date that refreshing doesn't move, and the usage endpoint doesn't say
+  when. The hub takes the date from the stored credential when it's there, else counts 30 days from the sign-in, and
+  sets `warn` from day 25, so an agent can ask the person to sign in again before polling stops.
 - Kind `claude.setup_token_age`, the same shape: setup tokens last a year from when they were made; `warn` a month
   ahead.
 
@@ -124,7 +125,7 @@ plugins:
     grants: [sync.publish, reading.publish]
     config:
       role: hub
-      targets: [laptop, agents, agents-triage]       # the nodes that get the tokens
+      targets: [laptop, server]                      # the nodes that get the tokens
       hub:
         dir: ~/.local/state/fleetlayer/claude-hub     # default; made 0700
         listen: 10.0.0.5:7660                         # behind a private HTTPS proxy, never the internet
@@ -140,6 +141,19 @@ plugins:
           url: https://status.example/api/v1/endpoints/claude-hub/external
           token_file: /etc/claudehub/heartbeat-token
 ```
+
+The settings refuse unknown keys. Besides the ones above:
+
+| Setting | Default | What it is |
+|---|---|---|
+| `role` | `node` | `node`, `hub` or `both` (a hub that also writes the tokens on its own machine) |
+| `default_slot` | `true` | Write account 1 into `~/.claude`; `false` leaves that sign-in alone |
+| `slot_dir` | `~/.claude/accounts/{slot}` | Where account 2 and up go, the rotator's slots |
+| `claude` | `claude` on the `PATH`, then the usual install places | Node: the Claude Code binary for the token checks |
+| `from` | the first node that sent a bundle, remembered | Node: the hub's node, the only one whose tokens it applies |
+| `tokens_file` | `tokens.json` in `hub.dir` | Hub: the tokens bundle it publishes |
+| `hub.service` | `claude-hub` | The name it gives the node's gateway (`claude-hub.localhost`) |
+| `hub.signin.client` | `hub` | The hub's client ID at the sign-in service |
 
 - **Opening the hub:** with `signin`, the login page offers "Sign in with Fleetlayer". Who may open it is the
   policy's `sign_in` on `service:hub`, which the sign-in service checks before it sends anyone back; by default a
@@ -217,8 +231,8 @@ machine whether or not it holds a sign-in.
 
 Set it up in CodexBar: Settings > Providers > Claude, turn on "Read accounts from claude-swap", put the binary's full
 path (`~/.local/bin/fleetlayer-claude-accounts`, expanded) in "claude-swap executable", and leave Source on
-claude-swap. It needs this machine's node running and linked, a control plane and a hub of 0.3.4 or later, and this
-node allowed to `read` the hub's node.
+claude-swap. It needs this machine's node running and linked, a control plane and a hub, and this node allowed to
+`read` the hub's node.
 
 - `--list --json`: claude-swap's schema v1, `supportsAccountSwitching: false` and no active account (each session's
   account is the rotator's choice, not one machine-wide account). Windows the account doesn't have are left out (no
@@ -226,8 +240,8 @@ node allowed to `read` the hub's node.
   seconds, and one that isn't a time is dropped, since CodexBar refuses the whole list over a bad one.
   `usageFetchedAt` is when the usage was measured, so an old reading doesn't look fresh.
 - **Status:** `token_expired` when this machine's `claude.token_health` check fails or the setup token's year is up;
-  `relogin_required` when the hub has no sign-in for the account or its last poll needed one (the hub can't poll its
-  usage); `unavailable` with no usage reading yet; else `ok`.
+  `relogin_required` when the hub has no sign-in for the account, its last poll needed one, or the sign-in's 30 days
+  are up (the hub can't poll its usage); `unavailable` with no usage reading yet; else `ok`.
 - **Failures** print `{schemaVersion: 1, error: {type, message}}` and exit non-zero: `NodeUnreachable`,
   `NodeTooOld`, `NoAccounts` (no hub readings this node may read), `HubTooOld` (readings without account numbers),
   `Timeout` (10 seconds). `--switch-to` always fails with `SwitchingUnsupported`.

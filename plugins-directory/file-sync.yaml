@@ -29,5 +29,6 @@ security: >-
   to send its bundles (your access policy). It never touches files it didn't write. Text files only, at most 1 MB
   each and 20 MB a set.
 description: |
-  The source publishes a new version whenever the folder changes. Each target makes its folder match: files written,
-  and files this plugin wrote for an earlier version removed. Bundles are named `file-sync/<set>`.
+  The source checks the folder every few minutes (`every_minutes`, 5 by default) and publishes a new version when it
+  changed. Each target makes its folder match: files written, and files this plugin wrote for an earlier version
+  removed. Bundles are named `file-sync/<set>`.

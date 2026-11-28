@@ -13,21 +13,24 @@ platforms: [linux, macos]
 min_fleetlayer: 0.3.6
 protocol: 1
 needs: [a synced folder (Syncthing or any sync), an HTTPS proxy on a server]
-grants: []
+grants: [access.check]
 config: |
   plugins:
     - name: pages
       command: fleetlayer-pages
+      grants: [access.check]   # needed only for sign-in through Fleetlayer
       config:
         listen: 127.0.0.1:0
         base_url: https://pages.example
+        apps_domain: apps.example
         spaces:
           personal: { dir: /srv/pages/personal, apps: /srv/apps/personal }
         login_file: /etc/fleetlayer-pages/login
 security: >-
-  Serves every file in its spaces' folders to whoever signs in. Pages run no scripts. Apps (interactive pages) run
-  agents' JavaScript, each on a subdomain of its own with a strict content policy; an app from an untrusted space
-  can't reach other sites and opens behind a notice.
+  Serves the files in its spaces' folders behind a sign-in: whoever has the login key reads every space, and with
+  Fleetlayer's sign-in each person reads only what the access policy gives them. Pages run no scripts. Apps
+  (interactive pages) run agents' JavaScript, each on a subdomain of its own with a strict content policy; an app from
+  an untrusted space can't reach other sites and opens behind a notice.
 docs: plugins/pages
 description: |
   A page is a folder with `index.md` and its images, written by any agent; there's no publish step. The same plugin

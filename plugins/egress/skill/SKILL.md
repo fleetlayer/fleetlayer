@@ -31,14 +31,16 @@ If your work needs that host, ask for it, saying what it's for in one line (the 
 
 ```sh
 fleetlayer-egress ask api.vendor.io --why "the vendor's API for the invoice import"
-fleetlayer-egress ask db.example.net:5432 --why "…"     # a port other than 443 and 80
-fleetlayer-egress ask api.vendor.io --why "…" --wait 10  # wait up to ten minutes for the answer
+# a port other than 443 and 80
+fleetlayer-egress ask db.example.net:5432 --why "the reporting database for the monthly export"
+# wait up to ten minutes for the answer
+fleetlayer-egress ask api.vendor.io --why "the vendor's API for the invoice import" --wait 10
 ```
 
-Run it in a session of your role's own node: that node files the request in its own name (no other node can), and
-the proxy then looks the answer up. Exit 0: allowed (or already was). Exit 3: waiting for the person; tell them what you asked for and why, then carry
-on with other work and try again once they've approved it. Exit 1: refused, or the role can't ask: report it to your
-person, don't work around it.
+Run it in a session of your role's own node: that node files the request in its own name (no other node can), and the
+proxy then looks the answer up. Exit 0: allowed (or already was). Exit 3: waiting for the person; tell them what you
+asked for and why, then carry on with other work and try again once they've approved it. Exit 1: refused, or the role
+can't ask: report it to your person, don't work around it.
 
 Never try to get around a refusal: no other ports, no other DNS servers, no tunnels or other machines, no encoding
 data into allowed requests. Ask once, explain, and wait. Ask only for hosts the task needs, never "just in case".

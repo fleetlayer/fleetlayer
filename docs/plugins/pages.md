@@ -137,9 +137,9 @@ such as `fleetlayer-gateway` routes `pages.<domain>` and every app to it.
 `fleetlayer-pages serve <config.json>` runs the same web service without a node (the config's JSON form), for trying
 a page format change locally.
 
-Space fields: `dir` (its pages), `title`, `owner` (`person:<name>` or `team:<name>`: private to them unless the policy
-shares it), `tenant`, `apps` (its apps folder) and `untrusted` (its agent reads outside input: its apps can't reach
-other sites and open behind a notice).
+Space fields: `dir` (its pages), `title`, `owner` and `tenant` (labels only: pages doesn't read them; who may read a
+space comes from the policy's `owners:` and `allow:`, under [Sign-in](#sign-in)), `apps` (its apps folder) and
+`untrusted` (its agent reads outside input: its apps can't reach other sites and open behind a notice).
 
 ### Moving it
 

@@ -46,4 +46,6 @@ Add `--json` for the whole readings.
 
 Only when your person asks (a script or test that must use a particular account): set
 `CLAUDE_SECURESTORAGE_CONFIG_DIR` to that account's slot, `CLAUDE_CONFIG_DIR` to a scratch folder, and unset
-`ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN`, which would override it. Never print, copy or move a token.
+`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_BASE_URL`,
+`CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` and `CLAUDE_CODE_USE_FOUNDRY`, which would override it. Never
+print, copy or move a token.

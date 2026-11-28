@@ -113,17 +113,16 @@ and is small for full-screen agents (Claude Code's is about 8 KB).
 ## Monitoring
 
 The plugin reports its status to the node every minute. It's `failing` when its own socket doesn't answer an
-`agent.list` (it asks itself, as a client would), or when it hasn't been able to read the fleet for two minutes. Its
-detail has `remoteSessions`, `lastFleetAt`, `clients`, `openStreams` and `transcripts` (copies, and why copying is
-off when it is). Read it anywhere with `fleetlayer readings
-plugin.status`.
+`agent.list` (it asks itself, as a client would), or when it hasn't been able to read the fleet for two minutes, or
+when transcript copying has a problem (the copies hold `transcript_total_mb`, or a session ID is claimed by more than
+one machine). Its detail has `remoteSessions`, `lastFleetAt`, `clients`, `openStreams` and `transcripts` (copies, and
+why copying is off when it is). Read it anywhere with `fleetlayer readings plugin.status`.
 
 ## Needs
 
-Both ends on Fleetlayer 0.3.13 or later: the client's node for the fleet listing (`_fleetlayer.dev/fleet/query`), and
-each other machine's node for reads (a watcher's `terminal.scrollback`), typing (`input` mode) and transcripts
-(`link/transcript_serve`), and the control plane for the fleet listing and transcripts. herdr 0.9 or later
-on each machine.
+It needs the client's node for the fleet listing (`_fleetlayer.dev/fleet/query`), and each other machine's node for
+reads (a watcher's `terminal.scrollback`), typing (`input` mode) and transcripts (`link/transcript_serve`), and the
+control plane for the fleet listing and transcripts. herdr 0.9 or later on each machine.
 
 ## Later
 

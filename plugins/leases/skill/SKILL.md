@@ -31,7 +31,7 @@ fleetlayer lease release "$id"
 - Scripts that take a slot themselves (Fleetlayer's `scripts/on-dev` does, through `scripts/fleetlayer-dev-slot`)
   need nothing from you.
   Don't take a slot by hand around them: with one slot, yours and theirs wait on each other. If one stops with
-  "couldn't take a build slot, so not building", the leases authority can't be reached: say so to your person, and
+  "couldn't take a build slot", the leases authority can't be reached: say so to your person, and
   build without a slot (`FLEETLAYER_DEV_SLOT=none`) only if they agree.
 - `fleetlayer lease acquire` fails with "no leases authority found" when the fleet has none set up: carry on without
   one, and don't set one up unless the person asks.

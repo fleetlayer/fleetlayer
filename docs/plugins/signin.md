@@ -20,8 +20,10 @@ SAML providers aren't supported yet.
    chmod 600 ~/.config/fleetlayer/signin-token
    ```
 
-   It may look up who belongs where, use invites, ask access checks and record sign-ins, and nothing else.
-   `fleetlayer-control signin revoke signin` stops it at once.
+   It may look up who belongs where, use invites, ask access checks and record sign-ins. It also reports a person's
+   passkey use (which lets them change people on the dashboard for ten minutes), confirms an admin's passkey for a
+   request ([below](#confirming-a-request-with-a-passkey)), adds someone an upstream provider vouches for as a member
+   (`join`) and sets teams from a provider's groups. `fleetlayer-control signin revoke signin` stops it at once.
 
 2. **Add the plugin** to a node of its own, under its own Unix user (or in a container), on an always-on machine,
    behind your HTTPS proxy. No agent may be able to read its folder or its token. Its signing keys are worth a
@@ -39,7 +41,7 @@ SAML providers aren't supported yet.
          issuer: https://signin.example.com
          control_plane: https://control.example.com
          token_file: ~/.config/fleetlayer/signin-token
-         listen: 127.0.0.1:7680
+         listen: 127.0.0.1:7650
          clients:
            - name: hub
              redirect_uris: [https://hub.example.com/_/auth/callback]
@@ -71,11 +73,12 @@ role, **Invite someone** (a link to send, which works once, for a week), making 
 the teams. The sign-in service keeps only the pages that must be its own: signing in, accepting an invite, confirming a
 request with a passkey, and "no access". Its signed-in page links admins to the dashboard when `dashboard:` is set.
 
-- Who can manage: the admins (`role: admin`), and anyone the policy gives `admin` on `service:dashboard`.
+- Who can manage: the admins (`role: admin`). Anyone the policy gives `admin` on `service:dashboard` sees the people
+  and teams, but only admins change them.
 - Every change is made by the control plane, which checks again that it's that person's to make, and is recorded in
   the audit log as them.
-- Removing someone, changing a role or taking someone off a team asks for the passkey again when it was last used
-  more than ten minutes ago, so a browser left signed in can't do it.
+- Every change, invites included, asks for the passkey again when it was last used more than ten minutes ago, so a
+  browser left signed in can't make it.
 - The last admin can't be removed or made a member: make someone else an admin first.
 - An admin can make 20 invites an hour.
 
@@ -206,12 +209,13 @@ with its client ID (the `name`) and secret.
 
   If neither applies, no email is given. An address nobody vouched for never is, and nothing signs anyone in by
   email.
-- A worked example, pages (`docs/plugins/pages.md`): the client in the sign-in settings is
+- A worked example, [pages](pages.md): the client in the sign-in settings is
 
   ```yaml
   - name: pages
     redirect_uris: [https://pages.example.com/_/auth/callback]
     post_logout_redirect_uris: [https://pages.example.com/_/signed-out]
+    backchannel_logout_uri: https://pages.example.com/_/auth/backchannel-logout
     secret_file: ~/.config/fleetlayer/signin-clients/pages   # pages reads the same secret (its signin.secret_file)
   ```
 
@@ -267,7 +271,7 @@ Caddy (`route` keeps the order: the headers go before `forward_auth` copies its 
 grafana.example.com {
 	route {
 		import strip_identity
-		forward_auth 127.0.0.1:7680 {
+		forward_auth 127.0.0.1:7650 {
 			uri /forward-auth
 			copy_headers X-Fleetlayer-Person X-Fleetlayer-Tenant X-Fleetlayer-Teams X-Forwarded-User
 		}
@@ -297,7 +301,7 @@ http:
           X-Forwarded-User: ""
     fleetlayer:
       forwardAuth:
-        address: http://127.0.0.1:7680/forward-auth
+        address: http://127.0.0.1:7650/forward-auth
         authResponseHeaders: [X-Fleetlayer-Person, X-Fleetlayer-Tenant, X-Fleetlayer-Teams, X-Forwarded-User]
   routers:
     grafana:
@@ -311,7 +315,7 @@ nginx (`auth_request` can't pass a redirect on, so the sign-in service answers 4
 ```nginx
 location = /_fleetlayer/auth {
     internal;
-    proxy_pass http://127.0.0.1:7680/forward-auth;
+    proxy_pass http://127.0.0.1:7650/forward-auth;
     proxy_pass_request_body off;
     proxy_set_header Content-Length "";
     proxy_set_header X-Original-URL $scheme://$http_host$request_uri;
@@ -366,7 +370,7 @@ it, and the link that comes with the request opens
   ```
 
   The running service signs them out everywhere within seconds. Signing in again afterwards works, so also take the
-  passkey or the upstream account away from whoever has it (`Managing people`).
+  passkey or the upstream account away from whoever has it ([Managing people](#managing-people)).
 - **How long things last after that:** there are no refresh tokens. Access tokens last ten minutes and are dropped at
   once by signing out everywhere. ID tokens last ten minutes. A service's own session lasts until its logout
   arrives, or its own limit (pages and the hub: 12 hours).

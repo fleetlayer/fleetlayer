@@ -72,11 +72,12 @@ plugin types a message in only for agents with no channel of their own (Codex, f
 
 ## Security
 
-It sees every pane on its user's tmux server (session and window names, folders, the process tree under each pane,
-the screen when you attach or the node reads a prompt) and types into a pane only to deliver a message or a first
-prompt, answer a prompt, or when someone attaches without `--observe`, all under the access policy. It runs `tmux`
-and `ps` with argv, never through a shell. Anyone who can run commands as the node's Unix user can drive that user's
-tmux already: the plugin adds no access of its own.
+It sees every pane on its user's tmux server (session and window names, folders, the process tree under each pane, the
+screen when you attach or the node reads a prompt) and types into a pane only to deliver a message or a first prompt,
+answer a prompt, type an allowed slash command or a person's answer from the dashboard, press Esc to interrupt, or
+when someone attaches without `--observe`, all under the access policy. It runs `tmux` and `ps` with argv, never
+through a shell. Anyone who can run commands as the node's Unix user can drive that user's tmux already: the plugin
+adds no access of its own.
 
 ## Testing it
 

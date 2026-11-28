@@ -1,7 +1,7 @@
 name: herdr
 summary: Connects herdr, the terminal session manager, so every session it runs is in the fleet.
 kind: plugin
-roles: [session_manager, harness]
+roles: [session_manager]
 ships_with_fleetlayer: true
 status: beta
 licence: FSL-1.1-ALv2

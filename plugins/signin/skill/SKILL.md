@@ -42,7 +42,9 @@ Follow "Set it up" in `docs/plugins/signin.md`. In short:
    chmod 600 ~/.config/fleetlayer/signin-token
    ```
 
-   - It may only look people up, use invites, ask access checks and record sign-ins.
+   - It may look people up, use invites, ask access checks and record sign-ins. It also reports passkey uses (which
+     unlock changes to people for ten minutes), confirms an admin's passkey for a request, adds people an upstream
+     vouches for (`join`) and sets teams from a provider's groups. Keep it from every agent.
    - `fleetlayer-control signin tokens` lists the tokens.
    - `fleetlayer-control signin revoke signin` stops it at once.
 2. The plugin goes in the node's config with `dir`, `issuer`, `control_plane`, `token_file`, `listen` and
@@ -52,7 +54,7 @@ Follow "Set it up" in `docs/plugins/signin.md`. In short:
    - the control plane doesn't answer
    - rotating the signing key failed
    - a sign-out hasn't reached a service for an hour
-   - Google groups haven't been read for an hour
+   - reading Google groups has failed for over an hour, or no daily read has worked for a day
 3. The first admin's invite: `fleetlayer-control invite add --handle <them> --role admin` prints a code. Give the
    person `https://<sign-in address>/invite?code=<code>`. They choose their name and make a passkey.
 
@@ -132,7 +134,8 @@ Follow "Set it up" in `docs/plugins/signin.md`. In short:
   fleetlayer-signin keys rotate --dir <its dir> --drop-previous
   ```
 
-  Every service's sessions end, so tell the person first.
+  Every token the old key signed stops verifying, but sessions services already hold carry on. To end someone's,
+  sign them out too (`fleetlayer-signin signout --dir <its dir> --person <id>`). Tell the person first.
 - **Moving** to another machine: stop it, copy its whole `dir` and settings, start it there, and repoint the proxy.
   Keys, passkeys and sessions come along.
 - **Changing its address:** put the old one in `previous_issuers` and repoint every client before the old address

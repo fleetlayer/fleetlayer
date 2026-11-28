@@ -43,8 +43,8 @@ You can still choose `source: file` on a Mac if you want it, and give those two 
    nothing if you refuse.
 3. Once you approve, it starts its own Playwright MCP with the `storage` capability and calls `browser_cookie_list`
    for each domain. That opens one blank tab in a tab group named "fleetlayer cookies", which it closes, then it stops
-   the process. Playwright reads the profile's cookies into that process on your machine and filters them there. Only
-   the named cookies of the listed domains reach the plugin, and only they leave the machine, sealed to the target.
+   the process. Every cookie of the listed domains reaches the plugin's process on your machine, which keeps only the
+   named ones. Only those leave the machine, sealed to the target.
 4. The delivery is an ordinary sync of `cookies/<set>`: approved once per target, then checked and audited each time.
 
 **Keep that ask in your own policy.** A fleet that turns approvals off (`ask: []`, or asks only for some things) drops
@@ -109,7 +109,7 @@ plugins:
 | `to` | | The nodes to send to |
 | `source` | `browser` on macOS, `file` elsewhere | Where the cookies come from (above) |
 | `refresh_days` | 14 | `browser`: read again after this long unasked (each read approved) |
-| `playwright` | the [browser guide](../guides/browser.md)'s install | `browser`: `{node, cli, token_file, chrome}`, how to start Playwright MCP. Defaults: `/opt/homebrew/bin/node`, `~/.local/share/browser-mcp/node_modules/@playwright/mcp/cli.js`, `~/.config/browser-mcp/extension-token`, Chrome's usual path |
+| `playwright` | the [browser guide](../guides/browser.md)'s install | `browser`: `{node, cli, token_file, chrome}`, how to start Playwright MCP (0.0.86 or later). Defaults: `/opt/homebrew/bin/node` if it exists, else `node` on the `PATH`; `~/.local/share/browser-mcp/node_modules/@playwright/mcp/cli.js`; `~/.config/browser-mcp/extension-token`; Chrome's usual path on macOS, none elsewhere |
 | `browser` | `chrome` | `file`: `chrome`, `chromium`, `brave` or `edge` (`browser` reads Chrome) |
 | `profile` | `Default` | The browser profile's folder name (`Profile 1`, …), as `chrome://version` shows it |
 | `user_data_dir` | the browser's usual one | The browser's user data folder |

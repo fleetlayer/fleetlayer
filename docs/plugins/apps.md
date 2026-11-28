@@ -1,6 +1,6 @@
 # Apps
 
-Apps are served by the same service as pages (`fleetlayer-pages`, `docs/plugins/pages.md`). Pages are Markdown and
+Apps are served by the same service as [pages](pages.md) (`fleetlayer-pages`). Pages are Markdown and
 images, with no scripts. Apps are where interactive things go: HTML, CSS and JavaScript, each on a subdomain of its
 own.
 
@@ -90,14 +90,14 @@ opens the app full screen. An app may ship its own manifest or service worker; t
 - **The app origin's Content-Security-Policy:** everything from the app itself; scripts only from files; connections
   only to the app and the origins in `network`; no framing by other sites.
 - **Untrusted spaces** (a space whose agent reads outside input, such as email: `untrusted: true`): its apps can't
-  reach any other site (entries in `network` are refused, and only the space's owner can change that), and opening
-  one shows a notice first saying which space made it and what it can reach.
+  reach any other site (entries in `network` are refused while the space has `untrusted: true` in the pages plugin's
+  settings), and opening one shows a notice first saying which space made it and what it can reach.
 - A content policy makes leaking data hard, not impossible (a link the reader clicks still carries data out). The
   isolation is what makes that matter little: an app's origin holds only that app.
 
 ## Sign-in
 
-Apps sign in through the pages site, which signs people in through Fleetlayer (`docs/plugins/pages.md`, "Sign-in").
+Apps sign in through the pages site, which signs people in through Fleetlayer ([Pages: Sign-in](pages.md#sign-in)).
 The handshake is shaped like OpenID Connect:
 
 1. An app with no session for you sends the browser to the pages site's `/_/apps/authorize` with a random `state`,
@@ -114,21 +114,22 @@ drop the `__Host-` prefix and `Secure`. The service allows plain HTTP only for `
 
 ## Configuration
 
-In the pages plugin's config (`docs/plugins/pages.md`):
+In the [pages](pages.md) plugin's config:
 
 ```yaml
 base_url: https://pages.home.example        # the pages site; apps send people here to sign in
 apps_domain: apps.home.example               # app recipes of space personal: recipes--personal.apps.home.example
 spaces:
-  personal: { dir: /srv/pages/personal, apps: /srv/apps/personal, owner: "person:alice" }
+  personal: { dir: /srv/pages/personal, apps: /srv/apps/personal }
   triage:   { dir: /srv/pages/triage, apps: /srv/apps/triage, untrusted: true }
 ```
 
 Each apps folder holds a `.fleetlayer-space` marker, like a pages folder, checked by `/healthz` and the heartbeat.
 The proxy sends `*.<apps domain>` to the service with the Host header intact.
 
-Sync and backups: apps folders are synced and backed up like pages folders, with `node_modules` and build caches
-(`.next`, `.turbo`, `.cache`, `target`, `.venv`, `__pycache__`) excluded on every share.
+Sync and backups: apps folders are synced and backed up like pages folders. Exclude `node_modules` and build caches
+(`.next`, `.turbo`, `.cache`, `target`, `.venv`, `__pycache__`) in your sync and backup settings: the plugin doesn't
+skip them itself (see the [sync guide](../guides/sync.md) and the [backups guide](../guides/backups.md)).
 
 ## Step 2: a small database (designed, not built)
 

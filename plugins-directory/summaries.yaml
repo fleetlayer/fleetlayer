@@ -22,8 +22,8 @@ config: |
       config:
         publish: full        # full | sentence | none
 security: >-
-  Reads the Claude Code transcripts of its own Unix user's sessions (never sessions whose working directory is
-  outside its home), and sends summaries to the control plane, where whoever may read this node can search them.
+  Reads the Claude Code and Codex transcripts of its own Unix user's sessions (never sessions whose working directory
+  is outside its home), and sends summaries to the control plane, where whoever may read this node can search them.
   Spends Claude tokens: at most one summary per session per 30 minutes by default.
 docs: plugins/summaries
 description: |

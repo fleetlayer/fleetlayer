@@ -88,7 +88,7 @@ with end-to-end encrypted rooms.
 | `device_name` | The name other members see for the bot's device (default "Fleetlayer (&lt;node&gt;)"). |
 | `state_dir` | Default `~/.local/state/fleetlayer/matrix`. |
 
-The node checks the settings when it starts the plugin and reports every problem at once.
+The plugin checks its settings when it starts and reports every problem at once.
 
 ## What agents get
 
@@ -153,7 +153,9 @@ ask:
   restart, a crash, or a node or control plane that's away loses nothing: the outbox waits, and the plugin retries with
   backoff.
 - Each event's dedupe key is `matrix:<event ID>`, and the control plane drops a key it has seen on that channel, so a
-  message read twice reaches nobody twice.
+  message read twice reaches nobody twice. The one exception is on purpose: a message the bot couldn't decrypt is sent
+  as `matrix.undecryptable` with the key `matrix:<event ID>:undecryptable`, and when it's decrypted later it arrives
+  again as an ordinary message.
 - When a busy room sends more than 100 messages between two syncs, the homeserver sends only the latest; the plugin
   fetches the rest back to the newest message it had (up to 1,000).
 - An agent that was offline when a message came reads it with `fleetlayer events`.
@@ -176,11 +178,14 @@ when:
 
 An alert path that breaks silently is the dangerous kind: no alerts look like nothing wrong. Alertmanager's `Watchdog`
 alert fires all the time on purpose; send it to a room of its own, list that room under `heartbeats`, and point
-`ping_url_file` at a heartbeat check's URL (a Gatus external endpoint, Healthchecks.io). Each message in the room pings
-it (at most once a minute) and publishes nothing, so when the pings stop, the check alerts by their absence.
+`ping_url_file` at a heartbeat check's URL. The ping is a plain GET with no credentials, so use a check that takes
+one, such as Healthchecks.io or Cronitor (a Gatus external endpoint wants an authenticated POST and won't work). Each
+message in the room pings it (at most once a minute) and publishes nothing, so when the pings stop, the check alerts
+by their absence.
 
 ## Moving it
 
-Everything is in the state directory and the plugin's section of `node.yaml`. Stop the node, copy the directory
-(mode 700, with the password file), start it on the new machine. The device and its keys move with it. Don't run two
+Everything is in the state directory, the password file and the plugin's section of `node.yaml`. `fleetlayer move`
+doesn't carry them, so move them by hand: stop the node, copy the state directory (mode 700) and the password file
+(readable only by its user), start it on the new machine. The device and its keys move with it. Don't run two
 copies with the same directory.

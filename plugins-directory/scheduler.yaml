@@ -29,4 +29,4 @@ description: |
   The recurring prompt you'd otherwise send a worker agent by hand ("check the queue every three hours") as one entry
   in a settings file. It retries a session that's waiting on a person, never sends a burst of catch-up messages after
   downtime, and reports a problem when fires stop getting through, so your monitoring hears about it.
-  To run it on another machine later, `fleetlayer move scheduler <machine>` moves it with its keys and data.
+  To run it on another machine later, `fleetlayer move scheduler <machine>` moves it with its settings and state.

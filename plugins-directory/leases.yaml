@@ -4,13 +4,13 @@ kind: plugin
 roles: []
 ships_with_fleetlayer: true
 status: beta
-licence: Apache-2.0
+licence: FSL-1.1-ALv2
 maintainer: Fleetlayer
 source: https://github.com/fleetlayer/fleetlayer/tree/main/plugins/leases
 install: bundled
 command: fleetlayer-leases
 platforms: [linux, macos]
-min_fleetlayer: 0.3.14
+min_fleetlayer: 0.4.0
 protocol: 1
 grants: [fleet.query, access.check, event.publish, message.send, reading.publish]
 config: |

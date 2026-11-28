@@ -54,9 +54,9 @@ have no channel of their own (Codex, for instance).
 ## Security
 
 It sees every session on its user's Rex server (labels, the program and folder in each terminal, the screen when you
-attach) and types into a terminal only to deliver a message or a first prompt, or when someone attaches without
-`--observe`, under the access policy. It runs `rex` with argv, never through a shell, and passes `--autostart=false`
-so it never starts a server.
+attach) and types into a terminal only to deliver a message or a first prompt, press Esc to interrupt, or when someone
+attaches without `--observe`, under the access policy. It runs `rex` with argv, never through a shell, and passes
+`--autostart=false` so it never starts a server.
 
 ## Testing it
 
