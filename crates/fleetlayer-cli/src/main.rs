@@ -474,7 +474,8 @@ enum ToolsCommand {
     Disable { tool: String },
     /// Call one tool of a shared MCP server once, without setting it up as an MCP server:
     /// `fleetlayer tools call matrix@server post room=alerts text='fixed'`. Arguments are key=value (strings), or
-    /// --json '{…}' for any JSON. Prints the result's text; exits 1 when the tool answers with an error.
+    /// --params '{…}' for any JSON. Prints the result's text (the whole result with --json); exits 1 when the tool
+    /// answers with an error.
     Call {
         /// `<tool>@<node>`: the shared tool.
         target: String,
@@ -482,9 +483,10 @@ enum ToolsCommand {
         name: String,
         /// key=value arguments, as strings.
         args: Vec<String>,
-        /// The arguments as one JSON object (merged under the key=value ones).
+        /// The arguments as one JSON object (merged under the key=value ones). Not --json, which is the global
+        /// flag for JSON output.
         #[arg(long)]
-        json: Option<String>,
+        params: Option<String>,
         /// Why, in one line, when the access rules ask for a reason. Default: $FLEETLAYER_WHY.
         #[arg(long, env = "FLEETLAYER_WHY")]
         why: Option<String>,
@@ -653,13 +655,13 @@ async fn tool_once(
     out
 }
 
-/// `key=value` arguments over `--json`'s object.
+/// `key=value` arguments over `--params`' object.
 fn call_args(pairs: &[String], json_arg: Option<&str>) -> anyhow::Result<Value> {
     let mut args = match json_arg {
         Some(j) => serde_json::from_str::<Value>(j).map_err(|e| anyhow::anyhow!("--json isn't JSON: {e}"))?,
         None => json!({}),
     };
-    let obj = args.as_object_mut().ok_or_else(|| anyhow::anyhow!("--json must be an object"))?;
+    let obj = args.as_object_mut().ok_or_else(|| anyhow::anyhow!("--params must be a JSON object"))?;
     for p in pairs {
         let (k, v) = p.split_once('=').ok_or_else(|| anyhow::anyhow!("{p:?} isn't key=value"))?;
         if k.is_empty() {
@@ -1206,8 +1208,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         let limit = std::time::Duration::from_secs(*call_timeout);
         return mcp(&socket.with_extension("tools.sock"), target, why.as_deref(), limit).await;
     }
-    if let Command::Tools { command: ToolsCommand::Call { target, name, args, json, why, timeout } } = &cli.command {
-        let args = call_args(args, json.as_deref())?;
+    if let Command::Tools { command: ToolsCommand::Call { target, name, args, params, why, timeout } } = &cli.command {
+        let args = call_args(args, params.as_deref())?;
         let limit = std::time::Duration::from_secs(*timeout);
         let tools = socket.with_extension("tools.sock");
         let r =
@@ -1894,5 +1896,42 @@ mod commit_tests {
         );
         let c = json!({"subject": "o/r@1a2b3c4d5e", "pending": [], "delivered": [], "ended": false});
         assert!(commit_report("ci", &c).contains("No runs seen yet"));
+    }
+}
+
+#[cfg(test)]
+mod cli_definition_tests {
+    use super::*;
+    use clap::{CommandFactory, Parser};
+
+    /// clap checks the whole definition (clashing argument names, a global flag redefined by a subcommand) only in
+    /// debug_assert; v0.4.0 shipped `tools call --json` clashing with the global `--json`, which panicked on every call.
+    #[test]
+    fn the_command_line_definition_is_consistent() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn tools_call_takes_params_and_the_global_json_flag() {
+        let cli = Cli::try_parse_from([
+            "fleetlayer",
+            "--json",
+            "tools",
+            "call",
+            "matrix@server",
+            "history",
+            "room=alerts",
+            "--params",
+            "{\"limit\": 5}",
+        ])
+        .expect("parses");
+        assert!(cli.json);
+        match cli.command {
+            Command::Tools { command: ToolsCommand::Call { params, args, .. } } => {
+                assert_eq!(params.as_deref(), Some("{\"limit\": 5}"));
+                assert_eq!(args, vec!["room=alerts".to_string()]);
+            }
+            _ => panic!("not tools call"),
+        }
     }
 }

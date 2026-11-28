@@ -179,7 +179,7 @@ To call one tool of a shared server once, without adding it as an MCP server:
 ```sh
 fleetlayer tools list matrix@server                                       # its tools and what each takes
 fleetlayer tools call matrix@server post room=infrastructure-alerts text='fixed: restarted the backup job'
-fleetlayer tools call matrix@server history --json '{"room": "infrastructure-alerts", "limit": 5}'
+fleetlayer tools call matrix@server history --params '{"room": "infrastructure-alerts", "limit": 5}'
 ```
 
 Arguments are `key=value` strings, or `--json` for any JSON. It prints the tool's text and exits 1 when the tool
