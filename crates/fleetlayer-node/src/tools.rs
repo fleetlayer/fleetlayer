@@ -971,7 +971,7 @@ pub async fn serve(node: Arc<Node>, req: ToolServe) -> Result<Value, RpcError> {
     std::fs::create_dir_all(&cwd).map_err(|e| RpcError::refused(format!("{}: {e}", cwd.display())))?;
     // The server starts at the caller's first tool call when what it answered last time is cached (`lazy.rs`).
     let key = crate::lazy::key(&tool.command, &tool.args, &tool.env, &cwd);
-    let cache_path = cwd.with_extension("mcp-cache.json");
+    let cache_path = node.home.join(".local/state/fleetlayer/tools").join(format!("{}.mcp-cache.json", tool.name));
     let cache = if tool.lazy { crate::lazy::load(&cache_path, &key) } else { None };
     let spawn = crate::lazy::Spawn { tool: tool.name.clone(), command: tool.command.clone(), args, env, cwd };
     let started = cache.is_none();

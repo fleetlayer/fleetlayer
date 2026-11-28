@@ -156,7 +156,11 @@ managers, machines that sleep.
   reboot: they start their MCP servers before the node has listed them, so the caller had no tab name; the node now
   waits up to 10 s for it. And every connected session cost an idle Playwright process on the laptop (50-80 MB each):
   the node now answers `initialize` and `tools/list` from a cache and starts the server at the first tool call
-  (`lazy`, on by default). Written: `docs/guides/browser.md` ("Leftover tabs").
+  (`lazy`, on by default). Its first version still started one per session: Claude Code (2.1.332) opens with a
+  `server/discover` probe before `initialize`, which the cache didn't answer, and a client asking for another protocol
+  version never joined the cache. Now each answer is kept under its request (`initialize` per protocol version,
+  `server/discover`, `tools/list`). Anyone fronting an MCP server should expect clients to probe before initialize.
+  Written: `docs/guides/browser.md` ("Leftover tabs").
 - **A LaunchAgent can't find `claude`.** launchd gives agents a PATH without `~/.local/bin`, where Claude Code's
   installer puts it, so anything a node runs that calls `claude` fails with "No such file or directory". The
   claude-auth-manager plugin looks on PATH and then in the installers' places (`~/.local/bin`, `~/.claude/local`,
