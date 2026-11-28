@@ -80,6 +80,24 @@ enum Command {
         #[arg(required = true)]
         kinds: Vec<String>,
     },
+    /// Read part of another session's transcript (its harness's JSONL, with delivered secrets redacted), on this node
+    /// or another one the access policy lets you read. Prints the text, then the offset to pass as --offset next time.
+    Transcript {
+        /// The session: `<tab>@<node>`, or a tab on this node.
+        to: String,
+        /// The last this many bytes (the default when no --offset: 65536).
+        #[arg(long)]
+        tail: Option<u64>,
+        /// Start at this byte offset (a `next` from an earlier read).
+        #[arg(long)]
+        offset: Option<u64>,
+        /// At most this many bytes (up to 1 MiB).
+        #[arg(long)]
+        max: Option<u64>,
+        /// Why you're reading it, shown if the person is asked.
+        #[arg(long)]
+        why: Option<String>,
+    },
     /// Subscribe this session (or --target) to a channel's events, or to one subject on it.
     Subscribe(SubscribeArgs),
     /// Undo a subscription.
@@ -894,6 +912,32 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             } else {
                 secrets::print_grants(&v["readings"]);
             }
+        }
+        Command::Transcript { to, tail, offset, max, why } => {
+            let tail = if offset.is_none() && tail.is_none() { Some(65536) } else { tail };
+            let req = json!({"to": to, "tail": tail, "offset": offset, "max": max, "why": why, "caller": caller()});
+            let v: Value =
+                peer.request_within("node/transcript_read", &req, std::time::Duration::from_secs(60)).await?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&v)?);
+                return Ok(());
+            }
+            use base64::Engine as _;
+            let data = v["data"].as_str().unwrap_or("");
+            let bytes =
+                base64::engine::general_purpose::STANDARD.decode(data).unwrap_or_else(|_| data.as_bytes().to_vec());
+            print!("{}", String::from_utf8_lossy(&bytes));
+            if !bytes.ends_with(b"\n") && !bytes.is_empty() {
+                println!();
+            }
+            eprintln!(
+                "-- {} bytes of {} (offset {}, next {}); continue with --offset {}",
+                bytes.len(),
+                v["size"].as_u64().unwrap_or(0),
+                v["offset"].as_u64().unwrap_or(0),
+                v["next"].as_u64().unwrap_or(0),
+                v["next"].as_u64().unwrap_or(0)
+            );
         }
         Command::Readings { kinds } => {
             let v: Value = peer.request("node/readings", &json!({"kinds": kinds})).await?;
