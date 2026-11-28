@@ -547,7 +547,7 @@ mod tests {
     #[tokio::test]
     async fn with_max_age_the_token_must_say_a_recent_enough_auth_time() {
         let f = FakeIssuer::start().await;
-        let o = Oidc::new(&f.url, "dashboard", "s3cret", "https://d.example").unwrap();
+        let o = Oidc::new(&f.url, &f.client, "s3cret", "https://d.example").unwrap();
         let now = jiff::Timestamp::now().as_second();
         for (auth_time, ok) in [(None, false), (Some(now - 3600), false), (Some(now - 5), true)] {
             let (url, state) = o.start_with("/people", Some(0)).await.unwrap();
