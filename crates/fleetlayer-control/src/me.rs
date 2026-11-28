@@ -24,14 +24,21 @@ pub async fn answer(app: &App, tenant: &str, node: &str, caller: &str) -> Result
 
     let fleet = crate::api::fleet(app, tenant).await.map_err(RpcError::internal)?;
     let online = app.links.online(tenant).await;
-    // Nodes this one may see at all, as the fleet view decides.
+    // Nodes this one may see at all, as the fleet view decides. A node it may not read can still share a tool or a
+    // command it may use: those are listed too, when the policy allows them outright (an ask or a refusal there would
+    // name a node it isn't shown).
     let mut visible: Vec<(String, Option<String>)> = vec![];
+    let mut hidden: Vec<String> = vec![];
     for n in fleet["nodes"].as_array().into_iter().flatten() {
         let name = n["name"].as_str().unwrap_or_default().to_string();
         if name == node || crate::authz::may_read(app, tenant, &me, &format!("-@{name}")).await {
             visible.push((name, n["version"].as_str().map(String::from)));
+        } else {
+            hidden.push(name);
         }
     }
+    let sharing: Vec<(&String, bool)> =
+        visible.iter().map(|(n, _)| (n, true)).chain(hidden.iter().map(|n| (n, false))).collect();
 
     // Sessions on other nodes: the ones it may message, and how many it may not.
     for s in fleet["sessions"].as_array().into_iter().flatten() {
@@ -58,7 +65,7 @@ pub async fn answer(app: &App, tenant: &str, node: &str, caller: &str) -> Result
 
     // Shared tools: the sharing node's own allow list, then the access policy.
     let tools = app.links.tools.lock().await.clone();
-    for (name, _version) in &visible {
+    for &(name, seen) in &sharing {
         let Some(list) = tools.get(&(tenant.to_string(), name.clone())) else { continue };
         for t in list {
             if !t.allow.iter().any(|p| crate::acl::glob(p, &who)) {
@@ -66,6 +73,9 @@ pub async fn answer(app: &App, tenant: &str, node: &str, caller: &str) -> Result
             }
             let target = format!("tool:{}@{name}", t.name);
             let d = crate::authz::dry(app, tenant, &who, "use_tool", &target).await;
+            if !seen && !matches!(d, Dry::Allowed { .. }) {
+                continue;
+            }
             let Some(state) = target_of(&d, &format!("{}@{name}", t.name), name, !online.contains(name)) else {
                 continue;
             };
@@ -84,7 +94,7 @@ pub async fn answer(app: &App, tenant: &str, node: &str, caller: &str) -> Result
     // Shared commands: the sharing node's own `who:` list, then the access policy. Any node's, its own included (a
     // run still goes through the control plane, which checks and audits it).
     let commands = app.links.commands.lock().await.clone();
-    for (name, _version) in &visible {
+    for &(name, seen) in &sharing {
         let Some(list) = commands.get(&(tenant.to_string(), name.clone())) else { continue };
         for c in list {
             if !c.who.iter().any(|p| crate::acl::glob(p, &who)) {
@@ -92,6 +102,9 @@ pub async fn answer(app: &App, tenant: &str, node: &str, caller: &str) -> Result
             }
             let target = format!("command:{}@{name}", c.name);
             let d = crate::authz::dry(app, tenant, &who, "run", &target).await;
+            if !seen && !matches!(d, Dry::Allowed { .. }) {
+                continue;
+            }
             let Some(state) = target_of(&d, &format!("{}@{name}", c.name), name, !online.contains(name)) else {
                 continue;
             };
@@ -297,6 +310,23 @@ mod tests {
         let expires: i64 =
             sqlx::query_scalar("SELECT expires_at FROM approvals WHERE id = 'ap_1'").fetch_one(&app.db).await.unwrap();
         assert_eq!(expires, far, "looking doesn't renew an approval");
+    }
+
+    #[tokio::test]
+    async fn a_tool_it_may_use_is_listed_without_read_on_its_node() {
+        let app = fleet().await;
+        let policy = "version: 2\ndefault: deny\nask: []\nallow:\n  - { who: \"*@server\", can: use_tool, to: [\"tool:browser@laptop\"] }\n";
+        crate::authz::store(&app.db, "default", policy).await.unwrap();
+        assert!(!crate::authz::may_read(&app, "default", "-@server", "-@laptop").await, "server can't read laptop");
+        let me = answer(&app, "default", "server", "planning").await.unwrap();
+        let names: Vec<(&str, &str)> =
+            me.tools.iter().map(|t| (t.target.name.as_str(), t.target.state.as_str())).collect();
+        assert_eq!(
+            names,
+            [("browser@laptop", "allowed")],
+            "downloads isn't allowed, so the hidden node's other tool stays hidden"
+        );
+        assert!(me.start.iter().all(|t| t.name != "laptop"), "the node itself stays out of the rest");
     }
 
     #[tokio::test]
