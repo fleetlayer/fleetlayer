@@ -208,13 +208,15 @@ fleetlayer run rack-gateway-run@laptop --rack staging --app web-app --script fix
 
 - **Parameters** are `--<name> <value>` (or `--<name>=<value>`), exactly as `fleetlayer commands` lists them. A
   `choice` takes one of its values; `text` is one line, no control characters, and can't start with `-`; a `pattern`
-  must match whole; a `file` takes a path on this machine (its bytes are sent, within its size limit). A wrong or
-  missing one is refused before anything runs, with what it takes.
+  must match whole; a `file` takes a path on this machine (its bytes are sent, within its size limit). No value starts
+  with `-` unless the command allows it. A wrong or missing one is refused before anything runs, with what it takes.
+- **One run at a time** is usual: "is already running … try again once it's done" means wait for the other run.
 - **Output** arrives as it runs: the program's stdout on stdout, its stderr on stderr. `fleetlayer run` leaves with
   the program's exit code, or 125 (refused or couldn't start), 124 (stopped at its timeout), 130 (cancelled). With
   `--json`, the stream's JSON lines instead.
 - **Each run often asks your person first** ("waiting for your person to approve request <id>"). They see the exact
-  program and arguments. It waits a few minutes; if they haven't answered by then, it's refused: tell them what
+  program and arguments, and your files whole: a run with a binary file, or files over 6000 bytes in all, can't be
+  put to them, so it's refused when it needs approval. It waits a few minutes; if they haven't answered by then, it's refused: tell them what
   you're running and why and the request ID, then run it again with exactly the same arguments once they've approved
   it. Changed arguments ask again. Don't retry in a loop.
 - **A command can need a second approval on that machine** (a key touch, a dialog). Tell your person before you run

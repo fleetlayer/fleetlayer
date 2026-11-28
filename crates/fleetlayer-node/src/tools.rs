@@ -854,6 +854,7 @@ async fn mcp_pipe<R, W, S>(
                                     detail: crate::gate::detail(&n, &g.args),
                                     justification: None,
                                     peek: None,
+                                    audit: None,
                                 };
                                 crate::gate::decide(&node, &stream_id, &call, config.wait()).await
                             }

@@ -67,6 +67,9 @@ pub struct Scrubber {
     values: Vec<String>,
     /// References of values too short to match.
     short: Vec<String>,
+    /// The longest form it matches, in bytes: how much of a text cut into pieces must carry over to the next piece
+    /// so a secret across the cut is still found.
+    longest: usize,
 }
 
 impl std::fmt::Debug for Scrubber {
@@ -143,6 +146,7 @@ impl Scrubber {
             let mut seen = std::collections::HashSet::new();
             for (p, f) in forms {
                 if !p.is_empty() && seen.insert(p.clone()) {
+                    s.longest = s.longest.max(p.len());
                     pats.push(p);
                     s.patterns.push((idx, f));
                 }
@@ -161,6 +165,11 @@ impl Scrubber {
     /// How many secrets it matches.
     pub fn len(&self) -> usize {
         self.references.len()
+    }
+
+    /// The longest text it matches, in bytes (0 when it matches nothing).
+    pub fn longest(&self) -> usize {
+        self.longest
     }
 
     /// References whose values are too short to match.

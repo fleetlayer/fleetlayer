@@ -265,6 +265,13 @@ async fn run(cfg: NodeConfig, config_path: PathBuf) -> anyhow::Result<()> {
     }
     tokio::spawn(sync::retry(node.clone()));
     tokio::spawn(tools::report(node.clone()));
+    // Run folders a node that stopped mid-run left behind, before any new run.
+    commands::sweep(&node.home);
+    for c in &node.commands {
+        for w in c.warnings() {
+            tracing::warn!("{w}");
+        }
+    }
     tokio::spawn(commands::report(node.clone()));
     tokio::spawn(secrets::run(node.clone()));
     // Windows saved as open: closed now if they ended while the node was stopped, otherwise timed to close.
@@ -288,6 +295,8 @@ async fn run(cfg: NodeConfig, config_path: PathBuf) -> anyhow::Result<()> {
             tracing::info!("stopping");
             // Let each tool connection clean up (close a session's browser tabs) before its server is killed with the
             // node: a server killed mid-session leaves what it opened behind.
+            // Shared commands running now stop with the node, their whole process groups.
+            node.command_runs.stop_all();
             let left = node.tool_connections.close_all(tools::STOP_CLEANUP).await;
             if left > 0 {
                 tracing::warn!(connections = left, "stopped before every tool connection had cleaned up");

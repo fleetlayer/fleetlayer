@@ -62,8 +62,20 @@ const APPROVAL_WAIT_DEFAULT: u64 = 600;
 const APPROVAL_WAIT_MAX: u64 = 3600;
 /// How often to look again while it waits.
 const POLL: Duration = Duration::from_secs(5);
-/// A line of output longer than this goes out in pieces.
+/// A line of output longer than this goes out in pieces, cut between characters.
 const LINE_MAX: usize = 16 * 1024;
+/// How long output is still read once the program has exited: a helper it left behind may hold its output open.
+const DRAIN: Duration = Duration::from_secs(2);
+/// The most of a run's files shown to the person whole, in bytes; a run whose files are bigger, or not text, can't be
+/// put to them (an `ask:` rule then refuses it).
+const SHOW_MAX: usize = 6000;
+/// The longest detail the control plane takes.
+const DETAIL_MAX: usize = 8000;
+/// The largest request line, whatever a command's files allow.
+const REQUEST_MAX: u64 = 40 << 20;
+/// Runs of one command at once: the default, and the most a command may set.
+const CONCURRENT_DEFAULT: u32 = 1;
+const CONCURRENT_MAX: u32 = 16;
 /// How long the caller has to send its request once the stream opens.
 const REQUEST_WAIT: Duration = Duration::from_secs(60);
 /// How long a program has to stop after SIGTERM before it's killed.
@@ -107,6 +119,10 @@ pub struct CommandConfig {
     /// How long a run waits for the person when the access policy asks them (`10m` by default, at most `1h`).
     #[serde(default)]
     pub approval_wait: Option<Duration_>,
+    /// How many runs of it at once (default 1, at most 16). One more is refused while they run, waiting for approval
+    /// included.
+    #[serde(default)]
+    pub max_concurrent: Option<u32>,
 }
 
 /// A duration in node.yaml: seconds, or a number with `s`, `m`, `h` or `d`.
@@ -168,8 +184,8 @@ pub struct ParamConfig {
     /// The value when the caller gives none (not for files). Without one, the parameter must be given.
     #[serde(default)]
     pub default: Option<String>,
-    /// text: allow a value starting with `-`. Off by default: a program can read such a value as an option of its
-    /// own (`--rack=production` in place of a reason).
+    /// text, pattern or choice: allow a value starting with `-`. Off by default: a program can read such a value as an
+    /// option of its own (`--rack=production` in place of a reason).
     #[serde(default)]
     pub allow_dash: bool,
 }
@@ -300,8 +316,8 @@ impl CommandConfig {
             if p.kind != ParamKind::File && (p.max_bytes.is_some() || p.extension.is_some()) {
                 return Err(at("max_bytes and extension are for a file"));
             }
-            if p.allow_dash && p.kind != ParamKind::Text {
-                return Err(at("allow_dash is for text (a choice or pattern decides its own values)"));
+            if p.allow_dash && p.kind == ParamKind::File {
+                return Err(at("allow_dash isn't for a file (it's given as a path the node chooses)"));
             }
             if p.max_length.is_some_and(|m| m == 0 || m > TEXT_MAX) {
                 return Err(at(&format!("max_length is 1 to {TEXT_MAX}")));
@@ -313,6 +329,11 @@ impl CommandConfig {
                     }
                     if p.values.iter().any(|v| v.is_empty() || !plain(v)) {
                         return Err(at("a value is plain text, not empty"));
+                    }
+                    if !p.allow_dash && p.values.iter().any(|v| v.starts_with('-')) {
+                        return Err(at(
+                            "a value starting with - needs allow_dash: true (the program may read it as an option)",
+                        ));
                     }
                 }
                 ParamKind::Pattern => {
@@ -342,6 +363,9 @@ impl CommandConfig {
         if self.approval_wait.is_some_and(|t| t.0 > APPROVAL_WAIT_MAX) {
             return Err("approval_wait is at most 1h".into());
         }
+        if self.max_concurrent.is_some_and(|m| m == 0 || m > CONCURRENT_MAX) {
+            return Err(format!("max_concurrent is 1 to {CONCURRENT_MAX}"));
+        }
         if self.max_output.is_some_and(|m| m == 0 || m > OUTPUT_MAX) {
             return Err(format!("max_output is 1 to {OUTPUT_MAX} bytes"));
         }
@@ -354,6 +378,29 @@ impl CommandConfig {
             }
         }
         Ok(())
+    }
+
+    /// What's probably not meant: a pattern that matches a value starting with `-`, which is refused anyway unless
+    /// the parameter has `allow_dash: true`. Logged when the node starts.
+    pub fn warnings(&self) -> Vec<String> {
+        let mut out = vec![];
+        for (name, p) in &self.params {
+            let (Some(re), false) = (&p.pattern, p.allow_dash) else { continue };
+            let Ok(re) = regex::Regex::new(&format!("^(?:{re})$")) else { continue };
+            let samples = ["-", "-1", "-a", "-A", "--a", "-0", "--", "-x1", "-_", "-.", "-/"];
+            if samples.iter().any(|v| re.is_match(v)) {
+                out.push(format!(
+                    "command {}: params.{name}: its pattern matches values starting with -, which are refused unless \
+                     it has allow_dash: true",
+                    self.name
+                ));
+            }
+        }
+        out
+    }
+
+    fn max_concurrent(&self) -> u32 {
+        self.max_concurrent.unwrap_or(CONCURRENT_DEFAULT)
     }
 
     fn timeout(&self) -> Duration {
@@ -433,7 +480,7 @@ fn check_value(name: &str, p: &ParamConfig, v: &str) -> Result<(), String> {
             if !plain(v) {
                 return Err(format!("--{name} has control characters or characters that hide themselves"));
             }
-            if p.kind == ParamKind::Text && !p.allow_dash && v.starts_with('-') {
+            if !p.allow_dash && v.starts_with('-') {
                 return Err(format!("--{name} can't start with - (the program could read it as an option)"));
             }
             if let Some(re) = &p.pattern {
@@ -490,7 +537,11 @@ pub struct Checked {
     /// Each argument as pieces: literal text, or a file to substitute by its path once written.
     argv: Vec<Vec<Arg>>,
     pub files: Vec<File>,
-    pub detail: String,
+    /// What the person sees when asked: the program, each parameter marked with its kind, and each file whole. None
+    /// when a file can't be shown whole (not text, or over `SHOW_MAX`): an `ask:` rule then refuses the run.
+    pub detail: Option<String>,
+    /// What the audit log keeps: the same without the files' contents.
+    pub audit: String,
     pub args_hash: String,
 }
 
@@ -532,7 +583,7 @@ pub fn check(cmd: &CommandConfig, req: &RunRequest, caller: &str, node: &str) ->
     let mut values: BTreeMap<&str, String> = BTreeMap::new();
     let mut files: Vec<File> = vec![];
     let mut file_of: BTreeMap<&str, usize> = BTreeMap::new();
-    let mut shown: BTreeMap<&str, String> = BTreeMap::new();
+    let mut named: BTreeMap<&str, String> = BTreeMap::new();
     for (name, p) in &cmd.params {
         if p.kind == ParamKind::File {
             if req.args.contains_key(name) {
@@ -563,7 +614,7 @@ pub fn check(cmd: &CommandConfig, req: &RunRequest, caller: &str, node: &str) ->
             if !f.sha256.eq_ignore_ascii_case(&sha) {
                 return Err(format!("--{name}: the bytes don't match the SHA-256 sent with them"));
             }
-            shown.insert(name, format!("<file {} ({} bytes, sha256 {sha})>", f.name, bytes.len()));
+            named.insert(name, f.name.clone());
             let i = match files.iter().position(|x| x.sha256 == sha && x.extension == ext) {
                 Some(i) => i,
                 None => {
@@ -586,56 +637,77 @@ pub fn check(cmd: &CommandConfig, req: &RunRequest, caller: &str, node: &str) ->
         values.insert(name, v);
     }
     let mut argv = vec![];
-    let mut shown_argv = vec![];
     for a in &cmd.run {
         let mut parts = vec![];
-        let mut text = String::new();
         for piece in pieces(a)? {
             match piece {
-                Piece::Lit(t) => {
-                    text.push_str(&t);
-                    parts.push(Arg::Text(t));
-                }
+                Piece::Lit(t) => parts.push(Arg::Text(t)),
                 Piece::Param(n) => match file_of.get(n.as_str()) {
-                    Some(i) => {
-                        text.push_str(&shown[n.as_str()]);
-                        parts.push(Arg::File(*i));
-                    }
-                    None => {
-                        let v = values[n.as_str()].clone();
-                        text.push_str(&v);
-                        parts.push(Arg::Text(v));
-                    }
+                    Some(i) => parts.push(Arg::File(*i)),
+                    None => parts.push(Arg::Text(values[n.as_str()].clone())),
                 },
             }
         }
         argv.push(parts);
-        shown_argv.push(text);
     }
-    let detail = crate::gate::visible(&format!(
-        "{} on {node} for {caller}:\n{}",
+    // The program as node.yaml writes it, then each parameter with its kind and value: a value is always quoted, so
+    // text can't pass for a file or for more of the program.
+    let mut head = format!(
+        "{} on {node} for {caller} runs:\n{}\nwith:\n",
         cmd.name,
-        shown_argv.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" ")
-    ));
+        cmd.run.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" ")
+    );
+    let mut bodies = String::new();
+    let mut showable = true;
+    let mut shown_bytes = 0usize;
+    for (name, p) in cmd.ordered() {
+        match file_of.get(name.as_str()) {
+            Some(i) => {
+                let f = &files[*i];
+                head.push_str(&format!(
+                    "  {name} (file): {}, {} bytes, sha256 {}\n",
+                    quote_always(&named[name.as_str()]),
+                    f.bytes.len(),
+                    f.sha256
+                ));
+                shown_bytes += f.bytes.len();
+                match std::str::from_utf8(&f.bytes) {
+                    Ok(t) if shown_bytes <= SHOW_MAX && !t.chars().any(|c| c.is_control() && !"\n\t".contains(c)) => {
+                        bodies.push_str(&format!("{name}, whole:\n"));
+                        for line in t.lines() {
+                            bodies.push_str(&format!("  | {line}\n"));
+                        }
+                    }
+                    _ => showable = false,
+                }
+            }
+            None => head.push_str(&format!("  {name} ({}): {}\n", p.kind.name(), quote_always(&values[name.as_str()]))),
+        }
+    }
+    let audit = crate::gate::visible(head.trim_end());
+    let detail =
+        showable.then(|| crate::gate::visible(format!("{head}{bodies}").trim_end())).filter(|d| d.len() <= DETAIL_MAX);
     let hashed = json!({
         "command": cmd.name,
         "args": values,
         "files": file_of.iter().map(|(k, i)| (k.to_string(), files[*i].sha256.clone())).collect::<BTreeMap<_, _>>(),
     });
     let args_hash = crate::gate::args_hash(&cmd.name, &hashed);
-    Ok(Checked { argv, files, detail, args_hash })
+    Ok(Checked { argv, files, detail, audit, args_hash })
 }
 
-/// An argument as a person reads it: bare when it's plain, else in single quotes.
+/// A part of the program as a person reads it: bare when it's plain, else in single quotes.
 fn quote(a: &str) -> String {
-    let bare = !a.is_empty()
-        && a.chars().all(|c| c.is_ascii_alphanumeric() || "-_./=:,@+%<>()".contains(c))
-        && !a.contains("<file");
-    if bare || a.starts_with("<file ") && !a.contains('\'') {
+    if !a.is_empty() && a.chars().all(|c| c.is_ascii_alphanumeric() || "-_./=:,@+%{}".contains(c)) {
         a.to_string()
     } else {
-        format!("'{}'", a.replace('\'', "'\\''"))
+        quote_always(a)
     }
+}
+
+/// A value as a person reads it: always in single quotes.
+fn quote_always(a: &str) -> String {
+    format!("'{}'", a.replace('\'', "'\\''"))
 }
 
 /// `--rack <staging|production> --script <file .rb> --why <text>`.
@@ -669,6 +741,11 @@ pub fn usage(cmd: &CommandConfig) -> String {
 pub struct Runs {
     state: std::sync::Mutex<BTreeMap<String, RunStats>>,
     changed: tokio::sync::Notify,
+    /// Runs of each command now, from the moment it's taken (waiting for approval included).
+    slots: std::sync::Mutex<BTreeMap<String, u32>>,
+    /// The process groups of programs running now, each led by a child not yet reaped (so the group's ID can't have
+    /// been reused): stopped when the node stops.
+    groups: std::sync::Mutex<std::collections::BTreeSet<i32>>,
 }
 
 #[derive(Default, Clone, Serialize)]
@@ -699,6 +776,24 @@ impl Runs {
         });
     }
 
+    /// Take one of a command's `max` places, or None while they're all in use.
+    fn slot(node: &Arc<Node>, name: &str, max: u32) -> Option<Slot> {
+        let mut s = node.command_runs.slots.lock().unwrap_or_else(|e| e.into_inner());
+        let n = s.entry(name.to_string()).or_default();
+        if *n >= max {
+            return None;
+        }
+        *n += 1;
+        Some(Slot { node: node.clone(), name: name.into() })
+    }
+
+    /// SIGKILL to every program running now and its process group: the node is stopping.
+    pub fn stop_all(&self) {
+        for g in self.groups.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+            let _ = nix::sys::signal::kill(nix::unistd::Pid::from_raw(-g), nix::sys::signal::Signal::SIGKILL);
+        }
+    }
+
     pub fn readings(&self, commands: &[CommandConfig]) -> Vec<Value> {
         let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let at = jiff::Timestamp::now();
@@ -709,6 +804,61 @@ impl Runs {
                 json!({"kind": "command.runs", "key": c.name, "at": at, "data": stats})
             })
             .collect()
+    }
+}
+
+/// One of a command's places, given back when the run ends.
+struct Slot {
+    node: Arc<Node>,
+    name: String,
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        let mut s = self.node.command_runs.slots.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(n) = s.get_mut(&self.name) {
+            *n = n.saturating_sub(1);
+        }
+    }
+}
+
+/// A running program's process group in [`Runs`], until its leader is reaped.
+struct Group<'a> {
+    runs: &'a Runs,
+    pid: i32,
+}
+
+impl<'a> Group<'a> {
+    fn new(runs: &'a Runs, pid: i32) -> Self {
+        runs.groups.lock().unwrap_or_else(|e| e.into_inner()).insert(pid);
+        Group { runs, pid }
+    }
+
+    /// Signal the whole group. Only while the leader isn't reaped: this guard is dropped as soon as it is.
+    fn signal(&self, sig: nix::sys::signal::Signal) {
+        let _ = nix::sys::signal::kill(nix::unistd::Pid::from_raw(-self.pid), sig);
+    }
+}
+
+impl Drop for Group<'_> {
+    fn drop(&mut self) {
+        self.runs.groups.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.pid);
+    }
+}
+
+/// Remove the run folders a node that stopped mid-run left behind (`~/.local/state/fleetlayer/commands/*`). At start,
+/// before any run. Its programs' process groups aren't looked for: after a restart their IDs may belong to others.
+pub fn sweep(home: &Path) {
+    let dir = home.join(".local/state/fleetlayer/commands");
+    let Ok(entries) = std::fs::read_dir(&dir) else { return };
+    for e in entries.flatten() {
+        let p = e.path();
+        if e.file_type().is_ok_and(|t| t.is_dir()) {
+            match std::fs::remove_dir_all(&p) {
+                Ok(()) => tracing::info!("removed {}, left by a command run that didn't finish", p.display()),
+                Err(err) => tracing::warn!("couldn't remove {}: {err}", p.display()),
+            }
+        }
     }
 }
 
@@ -804,6 +954,16 @@ pub async fn serve(node: Arc<Node>, req: CommandServe) -> Result<Value, RpcError
         node.command_runs.refused(&cmd.name, &req.caller);
         return Err(RpcError::refused(format!("{} may not run {} on {}", req.caller, cmd.name, node.name)));
     }
+    let Some(slot) = Runs::slot(&node, &cmd.name, cmd.max_concurrent()) else {
+        tracing::info!(command = %cmd.name, caller = %req.caller, "refused a command run: as many as it allows are running");
+        node.command_runs.refused(&cmd.name, &req.caller);
+        return Err(RpcError::refused(format!(
+            "{} is already running on {} ({} at a time): try again once it's done",
+            cmd.name,
+            node.name,
+            cmd.max_concurrent()
+        )));
+    };
     let ws = crate::tools::connect_stream(&node, &req.stream_id, "serve")
         .await
         .map_err(|e| RpcError::refused(e.to_string()))?;
@@ -811,6 +971,7 @@ pub async fn serve(node: Arc<Node>, req: CommandServe) -> Result<Value, RpcError
     let (far_r, far_w) = tokio::io::split(far);
     tokio::spawn(crate::tools::pipe(far_r, far_w, ws));
     tokio::spawn(async move {
+        let _slot = slot;
         let (r, w) = tokio::io::split(near);
         take(node, cmd, req, r, w).await;
     });
@@ -836,7 +997,7 @@ fn request_limit(cmd: &CommandConfig) -> u64 {
         .filter(|p| p.kind == ParamKind::File)
         .map(|p| p.max_bytes.unwrap_or(FILE_DEFAULT).div_ceil(3) * 4 + 1024)
         .sum();
-    files + 256 * 1024
+    (files + 256 * 1024).min(REQUEST_MAX)
 }
 
 /// Read the request, check it, ask the control plane, then run it.
@@ -898,19 +1059,27 @@ where
             }
         }
     });
-    let detail =
-        crate::gate::scrub(&node, &checked.detail, &format!("command {} for {}", cmd.name, req.caller)).into_owned();
+    let context = format!("command {} for {}", cmd.name, req.caller);
+    let audit = crate::gate::scrub(&node, &checked.audit, &context).into_owned();
+    let detail = checked.detail.as_ref().map(|d| crate::gate::scrub(&node, d, &context).into_owned());
     let call = ToolCall {
         stream_id: req.stream_id.clone(),
         targets: vec![],
         args_hash: checked.args_hash.clone(),
-        detail: Some(detail.clone()),
+        detail: detail.clone(),
         justification: req.justification.clone(),
+        audit: Some(audit.clone()),
         peek: None,
     };
     match decide(&node, &call, cmd.approval_wait(), &mut out, &mut cancel).await {
         Ok(()) => {}
-        Err(why) => {
+        Err(mut why) => {
+            if detail.is_none() && why.contains("too long to show") {
+                why = format!(
+                    "this run needs your person's approval, and its files can't be shown to them whole (only text \
+                     files of at most {SHOW_MAX} bytes in all can), so it wasn't put to them"
+                );
+            }
             tracing::info!(command = %cmd.name, caller = %req.caller, "a command run wasn't allowed: {why}");
             node.command_runs.refused(&cmd.name, &req.caller);
             out.send(refuse(why)).await;
@@ -926,7 +1095,7 @@ where
         return;
     }
     let argv = checked.argv(&dir);
-    tracing::info!(command = %cmd.name, caller = %req.caller, run = %id, detail = %detail, "running a shared command");
+    tracing::info!(command = %cmd.name, caller = %req.caller, run = %id, detail = %audit, "running a shared command");
     let mut running = Running::start(&node.command_runs, &cmd.name, &req.caller);
     let (code, outcome) = run(&node, &cmd, &argv, &dir, &req.caller, &mut out, &mut cancel).await;
     tracing::info!(command = %cmd.name, caller = %req.caller, run = %id, ?code, outcome = %outcome, "a shared command ended");
@@ -1087,26 +1256,38 @@ async fn run<W: AsyncWrite + Unpin>(
         }
     };
     out.send(json!({"type": "started"})).await;
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<(&'static str, String)>(64);
+    let group = child.id().map(|pid| Group::new(&node.command_runs, pid as i32));
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<(&'static str, String, bool)>(64);
+    let mut readers = vec![];
     if let Some(o) = child.stdout.take() {
-        tokio::spawn(lines("stdout", o, tx.clone()));
+        readers.push(tokio::spawn(lines("stdout", o, tx.clone())));
     }
     if let Some(e) = child.stderr.take() {
-        tokio::spawn(lines("stderr", e, tx.clone()));
+        readers.push(tokio::spawn(lines("stderr", e, tx.clone())));
     }
     drop(tx);
     let max = cmd.max_output.unwrap_or(OUTPUT_DEFAULT);
     let mut sent: u64 = 0;
     let mut cut = false;
     let context = format!("output of command {} for {caller}", cmd.name);
+    let scrubber = node.secrets.scrubber();
+    let mut carry: BTreeMap<&'static str, Carry> = BTreeMap::new();
+    let far = tokio::time::Instant::now() + Duration::from_secs(365 * 86_400);
     let deadline = tokio::time::sleep(cmd.timeout());
-    tokio::pin!(deadline);
+    let drain = tokio::time::sleep_until(far);
+    let kill_at = tokio::time::sleep_until(far);
+    tokio::pin!(deadline, drain, kill_at);
     let mut stop: Option<&'static str> = None;
+    let mut killing = false;
     let mut open = true;
-    let status = loop {
+    let mut group = group;
+    let mut status: Option<Option<std::process::ExitStatus>> = None;
+    // The program itself is waited on, never only its output: a helper it left behind (a background job, one that
+    // left the group) can hold the output open for ever. The timeout and a cancel count until it has exited.
+    loop {
         tokio::select! {
-            line = rx.recv(), if open => match line {
-                Some((stream, text)) => {
+            piece = rx.recv(), if open => match piece {
+                Some((stream, text, whole)) => {
                     if cut {
                         continue;
                     }
@@ -1116,22 +1297,51 @@ async fn run<W: AsyncWrite + Unpin>(
                         continue;
                     }
                     sent += text.len() as u64;
-                    let text = crate::gate::scrub(node, &text, &context).into_owned();
-                    out.send(json!({"type": "output", "stream": stream, "text": text})).await;
+                    let (clean, hits) = carry.entry(stream).or_default().push(&scrubber, &text, whole);
+                    node.secrets.report(&hits, &context);
+                    if !clean.is_empty() {
+                        out.send(json!({"type": "output", "stream": stream, "text": clean})).await;
+                    }
                 }
                 None => open = false,
             },
-            s = child.wait(), if !open => break s.ok(),
-            _ = &mut deadline, if stop.is_none() => {
+            s = child.wait(), if status.is_none() => {
+                status = Some(s.ok());
+                // Reaped: its group's ID may be anyone's from now on, so it's never signalled again.
+                group = None;
+                drain.as_mut().reset(tokio::time::Instant::now() + DRAIN);
+            }
+            _ = &mut drain, if status.is_some() && open => break,
+            _ = &mut deadline, if status.is_none() && stop.is_none() => {
                 stop = Some("timeout");
-                terminate(&mut child).await;
+                if let Some(g) = &group { g.signal(nix::sys::signal::Signal::SIGTERM); }
+                killing = true;
+                kill_at.as_mut().reset(tokio::time::Instant::now() + GRACE);
             }
-            _ = cancelled(cancel), if stop.is_none() => {
+            _ = cancelled(cancel), if status.is_none() && stop.is_none() => {
                 stop = Some("cancelled");
-                terminate(&mut child).await;
+                if let Some(g) = &group { g.signal(nix::sys::signal::Signal::SIGTERM); }
+                killing = true;
+                kill_at.as_mut().reset(tokio::time::Instant::now() + GRACE);
             }
+            _ = &mut kill_at, if killing && status.is_none() => {
+                killing = false;
+                if let Some(g) = &group { g.signal(nix::sys::signal::Signal::SIGKILL); }
+            }
+            else => break,
         }
-    };
+    }
+    drop(group);
+    for r in readers {
+        r.abort();
+    }
+    for (stream, mut c) in carry {
+        let rest = c.finish();
+        if !rest.is_empty() && !cut {
+            out.send(json!({"type": "output", "stream": stream, "text": rest})).await;
+        }
+    }
+    let status = status.flatten();
     use std::os::unix::process::ExitStatusExt;
     let code = status.and_then(|s| s.code());
     let signal = status.and_then(|s| s.signal());
@@ -1163,33 +1373,66 @@ async fn cancelled(cancel: &mut tokio::sync::watch::Receiver<bool>) {
     let _ = cancel.wait_for(|c| *c).await;
 }
 
-/// SIGTERM to the program's process group, then SIGKILL after a grace period. Its output keeps flowing meanwhile.
-async fn terminate(child: &mut tokio::process::Child) {
-    let Some(pid) = child.id() else { return };
-    let group = nix::unistd::Pid::from_raw(-(pid as i32));
-    let _ = nix::sys::signal::kill(group, nix::sys::signal::Signal::SIGTERM);
-    tokio::spawn(async move {
-        tokio::time::sleep(GRACE).await;
-        let _ = nix::sys::signal::kill(group, nix::sys::signal::Signal::SIGKILL);
-    });
+/// One output stream's text on its way out, scrubbed of delivered secrets. A piece cut from a longer line keeps its
+/// last few characters back (as many as the longest secret form, less one) for the next piece, so a secret across a
+/// cut is still found.
+#[derive(Default)]
+struct Carry {
+    held: String,
 }
 
-/// A pipe's output as lines (a long line in pieces), as text.
+impl Carry {
+    fn push(
+        &mut self,
+        scrubber: &fleetlayer_secrets::scrub::Scrubber,
+        piece: &str,
+        whole: bool,
+    ) -> (String, Vec<fleetlayer_secrets::scrub::Hit>) {
+        let text = std::mem::take(&mut self.held) + piece;
+        let (clean, hits) = scrubber.scrub(&text);
+        let clean = clean.into_owned();
+        if whole || scrubber.longest() == 0 {
+            return (clean, hits);
+        }
+        let mut at = clean.len().saturating_sub(scrubber.longest().saturating_sub(1));
+        while !clean.is_char_boundary(at) {
+            at -= 1;
+        }
+        self.held = clean[at..].to_string();
+        (clean[..at].to_string(), hits)
+    }
+
+    fn finish(&mut self) -> String {
+        std::mem::take(&mut self.held)
+    }
+}
+
+/// A pipe's output as lines, each with whether it's whole (ends a line, or the output). A line longer than `LINE_MAX`
+/// goes in pieces, cut between characters, never inside one.
 async fn lines<R: AsyncRead + Unpin>(
     stream: &'static str,
     r: R,
-    tx: tokio::sync::mpsc::Sender<(&'static str, String)>,
+    tx: tokio::sync::mpsc::Sender<(&'static str, String, bool)>,
 ) {
     let mut r = BufReader::new(r);
+    let mut pending: Vec<u8> = vec![];
     loop {
-        let mut buf = Vec::new();
-        match (&mut r).take(LINE_MAX as u64).read_until(b'\n', &mut buf).await {
-            Ok(0) | Err(_) => return,
-            Ok(_) => {
-                if tx.send((stream, String::from_utf8_lossy(&buf).into_owned())).await.is_err() {
-                    return;
-                }
-            }
+        let mut buf = std::mem::take(&mut pending);
+        let room = LINE_MAX.saturating_sub(buf.len()).max(4) as u64;
+        let n = (&mut r).take(room).read_until(b'\n', &mut buf).await.unwrap_or(0);
+        if buf.is_empty() {
+            return;
+        }
+        let eof = n == 0 || (!buf.ends_with(b"\n") && (n as u64) < room);
+        let whole = eof || buf.ends_with(b"\n");
+        if !whole
+            && let Err(e) = std::str::from_utf8(&buf)
+            && e.error_len().is_none()
+        {
+            pending = buf.split_off(e.valid_up_to());
+        }
+        if tx.send((stream, String::from_utf8_lossy(&buf).into_owned(), whole)).await.is_err() || eof {
+            return;
         }
     }
 }
@@ -1363,14 +1606,19 @@ timeout: 30m
                 "--n=1".into(),
             ]
         );
-        assert!(
-            k.detail.starts_with("rack-gateway-run on laptop for ci@agents:\n/usr/bin/rack-gateway run"),
-            "{}",
-            k.detail
+        let detail = k.detail.clone().unwrap();
+        assert_eq!(
+            detail,
+            format!(
+                "rack-gateway-run on laptop for ci@agents runs:\n/usr/bin/rack-gateway run --rack {{rack}} \
+                 --script={{script}} --justification {{why_text}} --n={{n}}\nwith:\n  rack (choice): 'staging'\n  \
+                 script (file): 'fix.rb', 7 bytes, sha256 {sha}\n  why_text (text): 'fix the thing'\n  n (pattern): \
+                 '1'\nscript, whole:\n  | puts 1"
+            )
         );
-        assert!(k.detail.contains(&format!("<file fix.rb (7 bytes, sha256 {sha})>")), "{}", k.detail);
-        assert!(k.detail.contains("'fix the thing'"), "{}", k.detail);
-        assert!(!k.detail.contains("puts 1"), "never the file's contents");
+        // The audit log keeps everything but the file's contents.
+        assert_eq!(k.audit, detail.split("\nscript, whole:").next().unwrap());
+        assert!(!k.audit.contains("puts 1"), "never the file's contents in the audit log");
         // The same arguments hash the same; any change changes it.
         let again = check(&c, &r, "ci@agents", "laptop").unwrap();
         assert_eq!(k.args_hash, again.args_hash);
@@ -1536,6 +1784,164 @@ timeout: 30m
         let (code, how) =
             run(&node, &long, &["/bin/sleep".into(), "30".into()], tmp.path(), "a@b", &mut out, &mut cancel).await;
         assert_eq!((code, how.as_str()), (None, "cancelled"));
+    }
+
+    /// Review 1: a helper that keeps the program's stdout open after the program exits (a background job, or one that
+    /// left the process group) mustn't hold the run open.
+    #[tokio::test]
+    async fn a_run_ends_when_its_program_does_even_if_a_helper_keeps_the_pipe() {
+        let tmp = tempfile::tempdir().unwrap();
+        let node = Node::for_test(tmp.path());
+        let cmd: CommandConfig = yaml_serde::from_str("name: t\nrun: [/bin/sh]\nwho: ['*']\n").unwrap();
+        let (mut w, _r) = tokio::io::duplex(64 * 1024);
+        let mut out = Out { w: &mut w };
+        let (_tx, mut cancel) = tokio::sync::watch::channel(false);
+        let argv = vec!["/bin/sh".into(), "-c".into(), "sleep 30 & echo hi; exit 4".into()];
+        let started = std::time::Instant::now();
+        let ran = tokio::time::timeout(
+            Duration::from_secs(15),
+            run(&node, &cmd, &argv, tmp.path(), "a@b", &mut out, &mut cancel),
+        )
+        .await;
+        assert_eq!(ran.map(|(c, _)| c).ok(), Some(Some(4)), "the run waited for the helper");
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    /// Review 3: a leading - is refused for every kind of value unless the parameter allows it.
+    #[test]
+    fn a_leading_dash_is_refused_for_patterns_and_choices_too() {
+        let mut c = rack();
+        c.params.get_mut("n").unwrap().pattern = Some("-?[0-9]+".into());
+        let r =
+            |n: &str| req(&[("rack", "staging"), ("why_text", "x"), ("n", n)], vec![("script", file("fix.rb", b"x"))]);
+        assert!(check(&c, &r("-1"), "a@b", "n").unwrap_err().contains("can't start with -"));
+        check(&c, &r("1"), "a@b", "n").unwrap();
+        let mut choice = rack();
+        choice.params.get_mut("rack").unwrap().values.push("--all".into());
+        assert!(choice.check().unwrap_err().contains("allow_dash"));
+    }
+
+    /// Review 2 and 6: the person sees a script whole, and a text value can't pass for a file.
+    #[test]
+    fn the_detail_shows_files_whole_and_marks_each_kind() {
+        let mut c = rack();
+        c.params.get_mut("why_text").unwrap().max_length = Some(100);
+        let spoof = "<file x.rb (1 bytes, sha256 0)>";
+        let r = req(&[("rack", "staging"), ("why_text", spoof)], vec![("script", file("fix.rb", b"puts 1\n"))]);
+        let k = check(&c, &r, "ci@agents", "laptop").unwrap();
+        let shown = format!("{:?}", k.detail);
+        assert!(shown.contains("puts 1"), "the script is shown: {shown}");
+        assert!(shown.contains("(text): '<file x.rb"), "a text value is quoted and marked: {shown}");
+        // A file that can't be shown whole (not text, or too big) leaves the run without a detail: an ask refuses it.
+        let mut big = rack();
+        big.params.get_mut("script").unwrap().max_bytes = Some(FILE_MAX);
+        let r = |bytes: &[u8]| req(&[("rack", "staging"), ("why_text", "x")], vec![("script", file("fix.rb", bytes))]);
+        let k = check(&big, &r(&vec![b'a'; SHOW_MAX + 1]), "a@b", "n").unwrap();
+        assert!(k.detail.is_none() && k.audit.contains("6001 bytes"), "{:?}", k.detail);
+        assert!(check(&big, &r(b"\x00\x01binary"), "a@b", "n").unwrap().detail.is_none());
+        assert!(check(&big, &r(b"\x1b[31mred"), "a@b", "n").unwrap().detail.is_none(), "an escape sequence");
+        assert!(check(&big, &r(b"puts 1\n"), "a@b", "n").unwrap().detail.is_some());
+    }
+
+    /// Review 4: a secret across a cut in a long line is still redacted, whatever the cut.
+    #[test]
+    fn a_secret_across_a_cut_is_still_redacted() {
+        let secret = "s3cr3t-value-that-is-long-enough";
+        let scrubber = fleetlayer_secrets::scrub::Scrubber::new(&[fleetlayer_secrets::Secret {
+            reference: "op://v/i/f".into(),
+            value: secret.into(),
+        }]);
+        assert!(scrubber.longest() >= secret.len());
+        let line = format!("before {secret} after\n");
+        for cut in 1..line.len() - 1 {
+            let mut c = Carry::default();
+            let (a, _) = c.push(&scrubber, &line[..cut], false);
+            let (b, _) = c.push(&scrubber, &line[cut..], true);
+            let out = a + &b + &c.finish();
+            assert!(!out.contains(secret) && !out.contains("s3cr3t-value"), "cut at {cut}: {out}");
+            assert!(out.starts_with("before ") && out.ends_with(" after\n"), "cut at {cut}: {out}");
+        }
+    }
+
+    /// Review 5: a program that ignores SIGTERM is killed after the grace period, with its whole group.
+    #[tokio::test]
+    async fn a_program_that_ignores_sigterm_is_killed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let node = Node::for_test(tmp.path());
+        let cmd: CommandConfig = yaml_serde::from_str("name: t\nrun: [/bin/sh]\nwho: ['*']\ntimeout: 1s\n").unwrap();
+        let (mut w, _r) = tokio::io::duplex(64 * 1024);
+        let mut out = Out { w: &mut w };
+        let (_tx, mut cancel) = tokio::sync::watch::channel(false);
+        let argv = vec!["/bin/sh".into(), "-c".into(), "trap '' TERM; sleep 60 & sleep 60".into()];
+        let started = std::time::Instant::now();
+        let (code, how) = run(&node, &cmd, &argv, tmp.path(), "a@b", &mut out, &mut cancel).await;
+        assert_eq!((code, how.as_str()), (None, "timeout"));
+        assert!(started.elapsed() < GRACE + Duration::from_secs(5), "{:?}", started.elapsed());
+        assert!(node.command_runs.groups.lock().unwrap().is_empty(), "the group is forgotten once reaped");
+    }
+
+    /// Review 5: the folders of runs a stopped node left behind go at start.
+    #[test]
+    fn leftover_run_folders_are_swept() {
+        let tmp = tempfile::tempdir().unwrap();
+        let left = tmp.path().join(".local/state/fleetlayer/commands/abc");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::write(left.join("x.sh"), "x").unwrap();
+        sweep(tmp.path());
+        assert!(!left.exists());
+        sweep(&tmp.path().join("nothing-here"));
+    }
+
+    /// Review 7: one run at a time by default, the next refused until it's done; the request size is capped.
+    #[test]
+    fn runs_at_once_are_limited() {
+        let tmp = tempfile::tempdir().unwrap();
+        let node = Node::for_test(tmp.path());
+        let one = Runs::slot(&node, "deploy", 1).unwrap();
+        assert!(Runs::slot(&node, "deploy", 1).is_none(), "a second run while the first holds its place");
+        assert!(Runs::slot(&node, "other", 1).is_some(), "per command");
+        drop(one);
+        assert!(Runs::slot(&node, "deploy", 1).is_some(), "free again once it's done");
+        assert_eq!(rack().max_concurrent(), 1);
+        let mut c = rack();
+        c.max_concurrent = Some(0);
+        assert!(c.check().is_err());
+        c.max_concurrent = Some(CONCURRENT_MAX + 1);
+        assert!(c.check().is_err());
+        let mut many = rack();
+        for i in 0..5 {
+            let name = format!("f{i}");
+            many.params
+                .insert(name.clone(), ParamConfig { max_bytes: Some(FILE_MAX), ..many.params["script"].clone() });
+            many.run.push(format!("{{{name}}}"));
+        }
+        assert_eq!(request_limit(&many), REQUEST_MAX);
+    }
+
+    /// Review 3: a pattern that can match a leading - is named at start.
+    #[test]
+    fn a_pattern_that_matches_a_dash_is_warned_about() {
+        let mut c = rack();
+        assert!(c.warnings().is_empty());
+        c.params.get_mut("n").unwrap().pattern = Some("[-0-9]+".into());
+        assert_eq!(c.warnings().len(), 1, "{:?}", c.warnings());
+        c.params.get_mut("n").unwrap().allow_dash = true;
+        assert!(c.warnings().is_empty());
+    }
+
+    /// Review 4: a long line is cut only between characters.
+    #[tokio::test]
+    async fn long_lines_are_cut_between_characters() {
+        let mut text = "a".repeat(LINE_MAX - 1);
+        text.push('é');
+        text.push('\n');
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        lines("stdout", std::io::Cursor::new(text.clone().into_bytes()), tx).await;
+        let mut got = String::new();
+        while let Some((_, t, _)) = rx.recv().await {
+            got.push_str(&t);
+        }
+        assert_eq!(got, text);
     }
 
     #[test]

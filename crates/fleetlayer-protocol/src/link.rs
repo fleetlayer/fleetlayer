@@ -367,6 +367,10 @@ pub struct ToolCall {
     pub detail: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub justification: Option<String>,
+    /// What the audit log keeps of a shared command's run (`link/command_call`): the program and arguments, files by
+    /// name, size and hash, never their contents. The detail can show more (a script whole); a tool call has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit: Option<String>,
     /// While waiting for the person: only look at this approval request (the stream's caller's), deciding and
     /// recording nothing. Answers `pending`, `denied`, or `ready` once approved, when the node asks again in full.
     #[serde(default, skip_serializing_if = "Option::is_none")]

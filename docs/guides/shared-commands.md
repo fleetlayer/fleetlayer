@@ -20,7 +20,8 @@ other program, no arguments you didn't allow.
 - **The laptop checks the arguments first.** Anything undeclared, missing or off its type is refused. It then asks the
   control plane about this exact run: the verb `run` on `command:<name>@<node>`, decided by your
   [access policy](../access-control.md), recorded in the audit log with the program and arguments (files by name, size
-  and hash, never their contents), and held for your approval when an `ask:` rule matches. By default every run asks.
+  and hash, never their contents), and held for your approval when an `ask:` rule matches, showing you each file
+  whole. By default every run asks.
 - **Then it runs**, by direct exec (an argument list, never a shell, so a value can't become a second command). A file
   is written to a new private folder the laptop chooses and removed after. Output streams back line by line, with any
   secret delivered to the laptop's node redacted. The agent can stop it with Ctrl-C; the timeout stops it too.
@@ -76,6 +77,7 @@ What each setting does:
 | `cwd` | The folder it runs in. Default: the run's own private folder. |
 | `max_output` | The most output sent back, in bytes (default 4 MiB). Past it, the agent gets a note and the program runs on. |
 | `approval_wait` | How long a run waits for your approval before the agent is told to try again later (default `10m`, at most `1h`). |
+| `max_concurrent` | How many runs of it at once (default 1, at most 16). Another is refused while they last, waiting for approval included. |
 
 Parameter types:
 
@@ -83,12 +85,13 @@ Parameter types:
 |---|---|---|
 | `choice` | one of its `values`, exactly | `values` |
 | `text` | plain text: no control characters (newlines included), nothing that hides itself, not starting with `-` | `max_length` (default 200, at most 4096), `allow_dash` |
-| `pattern` | text the regular expression matches whole (it's anchored for you) | `pattern`, `max_length` |
+| `pattern` | text the regular expression matches whole (it's anchored for you), not starting with `-` | `pattern`, `max_length`, `allow_dash` |
 | `file` | a file from the caller's machine, written to a new folder and given to the program as its path | `max_bytes` (default 1 MiB, at most 16 MiB), `extension` |
 
-Any parameter but a file can have a `default`; the others must be given. Text can't start with `-` unless you set
-`allow_dash: true`, because many programs read such a value as an option of their own: a justification of
-`--rack=production` would otherwise move the run to another rack.
+Any parameter but a file can have a `default`; the others must be given. No value can start with `-` (a choice's
+values included) unless the parameter has `allow_dash: true`, because many programs read such a value as an option of
+their own: a justification of `--rack=production` would otherwise move the run to another rack. The node warns at
+start about a pattern that matches such values without it.
 
 ## 2. Let the agents run them
 
@@ -105,14 +108,24 @@ ask:
   - { who: "*", can: run, to: "command:*", for: once }   # each run, with exactly the arguments you saw
 ```
 
-An approval request shows you the program and the arguments it will run, with each file by name, size and SHA-256:
+An approval request shows you the program as `node.yaml` writes it, each parameter with its kind and its value
+(always quoted, so a value can't pass for anything else), and each file whole:
 
 ```
-rack-gateway-run on laptop for ci@agents:
-/opt/homebrew/bin/rack-gateway run --rack staging --app web-app --script '<file fix.rb (812 bytes, sha256 9f2c…)>' --justification 'backfill the missing invoice rows' web rails runner
+rack-gateway-run on laptop for ci@agents runs:
+/opt/homebrew/bin/rack-gateway run --rack {rack} --app {app} --script {script} --justification {justification} web rails runner
+with:
+  rack (choice): 'staging'
+  app (choice): 'web-app'
+  script (file): 'fix.rb', 812 bytes, sha256 9f2c…
+  justification (text): 'backfill the missing invoice rows'
+script, whole:
+  | Invoice.where(total: nil).find_each { |i| i.recalculate! }
 ```
 
-`for: once` approves exactly that run; anything else asks again. A longer hold (`for: 1h`) approves every run of
+A run whose files can't be shown whole (not text, or more than 6000 bytes in all) isn't put to you at all: an
+`ask:` rule refuses it, and the agent is told why. Where the policy allows it without asking, it runs. The audit log
+keeps the same detail without the files' contents. `for: once` approves exactly that run; anything else asks again. A longer hold (`for: 1h`) approves every run of
 that command for an hour whatever its arguments, and `acl apply` warns about it. For Rack Gateway, the key touch and
 its own dialog are a second approval on the same machine, so you may choose `ask: []` for these commands and approve
 on the laptop alone. That's your call: the Fleetlayer approval is what you can answer from your phone.
@@ -143,9 +156,20 @@ if you don't answer within `approval_wait`, it's refused, and the agent runs it 
   through a link, read back and checked against the hash before the program starts, and removed when the run ends.
   The file's name from the agent is only checked against `extension` and shown to you.
 - **Size:** each file has its `max_bytes` (the CLI refuses a bigger one before sending it, and the laptop refuses it
-  again); the whole request has a limit from those; output stops being sent past `max_output`.
-- **What you approve is what runs:** the approval and the audit entry are bound to a hash of the arguments and the
-  files' hashes, and the laptop runs exactly what it checked.
+  again); the whole request has a limit from those (40 MiB at most); output stops being sent past `max_output`;
+  `max_concurrent` limits runs at once.
+- **Programs that don't end cleanly:** a run ends when its program exits, even if something it started holds its
+  output open (two seconds of output are still read). The timeout and Ctrl-C send SIGTERM to its process group and
+  SIGKILL five seconds later, only while the program hasn't been reaped (so the group's ID can't be someone else's).
+  Helpers the program started and left running carry on: declare commands that clean up after themselves. When the
+  node stops, every running program's group is killed, and a run folder left by a node that stopped mid-run is
+  removed when it starts again.
+- **Secrets in output:** output is scrubbed line by line; a line too long to send in one piece is cut between
+  characters, with enough held back that a secret across the cut is still found.
+- **What an approval is bound to:** a hash of the command, its arguments and each file's SHA-256. The laptop runs
+  the bytes it checked and showed you, with those arguments. The hash doesn't cover the program on disk, or anything
+  the program or your script reads when it runs: if the program changes between your approval and the run, the new
+  one runs.
 - **What it can't:** the program runs as you. Anything it does (a script on a rack, a deploy) is as powerful as the
   program and its arguments allow, so declare the narrowest commands that do the job, and keep `who:` to the agents
   that need each one. Other processes of the laptop's own user can read the run's folder while it runs: they're you.

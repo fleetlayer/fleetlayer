@@ -196,9 +196,9 @@ pub struct Outcome {
 pub struct CallContext<'a> {
     pub args_hash: &'a str,
     pub detail: Option<&'a str>,
-    /// Write the detail into the audit entry too: a shared command's run (its program and typed arguments, files by
-    /// hash), which the audit log keeps. A tool call's arguments stay out of it.
-    pub audit_detail: bool,
+    /// What the audit entry keeps besides the decision: a shared command's run (its program and typed arguments,
+    /// files by name, size and hash, never contents). A tool call's arguments stay out of it (None).
+    pub audit: Option<&'a str>,
 }
 
 /// Whether `who` may `verb` `target`, publishing refusals and audit matches. Err is the refusal to send back.
@@ -489,7 +489,7 @@ async fn decide_in(
     reply: bool,
     call: Option<CallContext<'_>>,
 ) -> Result<Outcome, RpcError> {
-    let audited = call.filter(|c| c.audit_detail).and_then(|c| c.detail);
+    let audited = call.and_then(|c| c.audit);
     let entry = |decision: &str, reason: String| crate::audit::Entry {
         decision: decision.into(),
         subject: who.into(),
@@ -1066,6 +1066,7 @@ mod tests {
             args_hash: hash.into(),
             detail: Some("call {\"to\": \"sam@example.com\"}".into()),
             justification: None,
+            audit: None,
             peek: None,
         };
         let ask = |c: ToolCall| crate::link::tool_call(&app, "default", "laptop", c);
@@ -1132,6 +1133,7 @@ mod tests {
             args_hash: "same".into(),
             detail: Some("send".into()),
             justification: None,
+            audit: None,
             peek: None,
         };
         let ask = |c: ToolCall| crate::link::tool_call(&app, "default", "laptop", c);
@@ -1160,8 +1162,9 @@ mod tests {
             stream_id: stream.clone(),
             targets: vec![],
             args_hash: hash.into(),
-            detail: Some("rack-gateway deploy --app web".into()),
+            detail: Some("rack-gateway deploy --app web --script fix.rb\n  | puts 1".into()),
             justification: None,
+            audit: Some("rack-gateway deploy --app web --script fix.rb (7 bytes, sha256 ab)".into()),
             peek: None,
         };
         let ask = |c: ToolCall| crate::link::command_call(&app, "default", "laptop", c);
@@ -1170,17 +1173,22 @@ mod tests {
         assert_eq!(d.decision, "pending", "{}", d.reason);
         let id = d.approval.unwrap();
         let listed = crate::approvals::list(&app.db, "default", false).await.unwrap();
-        assert_eq!(listed[0]["detail"].as_str(), Some("rack-gateway deploy --app web"));
+        // The person sees the script whole.
+        assert_eq!(listed[0]["detail"].as_str(), Some("rack-gateway deploy --app web --script fix.rb\n  | puts 1"));
         crate::approvals::decide(&app.db, "default", &id, true, None, "admin").await.unwrap();
         assert_eq!(ask(call("h2")).await.unwrap().decision, "pending", "other arguments aren't approved");
         assert_eq!(ask(call("h1")).await.unwrap().decision, "allowed");
         assert_eq!(ask(call("h1")).await.unwrap().decision, "pending", "spent");
-        // A tool stream isn't a command stream, a run names no targets and always carries its detail, and only the
+        // A run whose files can't be shown whole (no detail) isn't put to the person.
+        let d = ask(ToolCall { detail: None, ..call("h9") }).await.unwrap();
+        assert_eq!(d.decision, "denied", "{}", d.reason);
+        assert!(d.reason.contains("too long to show"), "{}", d.reason);
+        // A tool stream isn't a command stream, a run names no targets and always carries its audit text, and only the
         // node serving the stream may ask.
         let tool = app.streams.create(&app.db, "default", "x", "laptop", "laptop", "recipes@laptop").await.unwrap();
         assert!(ask(ToolCall { stream_id: tool, ..call("h") }).await.is_err());
         assert!(ask(ToolCall { targets: vec!["x".into()], ..call("h") }).await.is_err());
-        assert!(ask(ToolCall { detail: None, ..call("h") }).await.is_err());
+        assert!(ask(ToolCall { audit: None, ..call("h") }).await.is_err());
         assert!(crate::link::command_call(&app, "default", "web", call("h")).await.is_err());
         store(
             &app.db,
@@ -1190,6 +1198,8 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(ask(call("h3")).await.unwrap().decision, "allowed");
+        // Allowed without asking: it runs even when it couldn't have been shown.
+        assert_eq!(ask(ToolCall { detail: None, ..call("h4") }).await.unwrap().decision, "allowed");
         let drop =
             app.streams.create(&app.db, "default", "command:drop", "laptop", "laptop", "recipes@laptop").await.unwrap();
         assert_eq!(ask(ToolCall { stream_id: drop, ..call("h") }).await.unwrap().decision, "denied");
@@ -1198,7 +1208,9 @@ mod tests {
         assert!(logged.contains(&"denied recipes@laptop run command:drop@laptop".to_string()), "{logged:?}");
         let reasons: Vec<String> =
             sqlx::query_scalar("SELECT reason FROM audit_log WHERE verb = 'run'").fetch_all(&app.db).await.unwrap();
-        assert!(reasons.iter().all(|r| r.ends_with("; rack-gateway deploy --app web")), "{reasons:?}");
+        // The audit log keeps the run with its files by hash, never their contents.
+        assert!(reasons.iter().all(|r| r.ends_with("--script fix.rb (7 bytes, sha256 ab)")), "{reasons:?}");
+        assert!(!reasons.iter().any(|r| r.contains("puts 1")), "{reasons:?}");
     }
 
     #[tokio::test]

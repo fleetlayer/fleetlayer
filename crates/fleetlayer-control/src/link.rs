@@ -314,7 +314,7 @@ pub(crate) async fn tool_call(
         }
         targets.push(format!("tool:{tool}/{t}@{node}"));
     }
-    let call = crate::authz::CallContext { args_hash: &c.args_hash, detail: c.detail.as_deref(), audit_detail: false };
+    let call = crate::authz::CallContext { args_hash: &c.args_hash, detail: c.detail.as_deref(), audit: None };
     let mut reasons = vec![];
     let mut approval = None;
     let mut to_spend = vec![];
@@ -362,7 +362,7 @@ pub fn valid_command_name(n: &str) -> bool {
 /// `link/command_call`: the node serving a command stream asks whether its caller may run the command with the
 /// arguments it was given. The caller and the command are the stream's, as recorded when it was opened, and only the
 /// node serving it may ask. Decided as verb `run` on `command:<name>@<node>`; the detail (the program and arguments it
-/// will run, file parameters by hash) goes to the person when asked and into the audit log.
+/// will run, and its files whole) goes to the person when asked, and the audit text (files by hash) into the audit log.
 pub(crate) async fn command_call(
     app: &App,
     tenant: &str,
@@ -395,11 +395,16 @@ pub(crate) async fn command_call(
     if c.args_hash.is_empty() || c.args_hash.len() > 128 {
         return Err(RpcError::invalid_params("argsHash is 1 to 128 characters"));
     }
-    let Some(detail) = c.detail.as_deref().filter(|d| !d.is_empty() && d.len() <= 8192) else {
-        return Err(RpcError::invalid_params("a command run carries its detail (1 to 8192 bytes)"));
+    // What the audit log keeps is always there; the detail the person sees (with a script whole) may not be, when the
+    // run's files can't be shown whole: then an `ask:` rule refuses it rather than put a part of it to the person.
+    let Some(audit) = c.audit.as_deref().filter(|d| !d.is_empty() && d.len() <= 8192) else {
+        return Err(RpcError::invalid_params("a command run carries its audit text (1 to 8192 bytes)"));
     };
+    if c.detail.as_ref().is_some_and(|d| d.is_empty() || d.len() > 8192) {
+        return Err(RpcError::invalid_params("a command run's detail is 1 to 8192 bytes"));
+    }
     let target = format!("command:{command}@{node}");
-    let call = crate::authz::CallContext { args_hash: &c.args_hash, detail: Some(detail), audit_detail: true };
+    let call = crate::authz::CallContext { args_hash: &c.args_hash, detail: c.detail.as_deref(), audit: Some(audit) };
     let out = crate::authz::check_call(app, tenant, &caller, "run", &target, call, c.justification.as_deref()).await?;
     if let Some(e) = out.refusal {
         let decision = if out.pending.is_some() { "pending" } else { "denied" };

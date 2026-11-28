@@ -263,9 +263,11 @@ fn a_shared_command_runs_checked_and_decided() {
             _ => false,
         }
     });
-    assert!(listing.contains("/bin/sh -c") && listing.contains("bye"), "{listing}");
-    assert!(listing.contains("<file note.txt (15 bytes, sha256"), "{listing}");
-    assert!(!listing.contains("from the agents"), "never a file's contents: {listing}");
+    assert!(listing.contains("/bin/sh -c"), "{listing}");
+    // Each parameter with its kind, and the file whole, for the person to read before approving.
+    assert!(listing.contains("note (file): 'note.txt', 15 bytes, sha256"), "{listing}");
+    assert!(listing.contains("word (choice): 'bye'"), "{listing}");
+    assert!(listing.contains("| from the agents"), "the file is shown whole: {listing}");
     let out = f.laptop.control_cli(&["approvals", "approve", &id]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let out = child.wait_with_output().unwrap();
