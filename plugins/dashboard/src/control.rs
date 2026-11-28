@@ -85,6 +85,17 @@ impl Control {
         }
     }
 
+    /// `GET <path>` as `person` (the people and policy pages: the control plane checks they may).
+    pub async fn get_for(&self, path: &str, person: Option<&str>) -> Result<Value, Failed> {
+        self.send(Self::as_person(self.http.get(format!("{}{path}", self.base)), person), path).await
+    }
+
+    /// `POST <path>` with a JSON body, as `person`.
+    pub async fn post_for(&self, path: &str, body: &Value, person: Option<&str>) -> Result<Value, Failed> {
+        let req = self.http.post(format!("{}{path}", self.base)).json(body);
+        self.send(Self::as_person(req, person), path).await
+    }
+
     /// `POST /v1/approvals/<id>` `{approve}`, as `person` when the token is a delegate token.
     pub async fn decide(&self, id: &str, approve: bool, person: Option<&str>) -> Result<Value, Failed> {
         let path = format!("/v1/approvals/{}", enc(id));

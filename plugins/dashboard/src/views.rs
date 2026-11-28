@@ -56,6 +56,11 @@ fn until(ms: i64, now: i64) -> String {
     }
 }
 
+/// "28 Nov 2026", for an expiry.
+pub fn until_words(ms: i64) -> String {
+    jiff::Timestamp::from_millisecond(ms).map(|t| t.strftime("%-d %b %Y").to_string()).unwrap_or_default()
+}
+
 fn iso_ms(s: &str) -> Option<i64> {
     s.parse::<jiff::Timestamp>().ok().map(|t| t.as_millisecond())
 }
@@ -140,7 +145,7 @@ fn page_head(title: &str, summary: &str) -> String {
 }
 
 /// A section's heading over its list: a title, an optional count and an optional link.
-fn sec_head(id: &str, title: &str, count: Option<usize>, link: Option<(&str, &str)>) -> String {
+pub fn sec_head(id: &str, title: &str, count: Option<usize>, link: Option<(&str, &str)>) -> String {
     format!(
         r#"<div class="sec-head"><h2 id="{id}">{}{}</h2>{}</div>"#,
         esc(title),
@@ -150,7 +155,7 @@ fn sec_head(id: &str, title: &str, count: Option<usize>, link: Option<(&str, &st
 }
 
 /// An icon in a small square: `warn`, `bad`, `accent` or plain.
-fn tile(name: &str, tone: &str) -> String {
+pub fn tile(name: &str, tone: &str) -> String {
     format!(
         r#"<span class="tile{}">{}</span>"#,
         if tone.is_empty() { String::new() } else { format!(" is-{tone}") },

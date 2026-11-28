@@ -22,6 +22,7 @@
 //! same service on its own; `fleetlayer-dashboard demo` serves a made-up fleet on this machine, for trying it out and
 //! for screenshots.
 
+mod admin;
 mod auth;
 mod control;
 mod demo;

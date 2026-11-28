@@ -508,6 +508,106 @@ pub async fn delete_window(
     Ok(Json(json!({"role": role, "closed": closed})))
 }
 
+/// Who manages the tenant's people with this request: the admin token, or a delegate token for the signed-in person
+/// it names, when they're one of the tenant's admins or the policy allows them `admin` on `service:dashboard`. Their
+/// ID's tenant and how changes are recorded (`admin token`, `person:<handle> (via <token>)`).
+async fn people_actor(app: &App, headers: &HeaderMap, target: &str) -> Result<String, (StatusCode, String)> {
+    match scope_of(app, headers).await {
+        Some(Scope::Admin) => Ok("admin token".into()),
+        Some(Scope::Delegate) => {
+            let token = headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.strip_prefix("Bearer "))
+                .unwrap_or_default();
+            let (_, _, name) = db::token_info(&app.db, token)
+                .await
+                .map_err(internal)?
+                .ok_or((StatusCode::UNAUTHORIZED, "unknown token".to_string()))?;
+            let Some(person) = headers.get(PERSON_HEADER).and_then(|v| v.to_str().ok()).filter(|p| !p.is_empty())
+            else {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    "a delegate token acts for a person: send Fleetlayer-Person".into(),
+                ));
+            };
+            let fleet = app.authz.fleet(&app.db).await.map_err(internal)?;
+            let tenant = fleet.tenant(DEFAULT_TENANT).ok_or((StatusCode::NOT_FOUND, "no tenant".to_string()))?;
+            let Some(handle) = tenant.handles.get(person).cloned() else {
+                return Err((StatusCode::FORBIDDEN, format!("{person} isn't a member of the tenant")));
+            };
+            let by = format!("person:{handle} (via {name})");
+            if tenant.people.get(&handle).is_some_and(|p| p.role == "admin") {
+                return Ok(by);
+            }
+            let ask = fleetlayer_protocol::link::AccessCheck {
+                tenant: tenant.id.clone(),
+                who: person.to_string(),
+                can: "admin".into(),
+                to: "service:dashboard".into(),
+                ..Default::default()
+            };
+            let d = crate::authz::check_as(app, &fleet, tenant, &ask)
+                .await
+                .map_err(|e| (StatusCode::BAD_REQUEST, e.message))?;
+            if d.allowed {
+                Ok(by)
+            } else {
+                let why = format!("person:{handle} may not manage the tenant's people: {}", d.reason);
+                audit_refusal(app, &by, target, why.clone()).await;
+                Err((StatusCode::FORBIDDEN, why))
+            }
+        }
+        Some(_) => Err((StatusCode::FORBIDDEN, "managing people needs an admin or delegate token".into())),
+        None => Err((StatusCode::UNAUTHORIZED, "managing people needs an admin or delegate token".into())),
+    }
+}
+
+/// `GET /v1/people`: the tenant's members, pending invites and teams (admin token, or a delegate token for one of the
+/// tenant's admins). `{tenant, slug, name, members, invites, teams}`.
+pub async fn get_people(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
+    people_actor(&app, &headers, "people").await?;
+    let (slug, name): (String, String) = sqlx::query_as("SELECT slug, name FROM tenants WHERE id = ?")
+        .bind(DEFAULT_TENANT)
+        .fetch_one(&app.db)
+        .await
+        .map_err(|e| internal(e.into()))?;
+    let members = crate::people::members(&app.db, DEFAULT_TENANT).await.map_err(internal)?;
+    let invites = crate::people::invites(&app.db, DEFAULT_TENANT).await.map_err(internal)?;
+    let teams = crate::people::teams(&app.db, DEFAULT_TENANT).await.map_err(internal)?;
+    Ok(Json(
+        json!({"tenant": DEFAULT_TENANT, "slug": slug, "name": name, "members": members, "invites": invites, "teams": teams}),
+    ))
+}
+
+/// `POST /v1/people/<action>` (`invite`, `invite_revoke`, `member_role`, `member_remove`, `team_add`, `team_remove`,
+/// `team_member`) with the change's fields: made with the same functions as the command line and recorded as the
+/// person who made it. An invite answers `{code}`.
+pub async fn post_people(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    axum::extract::Path(action): axum::extract::Path<String>,
+    Json(c): Json<crate::people::Change>,
+) -> ApiResult {
+    let by = people_actor(&app, &headers, &format!("people/{action}")).await?;
+    crate::people::apply(&app.db, DEFAULT_TENANT, &action, &c, &by).await.map(Json).map_err(|e| match e {
+        crate::people::ApplyError::NoSuchAction => (StatusCode::NOT_FOUND, format!("no action {action}")),
+        crate::people::ApplyError::Bad(m) => (StatusCode::BAD_REQUEST, m),
+    })
+}
+
+/// `GET /v1/policy` (admin token, or a delegate token for one of the tenant's admins): the access policy in force, as
+/// its file says it and parsed. `{text, builtin, policy}`; `text` null when the tenant has none (the older ACL rules).
+pub async fn get_policy(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
+    people_actor(&app, &headers, "policy").await?;
+    let Some((text, builtin)) = crate::authz::effective(&app.db, DEFAULT_TENANT).await.map_err(internal)? else {
+        return Ok(Json(json!({"text": null, "builtin": false, "policy": null})));
+    };
+    let parsed = app.authz.policy(&app.db, DEFAULT_TENANT).await.map_err(internal)?;
+    let policy = parsed.map(|c| serde_json::to_value(&c.file).unwrap_or_default());
+    Ok(Json(json!({"text": text, "builtin": builtin, "policy": policy})))
+}
+
 /// `/healthz`: ok when the database answers, with the number of linked nodes.
 /// `{ok, linkedNodes, degraded: [reason]}`. 200 while the server can answer, so Kubernetes' probes don't restart it
 /// over a problem a restart won't fix; `ok` is false while something is degraded (an audit write failed within the
@@ -801,6 +901,46 @@ mod tests {
         let refused: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM audit_log WHERE decision = 'denied'").fetch_one(db).await.unwrap();
         assert!(refused >= 3, "refusals are audited");
+    }
+
+    #[tokio::test]
+    async fn people_are_managed_by_the_tenant_s_admins_through_the_dashboard_and_recorded_as_them() {
+        let app = app().await;
+        let db = &app.db;
+        let mut ids = vec![];
+        for (handle, role) in [("sam", "admin"), ("lee", "member")] {
+            let i = crate::people::NewInvite { handle, role, teams: &[], person: None };
+            let code = crate::people::invite(db, DEFAULT_TENANT, i, "admin").await.unwrap();
+            let r = crate::people::invite_redeem(db, &code, crate::people::Redeemer::New { display_name: handle });
+            ids.push(r.await.unwrap().person);
+        }
+        let token = db::add_token(db, DEFAULT_TENANT, "dashboard", "delegate").await.unwrap();
+        let as_ = |person: &str| {
+            let mut h = bearer(&token);
+            h.insert(PERSON_HEADER, person.parse().unwrap());
+            h
+        };
+        let change = |handle: &str| Json(crate::people::Change { handle: Some(handle.into()), ..Default::default() });
+        let path = |a: &str| axum::extract::Path(a.to_string());
+        // An admin reads and changes them, as themselves.
+        let Json(v) = get_people(State(app.clone()), as_(&ids[0])).await.unwrap();
+        assert_eq!(v["members"].as_array().unwrap().len(), 2, "{v}");
+        let Json(v) = post_people(State(app.clone()), as_(&ids[0]), path("invite"), change("kim")).await.unwrap();
+        assert!(v["code"].as_str().is_some_and(|c| !c.is_empty()), "{v}");
+        let by: String =
+            sqlx::query_scalar("SELECT created_by FROM invites WHERE handle = 'kim'").fetch_one(db).await.unwrap();
+        assert_eq!(by, "person:sam (via dashboard)");
+        assert!(get_policy(State(app.clone()), as_(&ids[0])).await.is_ok());
+        // A member doesn't, nor a delegate token without a person, nor a read token.
+        let e = post_people(State(app.clone()), as_(&ids[1]), path("invite"), change("x")).await.unwrap_err();
+        assert_eq!(e.0, StatusCode::FORBIDDEN, "{}", e.1);
+        assert_eq!(get_people(State(app.clone()), bearer(&token)).await.unwrap_err().0, StatusCode::FORBIDDEN);
+        let read = db::add_token(db, DEFAULT_TENANT, "reader", "read").await.unwrap();
+        assert_eq!(get_people(State(app.clone()), bearer(&read)).await.unwrap_err().0, StatusCode::FORBIDDEN);
+        // The admin token does, and an unknown action is a 404.
+        assert!(get_people(State(app.clone()), bearer("admin-token")).await.is_ok());
+        let e = post_people(State(app.clone()), as_(&ids[0]), path("nope"), change("x")).await.unwrap_err();
+        assert_eq!(e.0, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

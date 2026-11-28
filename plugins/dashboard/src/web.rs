@@ -11,6 +11,7 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Form, Router};
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::auth::{self, Access, Auth, Viewer};
 use crate::control::Failed;
@@ -27,6 +28,8 @@ pub struct App {
     pub issuer: Option<String>,
     /// What the dashboard's own token is (`GET /v1/token`).
     token: std::sync::RwLock<Option<TokenInfo>>,
+    /// Invites each person made in the last hour (`admin::INVITES_PER_HOUR`).
+    invites_made: tokio::sync::Mutex<std::collections::HashMap<String, Vec<std::time::Instant>>>,
 }
 
 /// The dashboard's control plane token: its scope, and the tenant it shows (people signed in to another are turned
@@ -59,6 +62,7 @@ impl App {
             cache: Cache::default(),
             issuer: None,
             token: std::sync::RwLock::new(None),
+            invites_made: Default::default(),
         }
     }
 
@@ -109,6 +113,19 @@ impl App {
         }
     }
 
+    /// Whether this viewer may make another invite now, counting it when they may.
+    async fn invite_allowed(&self, v: &Viewer) -> bool {
+        let who = v.person.as_ref().map(|p| p.sub.clone()).unwrap_or_else(|| "login key".into());
+        let mut made = self.invites_made.lock().await;
+        let mine = made.entry(who).or_default();
+        mine.retain(|t| t.elapsed() < std::time::Duration::from_secs(3600));
+        if mine.len() >= crate::admin::INVITES_PER_HOUR {
+            return false;
+        }
+        mine.push(std::time::Instant::now());
+        true
+    }
+
     /// Who the control plane should act as: the signed-in person, when the token is a delegate token.
     fn acting_as<'a>(&self, v: &'a Viewer) -> Option<&'a str> {
         (self.token_scope().as_deref() == Some("delegate")).then_some(())?;
@@ -155,6 +172,10 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/access", get(page_access))
         .route("/graph", get(page_graph))
         .route("/readings", get(page_readings))
+        .route("/people", get(page_people))
+        .route("/teams", get(page_teams))
+        .route("/rules", get(page_rules))
+        .route("/_/people/{action}", post(people_change))
         .fallback(not_found)
         .layer(axum::middleware::map_response(security_headers))
         .with_state(app)
@@ -237,6 +258,9 @@ enum Page {
     Access,
     Graph,
     Readings,
+    People,
+    Teams,
+    Rules,
 }
 
 const NAV: &[(Page, &str, &str)] = &[
@@ -247,6 +271,9 @@ const NAV: &[(Page, &str, &str)] = &[
     (Page::Access, "/access", "Access"),
     (Page::Graph, "/graph", "Graph"),
     (Page::Readings, "/readings", "Readings"),
+    (Page::People, "/people", "People"),
+    (Page::Teams, "/teams", "Teams"),
+    (Page::Rules, "/rules", "Rules"),
 ];
 
 #[derive(Deserialize, Default)]
@@ -257,6 +284,9 @@ struct PageQuery {
     node: Option<String>,
     #[serde(default)]
     msg: Option<String>,
+    /// An invite just made (its code), to show its link once.
+    #[serde(default)]
+    invite: Option<String>,
 }
 
 fn shell(page: Page, viewer: &Viewer, app: &App, refresh: &str, main: &str) -> String {
@@ -371,6 +401,18 @@ async fn page_graph(s: St, h: HeaderMap, q: Query<PageQuery>) -> Response {
     page(s, h, q, Page::Graph).await
 }
 
+async fn page_people(s: St, h: HeaderMap, q: Query<PageQuery>) -> Response {
+    page(s, h, q, Page::People).await
+}
+
+async fn page_teams(s: St, h: HeaderMap, q: Query<PageQuery>) -> Response {
+    page(s, h, q, Page::Teams).await
+}
+
+async fn page_rules(s: St, h: HeaderMap, q: Query<PageQuery>) -> Response {
+    page(s, h, q, Page::Rules).await
+}
+
 async fn page_readings(s: St, h: HeaderMap, q: Query<PageQuery>) -> Response {
     page(s, h, q, Page::Readings).await
 }
@@ -406,6 +448,7 @@ async fn page(State(app): St, headers: HeaderMap, Query(q): Query<PageQuery>, wh
         Page::Access => views::access(&snap, &c),
         Page::Graph => views::graph(&snap, &c),
         Page::Readings => views::readings(&snap, &c),
+        Page::People | Page::Teams | Page::Rules => admin_page(&app, &v, which, q.invite.as_deref(), path).await,
     };
     if let Some(m) = q.msg.as_deref().filter(|_| q.fragment.is_none()) {
         main.insert_str(
@@ -428,6 +471,127 @@ async fn not_found(State(app): St, headers: HeaderMap) -> Response {
         return Redirect::to("/_/login").into_response();
     }
     simple(StatusCode::NOT_FOUND, "Not here", r#"<p><a href="/">Back to the overview</a></p>"#)
+}
+
+// ------------------------------------------------------------------ people, teams and rules
+
+/// The demo's made-up people, teams and policy.
+fn demo_people() -> Value {
+    serde_json::json!({"name": "the demo fleet", "members": [
+        {"person": "p_alex", "display_name": "Alex Moreau", "handle": "alex", "role": "admin", "teams": ["everyone", "platform"]},
+        {"person": "p_jun", "display_name": "Jun Takeda", "handle": "jun", "role": "member", "teams": ["everyone", "design"]},
+        {"person": "p_rosa", "display_name": "Rosa Lindqvist", "handle": "rosa", "role": "member", "teams": ["everyone", "platform"]}],
+     "invites": [{"handle": "sam", "role": "member", "created_by": "person:alex (via dashboard)", "expires_at": crate::views::now_ms() + 6 * 86_400_000}],
+     "teams": [{"name": "everyone", "members": []},
+               {"name": "design", "parent": null, "members": [["jun", "member", null]]},
+               {"name": "platform", "parent": null, "members": [["alex", "maintainer", null], ["rosa", "member", null]]}]})
+}
+
+fn demo_policy() -> Value {
+    serde_json::json!({"text": "version: 2\ndefault: deny\n", "builtin": false, "policy": {"default": "deny",
+        "deny": [{"who": "*@reviewer", "can": ["message"], "to": ["*@workers"], "why": "it reads strangers' text"}],
+        "allow": [{"who": ["*@workers"], "can": ["message", "use_tool"], "to": ["*@workers", "tool:browser@laptop"]},
+                  {"who": ["team:platform"], "can": ["admin"], "to": ["service:dashboard"]}],
+        "roles": {"ops-admin": {"who": "*@ops", "activation": "window", "why": "changes the servers"}}}})
+}
+
+/// Who the people pages act as, for the control plane: the signed-in person (through the delegate token), or the
+/// login key's holder (through the admin token).
+async fn admin_page(app: &App, v: &Viewer, which: Page, invite: Option<&str>, here: &str) -> String {
+    let title = NAV.iter().find(|(p, _, _)| *p == which).map(|(_, _, t)| *t).unwrap_or("People");
+    let path = if which == Page::Rules { "/v1/policy" } else { "/v1/people" };
+    let got = match &app.source {
+        Source::Demo(_) => Ok(if which == Page::Rules { demo_policy() } else { demo_people() }),
+        Source::Control(c) => c.get_for(path, app.acting_as(v)).await,
+    };
+    let data = match got {
+        Ok(d) => d,
+        Err(Failed::Refused(why)) => return crate::admin::refused(title, &why),
+        Err(e) => return crate::admin::refused(title, &format!("The control plane didn't answer: {e}.")),
+    };
+    let f = crate::admin::Forms { csrf: &v.csrf, here };
+    match which {
+        Page::Teams => crate::admin::teams(&data, &f),
+        Page::Rules => crate::admin::rules(&data),
+        _ => {
+            let link = invite.map(|code| match &app.issuer {
+                Some(i) => {
+                    format!("{i}/invite?code={}", form_urlencoded::byte_serialize(code.as_bytes()).collect::<String>())
+                }
+                None => code.to_string(),
+            });
+            crate::admin::people(&data, &f, v.person.as_ref().map(|p| p.sub.as_str()), link.as_deref())
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct PeopleForm {
+    csrf: String,
+    #[serde(default)]
+    back: Option<String>,
+    #[serde(default)]
+    handle: Option<String>,
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    team: Option<String>,
+    #[serde(default)]
+    parent: Option<String>,
+    #[serde(default)]
+    add: Option<String>,
+}
+
+/// `POST /_/people/<action>`: one change to the fleet's people or teams, made by the control plane as this person.
+async fn people_change(
+    State(app): St,
+    headers: HeaderMap,
+    UrlPath(action): UrlPath<String>,
+    Form(f): Form<PeopleForm>,
+) -> Response {
+    let v = match actor(&app, &headers, &f.csrf).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let to = f.back.as_deref();
+    let add = f.add.as_deref().map(|a| a != "false");
+    // Hard to undo: their passkey again first, unless they used it in the last few minutes. They come back to the
+    // page and press again.
+    if crate::admin::hard_to_undo(&action, add) && !v.fresh(crate::admin::FRESH_SECS) && app.auth.oidc.is_some() {
+        let next = format!(
+            "{}?msg={}",
+            to.and_then(|t| NAV.iter().find(|(_, h, _)| *h == t).map(|(_, h, _)| *h)).unwrap_or("/people"),
+            form_urlencoded::byte_serialize("Signed in again with your passkey. Now make the change.".as_bytes())
+                .collect::<String>()
+        );
+        let enc: String = form_urlencoded::byte_serialize(next.as_bytes()).collect();
+        return Redirect::to(&format!("/_/login/start?fresh=1&next={enc}")).into_response();
+    }
+    if action == "invite" && !app.invite_allowed(&v).await {
+        return back(to, "That's 20 invites in the last hour, the limit. Try again later.");
+    }
+    let change = serde_json::json!({"handle": f.handle, "role": f.role, "team": f.team,
+        "parent": f.parent.filter(|p| !p.is_empty()), "add": add});
+    let done = match &app.source {
+        Source::Demo(_) => Ok(serde_json::json!({"code": "demo-invite"})),
+        Source::Control(c) => {
+            let path = format!("/v1/people/{}", form_urlencoded::byte_serialize(action.as_bytes()).collect::<String>());
+            c.post_for(&path, &change, app.acting_as(&v)).await
+        }
+    };
+    match done {
+        Ok(r) if action == "invite" => {
+            tracing::info!(who = %v.label(), handle = ?f.handle, "made an invite from the dashboard");
+            let code: String =
+                form_urlencoded::byte_serialize(r["code"].as_str().unwrap_or_default().as_bytes()).collect();
+            Redirect::to(&format!("/people?invite={code}")).into_response()
+        }
+        Ok(_) => {
+            tracing::info!(who = %v.label(), action, handle = ?f.handle, team = ?f.team, "changed people from the dashboard");
+            back(to, "Done.")
+        }
+        Err(e) => back(to, &failed_words(&e)),
+    }
 }
 
 // ------------------------------------------------------------------ actions
@@ -695,6 +859,9 @@ fn login_html(app: &App, msg: &str, next: &str) -> String {
 #[derive(Deserialize)]
 struct NextQuery {
     next: Option<String>,
+    /// Ask for the passkey again even when signed in (before a change that's hard to undo).
+    #[serde(default)]
+    fresh: Option<String>,
 }
 
 async fn login_page(State(app): St, Query(q): Query<NextQuery>) -> Response {
@@ -727,7 +894,8 @@ fn oidc_cookie(state: &str, secure: bool, max_age: u64) -> String {
 async fn login_start(State(app): St, Query(q): Query<NextQuery>) -> Response {
     let next = safe_next(q.next.as_deref());
     let Some(oidc) = &app.auth.oidc else { return Redirect::to("/_/login").into_response() };
-    match oidc.start(&next).await {
+    let max_age = q.fresh.is_some().then_some(0);
+    match oidc.start_with(&next, max_age).await {
         Ok((url, state)) => (
             StatusCode::SEE_OTHER,
             [(header::SET_COOKIE, oidc_cookie(&state, app.secure_cookies(), 600)), (header::LOCATION, url)],
@@ -770,8 +938,21 @@ async fn auth_callback(State(app): St, headers: HeaderMap, Query(q): Query<Callb
         return fail(StatusCode::BAD_REQUEST, "That sign-in link isn't complete. Sign in again.");
     };
     let bound = auth::cookie_value(&headers, OIDC_COOKIE);
-    match oidc.finish(code, state, bound.as_deref()).await {
-        Ok((person, next)) => {
+    let finished = oidc.finish_claims(code, state, bound.as_deref()).await.and_then(|(claims, next)| {
+        let get = |k: &str| claims.get(k).and_then(|v| v.as_str()).map(str::to_string);
+        let tenant =
+            get("fleetlayer.dev/tenant").ok_or_else(|| anyhow::anyhow!("the ID token doesn't say which tenant"))?;
+        let person = fleetlayer_oidc::Person {
+            sub: get("sub").unwrap_or_default(),
+            tenant,
+            handle: get("preferred_username"),
+            name: get("name"),
+            sid: get("sid"),
+        };
+        Ok((person, claims.get("auth_time").and_then(|t| t.as_i64()), next))
+    });
+    match finished {
+        Ok((person, auth_time, next)) => {
             if !app.tenant_ok(&person.tenant).await {
                 tracing::warn!(who = %person.sub, tenant = %person.tenant, "a sign-in to another tenant was turned away");
                 return fail(
@@ -780,7 +961,7 @@ async fn auth_callback(State(app): St, headers: HeaderMap, Query(q): Query<Callb
                 );
             }
             tracing::info!(who = %person.sub, handle = ?person.handle, "signed in to the dashboard");
-            let sid = app.auth.start(Some(person)).await;
+            let sid = app.auth.start_at(Some(person), auth_time).await;
             // A page, not a redirect: the SameSite=Strict cookie isn't sent on the issuer's cross-site redirect.
             let body = fleetlayer_oidc::continue_page(&next, "Signed in · Fleetlayer", "Continue");
             let mut res = Html(body).into_response();
@@ -1003,6 +1184,16 @@ mod tests {
                 }),
             )
             .route(
+                "/v1/people/{action}",
+                post({
+                    let s3 = seen.clone();
+                    move |UrlPath(action): UrlPath<String>, h: HeaderMap| async move {
+                        s3.lock().unwrap().push((format!("people {action}"), person(&h)));
+                        axum::Json(serde_json::json!({"code": "c0de"}))
+                    }
+                }),
+            )
+            .route(
                 "/v1/windows/{role}",
                 delete(move |UrlPath(role): UrlPath<String>, h: HeaderMap| async move {
                     s2.lock().unwrap().push((format!("close {role}"), person(&h)));
@@ -1154,6 +1345,44 @@ mod tests {
         let (status, h, _) = get(&app, "/_/approvals/ap_win/confirm?again=1", None).await;
         assert_eq!(status, StatusCode::SEE_OTHER);
         assert_eq!(h[header::LOCATION], "/_/login?next=%2F_%2Fapprovals%2Fap_win%2Fconfirm");
+    }
+
+    #[tokio::test]
+    async fn people_changes_go_as_the_person_and_removing_someone_asks_for_the_passkey_again() {
+        let (app, cookie, csrf, seen) = signed_in_person("delegate").await;
+        // Their session has no recent passkey: removing someone goes by the sign-in service first.
+        let r =
+            post_form(&app, "/_/people/member_remove", &cookie, format!("csrf={csrf}&handle=lee&back=/people")).await;
+        assert_eq!(r.status(), StatusCode::SEE_OTHER);
+        let to = r.headers()[header::LOCATION].to_str().unwrap().to_string();
+        assert!(to.starts_with("/_/login/start?fresh=1&next=%2Fpeople%3Fmsg%3D"), "{to}");
+        assert!(seen.lock().unwrap().is_empty());
+        // An invite needs no fresh passkey: made as them, and its link shown once.
+        let r = post_form(&app, "/_/people/invite", &cookie, format!("csrf={csrf}&handle=kim&role=member")).await;
+        assert_eq!(r.headers()[header::LOCATION], "/people?invite=c0de");
+        assert_eq!(*seen.lock().unwrap(), [("people invite".to_string(), Some("p_sam".to_string()))]);
+        // With a fresh passkey, removing goes ahead.
+        let person =
+            fleetlayer_oidc::Person { sub: "p_sam".into(), tenant: "home".into(), handle: None, name: None, sid: None };
+        let sid = app.auth.start_at(Some(person), Some(jiff::Timestamp::now().as_second())).await;
+        let fresh = format!("{}={sid}", auth::COOKIE);
+        let mut h = HeaderMap::new();
+        h.insert(header::COOKIE, fresh.parse().unwrap());
+        let csrf = app.auth.viewer(&h).await.unwrap().csrf;
+        let r =
+            post_form(&app, "/_/people/member_remove", &fresh, format!("csrf={csrf}&handle=lee&back=/people")).await;
+        assert_eq!(r.headers()[header::LOCATION], "/people?msg=Done.");
+        assert_eq!(seen.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn the_demo_shows_people_teams_and_rules() {
+        let app = demo();
+        for (path, want) in [("/people", "Invite someone"), ("/teams", "platform"), ("/rules", "may never")] {
+            let (status, _, body) = get(&app, path, None).await;
+            assert_eq!(status, StatusCode::OK, "{path}");
+            assert!(body.contains(want), "{path}: {body}");
+        }
     }
 
     #[test]

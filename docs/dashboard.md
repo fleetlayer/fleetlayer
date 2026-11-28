@@ -1,9 +1,8 @@
 # The dashboard
 
-Status: built (28 November 2026), the read-only part first: machines, sessions, events, approvals and admin windows,
-readings and a graph of the fleet, with approving requests and closing windows for whoever the policy lets. Signing in
-people, inviting them, permissions and agent roles come next; until then they're on the sign-in service's admin page
-and in the policy file.
+Status: built (28 November 2026): machines, sessions, events, approvals and admin windows, readings and a graph of the
+fleet; people, invites and teams; and the access rules in force (read here, changed in the policy file). Sign-in
+providers and editing rules from the page come next.
 
 The dashboard is Fleetlayer's web page for people: one place to see every machine and what it runs, every agent
 session and whether it needs you, what arrived and who it reached, and what's waiting for your approval. It's live:
@@ -28,6 +27,18 @@ look around, not the only way in. The same dashboard works with a control plane 
 - **Graph**: the control plane, each machine with its nodes and their plugins, which nodes are linked, and which
   shared tool each node may use.
 - **Readings**: the newest of every reading (Claude account usage, token health, `node.status`, `plugin.status`...).
+- **People**: everyone in the fleet and their role, inviting someone (a link that works once, for a week, which they
+  open to make their passkey), making someone an admin or a member, removing them, and the invites not used yet.
+- **Teams**: groups of people the access rules can name (`team:design`), each inside another if you like: making one,
+  putting people in it and taking them off. Someone in a team through their sign-in provider's groups is marked so.
+- **Rules**: the access policy in force, as sentences (who may never, may only, may do what to what), the agent roles
+  and which of them are off until a window is opened, and the policy file itself. Rules are changed in that file, kept
+  in git where the agents it limits can't change it, and applied with `fleetlayer-control acl apply`.
+
+People, Teams and Rules are for the fleet's admins (or anyone the policy allows `admin` on `service:dashboard`); the
+control plane checks that on every read and change, and records each change as the person who made it. Removing
+someone, changing a role and taking someone off a team ask for your passkey again when you last used it more than ten
+minutes ago. One person makes at most 20 invites an hour.
 
 ## Try it
 
@@ -124,7 +135,7 @@ role windows from the dashboard: that needs a person's passkey. Both can be set 
 
 ## What it reads
 
-Six calls to the control plane, made at most once every three seconds however many people are looking:
+Its calls to the control plane, made at most once every three seconds however many people are looking:
 
 | Call | For |
 |---|---|
@@ -135,6 +146,11 @@ Six calls to the control plane, made at most once every three seconds however ma
 | `GET /v1/windows` | Windowed roles and recent windows. |
 | `GET /v1/readings` | Every reading's newest value; `?kind=a,b` for some kinds only. |
 | `GET /v1/tools` | The tools each node shares (names, descriptions, `allow:` patterns, folder names; never paths). |
+| `GET /v1/token` | What its token is (scope) and which tenant it shows. |
+
+And for the People, Teams and Rules pages, as the signed-in person (`Fleetlayer-Person`, with the delegate token):
+`GET /v1/people`, `POST /v1/people/<action>` (`invite`, `invite_revoke`, `member_role`, `member_remove`, `team_add`,
+`team_remove`, `team_member`) and `GET /v1/policy`. They answer only for the tenant's admins, or the admin token.
 
 `/v1/readings` and `/v1/tools` are new with the dashboard; against an older control plane those parts are just empty.
 Each node publishes a **`node.status`** reading every minute while it's linked: its health (the same judgement as its

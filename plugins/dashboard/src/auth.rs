@@ -36,9 +36,21 @@ pub struct Viewer {
     /// None for the login key's holder (and the demo), who may do everything the token allows.
     pub person: Option<Person>,
     pub csrf: String,
+    /// When the person last used their passkey (the ID token's `auth_time`, seconds), for changes that are hard to
+    /// undo; None for the login key.
+    pub auth_time: Option<i64>,
 }
 
 impl Viewer {
+    /// Whether they used their passkey within the last `secs` seconds (the login key's holder always counts).
+    pub fn fresh(&self, secs: i64) -> bool {
+        match (&self.person, self.auth_time) {
+            (None, _) => true,
+            (Some(_), Some(t)) => jiff::Timestamp::now().as_second() - t <= secs,
+            (Some(_), None) => false,
+        }
+    }
+
     pub fn label(&self) -> String {
         match &self.person {
             Some(p) => p.name.clone().or_else(|| p.handle.clone()).unwrap_or_else(|| p.sub.clone()),
@@ -172,8 +184,13 @@ impl Auth {
     }
 
     pub async fn start(&self, person: Option<Person>) -> String {
+        self.start_at(person, None).await
+    }
+
+    /// A session for someone who used their passkey at `auth_time` (seconds).
+    pub async fn start_at(&self, person: Option<Person>, auth_time: Option<i64>) -> String {
         let sid = new_id();
-        let v = Viewer { person, csrf: new_id() };
+        let v = Viewer { person, csrf: new_id(), auth_time };
         let mut s = self.sessions.lock().await;
         s.retain(|_, (_, t)| t.elapsed() < SESSION);
         s.insert(sid.clone(), (v, Instant::now()));
@@ -194,7 +211,7 @@ impl Auth {
 
     pub async fn viewer(&self, headers: &HeaderMap) -> Option<Viewer> {
         if self.open {
-            return Some(Viewer { person: None, csrf: "demo".into() });
+            return Some(Viewer { person: None, csrf: "demo".into(), auth_time: None });
         }
         let sid = session_id(headers)?;
         let mut s = self.sessions.lock().await;
@@ -284,6 +301,7 @@ mod tests {
                 sid: None,
             }),
             csrf: "c".into(),
+            auth_time: None,
         }
     }
 
