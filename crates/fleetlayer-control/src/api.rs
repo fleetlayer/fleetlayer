@@ -816,6 +816,13 @@ pub async fn get_policy(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiR
     Ok(Json(json!({"text": text, "builtin": builtin, "policy": policy})))
 }
 
+/// `/livez`: 200 while the server answers requests at all, touching nothing else (not the database). For a liveness
+/// probe: restarting the server doesn't make a busy disk faster, so liveness never depends on the database; readiness
+/// and uptime checks use `/healthz`.
+pub async fn livez() -> &'static str {
+    "ok\n"
+}
+
 /// How long the database may stay busy before `/healthz` fails outright (503 for every check, not only `?strict`).
 const HEALTH_DB_STUCK: Duration = Duration::from_secs(60);
 
@@ -1070,6 +1077,7 @@ mod tests {
         assert!(v["degraded"][0].as_str().unwrap().starts_with("the database is busy"), "{v}");
         let (status, _) = healthz(State(app.clone()), query(true)).await.unwrap();
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "?strict still tells the uptime check");
+        assert_eq!(livez().await, "ok\n", "liveness doesn't wait on the database");
         // Busy for over a minute: an outage, and every check fails.
         *app.audit.db_busy_since.lock().unwrap() = Some(std::time::Instant::now() - HEALTH_DB_STUCK);
         assert_eq!(healthz(State(app.clone()), query(false)).await.unwrap_err(), StatusCode::SERVICE_UNAVAILABLE);

@@ -24,11 +24,12 @@ Two parts:
 
 | Port | Serves | Exposure |
 |---|---|---|
-| 7600 | `GET /healthz`, the node links (`GET /v1/link`, a WebSocket), the API (`GET /v1/fleet`, `/v1/events`, `/v1/subscriptions`, `/v1/endpoints`, `/v1/summaries`; `POST /v1/sessions/<id>/catchup`) | Private network only, through an HTTPS ingress that passes WebSocket upgrades through unbuffered, with long idle timeouts (the link pings every 30 s) |
+| 7600 | `GET /healthz`, `GET /livez`, the node links (`GET /v1/link`, a WebSocket), the API (`GET /v1/fleet`, `/v1/events`, `/v1/subscriptions`, `/v1/endpoints`, `/v1/summaries`; `POST /v1/sessions/<id>/catchup`) | Private network only, through an HTTPS ingress that passes WebSocket upgrades through unbuffered, with long idle timeouts (the link pings every 30 s) |
 | 7601 | `GET /healthz` and `POST /hooks/<endpoint id>/<secret>`, nothing else | Public, through a tunnel whose ingress sends only `^/hooks/` here and answers everything else with 404 |
 
 Health: `GET /healthz` on 7600 answers `{"ok":true,"linkedNodes":N,"degraded":[]}` once the database answers, 503
-otherwise. Use it for liveness and readiness. It stays 200 while something is degraded (`ok` false, the reason in
+otherwise. Use it for readiness, and `GET /livez` (200 while the server answers at all; it never touches the database)
+for liveness, so a busy disk never gets the server restarted. `/healthz` stays 200 while something is degraded (`ok` false, the reason in
 `degraded`: an audit write failed within the last five minutes, so access decisions are being refused; a policy file
 couldn't be applied; or the database was busy, with no connection free within two seconds), because a restart wouldn't
 fix that. For an uptime check that alerts on it, use `GET /healthz?strict`, which answers 503 while degraded. A

@@ -1407,6 +1407,7 @@ async fn serve(
 ) -> anyhow::Result<()> {
     let api = Router::new()
         .route("/healthz", get(api::healthz))
+        .route("/livez", get(api::livez))
         .route("/v1/move-proof", get(move_proof))
         .route("/v1/link", get(link::upgrade))
         .route("/v1/stream/{id}", get(streams::upgrade))
