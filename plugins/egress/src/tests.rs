@@ -60,9 +60,9 @@ fn private_addresses_are_the_lan_the_tailnet_and_metadata() {
     for ip in ["1.1.1.1", "140.82.112.3", "2606:4700::1111", "100.128.0.1"] {
         assert!(!is_private(ip.parse().unwrap()), "{ip}");
     }
-    let c = Cidr::parse("10.5.0.0/16").unwrap();
-    assert!(c.contains("10.5.7.37".parse().unwrap()) && !c.contains("10.6.0.1".parse().unwrap()));
-    assert!(c.contains("::ffff:10.5.0.1".parse().unwrap()));
+    let c = Cidr::parse("10.20.0.0/16").unwrap();
+    assert!(c.contains("10.20.7.37".parse().unwrap()) && !c.contains("10.6.0.1".parse().unwrap()));
+    assert!(c.contains("::ffff:10.20.0.1".parse().unwrap()));
     assert!(Cidr::parse("10.0.0.0/33").is_err());
 }
 
@@ -89,11 +89,11 @@ fn the_server_name_comes_from_the_client_hello() {
 fn the_owner_of_a_connection_comes_from_proc_net() {
     let tcp = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n   \
                0: 0100007F:0C38 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1001        0 1 1\n   \
-               1: 2507050A:D431 0101A8C0:01BB 01 00000000:00000000 00:00000000 00000000  1002        0 2 1\n";
-    let o = crate::procnet::tcp_owner(&[tcp.to_string()], "10.5.7.37:54321".parse().unwrap()).unwrap();
+               1: 2507140A:D431 0101A8C0:01BB 01 00000000:00000000 00:00000000 00000000  1002        0 2 1\n";
+    let o = crate::procnet::tcp_owner(&[tcp.to_string()], "10.20.7.37:54321".parse().unwrap()).unwrap();
     assert_eq!(o.uid, 1002);
     assert_eq!(o.remote, "192.168.1.1:443".parse().unwrap(), "the address it first dialled");
-    let mapped: SocketAddr = "[::ffff:10.5.7.37]:54321".parse().unwrap();
+    let mapped: SocketAddr = "[::ffff:10.20.7.37]:54321".parse().unwrap();
     assert_eq!(crate::procnet::tcp_owner(&[tcp.to_string()], mapped).unwrap().uid, 1002);
     let tcp6 = "  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n   \
                 0: 00000000000000000000000001000000:9C40 00000000000000000000000001000000:0C38 01 00000000:00000000 00:00000000 00000000  1003        0 3 1\n";
@@ -125,7 +125,7 @@ roles:
     node: agents-triage
     presets: [github]
     hosts: ["api.example.com", "*.docs.example.org", "db.example.net:5432"]
-    networks: ["10.5.0.0/16"]
+    networks: ["10.20.0.0/16"]
   worker:
     users: [worker, builder]
     mode: log
@@ -195,7 +195,7 @@ async fn decisions_follow_the_role_its_list_and_its_mode() {
     let wild = e.decide(Some("triage"), &t("a.docs.example.org", 443)).await;
     assert!(wild.address_ok("1.1.1.1".parse().unwrap()));
     assert!(!wild.address_ok("192.168.1.10".parse().unwrap()));
-    assert!(wild.address_ok("10.5.7.50".parse().unwrap()), "in the role's networks");
+    assert!(wild.address_ok("10.20.7.50".parse().unwrap()), "in the role's networks");
     let trusted = e.decide(Some("nathan"), &t("x.example.com", 443)).await;
     assert!(trusted.address_ok(IpAddr::from([192, 168, 1, 1])));
     // DNS names follow the same list, whatever the port.
@@ -511,15 +511,15 @@ fn whys_are_one_line_and_long_enough() {
 fn a_connection_s_owner_is_its_established_socket_never_a_time_wait_row() {
     // A closed connection from the same port (TIME_WAIT, uid 0, inode 0) and the new one (ESTABLISHED, uid 1002).
     let tcp = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n   \
-               0: 2507050A:D431 0101A8C0:01BB 06 00000000:00000000 00:00000000 00000000     0        0 0 1\n   \
-               1: 2507050A:D431 0100007F:0C38 01 00000000:00000000 00:00000000 00000000  1002        0 9 1\n";
-    let peer: SocketAddr = "10.5.7.37:54321".parse().unwrap();
+               0: 2507140A:D431 0101A8C0:01BB 06 00000000:00000000 00:00000000 00000000     0        0 0 1\n   \
+               1: 2507140A:D431 0100007F:0C38 01 00000000:00000000 00:00000000 00000000  1002        0 9 1\n";
+    let peer: SocketAddr = "10.20.7.37:54321".parse().unwrap();
     assert_eq!(crate::procnet::tcp_owner(&[tcp.to_string()], peer).unwrap().uid, 1002);
     let only_closed = tcp.lines().take(2).collect::<Vec<_>>().join("\n");
     assert_eq!(crate::procnet::tcp_owner(&[only_closed], peer), None, "a TIME_WAIT row is nobody");
     // Two live sockets on that port with different owners: can't tell, so nobody.
     let two = format!(
-        "{tcp}   2: 2507050A:D431 0202A8C0:01BB 01 00000000:00000000 00:00000000 00000000     0        0 7 1\n"
+        "{tcp}   2: 2507140A:D431 0202A8C0:01BB 01 00000000:00000000 00:00000000 00000000     0        0 7 1\n"
     );
     assert_eq!(crate::procnet::tcp_owner(&[two], peer), None);
 }
@@ -582,6 +582,6 @@ async fn private_addresses_only_through_the_role_s_networks() {
     assert!(!approved.address_ok("192.168.1.10".parse().unwrap()));
     let exact = e.decide(Some("triage"), &t("api.example.com", 443)).await;
     assert!(!exact.address_ok("127.0.0.1".parse().unwrap()), "a listed name pointed at loopback");
-    assert!(exact.address_ok("10.5.7.50".parse().unwrap()), "the role's networks");
+    assert!(exact.address_ok("10.20.7.50".parse().unwrap()), "the role's networks");
     assert!(exact.address_ok("1.1.1.1".parse().unwrap()));
 }

@@ -983,7 +983,7 @@ mod tests {
     fn public_addresses_are_told_apart_from_private_ones() {
         for ip in [
             "127.0.0.1",
-            "10.5.7.50",
+            "10.20.7.50",
             "192.168.1.2",
             "172.20.0.1",
             "100.101.102.103",

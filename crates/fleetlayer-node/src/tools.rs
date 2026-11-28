@@ -429,7 +429,7 @@ pub async fn report(node: Arc<Node>) {
     }
 }
 
-/// Whether `ip` is inside `cidr` (`10.5.0.0/16`, `fd7a::/48`, or a bare address).
+/// Whether `ip` is inside `cidr` (`10.20.0.0/16`, `fd7a::/48`, or a bare address).
 pub fn in_cidr(ip: std::net::IpAddr, cidr: &str) -> bool {
     use std::net::IpAddr;
     let (net, bits) = match cidr.split_once('/') {
@@ -1263,13 +1263,13 @@ mod tests {
     #[test]
     fn addresses_match_networks() {
         let ip = |s: &str| s.parse::<std::net::IpAddr>().unwrap();
-        assert!(in_cidr(ip("10.5.7.20"), "10.5.0.0/16"));
-        assert!(!in_cidr(ip("100.101.1.2"), "10.5.0.0/16"));
+        assert!(in_cidr(ip("10.20.7.20"), "10.20.0.0/16"));
+        assert!(!in_cidr(ip("100.101.1.2"), "10.20.0.0/16"));
         assert!(in_cidr(ip("100.101.1.2"), "100.64.0.0/10"));
         assert!(in_cidr(ip("192.168.1.9"), "192.168.1.9"));
         assert!(!in_cidr(ip("192.168.1.9"), "nonsense"));
         assert!(in_cidr(ip("fd7a:115c:a1e0::1"), "fd7a:115c:a1e0::/48"));
-        assert!(!in_cidr(ip("10.5.7.20"), "fd7a::/16"));
+        assert!(!in_cidr(ip("10.20.7.20"), "fd7a::/16"));
         assert!(in_cidr(ip("1.2.3.4"), "0.0.0.0/0"));
     }
 

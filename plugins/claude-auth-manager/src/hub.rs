@@ -1533,11 +1533,11 @@ mod tests {
 
     #[test]
     fn the_client_address_comes_from_a_trusted_proxy_only() {
-        let proxy: IpAddr = "10.5.7.11".parse().unwrap();
+        let proxy: IpAddr = "10.20.7.11".parse().unwrap();
         let mut h = HeaderMap::new();
-        h.insert("x-forwarded-for", "203.0.113.9, 10.5.7.11".parse().unwrap());
+        h.insert("x-forwarded-for", "203.0.113.9, 10.20.7.11".parse().unwrap());
         assert_eq!(client_ip(proxy, &h, &[proxy]), "203.0.113.9".parse::<IpAddr>().unwrap());
-        let other: IpAddr = "10.5.7.99".parse().unwrap();
+        let other: IpAddr = "10.20.7.99".parse().unwrap();
         assert_eq!(client_ip(other, &h, &[proxy]), other, "an untrusted connection's header is ignored");
         assert_eq!(client_ip(proxy, &HeaderMap::new(), &[proxy]), proxy);
     }

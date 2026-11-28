@@ -79,7 +79,7 @@ struct Config {
 struct HubSection {
     /// Its private folder (0700): sign-ins, setup tokens, state. Default `~/.local/state/fleetlayer/claude-hub`.
     dir: Option<String>,
-    /// Where the web page listens, e.g. `10.5.7.37:7660`. Put it behind a private HTTPS proxy, never on the internet.
+    /// Where the web page listens, e.g. `192.168.1.20:7660`. Put it behind a private HTTPS proxy, never on the internet.
     listen: std::net::SocketAddr,
     /// A file holding the page's login value (at least 32 characters), 0600. Leave it out to sign in only with
     /// Fleetlayer (`signin`).
