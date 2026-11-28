@@ -221,8 +221,12 @@ memory for heavy and light commands:
 
 ```text
 build-a  build-a  12G 6G
-build-b  build-b  8G  4G
+build-b  build-b  -   4G
 ```
+
+A `-` for heavy memory makes a host take light commands only. Use it for a small host that shares a machine with
+something more important (a CI runner, say): one heavy build there can starve its neighbour, while fmt, check and
+clippy fit.
 
 `scripts/on-dev` gives each checkout one host, picked from the checkout's name, and keeps it: that host already has the
 checkout's copy and its warm `target/`, so moving between hosts for each command would cost a cold build every time.

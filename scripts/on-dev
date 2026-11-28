@@ -16,26 +16,32 @@
 #
 # The build hosts come from $FLEETLAYER_DEV_HOST, or from .dev-host at the checkout's root (gitignored): one SSH host
 # with Rust (rustup) and rsync per line, optionally followed by its build-slot name and the memory for heavy and light
-# commands (`build-a build-a 12G 6G`). With several hosts, each checkout always uses the same one (picked from its
-# name), so its target/ stays warm there.
+# commands (`build-a build-a 12G 6G`; heavy '-' means light commands only). With several hosts, each checkout always
+# uses the same one for each class (picked from its name), so its target/ stays warm there.
 set -euo pipefail
 dir=$(git rev-parse --show-toplevel)
 name=$(basename "$dir")
 hosts=${FLEETLAYER_DEV_HOST:-$(grep -v '^[[:space:]]*\(#\|$\)' "$dir/.dev-host" 2>/dev/null || true)}
 [ -n "$hosts" ] || { echo "scripts/on-dev: set FLEETLAYER_DEV_HOST or write the build host to .dev-host" >&2; exit 2; }
-count=$(printf '%s\n' "$hosts" | wc -l)
-pick=$(( $(printf '%s' "$name" | cksum | cut -d' ' -f1) % count + 1 ))
-read -r host slot_name heavy_mem light_mem <<<"$(printf '%s\n' "$hosts" | sed -n "${pick}p")"
-export FLEETLAYER_DEV_SLOT_RESOURCE=${slot_name:-}
-heavy_mem=${heavy_mem:-12G}
-light_mem=${light_mem:-6G}
-remote_root=/opt/code/fleetlayer/checkouts
-remote=$remote_root/$name
 
 die() { echo "scripts/on-dev: $*" >&2; exit 1; }
 usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 [ $# -gt 0 ] || usage
 cmd=$1; shift
+
+# Pick the host. A host whose heavy memory is '-' takes only light commands (fmt, check, clippy); heavy ones (build,
+# test, lock, sync, clean) go to the hosts that take them, picked the same way.
+case "$cmd" in fmt | format | check | clippy) class=light ;; *) class=heavy ;; esac
+candidates=$(printf '%s\n' "$hosts" | awk -v class="$class" 'class == "light" || $3 != "-"')
+[ -n "$candidates" ] || die "no build host in .dev-host takes $class commands"
+count=$(printf '%s\n' "$candidates" | wc -l)
+pick=$(( $(printf '%s' "$name" | cksum | cut -d' ' -f1) % count + 1 ))
+read -r host slot_name heavy_mem light_mem <<<"$(printf '%s\n' "$candidates" | sed -n "${pick}p")"
+export FLEETLAYER_DEV_SLOT_RESOURCE=${slot_name:-}
+heavy_mem=${heavy_mem:-12G}
+light_mem=${light_mem:-6G}
+remote_root=/opt/code/fleetlayer/checkouts
+remote=$remote_root/$name
 
 sync() {
   ssh "$host" "mkdir -p '$remote'"
