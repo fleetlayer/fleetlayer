@@ -38,6 +38,8 @@ pub const LINK_METHODS: &[(&str, Option<&str>)] = &[
     (m::SUMMARIES_SEARCH, Some("read")),
     (m::TOOL_OPEN, Some("use_tool")),
     (m::TOOL_CALL, Some("call")),
+    (m::COMMAND_OPEN, Some("run")),
+    (m::COMMAND_CALL, Some("run")),
     (m::TERMINAL_OPEN, Some("read")),
     // Checked as `read` on the session, under every name it goes by (`route::read_transcript`).
     (m::TRANSCRIPT_READ, Some("read")),
@@ -194,6 +196,9 @@ pub struct Outcome {
 pub struct CallContext<'a> {
     pub args_hash: &'a str,
     pub detail: Option<&'a str>,
+    /// Write the detail into the audit entry too: a shared command's run (its program and typed arguments, files by
+    /// hash), which the audit log keeps. A tool call's arguments stay out of it.
+    pub audit_detail: bool,
 }
 
 /// Whether `who` may `verb` `target`, publishing refusals and audit matches. Err is the refusal to send back.
@@ -298,19 +303,21 @@ pub async fn session_names(app: &App, target: &str) -> Vec<String> {
     out
 }
 
-/// One tool call through the MCP gate (`link/tool_call`): verb `call` on `target`, decided, audited and filed for
-/// approval like any request, with the call's arguments hash and detail for an `ask:` rule.
+/// One tool call through the MCP gate (`link/tool_call`, verb `call`) or one run of a shared command
+/// (`link/command_call`, verb `run`) on `target`, decided, audited and filed for approval like any request, with the
+/// arguments hash and detail for an `ask:` rule.
 pub async fn check_call(
     app: &App,
     home: &str,
     who: &str,
+    verb: &str,
     target: &str,
     call: CallContext<'_>,
     why: Option<&str>,
 ) -> Result<Outcome, RpcError> {
     let fleet = app.authz.fleet(&app.db).await.map_err(RpcError::internal)?;
     let deciders: Vec<String> = fleet.deciders(who, target).iter().map(|t| t.id.clone()).collect();
-    decide_in(app, &fleet, &deciders, Some(home), (who, "call", target), why, false, Some(call)).await
+    decide_in(app, &fleet, &deciders, Some(home), (who, verb, target), why, false, Some(call)).await
 }
 
 /// A service asking about a person or agent in one tenant (`link/access_check`, `docs/sso.md`): answered only if the
@@ -482,12 +489,16 @@ async fn decide_in(
     reply: bool,
     call: Option<CallContext<'_>>,
 ) -> Result<Outcome, RpcError> {
+    let audited = call.filter(|c| c.audit_detail).and_then(|c| c.detail);
     let entry = |decision: &str, reason: String| crate::audit::Entry {
         decision: decision.into(),
         subject: who.into(),
         verb: verb.into(),
         target: target.into(),
-        reason,
+        reason: match audited {
+            Some(d) => format!("{reason}; {d}"),
+            None => reason,
+        },
     };
     // Fail closed: nothing goes ahead without its entry in the audit log.
     let record = |tenant: String, e: crate::audit::Entry| async move {
@@ -1134,6 +1145,62 @@ mod tests {
         assert_eq!(allowed, 1, "{:?}", all.iter().map(|d| d.as_ref().map(|d| d.decision.clone())).collect::<Vec<_>>());
     }
 
+    /// Shared commands: a run is decided as `run` on `command:<name>@<node>` for the stream's caller, with its detail
+    /// shown to the person and kept in the audit log, and the built-in default asks before each run.
+    #[tokio::test]
+    async fn command_runs_are_decided_as_run_and_audited_with_their_detail() {
+        use fleetlayer_protocol::link::ToolCall;
+        let (app, _) = example().await;
+        let stream = app
+            .streams
+            .create(&app.db, "default", "command:deploy", "laptop", "laptop", "recipes@laptop")
+            .await
+            .unwrap();
+        let call = |hash: &str| ToolCall {
+            stream_id: stream.clone(),
+            targets: vec![],
+            args_hash: hash.into(),
+            detail: Some("rack-gateway deploy --app web".into()),
+            justification: None,
+            peek: None,
+        };
+        let ask = |c: ToolCall| crate::link::command_call(&app, "default", "laptop", c);
+        // No policy: the built-in default asks before every run, once.
+        let d = ask(call("h1")).await.unwrap();
+        assert_eq!(d.decision, "pending", "{}", d.reason);
+        let id = d.approval.unwrap();
+        let listed = crate::approvals::list(&app.db, "default", false).await.unwrap();
+        assert_eq!(listed[0]["detail"].as_str(), Some("rack-gateway deploy --app web"));
+        crate::approvals::decide(&app.db, "default", &id, true, None, "admin").await.unwrap();
+        assert_eq!(ask(call("h2")).await.unwrap().decision, "pending", "other arguments aren't approved");
+        assert_eq!(ask(call("h1")).await.unwrap().decision, "allowed");
+        assert_eq!(ask(call("h1")).await.unwrap().decision, "pending", "spent");
+        // A tool stream isn't a command stream, a run names no targets and always carries its detail, and only the
+        // node serving the stream may ask.
+        let tool = app.streams.create(&app.db, "default", "x", "laptop", "laptop", "recipes@laptop").await.unwrap();
+        assert!(ask(ToolCall { stream_id: tool, ..call("h") }).await.is_err());
+        assert!(ask(ToolCall { targets: vec!["x".into()], ..call("h") }).await.is_err());
+        assert!(ask(ToolCall { detail: None, ..call("h") }).await.is_err());
+        assert!(crate::link::command_call(&app, "default", "web", call("h")).await.is_err());
+        store(
+            &app.db,
+            "default",
+            "version: 2\ndefault: allow\nask: []\ndeny:\n  - { who: \"*\", can: run, to: \"command:drop@*\" }\n",
+        )
+        .await
+        .unwrap();
+        assert_eq!(ask(call("h3")).await.unwrap().decision, "allowed");
+        let drop =
+            app.streams.create(&app.db, "default", "command:drop", "laptop", "laptop", "recipes@laptop").await.unwrap();
+        assert_eq!(ask(ToolCall { stream_id: drop, ..call("h") }).await.unwrap().decision, "denied");
+        let logged = log(&app.db, "default").await;
+        assert!(logged.contains(&"allowed recipes@laptop run command:deploy@laptop".to_string()), "{logged:?}");
+        assert!(logged.contains(&"denied recipes@laptop run command:drop@laptop".to_string()), "{logged:?}");
+        let reasons: Vec<String> =
+            sqlx::query_scalar("SELECT reason FROM audit_log WHERE verb = 'run'").fetch_all(&app.db).await.unwrap();
+        assert!(reasons.iter().all(|r| r.ends_with("; rack-gateway deploy --app web")), "{reasons:?}");
+    }
+
     #[tokio::test]
     async fn a_fleet_with_no_policy_asks_before_sensitive_actions() {
         let (app, _) = example().await;
@@ -1442,6 +1509,8 @@ mod tests {
             m::SUMMARIES_SEARCH,
             m::TOOL_OPEN,
             m::TOOL_CALL,
+            m::COMMAND_OPEN,
+            m::COMMAND_CALL,
             m::TERMINAL_OPEN,
             m::TRANSCRIPT_READ,
             m::TRANSCRIPT_SEARCH,

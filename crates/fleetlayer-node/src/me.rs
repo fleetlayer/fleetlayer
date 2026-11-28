@@ -1,5 +1,5 @@
-//! `fleetlayer me`: what a session may use. The node tells the control plane which tools it shares (`link/tools`:
-//! names, descriptions, folder names, never paths), when it links and whenever an opt-in changes; the control plane
+//! `fleetlayer me`: what a session may use. The node tells the control plane which tools and commands it shares
+//! (`link/tools`: names, descriptions, folder names and parameters, never paths or programs), when it links and whenever an opt-in changes; the control plane
 //! answers `link/me` for one of this node's sessions from that and the access policy, without asking anyone.
 
 use std::path::Path;
@@ -75,7 +75,8 @@ pub async fn announce(node: &Node) {
 }
 
 pub async fn announce_to(node: &Node, peer: &Peer) {
-    peer.notify(l::method::TOOLS, &l::Tools { tools: infos(node).await });
+    let commands = node.commands.iter().map(|c| c.info()).collect();
+    peer.notify(l::method::TOOLS, &l::Tools { tools: infos(node).await, commands });
 }
 
 #[cfg(test)]

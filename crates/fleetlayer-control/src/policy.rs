@@ -3,7 +3,7 @@
 //! order of rules doesn't matter.
 //!
 //! Subjects (`who`) are `<tab>@<node>`, `-@<node>`, `plugin:<name>@<node>` or `person:<handle>`; targets (`to`) are
-//! those, or `tool:<name>@<node>`, `sync:<bundle>@<node>`, `channel:<name>`, `service:<name>[/<owner>/…]`,
+//! those, or `tool:<name>@<node>`, `command:<name>@<node>`, `sync:<bundle>@<node>`, `channel:<name>`, `service:<name>[/<owner>/…]`,
 //! `page:<space>/<path>`, `app:<space>/<name>`, `host:<name>[:<port>]` (an internet host a role's agents may
 //! `connect` to, asked by the egress plugin). `*` matches any run of characters; `group:<name>` names a group of
 //! patterns, `team:<name>` a team of the tenant (with its sub-teams), `role:admin` its admins, `owned-by:person:<h>` and
@@ -27,6 +27,7 @@ pub const VERBS: &[&str] = &[
     "message",
     "use_tool",
     "call",
+    "run",
     "sync",
     "read",
     "subscribe",
@@ -201,6 +202,9 @@ pub fn default_ask() -> Vec<AskRule> {
     vec![
         rule(&["start", "attach", "answer", "close"], "10m"),
         rule(&["use_tool", "sync", "admin", "write", "connect"], "30d"),
+        // Each run of a shared command on another machine, with the program and arguments it will run in front of
+        // the person.
+        rule(&["run"], "once"),
         // Each read of a person's signed-in browser for cookies is its own approval (the cookies plugin asks before
         // it reads; the shortest hold of the rules that match wins).
         AskRule { to: Some(OneOrMany::One("sync:cookies-from-browser/*".into())), ..rule(&["sync"], "once") },
@@ -651,6 +655,15 @@ impl Compiled {
     pub fn warnings(&self) -> Vec<String> {
         let mut out = vec![];
         for (i, r) in self.file.ask.iter().flatten().enumerate() {
+            let covers_run = r.can.items().iter().any(|c| c == "run");
+            if covers_run && parse_duration_ms(&r.hold).is_ok_and(|h| h != ONCE) {
+                out.push(format!(
+                    "ask[{i}] approves shared commands (run) for {}: one approval allows every run of that command for \
+                     that long, whatever its arguments, though the person saw only the first. Use `for: once` for \
+                     commands that deploy, change or delete things",
+                    r.hold
+                ));
+            }
             let covers_call = r.can.items().iter().any(|c| c == "call" || c == "*");
             if covers_call && parse_duration_ms(&r.hold).is_ok_and(|h| h != ONCE) {
                 out.push(format!(
@@ -1270,6 +1283,7 @@ audit:
         let p = Compiled::parse(base).unwrap();
         assert_eq!(p.ask_for("a@x", "start", "b@y"), Some(600_000));
         assert_eq!(p.ask_for("a@x", "use_tool", "tool:browser@y"), Some(30 * 86_400_000));
+        assert_eq!(p.ask_for("a@x", "run", "command:deploy@y"), Some(ONCE), "each run of a shared command");
         assert_eq!(p.ask_for("a@x", "message", "b@y"), None);
         let off = Compiled::parse(&format!("{base}ask: []\n")).unwrap();
         assert_eq!(off.ask_for("a@x", "start", "b@y"), None);

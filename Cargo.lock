@@ -1989,6 +1989,7 @@ dependencies = [
  "hex",
  "jiff 1.0.3",
  "nix 0.32.0",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

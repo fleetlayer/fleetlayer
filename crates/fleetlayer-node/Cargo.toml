@@ -34,7 +34,8 @@ reqwest = { version = "0.13.5", default-features = false, features = ["rustls", 
 sha2 = "0.11"
 hex = "0.4"
 age = { version = "0.12.1", default-features = false, features = ["armor"] }
-nix = { version = "0.32.0", default-features = false, features = ["hostname", "user", "socket"] }
+nix = { version = "0.32.0", default-features = false, features = ["hostname", "user", "socket", "fs", "signal", "process"] }
+regex = "1.13"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

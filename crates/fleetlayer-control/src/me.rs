@@ -5,7 +5,7 @@
 //! What each node shares comes from `link/tools`, kept in memory ([`crate::link::Links`]): a cache every node rebuilds
 //! when it links, never state to back up.
 
-use fleetlayer_protocol::link::{Me, MeTarget, MeTool};
+use fleetlayer_protocol::link::{Me, MeCommand, MeTarget, MeTool};
 use fleetlayer_protocol::rpc::RpcError;
 
 use crate::App;
@@ -77,6 +77,32 @@ pub async fn answer(app: &App, tenant: &str, node: &str, caller: &str) -> Result
                 description: t.description.clone(),
                 not_offered: t.not_offered.clone(),
                 folders: t.folders.clone(),
+            });
+        }
+    }
+
+    // Shared commands: the sharing node's own `who:` list, then the access policy. Any node's, its own included (a
+    // run still goes through the control plane, which checks and audits it).
+    let commands = app.links.commands.lock().await.clone();
+    for (name, _version) in &visible {
+        let Some(list) = commands.get(&(tenant.to_string(), name.clone())) else { continue };
+        for c in list {
+            if !c.who.iter().any(|p| crate::acl::glob(p, &who)) {
+                continue;
+            }
+            let target = format!("command:{}@{name}", c.name);
+            let d = crate::authz::dry(app, tenant, &who, "run", &target).await;
+            let Some(state) = target_of(&d, &format!("{}@{name}", c.name), name, !online.contains(name)) else {
+                continue;
+            };
+            if why(&d) {
+                justify.insert("run");
+            }
+            out.commands.push(MeCommand {
+                target: state,
+                description: c.description.clone(),
+                params: c.params.clone(),
+                timeout: c.timeout,
             });
         }
     }
@@ -284,6 +310,41 @@ mod tests {
         assert_eq!(start, [("server", "allowed")]);
         let me = answer(&app, "default", "laptop", "planning").await.unwrap();
         assert!(me.start.iter().any(|t| t.name == "server" && t.state == "allowed"), "no ask: rules, so no asking");
+    }
+
+    #[tokio::test]
+    async fn commands_are_listed_by_their_who_and_the_policy() {
+        let app = fleet().await;
+        let cmd = |name: &str, who: &[&str]| fleetlayer_protocol::link::CommandInfo {
+            name: name.into(),
+            who: who.iter().map(|a| a.to_string()).collect(),
+            params: vec![fleetlayer_protocol::link::ParamInfo {
+                name: "app".into(),
+                kind: "choice".into(),
+                values: vec!["web".into()],
+                ..Default::default()
+            }],
+            timeout: 60,
+            ..Default::default()
+        };
+        app.links.commands.lock().await.insert(
+            ("default".into(), "laptop".into()),
+            vec![cmd("deploy", &["*@server"]), cmd("approve", &["infra@server"]), cmd("nobody", &[])],
+        );
+        let me = answer(&app, "default", "server", "planning").await.unwrap();
+        let names: Vec<(&str, &str)> =
+            me.commands.iter().map(|c| (c.target.name.as_str(), c.target.state.as_str())).collect();
+        // Each run asks by default; approve's own who: leaves planning out, and nobody's empty list everyone.
+        assert_eq!(names, [("deploy@laptop", "ask")]);
+        assert_eq!(me.commands[0].params[0].values, ["web"]);
+        let policy =
+            "version: 2\ndefault: allow\nask: []\ndeny:\n  - { who: \"*\", can: run, to: [\"command:deploy@*\"] }\n";
+        crate::authz::store(&app.db, "default", policy).await.unwrap();
+        let me = answer(&app, "default", "server", "infra").await.unwrap();
+        let names: Vec<(&str, &str)> =
+            me.commands.iter().map(|c| (c.target.name.as_str(), c.target.state.as_str())).collect();
+        assert_eq!(names, [("approve@laptop", "allowed")], "deploy is denied, so it isn't named");
+        assert_eq!(counts(&app).await, (0, 0));
     }
 
     #[tokio::test]

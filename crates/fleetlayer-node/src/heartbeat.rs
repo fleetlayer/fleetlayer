@@ -39,6 +39,8 @@ pub async fn health(node: &Node, has_control: bool) -> Option<String> {
     problems.extend(node.windows.problems().await);
     // A remote MCP server this node shares that fails its check (down, or refusing the node's credentials).
     problems.extend(node.gate.problems().await);
+    // A shared command whose program isn't there (uninstalled, moved, not on the node's PATH).
+    problems.extend(crate::commands::problems(node));
     if has_control && node.link.peer().await.is_none() {
         problems.push("not linked to the control plane".into());
     }

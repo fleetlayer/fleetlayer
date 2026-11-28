@@ -47,6 +47,7 @@ agents they limit can't change.
 | A shell or script | `-@<node>` | `-@server` |
 | A plugin (a runner that carries out approved actions) | `plugin:<name>@<node>` | `plugin:runner@triage` |
 | A shared tool | `tool:<name>@<node>` | `tool:browser@laptop` |
+| A shared command | `command:<name>@<node>` | `command:rack-gateway-run@laptop` |
 | A sync bundle | `sync:<bundle>@<node>` | `sync:file-sync/skills@laptop` |
 | A channel | `channel:<name>` | `channel:ci` |
 | A group | `group:<name>` | `group:untrusted-input` |
@@ -136,7 +137,8 @@ audit:
       to: ["*@server", "planning@laptop"]
 ```
 
-Verbs: `message`, `use_tool`, `call` (one tool call through [the MCP gate](#the-mcp-gate)), `sync`, `read` (the fleet view, summaries, catch-ups; a node that may read nothing of
+Verbs: `message`, `use_tool`, `call` (one tool call through [the MCP gate](#the-mcp-gate)), `run` (one run of a
+[shared command](guides/shared-commands.md), on `command:<name>@<node>`), `sync`, `read` (the fleet view, summaries, catch-ups; a node that may read nothing of
 another, not even `-@<node>`, doesn't see that node in the fleet view at all), `subscribe`, `publish`, and
 `start` (start, resume or interrupt a session on another node), `close` (close one), `answer` (answer the prompt a
 session is blocked on: a question, a plan, or a permission prompt, which approves what it asks), and `attach` (type
@@ -169,7 +171,8 @@ Approvals are on by default: a policy that leaves `ask:` out asks before `start`
 approval holds 10 minutes) and
 before each agent's first `use_tool`, `sync`, `admin`, `write` or `connect` to a target (it holds 30 days; one for
 `use_tool`, `sync` or `connect` renews while it's used, so it lapses only after 30 days unused), the safe start for a
-fleet you don't know yet. Reading the person's signed-in browser for cookies (`sync` on `sync:cookies-from-browser/<set>@<target>`, asked by the
+fleet you don't know yet. Each run of a [shared command](guides/shared-commands.md) (`run`) asks too, `for: once`:
+the person sees the program and the arguments it will run, and an approval holds for exactly those. Reading the person's signed-in browser for cookies (`sync` on `sync:cookies-from-browser/<set>@<target>`, asked by the
 [cookies plugin](plugins/cookies.md) before each read) asks every time (`for: once`); keep that rule in a policy of your
 own even where you turn other asks off. That holds with no policy applied too: a tenant with neither a policy nor version 1 rules is
 decided by the built-in default (`default: allow` and these asks), which `acl show` prints. A fleet of autonomous agents turns it off with `ask: []` (and

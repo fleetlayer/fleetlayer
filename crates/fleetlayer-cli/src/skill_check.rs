@@ -125,6 +125,11 @@ pub fn check(cmd: &clap::Command, args: &[String]) -> Option<String> {
             continue;
         }
         if a.starts_with("--") {
+            // Past its positionals, a command that passes the rest through (`fleetlayer run <target> --rack x`) takes
+            // any flag as its own argument.
+            if !walking && at.get_positionals().any(|p| p.is_trailing_var_arg_set()) {
+                break;
+            }
             let long = a.trim_start_matches("--").split('=').next().unwrap_or("");
             if long.is_empty() {
                 // `--` ends the flags.

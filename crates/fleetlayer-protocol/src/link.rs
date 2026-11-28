@@ -39,6 +39,15 @@ pub mod method {
     /// `docs/access-control.md`)? Decided as verb `call` on each target, audited, and filed for approval when an `ask:`
     /// rule matches. `ToolCall` → `ToolCallDecision`.
     pub const TOOL_CALL: &str = "link/tool_call";
+    /// Node → control plane: open a stream to run a command another node shares (`docs/guides/shared-commands.md`).
+    /// `CommandOpen` → `ToolOpened`.
+    pub const COMMAND_OPEN: &str = "link/command_open";
+    /// Control plane → node: take one run of a shared command from stream `streamId`. `CommandServe` → `{}`.
+    pub const COMMAND_SERVE: &str = "link/command_serve";
+    /// Node → control plane: may the caller of one of this node's command streams run it with these arguments?
+    /// Decided as verb `run` on `command:<name>@<node>`, audited with the run's detail, and filed for approval when an
+    /// `ask:` rule matches. `ToolCall` (no targets) → `ToolCallDecision`.
+    pub const COMMAND_CALL: &str = "link/command_call";
     /// Node → control plane: open a stream to a session's terminal on another node. `TerminalOpen` → `ToolOpened`.
     pub const TERMINAL_OPEN: &str = "link/terminal_open";
     /// Control plane → node: start streaming one of its sessions' terminals into stream `streamId`. `TerminalServe` →
@@ -268,6 +277,78 @@ pub struct ToolServe {
     pub tool: String,
     /// `<tab>@<node>` of the caller.
     pub caller: String,
+}
+
+/// A session asks to run a command another node shares.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandOpen {
+    pub command: String,
+    /// The node that shares it.
+    pub node: String,
+    /// The calling session's name (its tab), or `-` for a shell.
+    pub caller: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub justification: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandServe {
+    pub stream_id: String,
+    pub command: String,
+    /// `<tab>@<node>` of the caller.
+    pub caller: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub justification: Option<String>,
+}
+
+/// One command a node shares, as `link/tools` carries it: its name, what it does and what it takes, never the program
+/// it runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandInfo {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub params: Vec<ParamInfo>,
+    /// The node's own `who:` patterns: both they and the access policy must let a caller in.
+    #[serde(default)]
+    pub who: Vec<String>,
+    /// The longest a run may take, in seconds.
+    #[serde(default)]
+    pub timeout: u64,
+}
+
+/// One parameter of a shared command.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ParamInfo {
+    pub name: String,
+    /// `choice`, `text`, `pattern` or `file`.
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// For a choice: the values it takes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub values: Vec<String>,
+    /// For a pattern: the regular expression a value must match whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
+    /// For text: the longest value, in characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_length: Option<usize>,
+    /// For a file: the largest, in bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<u64>,
+    /// For a file: the extension its name must end with (`.sh`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extension: Option<String>,
+    /// The value used when the caller gives none. A parameter without one must be given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
 }
 
 /// `link/tool_call`: the node serving a tool stream asks about one call its caller made. The caller and the tool come
@@ -628,6 +709,9 @@ pub struct Handoff {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Tools {
     pub tools: Vec<ToolInfo>,
+    /// The commands it shares (`commands:` in node.yaml).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commands: Vec<CommandInfo>,
 }
 
 /// One tool a node shares.
@@ -687,6 +771,9 @@ pub struct Me {
     /// Shared tools it may use or could ask for. Refused ones are left out.
     #[serde(default)]
     pub tools: Vec<MeTool>,
+    /// Commands on other nodes it may run, or could ask to (`fleetlayer run`). Refused ones are left out.
+    #[serde(default)]
+    pub commands: Vec<MeCommand>,
     /// Pages spaces it may push to, or could ask for.
     #[serde(default)]
     pub pages: Vec<MeTarget>,
@@ -832,6 +919,20 @@ pub struct MeTool {
     pub not_offered: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub folders: Vec<FolderInfo>,
+}
+
+/// A shared command in `fleetlayer me` and `fleetlayer commands`: `name` is `<command>@<node>`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MeCommand {
+    #[serde(flatten)]
+    pub target: MeTarget,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub params: Vec<ParamInfo>,
+    #[serde(default)]
+    pub timeout: u64,
 }
 
 /// Something done to a running session for a caller.

@@ -334,6 +334,7 @@ impl Handler for FromControl {
             l::method::SYNC_DELIVER => crate::sync::deliver(&self.node, params(p)?).await,
             l::method::TOOL_SERVE => crate::tools::serve(self.node.clone(), params(p)?).await,
             l::method::TERMINAL_SERVE => crate::terminals::serve(self.node.clone(), params(p)?).await,
+            l::method::COMMAND_SERVE => crate::commands::serve(self.node.clone(), params(p)?).await,
             l::method::PAGES_SERVE => crate::pages::serve(self.node.clone(), params(p)?).await,
             l::method::SESSION_SERVE => crate::start::serve(&self.node, params(p)?).await,
             l::method::SESSION_ACT_SERVE => crate::act::serve(&self.node, params(p)?).await,

@@ -579,7 +579,7 @@ pub fn session_name(caller: &str) -> String {
 }
 
 /// `*` matches any run of characters.
-fn glob(pattern: &str, text: &str) -> bool {
+pub(crate) fn glob(pattern: &str, text: &str) -> bool {
     let parts: Vec<&str> = pattern.split('*').collect();
     if parts.len() == 1 {
         return pattern == text;
@@ -1058,6 +1058,11 @@ pub async fn listen(node: Arc<Node>, listener: std::os::unix::net::UnixListener)
                 crate::terminals::handle(node, t, r, w).await;
                 return;
             }
+            // A shared command's run (`{"command": …}`).
+            if let Ok(c) = serde_json::from_str::<crate::commands::OpenRequest>(&line) {
+                crate::commands::handle(node, c, r, w).await;
+                return;
+            }
             match open(&node, &line).await {
                 Ok(ws) => {
                     if w.write_all(b"{\"ok\":true}\n").await.is_ok() {
@@ -1076,13 +1081,28 @@ pub async fn listen(node: Arc<Node>, listener: std::os::unix::net::UnixListener)
 /// How long a tool connection waits for this node to know the calling session's tab.
 const CALLER_WAIT: Duration = Duration::from_secs(10);
 
+/// The calling session's tab, or `-` for a shell. A session starts its MCP servers at launch, often before this node's
+/// plugins have listed it (a session herdr resumes after a restart): wait a little for its tab name, which names its
+/// tab group on the other machine.
+pub(crate) async fn caller_name(node: &Node, session_id: Option<&str>, address: Option<&str>) -> String {
+    let deadline = tokio::time::Instant::now() + CALLER_WAIT;
+    loop {
+        let tab = caller_tab(node, session_id, address).await;
+        let named = session_id.is_some() || address.is_some();
+        if tab.is_some() || !named || tokio::time::Instant::now() >= deadline {
+            return tab.unwrap_or_else(|| "-".into());
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
 /// The calling session's tab, if this node knows the session by its ID or its address.
-async fn caller_tab(node: &Node, req: &OpenRequest) -> Option<String> {
-    let caller = match &req.session_id {
+async fn caller_tab(node: &Node, session_id: Option<&str>, address: Option<&str>) -> Option<String> {
+    let caller = match session_id {
         Some(id) => node.registry.get(id).await,
         None => None,
     };
-    let caller = match (caller, &req.address) {
+    let caller = match (caller, address) {
         (Some(c), _) => Some(c),
         (None, Some(a)) => node.registry.by_address(a).await,
         (None, None) => None,
@@ -1095,17 +1115,7 @@ async fn open(
     line: &str,
 ) -> Result<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, String> {
     let req: OpenRequest = serde_json::from_str(line).map_err(|e| format!("unreadable request: {e}"))?;
-    // A session starts its MCP servers at launch, often before this node's plugins have listed it (a session herdr
-    // resumes after a restart): wait a little for its tab name, which names its tab group on the other machine.
-    let deadline = tokio::time::Instant::now() + CALLER_WAIT;
-    let caller_name = loop {
-        let tab = caller_tab(node, &req).await;
-        let named = req.session_id.is_some() || req.address.is_some();
-        if tab.is_some() || !named || tokio::time::Instant::now() >= deadline {
-            break tab.unwrap_or_else(|| "-".into());
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    };
+    let caller_name = caller_name(node, req.session_id.as_deref(), req.address.as_deref()).await;
     let peer = node.link.peer().await.ok_or_else(|| format!("{} isn't linked to a control plane now", node.name))?;
     let opened: ToolOpened = peer
         .request_within(

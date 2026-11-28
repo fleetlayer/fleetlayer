@@ -4,6 +4,7 @@ mod lease;
 mod mcp_bridge;
 mod pages;
 mod relocate;
+mod run;
 mod secrets;
 #[cfg(test)]
 mod skill_check;
@@ -183,6 +184,25 @@ enum Command {
     Tools {
         #[command(subcommand)]
         command: ToolsCommand,
+    },
+    /// The commands other nodes share that this session may run, with what each takes: `fleetlayer commands laptop`.
+    Commands {
+        /// Only this node's.
+        node: Option<String>,
+    },
+    /// Run a command another node shares: `fleetlayer run rack-gateway-run@laptop --rack staging --script fix.rb`.
+    /// Its output comes out here as it runs, and it leaves with the command's exit code (125: refused or couldn't
+    /// run; 124: stopped at its timeout; 130: cancelled). Ctrl-C stops it.
+    Run {
+        /// `<command>@<node>`.
+        target: String,
+        /// Why this session runs it, in one line, when its access rules ask for a reason (also `--why` after the
+        /// target). Default: $FLEETLAYER_WHY.
+        #[arg(long, env = "FLEETLAYER_WHY")]
+        why: Option<String>,
+        /// Its parameters: `--<name> <value>`; a file parameter takes the file's path here.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
     /// Use a tool another node shares, as this session's MCP server (stdio): `fleetlayer mcp browser@laptop`.
     Mcp {
@@ -768,6 +788,17 @@ fn me_text(v: &Value) -> String {
             let _ = writeln!(o, "    Add it: claude mcp add {short} -- fleetlayer mcp {name}");
         }
     }
+    let commands = list("commands");
+    if !commands.is_empty() {
+        let names: Vec<String> = commands
+            .iter()
+            .map(|c| {
+                let n = c["name"].as_str().unwrap_or("?");
+                if c["state"] == "allowed" { n.to_string() } else { format!("{n} ({})", state(c)) }
+            })
+            .collect();
+        let _ = writeln!(o, "Commands you may run: {} (`fleetlayer commands` says what each takes).", names.join(", "));
+    }
     for p in list("pages") {
         let space = p["name"].as_str().unwrap_or("?");
         let _ = writeln!(o, "Pages space {space} (on {}): {}", p["node"].as_str().unwrap_or("?"), state(&p));
@@ -1088,6 +1119,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         std::process::exit(code);
     }
     let socket = cli.socket.clone().unwrap_or_else(default_socket);
+    let cli_socket = socket.clone();
     if let Command::Attach { target, observe, raw, why } = &cli.command {
         return attach(&socket.with_extension("tools.sock"), target, *observe, *raw, why.as_deref()).await;
     }
@@ -1434,6 +1466,40 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
         Command::Mcp { .. } | Command::Lease { .. } | Command::Attach { .. } | Command::Pages { .. } => {}
+        Command::Commands { node } => {
+            let v: Value = peer.request("node/me", &json!({"caller": caller()})).await?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&run::listed(&v, node.as_deref()))?);
+                return Ok(());
+            }
+            println!("{}", run::commands_text(&v, node.as_deref()));
+        }
+        Command::Run { target, why, args } => {
+            let (args, why_after) = run::parse_args(&args)?;
+            let why = why_after.or(why);
+            let v: Value = peer.request("node/me", &json!({"caller": caller()})).await?;
+            if v["offline"] == true {
+                anyhow::bail!("{} isn't linked to a control plane now", v["node"].as_str().unwrap_or("this node"));
+            }
+            let list = run::listed(&v, None);
+            // Refused here (not offered to it, or arguments it can't send) leaves with 125, as a refusal there does.
+            let Some(found) = list.iter().find(|c| c["name"].as_str() == Some(target.as_str())).copied() else {
+                eprintln!(
+                    "fleetlayer: no command {target} you may run (`fleetlayer commands` lists them, as <command>@<node>)"
+                );
+                std::process::exit(run::REFUSED);
+            };
+            let req = match run::request(found, args, &std::env::current_dir()?) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("fleetlayer: {e}");
+                    std::process::exit(run::REFUSED);
+                }
+            };
+            let tools = cli_socket.with_extension("tools.sock");
+            let code = run::run(&tools, &target, why.as_deref(), req, cli.json, caller()).await?;
+            std::process::exit(code);
+        }
         Command::Tools { command } => {
             let (method, args) = match &command {
                 ToolsCommand::Enable { tool, duration } => {

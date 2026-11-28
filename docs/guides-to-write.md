@@ -907,3 +907,15 @@ managers, machines that sleep.
   the person approves once (a mail filter while an agent watches CI): Fleetlayer keeps the lease, the approval
   (through the access policy) and the expiry, and the service that owns the filter acts on start and end events.
   Written: `docs/plugins/leases.md`, `plugins/leases/skill/SKILL.md`, `scripts/fleetlayer-dev-slot`.
+- **A command that only works on one machine, for agents that run elsewhere.** A deploy tool that needs a touch of
+  the security key in the laptop, its own review dialog on the desktop and the person's own CLI sign-in can't run in
+  an agents VM, and giving agents a shell on the laptop gives them everything. Solved with shared commands: the
+  laptop's node declares a few commands in `node.yaml` (`commands:`, the program as an argument list with typed
+  `{param}` placeholders: choice, text, pattern, file), agents list them with `fleetlayer commands` and run one with
+  `fleetlayer run <name>@<node>`. The laptop checks every argument, the access policy decides `run` on
+  `command:<name>@<node>` (each run asks by default, `for: once`, showing the exact argument list), and it runs by
+  direct exec with the output streamed back. Footguns met on the way: a text value starting with `-` is read by most
+  programs as an option (refused unless `allow_dash`), launchd's `PATH` is short (give the program's full path; the
+  node's health fails when a command's program can't be found), and a file parameter must never be a path the agent
+  picks (the node writes the bytes to a new 0700 folder of its own). Written: `docs/guides/shared-commands.md`, with
+  Rack Gateway as the worked example; the skill section in `skills/fleetlayer/`.

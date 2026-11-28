@@ -1,6 +1,6 @@
 ---
 name: fleetlayer
-description: Work with the other agent sessions and shared tools on a Fleetlayer fleet. Use when you need to message another session or reply to one, find out what other sessions are doing or have done, start or resume a session on this or another machine, use a tool another machine shares (a signed-in browser, a laptop's screenshots and downloads), read usage readings, hear a channel's events (alerts, CI results, chat rooms) or catch up on the ones you missed, use a secret delivered to your role (an `op://` reference, `fleetlayer secrets run`), or when a message says it carries outside data or a call is waiting for the person's approval or was refused by access control.
+description: Work with the other agent sessions and shared tools on a Fleetlayer fleet. Use when you need to message another session or reply to one, find out what other sessions are doing or have done, start or resume a session on this or another machine, use a tool another machine shares (a signed-in browser, a laptop's screenshots and downloads), run a command another machine shares (a deploy tool that needs the person's laptop, `fleetlayer run`), read usage readings, hear a channel's events (alerts, CI results, chat rooms) or catch up on the ones you missed, use a secret delivered to your role (an `op://` reference, `fleetlayer secrets run`), or when a message says it carries outside data or a call is waiting for the person's approval or was refused by access control.
 ---
 
 # Fleetlayer
@@ -16,6 +16,7 @@ command, which talks to this machine's node.
   `<tab>@<node>`: `planning@laptop`. The tab name survives restarts; the harness's own session ID doesn't. When a tab
   name is unique in the fleet, the `@<node>` can be left out.
 - **A shared tool** is `<tool>@<node>`: `browser@laptop`, `shared-folders@laptop`.
+- **A shared command** is `<command>@<node>`: `rack-gateway-run@laptop`.
 
 ## What you may use from here
 
@@ -192,6 +193,35 @@ around the gate is going around your person. What its answers mean:
   can't read. Make smaller calls: fewer calls in one, shorter arguments.
 - **"… couldn't check this call with the control plane …"**: the gate fails closed. Try again in a minute; tell your
   person if it keeps failing.
+
+## Shared commands
+
+A machine can let you run a few commands it declares, with typed parameters, on that machine: usually the person's
+laptop, for what only works there (a deploy tool that needs their security key, a CLI signed in as them). You can't
+run anything else there, and you don't need to: ask your person if a command you need isn't offered.
+
+```sh
+fleetlayer commands                     # what you may run, on every node, and what each parameter takes
+fleetlayer commands laptop              # one node's
+fleetlayer run rack-gateway-run@laptop --rack staging --app web-app --script fix.rb --justification "backfill the missing rows"
+```
+
+- **Parameters** are `--<name> <value>` (or `--<name>=<value>`), exactly as `fleetlayer commands` lists them. A
+  `choice` takes one of its values; `text` is one line, no control characters, and can't start with `-`; a `pattern`
+  must match whole; a `file` takes a path on this machine (its bytes are sent, within its size limit). A wrong or
+  missing one is refused before anything runs, with what it takes.
+- **Output** arrives as it runs: the program's stdout on stdout, its stderr on stderr. `fleetlayer run` leaves with
+  the program's exit code, or 125 (refused or couldn't start), 124 (stopped at its timeout), 130 (cancelled). With
+  `--json`, the stream's JSON lines instead.
+- **Each run often asks your person first** ("waiting for your person to approve request <id>"). They see the exact
+  program and arguments. It waits a few minutes; if they haven't answered by then, it's refused: tell them what
+  you're running and why and the request ID, then run it again with exactly the same arguments once they've approved
+  it. Changed arguments ask again. Don't retry in a loop.
+- **A command can need a second approval on that machine** (a key touch, a dialog). Tell your person before you run
+  it, so they're at the machine.
+- **`--why "<one line>"`** goes with the run when the access rules ask for a reason. Refusals read as in "When a call
+  is held or refused" below.
+- It runs as the person on their machine: run only what your task needs, and never put secrets in a parameter.
 
 ## Outside data
 

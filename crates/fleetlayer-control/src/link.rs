@@ -42,6 +42,8 @@ pub struct Links {
     /// What each node shares, by (tenant, node), from `link/tools`, for `fleetlayer me`. Kept when the node unlinks,
     /// so its tools show as offline; rebuilt as nodes link.
     pub tools: Mutex<HashMap<(String, String), Vec<l::ToolInfo>>>,
+    /// The commands each node shares, by (tenant, node), from the same `link/tools` (`fleetlayer commands`).
+    pub commands: Mutex<HashMap<(String, String), Vec<l::CommandInfo>>>,
     next: AtomicU64,
     /// True once the control plane is shutting down: links and streams close with "restarting" so nodes reconnect.
     closing: tokio::sync::watch::Sender<bool>,
@@ -295,23 +297,7 @@ pub(crate) async fn tool_call(
     };
     let (tool, caller): (String, String) = (row.get(0), row.get(1));
     if let Some(id) = &c.peek {
-        let row = sqlx::query("SELECT status, expires_at FROM approvals WHERE tenant = ? AND id = ? AND subject = ?")
-            .bind(tenant)
-            .bind(id)
-            .bind(&caller)
-            .fetch_optional(&app.db)
-            .await
-            .map_err(RpcError::internal)?;
-        let Some(row) = row else { return Err(RpcError::refused(format!("no approval request {id} for {caller}"))) };
-        let (status, expires): (String, Option<i64>) = (row.get(0), row.get(1));
-        let live = expires.is_some_and(|e| e > crate::db::now_ms());
-        let (decision, reason) = match status.as_str() {
-            "pending" => ("pending", format!("waiting for the person to approve request {id}")),
-            "approved" if live => ("ready", format!("request {id} is approved")),
-            "denied" => ("denied", format!("the person refused request {id}")),
-            _ => ("denied", format!("request {id} has lapsed: make the call again to ask again")),
-        };
-        return Ok(l::ToolCallDecision { decision: decision.into(), approval: Some(id.clone()), reason });
+        return peek_approval(app, tenant, &caller, id).await;
     }
     if c.targets.is_empty() || c.targets.len() > TARGETS_MAX {
         return Err(RpcError::invalid_params(format!("a call names 1 to {TARGETS_MAX} targets")));
@@ -328,13 +314,14 @@ pub(crate) async fn tool_call(
         }
         targets.push(format!("tool:{tool}/{t}@{node}"));
     }
-    let call = crate::authz::CallContext { args_hash: &c.args_hash, detail: c.detail.as_deref() };
+    let call = crate::authz::CallContext { args_hash: &c.args_hash, detail: c.detail.as_deref(), audit_detail: false };
     let mut reasons = vec![];
     let mut approval = None;
     let mut to_spend = vec![];
     // Every target first, spending nothing; then the approvals `for: once` it relies on, all or none.
     for target in &targets {
-        let out = crate::authz::check_call(app, tenant, &caller, target, call, c.justification.as_deref()).await?;
+        let out =
+            crate::authz::check_call(app, tenant, &caller, "call", target, call, c.justification.as_deref()).await?;
         if let Some(e) = out.refusal {
             // The first refusal decides; a wait for approval names the request.
             let decision = if out.pending.is_some() { "pending" } else { "denied" };
@@ -362,6 +349,104 @@ pub(crate) async fn tool_call(
         return Ok(l::ToolCallDecision { decision: "denied".into(), approval: None, reason: reason.into() });
     }
     Ok(l::ToolCallDecision { decision: "allowed".into(), approval, reason: reasons.join("; ") })
+}
+
+/// A shared command's name: what node.yaml may call one (the node checks the same).
+pub fn valid_command_name(n: &str) -> bool {
+    !n.is_empty()
+        && n.len() <= 64
+        && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        && n.starts_with(|c: char| c.is_ascii_alphanumeric())
+}
+
+/// `link/command_call`: the node serving a command stream asks whether its caller may run the command with the
+/// arguments it was given. The caller and the command are the stream's, as recorded when it was opened, and only the
+/// node serving it may ask. Decided as verb `run` on `command:<name>@<node>`; the detail (the program and arguments it
+/// will run, file parameters by hash) goes to the person when asked and into the audit log.
+pub(crate) async fn command_call(
+    app: &App,
+    tenant: &str,
+    node: &str,
+    c: l::ToolCall,
+) -> Result<l::ToolCallDecision, RpcError> {
+    use sqlx::Row;
+    let row = sqlx::query(
+        "SELECT tool, caller FROM tool_connections WHERE tenant = ? AND stream_id = ? AND server_node = ? AND closed_at IS NULL",
+    )
+    .bind(tenant)
+    .bind(&c.stream_id)
+    .bind(node)
+    .fetch_optional(&app.db)
+    .await
+    .map_err(RpcError::internal)?;
+    let Some(row) = row else {
+        return Err(RpcError::refused(format!("{node} serves no open command stream with that ID")));
+    };
+    let (stream, caller): (String, String) = (row.get(0), row.get(1));
+    let Some(command) = stream.strip_prefix("command:").filter(|n| valid_command_name(n)) else {
+        return Err(RpcError::refused(format!("{node} serves no open command stream with that ID")));
+    };
+    if let Some(id) = &c.peek {
+        return peek_approval(app, tenant, &caller, id).await;
+    }
+    if !c.targets.is_empty() {
+        return Err(RpcError::invalid_params("a command run names no targets: the stream names the command"));
+    }
+    if c.args_hash.is_empty() || c.args_hash.len() > 128 {
+        return Err(RpcError::invalid_params("argsHash is 1 to 128 characters"));
+    }
+    let Some(detail) = c.detail.as_deref().filter(|d| !d.is_empty() && d.len() <= 8192) else {
+        return Err(RpcError::invalid_params("a command run carries its detail (1 to 8192 bytes)"));
+    };
+    let target = format!("command:{command}@{node}");
+    let call = crate::authz::CallContext { args_hash: &c.args_hash, detail: Some(detail), audit_detail: true };
+    let out = crate::authz::check_call(app, tenant, &caller, "run", &target, call, c.justification.as_deref()).await?;
+    if let Some(e) = out.refusal {
+        let decision = if out.pending.is_some() { "pending" } else { "denied" };
+        return Ok(l::ToolCallDecision { decision: decision.into(), approval: out.pending, reason: e.message });
+    }
+    let mut to_spend = out.to_spend;
+    to_spend.sort();
+    to_spend.dedup();
+    if !crate::approvals::spend_all(&app.db, tenant, &to_spend).await.map_err(RpcError::internal)? {
+        let reason = "another run with the same arguments used its approval just now: run it again to ask again";
+        let e = crate::audit::Entry {
+            decision: "denied".into(),
+            subject: caller.clone(),
+            verb: "run".into(),
+            target: target.clone(),
+            reason: reason.into(),
+        };
+        app.audit.record(&app.db, tenant, e).await.map_err(RpcError::internal)?;
+        return Ok(l::ToolCallDecision { decision: "denied".into(), approval: None, reason: reason.into() });
+    }
+    Ok(l::ToolCallDecision {
+        decision: "allowed".into(),
+        approval: None,
+        reason: format!("{target}: {}", out.because.join(", ")),
+    })
+}
+
+/// A peek at the stream caller's approval request: `pending`, `ready` once approved, or `denied`.
+async fn peek_approval(app: &App, tenant: &str, caller: &str, id: &str) -> Result<l::ToolCallDecision, RpcError> {
+    use sqlx::Row;
+    let row = sqlx::query("SELECT status, expires_at FROM approvals WHERE tenant = ? AND id = ? AND subject = ?")
+        .bind(tenant)
+        .bind(id)
+        .bind(caller)
+        .fetch_optional(&app.db)
+        .await
+        .map_err(RpcError::internal)?;
+    let Some(row) = row else { return Err(RpcError::refused(format!("no approval request {id} for {caller}"))) };
+    let (status, expires): (String, Option<i64>) = (row.get(0), row.get(1));
+    let live = expires.is_some_and(|e| e > crate::db::now_ms());
+    let (decision, reason) = match status.as_str() {
+        "pending" => ("pending", format!("waiting for the person to approve request {id}")),
+        "approved" if live => ("ready", format!("request {id} is approved")),
+        "denied" => ("denied", format!("the person refused request {id}")),
+        _ => ("denied", format!("request {id} has lapsed: make the call again to ask again")),
+    };
+    Ok(l::ToolCallDecision { decision: decision.into(), approval: Some(id.to_string()), reason })
 }
 
 /// When the person approves a `sync` request (from the hub, the API or `fleetlayer-control approvals approve`, which
@@ -575,6 +660,9 @@ impl Handler for FromNode {
             }
             l::method::TOOL_OPEN => {
                 let t: l::ToolOpen = params(p)?;
+                if t.tool.is_empty() || t.tool.contains([':', '@', '/']) {
+                    return Err(RpcError::invalid_params("a tool's name has no : @ or /"));
+                }
                 let caller = format!("{}@{}", t.caller, self.node);
                 let target = format!("tool:{}@{}", t.tool, t.node);
                 crate::authz::check_why(app, tenant, &caller, "use_tool", &target, t.justification.as_deref()).await?;
@@ -607,6 +695,54 @@ impl Handler for FromNode {
             l::method::TOOL_CALL => {
                 let c: l::ToolCall = params(p)?;
                 answer(&tool_call(app, tenant, &self.node, c).await?)
+            }
+            l::method::COMMAND_OPEN => {
+                let c: l::CommandOpen = params(p)?;
+                if !valid_command_name(&c.command) {
+                    return Err(RpcError::invalid_params(
+                        "a command's name is 1 to 64 letters, digits, - and _, starting with a letter or digit",
+                    ));
+                }
+                let caller = format!("{}@{}", c.caller, self.node);
+                let target = format!("command:{}@{}", c.command, c.node);
+                // Refused outright here; asked (and audited with its arguments) when the serving node checks the run
+                // it was given (`link/command_call`), so the person sees what it will run.
+                if matches!(crate::authz::dry(app, tenant, &caller, "run", &target).await, crate::authz::Dry::Denied) {
+                    crate::authz::check_why(app, tenant, &caller, "run", &target, c.justification.as_deref()).await?;
+                }
+                let server = app
+                    .links
+                    .peer(tenant, &c.node)
+                    .await
+                    .ok_or_else(|| RpcError::not_here(format!("node {} is offline", c.node)))?;
+                let id = app
+                    .streams
+                    .create(&app.db, tenant, &format!("command:{}", c.command), &self.node, &c.node, &caller)
+                    .await
+                    .map_err(RpcError::internal)?;
+                let (app2, id2) = (app.clone(), id.clone());
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                    app2.streams.forget(&id2).await;
+                });
+                let serve = l::CommandServe {
+                    stream_id: id.clone(),
+                    command: c.command.clone(),
+                    caller,
+                    justification: c.justification.clone(),
+                };
+                if let Err(e) =
+                    server.request_within::<_, Value>(l::method::COMMAND_SERVE, &serve, Duration::from_secs(20)).await
+                {
+                    app.streams.forget(&id).await;
+                    crate::streams::finish(app, &id, 0, 0, &format!("refused: {}", e.message)).await;
+                    return Err(e);
+                }
+                answer(&l::ToolOpened { stream_id: id })
+            }
+            l::method::COMMAND_CALL => {
+                let c: l::ToolCall = params(p)?;
+                answer(&command_call(app, tenant, &self.node, c).await?)
             }
             l::method::SESSION_CLOSE | l::method::SESSION_ANSWER => {
                 let r: l::SessionActRequest = params(p)?;
@@ -814,7 +950,9 @@ impl Handler for FromNode {
             }
             l::method::TOOLS => match serde_json::from_value::<l::Tools>(p) {
                 Ok(t) => {
-                    self.app.links.tools.lock().await.insert((tenant.to_string(), node.to_string()), t.tools);
+                    let key = (tenant.to_string(), node.to_string());
+                    self.app.links.tools.lock().await.insert(key.clone(), t.tools);
+                    self.app.links.commands.lock().await.insert(key, t.commands);
                     Ok(())
                 }
                 Err(e) => Err(e.into()),

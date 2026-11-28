@@ -675,6 +675,12 @@ Not part of the plugin protocol, summarised here for context; `docs/link.md` wil
   frames, a `hello` with the node's enrolment token and protocol version, and request/response frames with IDs.
 - Up: session snapshots and changes, events, readings, sealed bundles and their status, plugin health.
 - Down: messages to deliver, actions to run, sealed bundles, requests to open, close or interrupt a session.
+- Streams the control plane pairs between two nodes: a shared tool (`link/tool_open`, `link/tool_serve`, and
+  `link/tool_call` for the MCP gate), a terminal, and a shared command (`link/command_open`, `link/command_serve`, and
+  `link/command_call` for each run, decided as `run` on `command:<name>@<node>`). A command stream carries one JSON
+  object per line: the caller's `run` request (arguments, and file parameters with their bytes and SHA-256) and
+  optional `cancel`; the serving node's `waiting`, `started`, `output` (`stream`, `text`), `note`, and a last
+  `refused` or `exit` (`docs/guides/shared-commands.md`, `crates/fleetlayer-node/src/commands.rs`).
 - The control plane holds no credentials. It sees session metadata, messages and events (the hosted plan's privacy
   terms say so) and only ciphertext for secrets.
 

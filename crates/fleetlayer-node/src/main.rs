@@ -3,6 +3,7 @@
 //! CLI on a local socket. Linking to the control plane comes next.
 
 mod act;
+mod commands;
 mod config;
 mod deliver;
 mod gate;
@@ -86,6 +87,10 @@ pub struct Node {
     /// The control plane link's settings (token path expanded), for tool streams.
     pub control: Option<config::ControlConfig>,
     pub tools: Vec<tools::ToolConfig>,
+    /// Commands this node runs for sessions elsewhere (`commands:` in node.yaml, `crate::commands`).
+    pub commands: Vec<commands::CommandConfig>,
+    /// Their runs since the node started, for the `command.runs` readings.
+    pub command_runs: commands::Runs,
     /// This node's age public key (`age1…`).
     pub public_key: String,
     pub identity: age::x25519::Identity,
@@ -125,6 +130,8 @@ impl Node {
             gateway: None,
             control: None,
             tools: vec![],
+            commands: vec![],
+            command_runs: Default::default(),
             public_key: key.to_public().to_string(),
             identity: key,
             sync: Default::default(),
@@ -229,6 +236,8 @@ async fn run(cfg: NodeConfig, config_path: PathBuf) -> anyhow::Result<()> {
             c
         }),
         tools: cfg.tools.clone(),
+        commands: cfg.commands.clone(),
+        command_runs: Default::default(),
         public_key: key.to_public().to_string(),
         identity: key,
         sync: sync::Sync::default(),
@@ -256,6 +265,7 @@ async fn run(cfg: NodeConfig, config_path: PathBuf) -> anyhow::Result<()> {
     }
     tokio::spawn(sync::retry(node.clone()));
     tokio::spawn(tools::report(node.clone()));
+    tokio::spawn(commands::report(node.clone()));
     tokio::spawn(secrets::run(node.clone()));
     // Windows saved as open: closed now if they ended while the node was stopped, otherwise timed to close.
     tokio::spawn(window::at_start(node.clone()));

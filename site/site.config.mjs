@@ -45,6 +45,7 @@ export const pages = [
   { file: "guides/shared-folders", group: "Shared tools and accounts", label: "Your screenshots and downloads" },
   { file: "guides/pages", group: "Shared tools and accounts", label: "Pages instead of artifacts" },
   { file: "guides/executor", group: "Shared tools and accounts", label: "Executor behind Fleetlayer" },
+  { file: "guides/shared-commands", group: "Shared tools and accounts", label: "Run approved commands on another machine" },
   { file: "guides/untrusted-input", group: "Security", label: "An agent that reads strangers' text" },
   { file: "guides/egress", group: "Security", label: "Keep agents to the hosts they need" },
   { file: "guides/admin-window", group: "Security", label: "An admin role that's off until you open it" },

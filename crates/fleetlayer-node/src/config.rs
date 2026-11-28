@@ -47,6 +47,10 @@ pub struct NodeConfig {
     /// Tools this node shares with sessions on other nodes (`crate::tools`).
     #[serde(default)]
     pub tools: Vec<crate::tools::ToolConfig>,
+    /// Commands this node runs, with typed parameters, for sessions on other nodes (`crate::commands`,
+    /// `docs/guides/shared-commands.md`).
+    #[serde(default)]
+    pub commands: Vec<crate::commands::CommandConfig>,
     /// The gateway's address (`http://127.0.0.1:7680`): the node's health includes the gateway's `/healthz`, so a
     /// gateway that keeps dying turns the node's heartbeat red (`fleetlayer up` sets it).
     pub gateway: Option<String>,
@@ -155,6 +159,16 @@ impl NodeConfig {
                 }
                 for t in &c.tools {
                     t.check().map_err(|e| anyhow::anyhow!("{}: tool {}: {e}", path.display(), t.name))?;
+                }
+                let mut names = std::collections::HashSet::new();
+                for cmd in &c.commands {
+                    cmd.check().map_err(|e| anyhow::anyhow!("{}: command {}: {e}", path.display(), cmd.name))?;
+                    anyhow::ensure!(
+                        names.insert(cmd.name.clone()),
+                        "{}: two commands are called {}",
+                        path.display(),
+                        cmd.name
+                    );
                 }
                 Ok(c)
             }

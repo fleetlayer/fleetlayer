@@ -32,4 +32,7 @@ fn the_check_catches_what_it_should() {
     assert!(check(&w("fleetlayer session start --tabname r")).unwrap().contains("no flag --tabname"));
     assert!(check(&w("fleetlayer stauts")).unwrap().contains("no subcommand stauts"));
     assert!(invocations("fleetlayer-node install", "fleetlayer").is_empty());
+    // A command's own parameters after its target pass through; its flags before the target are still checked.
+    assert_eq!(check(&w("fleetlayer run deploy@laptop --app web --why x")), None);
+    assert!(check(&w("fleetlayer run --bogus deploy@laptop")).unwrap().contains("no flag --bogus"));
 }

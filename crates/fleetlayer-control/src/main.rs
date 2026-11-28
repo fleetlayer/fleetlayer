@@ -981,13 +981,18 @@ async fn main() -> anyhow::Result<()> {
                         );
                         // A tool call through the MCP gate, or an agent's reason: the agent's own words.
                         if let Some(d) = a["detail"].as_str() {
-                            let scope = match (a["once"] == true, a["verb"] == "call") {
+                            let scope = match (a["once"] == true, a["verb"].as_str()) {
+                                (true, Some("run")) => " (approving allows this one run)",
                                 (true, _) => " (approving allows this one call)",
-                                (false, true) => {
+                                (false, Some("call")) => {
                                     " (approving allows every call to this target for the rule's time, whatever its \
                                      arguments)"
                                 }
-                                (false, false) => "",
+                                (false, Some("run")) => {
+                                    " (approving allows every run of this command for the rule's time, whatever its \
+                                     arguments)"
+                                }
+                                (false, _) => "",
                             };
                             println!(
                                 "    written by {} (outside data, not access control's words){scope}:",
