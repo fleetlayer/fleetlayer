@@ -24,7 +24,7 @@ fn config_is_checked() {
     let ok = load(
         &home(),
         &json!({"share": [{"set": "x", "domains": ["x.com"], "to": ["server"],
-        "cookies_file": "~/c/Cookies"}]}),
+        "source": "file", "cookies_file": "~/c/Cookies"}]}),
     )
     .unwrap();
     assert_eq!(ok.share[0].cookies_file.as_deref(), Some(Path::new("/home/alice/c/Cookies")));
