@@ -25,6 +25,7 @@ export const site = {
 // and the page's meta description. Write it for someone deciding whether to open the page, never a status line.
 export const pages = [
   { file: "getting-started", group: "Start here", description: "Install Fleetlayer on your laptop in a few minutes, link a second machine, and send your first message between agents." },
+  { file: "walkthrough", group: "Start here", label: "Ten-minute walkthrough", description: "Link two machines, have an agent on each message the other, and let one read a folder on the other machine, in about ten minutes, with a diagram of how the pieces connect." },
   { file: "concepts", group: "Start here", label: "How it fits together", description: "How the pieces fit: the control plane, a node on each machine, plugins for session managers and tools, and the access policy over all of it." },
   { file: "requirements", group: "Start here", label: "Requirements and uninstalling", description: "Check what you need (macOS or Linux, a session manager, Claude Code or Codex), which agents work today, and how to remove Fleetlayer cleanly." },
   { file: "trust", group: "Start here", label: "Installing and trusting it", description: "What installing Fleetlayer trusts, how to verify a release before you run it, how to control self-updates, and what each plugin can read." },
