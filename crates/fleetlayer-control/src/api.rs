@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Json;
 use axum::extract::{Query, State};
@@ -241,9 +242,71 @@ pub async fn get_handoff(
     }
 }
 
-pub async fn get_events(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
+#[derive(serde::Deserialize, Default)]
+pub struct EventsQuery {
+    /// The cursor: the last event ID the reader has, or `latest` to start from now.
+    after: Option<String>,
+    /// Only these channels (a comma-separated list).
+    channel: Option<String>,
+    subject: Option<String>,
+    limit: Option<i64>,
+    /// Seconds to wait for an event when there's none yet (long-poll), at most [`MAX_EVENTS_WAIT_S`].
+    wait: Option<u64>,
+}
+
+/// The longest `GET /v1/events?wait=` holds a request open.
+pub const MAX_EVENTS_WAIT_S: u64 = 60;
+
+/// `GET /v1/events`: the newest 100 events (without their bodies, with where each was delivered). With `?after=<id>`
+/// it's the cursor feed a service reads events with: the events after that ID, oldest first, with their bodies, and
+/// `next`, the cursor to pass next time. `after=latest` starts from now (no events, just `next`). `channel=a,b` and
+/// `subject=` narrow it; `limit` (default 100, at most 1000); `wait=<seconds>` (at most 60) holds the request until an
+/// event arrives when there's none yet.
+pub async fn get_events(State(app): State<Arc<App>>, headers: HeaderMap, Query(q): Query<EventsQuery>) -> ApiResult {
     guard(&app, &headers).await?;
-    Ok(Json(json!({"events": db::recent_events(&app.db, DEFAULT_TENANT, 100).await.map_err(internal)?})))
+    let Some(after) = q.after.as_deref() else {
+        return Ok(Json(json!({"events": db::recent_events(&app.db, DEFAULT_TENANT, 100).await.map_err(internal)?})));
+    };
+    // Subscribed before the first read, so an event stored in between still wakes the wait.
+    let mut newest = app.links.new_events.subscribe();
+    let after: i64 = match after {
+        "latest" => {
+            let id = db::latest_event_id(&app.db, DEFAULT_TENANT).await.map_err(internal)?;
+            return Ok(Json(json!({"events": [], "next": id})));
+        }
+        a => a.parse().ok().filter(|a: &i64| *a >= 0).ok_or((
+            StatusCode::BAD_REQUEST,
+            "after is an event ID (the `next` of the last answer) or `latest`".to_string(),
+        ))?,
+    };
+    let channels: Vec<String> = q
+        .channel
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+        .map(str::to_string)
+        .collect();
+    let limit = q.limit.unwrap_or(100).clamp(1, 1000);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(q.wait.unwrap_or(0).min(MAX_EVENTS_WAIT_S));
+    let mut cursor = after;
+    loop {
+        // Every event up to this ID is stored already (one writer: IDs are committed in order).
+        let seen = *newest.borrow_and_update();
+        let events = db::events_after(&app.db, DEFAULT_TENANT, cursor, &channels, q.subject.as_deref(), limit)
+            .await
+            .map_err(internal)?;
+        if !events.is_empty() {
+            let next = events.last().and_then(|e| e["id"].as_i64()).unwrap_or(cursor);
+            return Ok(Json(json!({"events": events, "next": next})));
+        }
+        // Nothing matched: what's stored after the cursor didn't, so the next read starts past it.
+        cursor = cursor.max(seen);
+        if tokio::time::timeout_at(deadline, newest.changed()).await.is_err() {
+            return Ok(Json(json!({"events": [], "next": cursor})));
+        }
+    }
 }
 
 pub async fn get_subscriptions(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
@@ -1315,7 +1378,10 @@ mod tests {
         assert!(get_approvals(State(app.clone()), h.clone()).await.is_ok());
         assert!(get_windows(State(app.clone()), h.clone()).await.is_ok());
         assert_eq!(get_fleet(State(app.clone()), h.clone()).await.unwrap_err().0, StatusCode::FORBIDDEN);
-        assert_eq!(get_events(State(app.clone()), h.clone()).await.unwrap_err().0, StatusCode::FORBIDDEN);
+        assert_eq!(
+            get_events(State(app.clone()), h.clone(), Query(EventsQuery::default())).await.unwrap_err().0,
+            StatusCode::FORBIDDEN
+        );
         // An ordinary request: approved as its owner, and audited.
         pending(&app, "ap_tool", "use_tool", "tool:browser@laptop").await;
         let _ = post_approval(State(app.clone()), h.clone(), axum::extract::Path("ap_tool".into()), body(true))
@@ -1450,5 +1516,76 @@ mod tests {
             .unwrap_err();
         assert_eq!(e.0, StatusCode::FORBIDDEN);
         assert!(e.1.contains("isn't a member"), "{}", e.1);
+    }
+
+    fn event(channel: &str, subject: &str, n: u32) -> fleetlayer_protocol::ext::Event {
+        fleetlayer_protocol::ext::Event {
+            channel: channel.into(),
+            kind: format!("{channel}.thing"),
+            subject: Some(subject.into()),
+            at: jiff::Timestamp::now(),
+            dedupe_key: None,
+            summary: format!("event {n}"),
+            body: json!({"n": n}),
+        }
+    }
+
+    fn after(after: &str, channel: Option<&str>, wait: Option<u64>) -> Query<EventsQuery> {
+        Query(EventsQuery {
+            after: Some(after.into()),
+            channel: channel.map(str::to_string),
+            subject: None,
+            limit: None,
+            wait,
+        })
+    }
+
+    #[tokio::test]
+    async fn a_service_reads_events_with_a_cursor_and_waits_for_the_next() {
+        let app = app().await;
+        let read = db::add_token(&app.db, DEFAULT_TENANT, "deck", "read").await.unwrap();
+        let h = bearer(&read);
+        let send = db::add_token(&app.db, DEFAULT_TENANT, "sender", "send").await.unwrap();
+        let e = get_events(State(app.clone()), bearer(&send), after("0", None, None)).await.unwrap_err();
+        assert_eq!(e.0, StatusCode::FORBIDDEN, "a send token doesn't read events");
+        for n in 1..=3 {
+            crate::route::publish(&app, DEFAULT_TENANT, event(if n == 2 { "ci" } else { "alerts" }, "x", n), "test")
+                .await
+                .unwrap();
+        }
+        // From the start: oldest first, with bodies, and the cursor.
+        let v = get_events(State(app.clone()), h.clone(), after("0", None, None)).await.unwrap().0;
+        let ns: Vec<_> = v["events"].as_array().unwrap().iter().map(|e| e["body"]["n"].clone()).collect();
+        assert_eq!(ns, vec![json!(1), json!(2), json!(3)]);
+        let next = v["next"].as_i64().unwrap();
+        // One channel; a cursor past what matched.
+        let v = get_events(State(app.clone()), h.clone(), after("0", Some("ci, other"), None)).await.unwrap().0;
+        assert_eq!(v["events"].as_array().unwrap().len(), 1);
+        let v = get_events(State(app.clone()), h.clone(), after(&next.to_string(), Some("ci"), None)).await.unwrap().0;
+        assert_eq!((v["events"].as_array().unwrap().len(), v["next"].as_i64()), (0, Some(next)));
+        // latest: nothing, and the newest ID.
+        let v = get_events(State(app.clone()), h.clone(), after("latest", None, None)).await.unwrap().0;
+        assert_eq!((v["events"].as_array().unwrap().len(), v["next"].as_i64()), (0, Some(next)));
+        assert_eq!(
+            get_events(State(app.clone()), h.clone(), after("x", None, None)).await.unwrap_err().0,
+            StatusCode::BAD_REQUEST
+        );
+        // A long-poll answers as soon as a matching event arrives, skipping one that doesn't match.
+        let waiting = {
+            let (app, h) = (app.clone(), h.clone());
+            tokio::spawn(async move { get_events(State(app), h, after(&next.to_string(), Some("ci"), Some(30))).await })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        crate::route::publish(&app, DEFAULT_TENANT, event("alerts", "x", 4), "test").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!waiting.is_finished(), "an event on another channel doesn't answer it");
+        crate::route::publish(&app, DEFAULT_TENANT, event("ci", "x", 5), "test").await.unwrap();
+        let v = tokio::time::timeout(Duration::from_secs(5), waiting).await.unwrap().unwrap().unwrap().0;
+        assert_eq!(v["events"][0]["body"]["n"], json!(5));
+        // A wait that times out answers empty, with the cursor moved past what didn't match.
+        let started = std::time::Instant::now();
+        let v = get_events(State(app.clone()), h, after(&v["next"].to_string(), Some("nothing"), Some(1))).await;
+        assert!(started.elapsed() >= Duration::from_millis(900));
+        assert_eq!(v.unwrap().0["events"].as_array().unwrap().len(), 0);
     }
 }

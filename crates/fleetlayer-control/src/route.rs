@@ -541,6 +541,7 @@ pub async fn publish_matching(
     let Some(id) = db::add_event(&app.db, tenant, &e, source).await.map_err(RpcError::internal)? else {
         return Ok((None, PublishResult { duplicate: true, deliveries: vec![] }));
     };
+    app.links.new_events.send_modify(|newest| *newest = (*newest).max(id));
     let mut subjects: Vec<&str> = vec![];
     if let Some(s) = e.subject.as_deref() {
         subjects.push(s);

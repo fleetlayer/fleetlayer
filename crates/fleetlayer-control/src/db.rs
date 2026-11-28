@@ -889,6 +889,57 @@ pub async fn missed_events(
     Ok(out)
 }
 
+/// The newest event ID in the tenant (0 when there's none): where a feed that starts now begins.
+pub async fn latest_event_id(db: &Db, tenant: &str) -> anyhow::Result<i64> {
+    Ok(sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(id) FROM events WHERE tenant = ?")
+        .bind(tenant)
+        .fetch_one(db)
+        .await?
+        .unwrap_or(0))
+}
+
+/// The events after ID `after`, oldest first, on any of `channels` (every channel when empty) and about `subject`
+/// when given: the cursor feed of `GET /v1/events?after=`. Each is `{id, channel, kind, subject, summary, body,
+/// source, at}`, `at` in milliseconds.
+pub async fn events_after(
+    db: &Db,
+    tenant: &str,
+    after: i64,
+    channels: &[String],
+    subject: Option<&str>,
+    limit: i64,
+) -> anyhow::Result<Vec<serde_json::Value>> {
+    let channels = serde_json::to_string(channels)?;
+    let rows = sqlx::query(
+        "SELECT id, channel, kind, subject, summary, body, source, at FROM events
+         WHERE tenant = ? AND id > ?
+           AND (json_array_length(?) = 0 OR channel IN (SELECT value FROM json_each(?)))
+           AND (? IS NULL OR subject = ?)
+         ORDER BY id LIMIT ?",
+    )
+    .bind(tenant)
+    .bind(after)
+    .bind(&channels)
+    .bind(&channels)
+    .bind(subject)
+    .bind(subject)
+    .bind(limit)
+    .fetch_all(db)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            let body: String = r.get(5);
+            serde_json::json!({
+                "id": r.get::<i64, _>(0), "channel": r.get::<String, _>(1), "kind": r.get::<String, _>(2),
+                "subject": r.get::<Option<String>, _>(3), "summary": r.get::<String, _>(4),
+                "body": serde_json::from_str::<serde_json::Value>(&body).unwrap_or(serde_json::Value::String(body)),
+                "source": r.get::<String, _>(6), "at": r.get::<i64, _>(7),
+            })
+        })
+        .collect())
+}
+
 pub async fn recent_events(db: &Db, tenant: &str, limit: i64) -> anyhow::Result<Vec<serde_json::Value>> {
     let rows = sqlx::query(
         "SELECT id, channel, kind, subject, summary, source, at, deliveries FROM events WHERE tenant = ?

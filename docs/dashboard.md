@@ -154,7 +154,7 @@ Its calls to the control plane, made at most once every three seconds however ma
 |---|---|
 | `GET /v1/fleet` | Nodes (linked or not, version, last seen) and sessions with their summaries, and the handoffs that link them (`handoffFrom`, `handoffTo`). |
 | `GET /v1/handoffs` | The newest 200 handoffs; `?since=<cursor>` the feed after it, oldest first, with `nextCursor` (`?since=` from the start). `/v1/handoffs/<id>`: one; its note only with the admin token. Handoffs are kept 30 days (`handoff_days:`). |
-| `GET /v1/events` | The newest hundred events and their deliveries. |
+| `GET /v1/events` | The newest hundred events and their deliveries. `?after=<id>` is the cursor feed services read events with ([Events](events.md)). |
 | `GET /v1/approvals` | Requests waiting for a person. |
 | `GET /v1/windows` | Windowed roles and recent windows. |
 | `GET /v1/readings` | Every reading's newest value; `?kind=a,b` for some kinds only. |

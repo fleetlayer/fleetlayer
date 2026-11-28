@@ -47,6 +47,9 @@ pub struct Links {
     next: AtomicU64,
     /// True once the control plane is shutting down: links and streams close with "restarting" so nodes reconnect.
     closing: tokio::sync::watch::Sender<bool>,
+    /// The newest stored event's ID, bumped as each is stored, so `GET /v1/events?after=&wait=` answers as soon as one
+    /// arrives.
+    pub new_events: tokio::sync::watch::Sender<i64>,
 }
 
 /// Resolves once `closing` turns true (without holding its value across an await, which isn't `Send`).

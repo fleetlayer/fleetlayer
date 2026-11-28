@@ -82,6 +82,7 @@ export const pages = [
   { file: "credentials", group: "Reference", label: "Credentials" },
   { file: "egress", group: "Reference", label: "Network access" },
   { file: "access-control", group: "Reference", label: "Access control" },
+  { file: "events", group: "Reference", label: "Events" },
   { file: "releasing", group: "Reference", label: "Releases and updates" },
   { file: "protocol", group: "Reference", label: "Plugin protocol" },
   { file: "link", group: "Reference", label: "Node link" },
