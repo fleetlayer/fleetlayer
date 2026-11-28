@@ -131,6 +131,32 @@ fn persisted(file: &Path, logger: &Logger) -> Option<Value> {
     }
 }
 
+/// How long a lock holder's socket may refuse connections before the lock counts as stale. A coordinator that's
+/// still starting binds its socket within a second or two.
+const STALE_AFTER: Duration = Duration::from_secs(15);
+
+/// Whether the lock's holder `pid` counts as gone: its socket has refused every call for [`STALE_AFTER`]. `silent`
+/// remembers since when, per holder; an answer clears it.
+fn stale_holder(
+    silent: &mut Option<(i32, std::time::Instant)>,
+    pid: i32,
+    answered: bool,
+    now: std::time::Instant,
+) -> bool {
+    if answered {
+        *silent = None;
+        return false;
+    }
+    let since = match *silent {
+        Some((p, t)) if p == pid => t,
+        _ => {
+            *silent = Some((pid, now));
+            now
+        }
+    };
+    now.duration_since(since) >= STALE_AFTER
+}
+
 /// What the node coordinator needs.
 pub struct NodeEnv {
     pub rotator_dir: PathBuf,
@@ -147,6 +173,9 @@ pub async fn run_node(peer: Peer, env: NodeEnv, layout: Layout, applied: watch::
     let lock = server::lock_path(&env.rotator_dir);
     let sock = server::socket_path(&env.rotator_dir);
     let mut said: Option<i32> = None;
+    // A holder whose socket has refused connections since this moment: its pid may have been reused by another
+    // process after it died (so `kill(pid, 0)` still succeeds), leaving a stale lock nobody serves.
+    let mut silent: Option<(i32, std::time::Instant)> = None;
     while !peer.is_closed() {
         let wait = match server::take_lock(&lock) {
             Ok(None) => {
@@ -155,7 +184,23 @@ pub async fn run_node(peer: Peer, env: NodeEnv, layout: Layout, applied: watch::
                 Duration::from_secs(1)
             }
             Ok(Some(pid)) => {
-                let name = match server::call(&sock, "GET", "/hello", None, Duration::from_secs(5)).await {
+                let hello = server::call(&sock, "GET", "/hello", None, Duration::from_secs(5)).await;
+                if stale_holder(&mut silent, pid, hello.is_ok(), std::time::Instant::now()) {
+                    {
+                        tracing::warn!(
+                            pid,
+                            "coordinator.lock names pid {pid}, but nothing has answered on the socket for {}s: taking it over",
+                            STALE_AFTER.as_secs()
+                        );
+                        let _ = std::fs::remove_file(&lock);
+                        let _ = std::fs::remove_file(&sock);
+                        silent = None;
+                        said = None;
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        continue;
+                    }
+                }
+                let name = match hello {
                     Ok((200, hello)) => hello["name"].as_str().map(str::to_string),
                     _ => None,
                 };
@@ -321,4 +366,30 @@ async fn serve(peer: &Peer, env: &NodeEnv, layout: &Layout, mut applied: watch::
     c.stop();
     c.deps().flush();
     let _ = std::fs::remove_file(server::socket_path(dir));
+}
+
+#[cfg(test)]
+mod stale_tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn a_holder_whose_socket_never_answers_goes_stale_after_the_grace_period() {
+        let mut silent = None;
+        let t0 = Instant::now();
+        assert!(!stale_holder(&mut silent, 780, false, t0), "the first refusal starts the clock");
+        assert!(!stale_holder(&mut silent, 780, false, t0 + Duration::from_secs(5)), "still within the grace period");
+        assert!(stale_holder(&mut silent, 780, false, t0 + STALE_AFTER), "a reused pid with no coordinator behind it");
+    }
+
+    #[test]
+    fn an_answer_or_a_new_holder_resets_the_clock() {
+        let mut silent = None;
+        let t0 = Instant::now();
+        assert!(!stale_holder(&mut silent, 780, false, t0));
+        assert!(!stale_holder(&mut silent, 780, true, t0 + Duration::from_secs(10)), "it answered: alive");
+        assert!(!stale_holder(&mut silent, 780, false, t0 + Duration::from_secs(20)), "the clock starts again");
+        assert!(!stale_holder(&mut silent, 900, false, t0 + Duration::from_secs(40)), "another holder: a new clock");
+        assert!(stale_holder(&mut silent, 900, false, t0 + Duration::from_secs(40) + STALE_AFTER));
+    }
 }
