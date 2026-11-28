@@ -23,6 +23,14 @@ Most releases need only the installer or a node's own update. These need more, o
 
 ## Unreleased
 
+- **A lock per named thing** in the leases plugin: `per: <field>` counts a kind's slots per value of one payload
+  field, so one session holds `racks/us` while another holds `dns`, and a second asking for `racks/us` waits in that
+  component's own line. It ships in v0.4.2.
+- **GitHub commit statuses and pull requests** keep the fields a subscriber needs in their event's short body: a
+  status's `context` and `state` (CircleCI and others send one per job), a pull request's `number` and whether it
+  `merged`. It ships in v0.4.2.
+- **Built on Fleetlayer**: a page for Quietdeck and Deploy Queue, and the guide [Deploying with
+  agents](guides/deploying-with-agents.md).
 - **tmux** (`fleetlayer-tmux`): puts the Claude Code, Codex and other agents in your tmux panes in the fleet, with
   their status, messages, blocked prompts, sessions started and closed remotely, and `fleetlayer attach`. It uses only
   tmux's own command line and never attaches a client, so your layout stays as it is. It ships in v0.4.2.
