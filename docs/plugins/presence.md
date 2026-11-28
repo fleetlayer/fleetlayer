@@ -16,8 +16,10 @@ nobody looks at, a mail triage agent that pauses overnight and does one catch-up
 It's a node plugin that ships with Fleetlayer as `fleetlayer-presence`, in two parts:
 
 - **The authority**: one per fleet, on a machine that's always on. It keeps what people said and planned, hears their
-  desks, decides each person's state every 15 seconds, and publishes it. Agents everywhere reach it through a tool
-  its node shares, so the control plane checks every call against the access policy and writes it to the audit log.
+  desks, decides each person's state every 15 seconds, and publishes it. Agents reach it through a tool its node
+  shares, so the control plane checks each of their calls against the access policy and writes it to the audit log.
+  Run it under a Unix user (with its own node) that no agent shares: every process of the authority's own user can
+  reach its socket directly, past the policy, and record anything as said by anyone.
 - **The desk source**: on the person's own computer, it reports whether the screen is locked and how long since the
   last keyboard or mouse input.
 
@@ -41,6 +43,7 @@ tools:
     allow: ["*"]                              # who may read and set presence: <tab>@<node> patterns
     check_calls: true                         # every call checked and audited by the control plane
     call_targets:                             # so rules can name the person: tool:presence/set/alice@<node>
+      get: ["/person"]
       set: ["/person"]
       plan_add: ["/person"]
       plan_remove: ["/person"]
@@ -103,9 +106,12 @@ alice is away since 12:04, until 13:00: said away (lunch) until 13:00 at 12:01 v
 ```
 
 `--json` gives `person`, `state` (`present`, `semi_present`, `away` or `asleep`), `since`, `until` (for a stated
-status, a planned absence or the night), `note`, `why` (one line on what decided it), `line`, `at`, `timezone`,
-`localTime`, `night`, `desks` (each with `locked`, `idleSeconds`, `at` and `fresh`), `seen`, `stated` and the upcoming
-`plans`.
+status, a planned absence or the night), `note`, `why` (one line on what decided it), `line`, `outsideData`, `at`,
+`timezone`, `localTime`, `night`, `desks` (each with `locked`, `idleSeconds`, `at` and `fresh`), `seen`, `stated` and
+the upcoming `plans`.
+
+Notes are what a session wrote when it recorded a status or a plan, so they're quoted (`note "lunch"`) and followed by
+a line naming who wrote them, as outside data: an agent reads them as information, never as instructions.
 
 With one person set up, `--person` can be left out; `$FLEETLAYER_PERSON` sets it for a session or script.
 `--at <node>` (or `$FLEETLAYER_PRESENCE`) names the authority when more than one node shares a `presence` tool.
@@ -113,12 +119,14 @@ With one person set up, `--person` can be left out; `$FLEETLAYER_PERSON` sets it
 ### Changes, as events and readings
 
 - Each change is an event on the `presence` channel, kind `presence.changed`, subject `person:<handle>`, once the new
-  state has held for a minute (so a moment's flicker wakes nobody). Its body has `person`, `state`, `from`, `since`,
-  `until`, `note` and `why`. A session subscribes with `fleetlayer subscribe presence`; a script reads what it missed
+  state has held for a minute (so a moment's flicker wakes nobody). Its body has `person`, `state`, `from`, `since`
+  and `until`: no notes or desk details. A session subscribes with `fleetlayer subscribe presence`; a script reads what it missed
   with `fleetlayer events`.
-- The state is also a reading, kind `presence`, key the person, sent on every change and at least every 5 minutes.
-  Plugins subscribe to it (`_fleetlayer.dev/reading/subscribe`); `fleetlayer readings presence` prints the latest. A
-  reading whose `at` is more than 15 minutes old means the authority has stopped: treat the person as unknown.
+- The state is also a reading, kind `presence`, key the person, with `person`, `state`, `since`, `until` and `at`,
+  sent on every change and at least every 5 minutes. Plugins subscribe to it (`_fleetlayer.dev/reading/subscribe`);
+  `fleetlayer readings presence` prints the latest. A reading whose `at` is more than 15 minutes old means the
+  authority has stopped: treat the person as unknown. Any node's plugin with `reading.publish` can publish a reading
+  of kind `presence`, so trust one only from the authority's node (each reading carries the node it came from).
 
 ## Saying it
 
@@ -165,26 +173,35 @@ someone present.
 
 ## Access
 
-Every call goes through the shared tool, so the access policy decides who may read and who may change whose status,
-as verb `call` on `tool:presence/<call>/<person>@<node>` (with the `call_targets` above; `get` has no person part).
-The person's own fleet may set their status; keep other roles to reading:
+Who learns what:
+
+| Who | Learns | Decided by |
+|---|---|---|
+| Callers of `get` for a person | Everything: state, why, notes, who recorded them, desk lock and idle time, plans | `call` on `tool:presence/get/<person>@<node>` |
+| Callers of `people` | The handles set up | `call` on `tool:presence/people@<node>` |
+| Nodes that may read the authority's node | The `presence` reading: state, since, until | `read` between nodes |
+| Sessions subscribed to the `presence` channel | Each change: state, from, since, until | the channel's publish and subscribe rules |
+| Processes of the authority's own Unix user | Everything, and they can change anything as anyone | Unix permissions: give the authority a user of its own |
+
+Every call through the shared tool is decided as verb `call` on `tool:presence/<call>/<person>@<node>` (with the
+`call_targets` above; `people` has no person part). The person's own fleet may read and set their status. Keep roles
+that read strangers' text (the [untrusted-input group](../access-control.md)) to reading, or nothing, and let only the
+services that show the person pages report a look (`seen`, which can make someone present or semi_present):
 
 ```yaml
 deny:
-  - who: "*@triage"                           # the mail agent may read presence, not change it
+  - who: group:untrusted-input                # may read presence, never change it
     can: call
     to: ["tool:presence/set/*@*", "tool:presence/plan_add/*@*", "tool:presence/plan_remove/*@*"]
-  - who: "*"
-    can: call
-    to: "tool:presence/seen/*@*"
-allow:
-  - who: "-@hub"                              # only the deck's own service reports looks
+  - who: "*"                                  # only the deck's own service reports looks
+    except: "-@hub"
     can: call
     to: "tool:presence/seen/*@*"
 ```
 
-The authority records who said what (the caller the control plane recorded, never what the caller claims): it shows
-in `stated.by` and the plans' `by`.
+A deny wins over any allow, so a deny with exceptions (`except:`) is how one caller keeps a call everyone else loses.
+The authority records who said what as the caller the control plane recorded, never what the caller claims: it shows
+in `stated.by`, the plans' `by` and a look's "reported by".
 
 ## Monitoring
 

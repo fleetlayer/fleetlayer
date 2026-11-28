@@ -61,12 +61,47 @@ pub fn parse_locked(ioreg: &str, uid: u32) -> Option<bool> {
     })
 }
 
+/// A look that takes longer than this is killed and counts as failed.
+const LOOK_TIMEOUT: Duration = Duration::from_secs(5);
+
 fn run(cmd: &str, args: &[&str]) -> Result<String, String> {
-    let out = std::process::Command::new(cmd).args(args).output().map_err(|e| format!("{cmd}: {e}"))?;
-    if !out.status.success() {
-        return Err(format!("{cmd} {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim()));
+    use std::io::Read;
+    let mut child = std::process::Command::new(cmd)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{cmd}: {e}"))?;
+    // Read while it runs, so a long output can't fill the pipe and stall it.
+    let reader = |pipe: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut s = String::new();
+            if let Some(mut p) = pipe {
+                let _ = p.read_to_string(&mut s);
+            }
+            s
+        })
+    };
+    let out = reader(child.stdout.take().map(|o| Box::new(o) as Box<dyn Read + Send>));
+    let err = reader(child.stderr.take().map(|e| Box::new(e) as Box<dyn Read + Send>));
+    let started = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait().map_err(|e| format!("{cmd}: {e}"))? {
+            Some(s) => break s,
+            None if started.elapsed() >= LOOK_TIMEOUT => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("{cmd} {} took over {}s", args.join(" "), LOOK_TIMEOUT.as_secs()));
+            }
+            None => std::thread::sleep(Duration::from_millis(20)),
+        }
+    };
+    let (out, err) = (out.join().unwrap_or_default(), err.join().unwrap_or_default());
+    if !status.success() {
+        return Err(format!("{cmd} {}: {}", args.join(" "), err.trim()));
     }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    Ok(out)
 }
 
 fn uid() -> u32 {
@@ -82,7 +117,7 @@ fn sample_macos(uid: u32) -> Result<Sample, String> {
 }
 
 /// One look through the configured program.
-fn sample_command(cmd: &str) -> Result<Sample, String> {
+pub(crate) fn sample_command(cmd: &str) -> Result<Sample, String> {
     let out = run("sh", &["-c", cmd])?;
     let v: Value = serde_json::from_str(out.trim()).map_err(|e| format!("{cmd} didn't print JSON: {e}"))?;
     Ok(Sample { locked: v["locked"].as_bool(), idle_seconds: v["idleSeconds"].as_u64() })

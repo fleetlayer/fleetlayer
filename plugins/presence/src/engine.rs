@@ -162,19 +162,29 @@ pub fn judge(l: &Look) -> Verdict {
     if let Some(s) = l.seen.filter(|s| s.device == Device::Desk && l.now.duration_since(s.at) <= DESK_SEEN_FOR)
         && l.stated.is_none()
     {
-        return v(State::Present, format!("looked at {} on a desk {} ago", s.via, ago(s.at)), None, None);
+        return v(
+            State::Present,
+            format!("looked at {} on a desk {} ago (reported by {})", s.via, ago(s.at), s.by),
+            None,
+            None,
+        );
     }
 
     // 2. Semi-present: a look at the phone, whatever else holds.
     let said = l.stated.map(|s| {
-        let note = s.note.as_ref().map(|n| format!(" ({n})")).unwrap_or_default();
+        let note = s.note.as_ref().map(|n| format!(" (note \"{n}\")")).unwrap_or_default();
         let until = s.until.map(|u| format!(" until {}", local(p, u, l.now))).unwrap_or_default();
         format!("said {}{note}{until} at {} via {}", s.state.words(), local(p, s.set_at, l.now), s.by)
     });
     if let Some(s) = l.seen.filter(|s| s.device != Device::Desk && l.now.duration_since(s.at) <= p.seen_for) {
         let device = if s.device == Device::Phone { "the phone" } else { "a device" };
         let also = said.as_ref().map(|w| format!("; {w}")).unwrap_or_default();
-        return v(State::SemiPresent, format!("looked at {} on {device} {} ago{also}", s.via, ago(s.at)), None, None);
+        return v(
+            State::SemiPresent,
+            format!("looked at {} on {device} {} ago (reported by {}){also}", s.via, ago(s.at), s.by),
+            None,
+            None,
+        );
     }
 
     // 3. What they said.
@@ -184,7 +194,7 @@ pub fn judge(l: &Look) -> Verdict {
 
     // 4. A planned absence.
     if let Some(plan) = l.plans.iter().find(|x| x.from <= l.now && l.now < x.to) {
-        let note = plan.note.as_ref().map(|n| format!(" ({n})")).unwrap_or_default();
+        let note = plan.note.as_ref().map(|n| format!(" (note \"{n}\")")).unwrap_or_default();
         return v(
             State::Away,
             format!("planned absence{note} until {}", local(p, plan.to, l.now)),

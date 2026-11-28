@@ -1276,6 +1276,26 @@ audit:
     }
 
     #[test]
+    fn the_presence_docs_access_example_decides_as_they_say() {
+        // docs/plugins/presence.md, "## Access": the yaml block, under a policy that allows the rest.
+        let doc = include_str!("../../../docs/plugins/presence.md");
+        let access = &doc[doc.find("## Access").expect("an Access section")..];
+        let start = access.find("```yaml\n").expect("a yaml block") + 8;
+        let block = &access[start..start + access[start..].find("```").unwrap()];
+        let p = Compiled::parse(&format!(
+            "version: 2\ndefault: allow\ngroups:\n  untrusted-input: [\"*@triage\"]\n{block}"
+        ))
+        .unwrap();
+        let may = |who: &str, to: &str| p.decide(who, "call", to, false).unwrap().allowed;
+        assert!(may("-@hub", "tool:presence/seen/alice@hub"), "the deck's service reports looks");
+        assert!(!may("planning@laptop", "tool:presence/seen/alice@hub"), "nobody else does");
+        assert!(!may("inbox@triage", "tool:presence/set/alice@hub"));
+        assert!(!may("inbox@triage", "tool:presence/plan_add/alice@hub"));
+        assert!(may("inbox@triage", "tool:presence/get/alice@hub"), "it may still read");
+        assert!(may("planning@laptop", "tool:presence/set/alice@hub"), "the person's own fleet sets it");
+    }
+
+    #[test]
     fn suggestions_list_what_each_subject_did() {
         let seen = vec![
             ("inbox@triage".to_string(), "message".to_string(), "billing@laptop".to_string()),

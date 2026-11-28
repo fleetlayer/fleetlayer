@@ -2,9 +2,9 @@
 //! process per connection. Each tool call becomes one request on the authority's socket, with the caller the control
 //! plane recorded for the connection (never anything the caller says).
 //!
-//! Tools: `get {person?}`, `set {person, state, for?, until?, note?}`, `plan_add {person, from, to, note?}`,
+//! Tools: `people {}`, `get {person}`, `set {person, state, for?, until?, note?}`, `plan_add {person, from, to, note?}`,
 //! `plan_remove {person, id}` and `seen {person, via, device?}`. Name `person` in `call_targets` so the access policy
-//! can say who may change whose status (`tool:presence/set/<person>@<node>`).
+//! can say who may read and change whose status (`tool:presence/get/<person>@<node>`, `tool:presence/set/…`).
 
 use std::path::PathBuf;
 
@@ -13,16 +13,21 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::authority::ask;
 
-pub const TOOLS: &[&str] = &["get", "set", "plan_add", "plan_remove", "seen"];
+pub const TOOLS: &[&str] = &["people", "get", "set", "plan_add", "plan_remove", "seen"];
 
 fn tools() -> Value {
-    let person = json!({"type": "string", "description": "The person's handle (`get` lists them)."});
+    let person = json!({"type": "string", "description": "The person's handle (`people` lists them)."});
     json!({"tools": [
+        {
+            "name": "people",
+            "description": "The handles of the people this authority knows.",
+            "inputSchema": {"type": "object", "properties": {}}
+        },
         {
             "name": "get",
             "description": "Whether the person is present (at their desk), semi_present (looking at their phone), away or \
                 asleep, since when and why, with their planned absences. Check before background work nobody may read.",
-            "inputSchema": {"type": "object", "properties": {"person": person}}
+            "inputSchema": {"type": "object", "properties": {"person": person}, "required": ["person"]}
         },
         {
             "name": "set",

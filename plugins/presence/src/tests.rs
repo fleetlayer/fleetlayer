@@ -92,7 +92,7 @@ fn a_look_at_the_phone_is_semi_present_even_when_away_or_at_night() {
     };
     let v = judge(&p, &[], Some(&seen), None, &[], now);
     assert_eq!(v.state, State::SemiPresent);
-    assert_eq!(v.why, "looked at quietdeck on the phone 3 min ago");
+    assert_eq!(v.why, "looked at quietdeck on the phone 3 min ago (reported by -@hub)");
     let stated = Stated {
         state: State::Away,
         note: Some("lunch".into()),
@@ -103,7 +103,7 @@ fn a_look_at_the_phone_is_semi_present_even_when_away_or_at_night() {
     };
     let v = judge(&p, &[], Some(&seen), Some(&stated), &[], now);
     assert_eq!(v.state, State::SemiPresent);
-    assert!(v.why.contains("said away (lunch) until 01:40"), "{}", v.why);
+    assert!(v.why.contains("said away (note \"lunch\") until 01:40"), "{}", v.why);
     // Ten minutes later it has worn off.
     let v = judge(&p, &[], Some(&seen), Some(&stated), &[], now + SignedDuration::from_mins(8));
     assert_eq!(v.state, State::Away);
@@ -179,7 +179,7 @@ fn a_planned_absence_is_away_until_it_ends_unless_they_turn_up() {
     let v = judge(&p, &[], None, None, std::slice::from_ref(&plan), now);
     assert_eq!(v.state, State::Away);
     assert_eq!(v.until, Some(plan.to));
-    assert!(v.why.starts_with("planned absence (holiday) until Wed 6 Jan 00:00"), "{}", v.why);
+    assert!(v.why.starts_with("planned absence (note \"holiday\") until Wed 6 Jan 00:00"), "{}", v.why);
     let v = judge(&p, &[desk("laptop", false, 3, now)], None, None, std::slice::from_ref(&plan), now);
     assert_eq!(v.state, State::Present);
     // At night during the holiday, the plan says more than the night.
@@ -383,7 +383,7 @@ async fn the_authority_hears_desks_announces_settled_changes_and_keeps_what_was_
     let v = a.handle("get", None, &json!({})).await.unwrap();
     assert_eq!(v["people"][0]["stated"]["note"], "lunch");
     assert_eq!(v["people"][0]["plans"][0]["id"], id);
-    assert!(v["people"][0]["line"].as_str().unwrap().contains("Next planned absence (holiday)"));
+    assert!(v["people"][0]["line"].as_str().unwrap().contains("Next planned absence (note \"holiday\")"));
     a.handle("plan_remove", Some("x@y"), &json!({"person": "alice", "id": id})).await.unwrap();
     assert!(a.handle("plan_remove", Some("x@y"), &json!({"person": "alice", "id": id})).await.is_err());
     // Back: the stated away is gone.
@@ -468,4 +468,14 @@ fn a_view_says_which_desks_are_fresh() {
     assert_eq!(view["desks"][0]["fresh"], false);
     assert_eq!(view["timezone"], "Europe/London");
     assert_eq!(view["night"], "23:00-08:00");
+}
+
+#[test]
+fn a_desk_command_that_hangs_is_stopped() {
+    let started = std::time::Instant::now();
+    let e = desk::sample_command("sleep 30").unwrap_err();
+    assert!(e.contains("took over 5s"), "{e}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    let s = desk::sample_command("echo '{\"locked\": false, \"idleSeconds\": 7}'").unwrap();
+    assert_eq!(s, Sample { locked: Some(false), idle_seconds: Some(7) });
 }
