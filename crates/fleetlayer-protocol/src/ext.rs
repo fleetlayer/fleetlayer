@@ -359,6 +359,39 @@ pub struct SessionMeta {
     /// none; absent: not known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background: Option<Vec<BackgroundTask>>,
+    /// What last started (or will start) a turn: the latest such signal the node or the harness saw. The control
+    /// plane reads it when the session starts working, for the `session.status` event's cause.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<Turn>,
+}
+
+/// What started a turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnCause {
+    /// A person: a prompt they typed, or a prompt of the agent's they answered.
+    Person,
+    /// A delivery: a message from another session or a plugin, or a channel's event.
+    Message,
+    /// A scheduler entry's message.
+    Scheduler,
+    /// Nothing anyone saw (background work finishing, the agent carrying on by itself).
+    #[default]
+    Unknown,
+}
+
+/// A signal that starts a turn: `_meta["fleetlayer.dev/session"].turn`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Turn {
+    pub cause: TurnCause,
+    pub at: Timestamp,
+    /// Who: a message's sender (`ci (laptop)`), a person's handle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// More about it: `typed`, `answered`, `message`, `event`, `background`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 /// A prompt an agent is blocked on, as its harness reports it.
@@ -475,7 +508,8 @@ impl SessionMeta {
             opens_in,
             resume_command,
             deliverable,
-            background
+            background,
+            turn
         );
         // A prompt cleared (`null`) is gone, not unknown.
         if let Some(p) = &update.prompt {

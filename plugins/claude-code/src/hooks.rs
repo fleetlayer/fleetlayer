@@ -14,7 +14,9 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use fleetlayer_protocol::ext::{BackgroundTask, BlockedPrompt, PromptKind, PromptOption, PromptQuestion, PromptTool};
+use fleetlayer_protocol::ext::{
+    BackgroundTask, BlockedPrompt, PromptKind, PromptOption, PromptQuestion, PromptTool, Turn, TurnCause,
+};
 use jiff::Timestamp;
 use serde_json::{Map, Value, json};
 
@@ -133,6 +135,8 @@ fn edit(settings: &Path, want: Option<&str>) -> Result<bool, String> {
 pub struct Waiting {
     pub prompt: Option<BlockedPrompt>,
     pub background: Option<Vec<BackgroundTask>>,
+    /// The last prompt submitted, as a turn signal.
+    pub turn: Option<Turn>,
 }
 
 #[derive(Debug, Default)]
@@ -207,7 +211,10 @@ impl Tracker {
                     w.prompt = None;
                 }
             }
-            "UserPromptSubmit" => w.prompt = None,
+            "UserPromptSubmit" => {
+                w.prompt = None;
+                w.turn = Some(turn_of(v["prompt"].as_str().unwrap_or(""), now));
+            }
             "Stop" => {
                 w.prompt = None;
                 w.background = Some(background(&v["background_tasks"]));
@@ -224,6 +231,27 @@ impl Tracker {
         self.sessions.insert(session.clone(), w);
         Some(session)
     }
+}
+
+/// What a submitted prompt's text says started the turn: background work's notice, a message delivered as text (a
+/// session's, or one typed in by a messaging tool), or else a person typing.
+pub fn turn_of(prompt: &str, at: Timestamp) -> Turn {
+    let text = prompt.trim_start();
+    if text.starts_with("<task-notification") {
+        return Turn { cause: TurnCause::Unknown, at, from: None, detail: Some("background".into()) };
+    }
+    if let Some(rest) = text.split_once("<cross-session-message").map(|(_, r)| r) {
+        let from = rest.split_once("from-name=\"").and_then(|(_, r)| r.split_once('"')).map(|(n, _)| n.to_string());
+        return Turn { cause: TurnCause::Message, at, from, detail: Some("message".into()) };
+    }
+    // "Message from <sender> via <tool>:" on its first line.
+    let first = text.lines().next().unwrap_or("");
+    if let Some(from) = first.strip_prefix("Message from ").and_then(|r| r.rsplit_once(" via ")).map(|(f, _)| f)
+        && first.ends_with(':')
+    {
+        return Turn { cause: TurnCause::Message, at, from: Some(from.into()), detail: Some("message".into()) };
+    }
+    Turn { cause: TurnCause::Person, at, from: None, detail: Some("typed".into()) }
 }
 
 /// The most of a permission prompt's tool input passed on, as JSON bytes: it reaches the control plane and everyone
@@ -307,6 +335,26 @@ mod tests {
         let mut v = json!({"session_id": "s1", "hook_event_name": event});
         v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
         v
+    }
+
+    #[test]
+    fn a_submitted_prompt_says_what_started_the_turn() {
+        let now = Timestamp::now();
+        let t = turn_of("fix the build please", now);
+        assert_eq!((t.cause, t.detail.as_deref()), (TurnCause::Person, Some("typed")));
+        let t = turn_of("<task-notification>\n<task-id>x</task-id>", now);
+        assert_eq!((t.cause, t.detail.as_deref()), (TurnCause::Unknown, Some("background")));
+        let t = turn_of(
+            "Another Claude session sent a message:\n<cross-session-message from-name=\"ci (laptop)\">\nMessage from ci",
+            now,
+        );
+        assert_eq!((t.cause, t.from.as_deref()), (TurnCause::Message, Some("ci (laptop)")));
+        let t = turn_of("Message from overseer (agents) via Quietdeck:\n\nlook at this", now);
+        assert_eq!((t.cause, t.from.as_deref()), (TurnCause::Message, Some("overseer (agents)")));
+        assert_eq!(turn_of("Message from me via email: hi", now).cause, TurnCause::Person, "not a header line");
+        let mut tr = Tracker::default();
+        assert!(tr.event(&ev("UserPromptSubmit", json!({"prompt": "go"})), now).is_some());
+        assert_eq!(tr.get("s1").unwrap().turn.as_ref().unwrap().cause, TurnCause::Person);
     }
 
     #[test]

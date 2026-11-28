@@ -135,6 +135,7 @@ impl Handler for Shared {
                             harness: Some("claude".into()),
                             deliverable: Some(true),
                             prompt: waiting.as_ref().and_then(|w| w.prompt.clone()).map(Some),
+                            turn: waiting.as_ref().and_then(|w| w.turn.clone()),
                             background: waiting.and_then(|w| w.background),
                             ..Default::default()
                         };
@@ -289,6 +290,7 @@ async fn start_hooks(plugin: Arc<Plugin>, peer: Peer, home: PathBuf, settings: P
                     let meta = SessionMeta {
                         prompt: Some(waiting.prompt),
                         background: waiting.background,
+                        turn: waiting.turn,
                         ..Default::default()
                     };
                     let n = SessionNotification {

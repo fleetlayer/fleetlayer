@@ -50,6 +50,8 @@ pub struct Links {
     /// The newest stored event's ID, bumped as each is stored, so `GET /v1/events?after=&wait=` answers as soon as one
     /// arrives.
     pub new_events: tokio::sync::watch::Sender<i64>,
+    /// The `session.status` queue (`status.rs`), started with its first change.
+    pub status_queue: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<crate::status::Change>>>,
 }
 
 /// Resolves once `closing` turns true (without holding its value across an await, which isn't `Send`).
@@ -945,15 +947,39 @@ impl Handler for FromNode {
         let (db, tenant, node) = (&self.app.db, self.tenant.as_str(), self.node.as_str());
         let r = match method {
             l::method::SESSIONS => match serde_json::from_value::<SessionsPush>(p) {
-                Ok(s) => db::replace_sessions(db, tenant, node, &s.sessions).await,
+                Ok(s) => {
+                    let old = db::node_sessions(db, node).await.unwrap_or_default();
+                    let r = db::replace_sessions(db, tenant, node, &s.sessions).await;
+                    if r.is_ok() {
+                        crate::status::observe(&self.app, tenant, node, &old, &s.sessions, true);
+                    }
+                    r
+                }
                 Err(e) => Err(e.into()),
             },
             l::method::SESSION => match serde_json::from_value::<SessionPush>(p) {
-                Ok(s) => db::upsert_session(db, tenant, node, &s.session).await,
+                Ok(s) => {
+                    let id = s.session["sessionId"].as_str().unwrap_or_default();
+                    let old = db::session_data(db, tenant, node, id).await.ok().flatten();
+                    let r = db::upsert_session(db, tenant, node, &s.session).await;
+                    if r.is_ok() {
+                        let old: Vec<Value> = old.into_iter().collect();
+                        crate::status::observe(&self.app, tenant, node, &old, std::slice::from_ref(&s.session), false);
+                    }
+                    r
+                }
                 Err(e) => Err(e.into()),
             },
             l::method::SESSION_GONE => match serde_json::from_value::<SessionGone>(p) {
-                Ok(s) => db::remove_session(db, tenant, node, &s.session_id).await,
+                Ok(s) => {
+                    let old = db::session_data(db, tenant, node, &s.session_id).await.ok().flatten();
+                    let r = db::remove_session(db, tenant, node, &s.session_id).await;
+                    if r.is_ok() {
+                        let old: Vec<Value> = old.into_iter().collect();
+                        crate::status::observe(&self.app, tenant, node, &old, &[], true);
+                    }
+                    r
+                }
                 Err(e) => Err(e.into()),
             },
             l::method::READINGS => {

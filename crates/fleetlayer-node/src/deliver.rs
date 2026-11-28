@@ -203,11 +203,35 @@ pub async fn send(
     deliver(node, &session, &d).await
 }
 
-/// Put a rendered delivery in front of a session.
+/// Put a rendered delivery in front of a session. Once it's in, it's the session's latest turn signal: whatever
+/// turn the session starts next was started by it.
 pub async fn deliver(node: &Node, session: &Session, d: &Deliver) -> Result<Delivered, RpcError> {
     if !node.deliveries.first_time(&d.delivery_id).await {
         return Err(RpcError::refused(format!("delivery {} was already delivered", d.delivery_id)));
     }
+    let r = put_in_front(node, session, d).await;
+    if r.is_ok() {
+        node.registry.note_turn(&session.session_id, turn_of(d, jiff::Timestamp::now())).await;
+    }
+    r
+}
+
+/// The turn a delivery starts: a scheduler entry's message, or any other message or event.
+pub fn turn_of(d: &Deliver, at: jiff::Timestamp) -> ext::Turn {
+    let scheduled = d.subkind.as_deref() == Some("scheduled");
+    ext::Turn {
+        cause: if scheduled { ext::TurnCause::Scheduler } else { ext::TurnCause::Message },
+        at,
+        from: Some(d.from.label.clone()).filter(|l| !l.is_empty()),
+        detail: Some(match d.kind {
+            DeliveryKind::Event => "event".into(),
+            DeliveryKind::Message => "message".into(),
+            DeliveryKind::Wake => "wake".into(),
+        }),
+    }
+}
+
+async fn put_in_front(node: &Node, session: &Session, d: &Deliver) -> Result<Delivered, RpcError> {
     if let Some(h) = &session.harness_plugin {
         match try_plugin(node, h, d).await {
             // Only a running session without a usable channel is typed into. A harness that says the session has

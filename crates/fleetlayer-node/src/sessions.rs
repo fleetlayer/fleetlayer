@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use fleetlayer_protocol::acp::{SessionInfo, SessionInfoUpdate};
-use fleetlayer_protocol::ext::{self, How, SessionEnded, SessionMeta, Status, meta_key};
+use fleetlayer_protocol::ext::{self, How, SessionEnded, SessionMeta, Status, Turn, TurnCause, meta_key};
 use jiff::{SignedDuration, Timestamp};
 use serde::Serialize;
 use tokio::sync::{RwLock, broadcast};
@@ -77,6 +77,28 @@ impl Default for Registry {
     }
 }
 
+/// A typed prompt this soon after a delivery or an act of the node's is that delivery typed in, not a person.
+const SAME_TURN: SignedDuration = SignedDuration::from_secs(10);
+
+/// Take `incoming` as the session's latest turn signal unless it's older, or it's the harness seeing as typed what
+/// the node itself just delivered or typed.
+fn take_turn(current: &mut Option<Turn>, incoming: Option<Turn>) {
+    let Some(new) = incoming else { return };
+    if let Some(cur) = current {
+        if new.at < cur.at {
+            return;
+        }
+        let typed_echo = new.cause == TurnCause::Person
+            && new.detail.as_deref() == Some("typed")
+            && cur.cause != TurnCause::Unknown
+            && new.at.duration_since(cur.at) < SAME_TURN;
+        if typed_echo {
+            return;
+        }
+    }
+    *current = Some(new);
+}
+
 fn meta_of(info: &SessionInfo) -> SessionMeta {
     ext::get_meta(info.meta.as_ref(), meta_key::SESSION).ok().flatten().unwrap_or_default()
 }
@@ -125,7 +147,10 @@ impl Registry {
                     let deliverable = entry.meta.deliverable;
                     // What the harness reports (a blocked prompt, background work) isn't the manager's to replace.
                     let (prompt, background) = (entry.meta.prompt.take(), entry.meta.background.take());
+                    let mut turn = entry.meta.turn.take();
+                    take_turn(&mut turn, meta.turn.clone());
                     entry.meta = meta;
+                    entry.meta.turn = turn;
                     entry.meta.deliverable = entry.meta.deliverable.or(deliverable);
                     entry.meta.prompt = prompt;
                     entry.meta.background = background;
@@ -139,6 +164,7 @@ impl Registry {
                     if meta.background.is_some() {
                         entry.meta.background = meta.background.clone();
                     }
+                    take_turn(&mut entry.meta.turn, meta.turn.clone());
                     if entry.manager.is_none() {
                         entry.cwd = info.cwd.or(entry.cwd.take());
                         entry.meta.harness = meta.harness.or(entry.meta.harness.take());
@@ -204,7 +230,10 @@ impl Registry {
             }
             None => return false,
         };
+        let mut meta = meta;
+        let incoming = meta.turn.take();
         s.meta.merge(&meta);
+        take_turn(&mut s.meta.turn, incoming);
         if u.title.is_some() {
             s.title = u.title.clone();
         }
@@ -215,6 +244,20 @@ impl Registry {
         drop(sessions);
         self.emit(Change::Updated { session });
         true
+    }
+
+    /// Something the node did that starts a turn in session `session_id`: a delivery, an act typed in for someone.
+    pub async fn note_turn(&self, session_id: &str, turn: Turn) {
+        let mut sessions = self.sessions.write().await;
+        let Some(s) = sessions.get_mut(session_id) else { return };
+        let before = s.meta.turn.clone();
+        take_turn(&mut s.meta.turn, Some(turn));
+        if s.meta.turn == before {
+            return;
+        }
+        let session = Box::new(s.clone());
+        drop(sessions);
+        self.emit(Change::Updated { session });
     }
 
     /// The options of the prompt `prompt_id` a session is blocked on, read from elsewhere (its screen).
@@ -288,6 +331,39 @@ mod tests {
         let mut meta = json!({"harness":"claude","address":format!("p-{id}"),"tab":tab,"status":"idle","running":true});
         meta.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
         serde_json::from_value(json!({"sessionId":id,"title":tab,"_meta":{"fleetlayer.dev/session":meta}})).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_typed_prompt_right_after_a_delivery_is_the_delivery() {
+        let r = Registry::default();
+        r.replace("herdr", Role::Manager, vec![info("a", "a", json!({}))]).await;
+        let t0 = Timestamp::now();
+        let turn = |cause, secs: i64, detail: &str| Turn {
+            cause,
+            at: t0 + SignedDuration::from_secs(secs),
+            from: None,
+            detail: Some(detail.into()),
+        };
+        r.note_turn("a", turn(TurnCause::Message, 0, "message")).await;
+        // The harness sees the typed-in delivery as typed: still the message.
+        let u = SessionInfoUpdate {
+            session_update: SessionInfoTag::SessionInfoUpdate,
+            title: None,
+            updated_at: None,
+            meta: Some(ext::meta_with(
+                meta_key::SESSION,
+                &SessionMeta { turn: Some(turn(TurnCause::Person, 2, "typed")), ..Default::default() },
+            )),
+        };
+        r.update("claude-code", "a", &u).await;
+        assert_eq!(r.get("a").await.unwrap().meta.turn.unwrap().cause, TurnCause::Message);
+        // Later, a person typing is theirs; an older signal never replaces a newer one.
+        r.note_turn("a", turn(TurnCause::Person, 30, "typed")).await;
+        r.note_turn("a", turn(TurnCause::Message, 20, "message")).await;
+        assert_eq!(r.get("a").await.unwrap().meta.turn.unwrap().cause, TurnCause::Person);
+        // A manager's list keeps it.
+        r.replace("herdr", Role::Manager, vec![info("a", "a", json!({}))]).await;
+        assert_eq!(r.get("a").await.unwrap().meta.turn.unwrap().cause, TurnCause::Person);
     }
 
     #[tokio::test]

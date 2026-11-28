@@ -415,6 +415,18 @@ pub async fn node_sessions(db: &Db, node: &str) -> anyhow::Result<Vec<serde_json
     Ok(rows.into_iter().filter_map(|r| serde_json::from_str(&r.get::<String, _>(0)).ok()).collect())
 }
 
+/// One session as its node last pushed it.
+pub async fn session_data(db: &Db, tenant: &str, node: &str, id: &str) -> anyhow::Result<Option<serde_json::Value>> {
+    let row: Option<String> =
+        sqlx::query_scalar("SELECT data FROM sessions WHERE tenant = ? AND node = ? AND session_id = ?")
+            .bind(tenant)
+            .bind(node)
+            .bind(id)
+            .fetch_optional(db)
+            .await?;
+    Ok(row.and_then(|d| serde_json::from_str(&d).ok()))
+}
+
 pub async fn sessions(db: &Db, tenant: &str) -> anyhow::Result<Vec<(String, serde_json::Value)>> {
     let rows = sqlx::query("SELECT node, data FROM sessions WHERE tenant = ? ORDER BY node, session_id")
         .bind(tenant)
@@ -887,6 +899,16 @@ pub async fn missed_events(
         .await?;
     }
     Ok(out)
+}
+
+/// Forget a channel's events older than `keep_ms`.
+pub async fn prune_channel(db: &Db, channel: &str, keep_ms: i64) -> anyhow::Result<u64> {
+    let r = sqlx::query("DELETE FROM events WHERE channel = ? AND at < ?")
+        .bind(channel)
+        .bind(now_ms() - keep_ms)
+        .execute(db)
+        .await?;
+    Ok(r.rows_affected())
 }
 
 /// The newest event ID in the tenant (0 when there's none): where a feed that starts now begins.

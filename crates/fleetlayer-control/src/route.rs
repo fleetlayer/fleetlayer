@@ -558,6 +558,18 @@ pub async fn publish_matching(
     {
         targets.push(f);
     }
+    // An event about a session goes only to those who may read that session.
+    if e.channel == crate::status::CHANNEL
+        && let Some(about) = e.subject.as_deref()
+    {
+        let mut readable = vec![];
+        for t in targets {
+            if crate::authz::may_read(app, tenant, &t, about).await {
+                readable.push(t);
+            }
+        }
+        targets = readable;
+    }
     let mut deliveries = vec![];
     for target in targets {
         deliveries.push(deliver_event(app, tenant, id, &e, source, target).await);

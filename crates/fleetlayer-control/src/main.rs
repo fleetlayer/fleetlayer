@@ -25,6 +25,7 @@ mod readings;
 mod route;
 mod settings;
 mod signin;
+mod status;
 mod stepup;
 mod streams;
 mod summaries;

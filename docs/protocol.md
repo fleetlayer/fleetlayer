@@ -224,6 +224,14 @@ overseer agent speaking for them) can answer from anywhere:
   permission prompt's `tool.input` (a command line, say) is cut to 2 KB (`{"truncated": true, "preview": …}`).
 - `background` is best effort: the work the agent reported still running when it last stopped (`[]`: none; absent:
   not known).
+- `turn` is the latest signal that starts a turn: `{"cause": "person" | "message" | "scheduler" | "unknown", "at",
+  "from"?, "detail"?}`. The node sets it itself when it delivers something into the session (`message`, or `scheduler`
+  for a scheduler entry's message) or types in an answer or a line for someone (`person` for a signed-in person, else
+  `message` from the session that asked). A harness plugin reports the prompts submitted in the agent: Claude Code's
+  `UserPromptSubmit` text is `person` (`detail: "typed"`), a message (a session's, or a `Message from … via …:` line
+  typed in by a messaging tool) or background work's notice (`unknown`, `detail: "background"`); never the text itself.
+  A harness's `typed` signal within ten seconds of one of the node's own is that delivery typed in, and doesn't
+  replace it. The control plane reads it for the `session.status` channel ([Events](events.md)).
 
 Claude Code's plugin gets these from hooks it installs in `~/.claude/settings.json` (every other key and hook kept,
 the file replaced in one rename, through a symbolic link to the file it names, put back if something rewrites the

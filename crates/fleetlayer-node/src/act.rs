@@ -85,6 +85,17 @@ pub(crate) async fn here(
     let plugin =
         node.plugin(&manager).ok_or_else(|| RpcError::refused(format!("plugin {manager} isn't configured")))?;
     let peer = plugin.peer().await.ok_or_else(|| RpcError::refused(format!("plugin {manager} isn't running")))?;
+    // What's typed in starts the session's next turn, for whoever asked: noted first, so the harness seeing it as
+    // typed doesn't make it a person's.
+    let detail = match &action {
+        SessionAction::Close => None,
+        SessionAction::Answer { .. } => Some("answered"),
+        SessionAction::Command { .. } => Some("command"),
+        SessionAction::Say { .. } => Some("typed"),
+    };
+    if let Some(detail) = detail {
+        node.registry.note_turn(&session.session_id, turn_for(caller, detail, jiff::Timestamp::now())).await;
+    }
     let done = match action {
         SessionAction::Close => {
             let r = json!({"sessionId": session.session_id});
@@ -139,6 +150,16 @@ pub(crate) async fn here(
 }
 
 /// The command, trimmed, when it's one line starting with a slash command in `allowed` (arguments may follow).
+/// The turn an act starts: a person's when a signed-in person asked (`person:<handle>`), else a message from the
+/// session or service that did.
+fn turn_for(caller: &str, detail: &str, at: jiff::Timestamp) -> fleetlayer_protocol::ext::Turn {
+    use fleetlayer_protocol::ext::{Turn, TurnCause};
+    match caller.strip_prefix("person:") {
+        Some(handle) => Turn { cause: TurnCause::Person, at, from: Some(handle.into()), detail: Some(detail.into()) },
+        None => Turn { cause: TurnCause::Message, at, from: Some(caller.into()), detail: Some(detail.into()) },
+    }
+}
+
 /// The command, trimmed, when it's exactly one of `allowed`: no arguments, which would let a caller steer the agent
 /// with words of its own.
 fn allowed_command(command: &str, allowed: &[String]) -> Result<String, RpcError> {
