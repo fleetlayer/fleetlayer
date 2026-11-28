@@ -5,7 +5,7 @@ import "../styles/home.css";
 import mark from "../assets/mark.svg?raw";
 import { site, repo } from "../../site.config.mjs";
 
-const title = "Fleetlayer: an open framework for running AI agents securely and at scale";
+const title = "Fleetlayer: your AI agents, across every machine and account";
 const description = site.summary;
 ---
 
@@ -51,14 +51,13 @@ const description = site.summary;
       <section class="hero" aria-labelledby="hero-title">
         <div class="hero__copy">
           <p class="status-line"><span class="dot" aria-hidden="true"></span> Source-available · early · built in public</p>
-          <!-- An uptime check looks for "An open framework for running AI agents" on this page: tell the homeserver
-               session before changing the headline. -->
-          <h1 id="hero-title">An open framework for running AI agents securely and at scale.</h1>
+          <!-- An uptime check looks for "until you add a second machine or account" on this page: tell the homeserver
+               pve session before changing the headline. -->
+          <h1 id="hero-title">Claude Code is awesome, until you add a second machine or account.</h1>
           <p class="lede">
-            Fleetlayer connects the Claude Code and Codex sessions you already run in <a
-            href="https://herdr.dev/">herdr</a>, on your laptop, a home server or a VPS. Any agent can
-            message any other agent, webhooks can be routed to specific agents, and each agent gets its
-            own access rules.
+            Fleetlayer connects the Claude Code and Codex sessions on your laptop, home server and VPS, under every
+            account you use. They message each other, share your signed-in browser and files, and work under rules
+            you set, on machines you control.
           </p>
           <div class="actions">
             <a class="btn btn--primary" href="/docs/getting-started/">Install Fleetlayer</a>
@@ -85,6 +84,25 @@ const description = site.summary;
         </figure>
       </section>
 
+      <section class="pain" aria-labelledby="pain-title">
+        <div class="pain__head">
+          <h2 id="pain-title">What starts going wrong</h2>
+          <p>
+            One Claude account on one machine is easy. Add a second account, a server, or another kind of agent, and
+            this starts happening:
+          </p>
+        </div>
+        <ul class="pain__list">
+          <li>claude.ai artifacts say “access denied” unless you’re signed in to the right account.</li>
+          <li>A session on your server can’t message one on your laptop.</li>
+          <li>You keep signing in and out of the Claude in Chrome extension.</li>
+          <li>An agent on your server can’t use the browser on your Mac.</li>
+          <li>An agent on your server can’t reach the Downloads or Screenshots folders on your Mac.</li>
+          <li>Codex and Gemini agents can’t make claude.ai artifacts at all.</li>
+          <li>You find out an account is out of usage when a session stops.</li>
+        </ul>
+      </section>
+
       <section class="showcase" aria-labelledby="showcase-title">
         <div class="showcase__head">
           <h2 id="showcase-title">Your whole fleet on one page.</h2>
@@ -103,25 +121,6 @@ const description = site.summary;
               alt="The Fleetlayer dashboard's overview of a fleet: machines online, sessions, what's waiting on you and problems; a list of what needs you; a card per machine with its nodes, sessions and plugins; and a live feed of events." />
           </picture>
         </figure>
-      </section>
-
-      <section class="pain" aria-labelledby="pain-title">
-        <div class="pain__head">
-          <h2 id="pain-title">Claude Code is awesome…</h2>
-          <p>
-            …when you have one Claude account and run it on one machine. Add a second account, a server or another
-            agent, and this starts happening:
-          </p>
-        </div>
-        <ul class="pain__list">
-          <li>claude.ai artifacts say “access denied” unless you’re signed in to the right account.</li>
-          <li>A session on your server can’t message one on your laptop.</li>
-          <li>You keep signing in and out of the Claude in Chrome extension.</li>
-          <li>An agent on your server can’t use the browser on your Mac.</li>
-          <li>An agent on your server can’t reach the Downloads or Screenshots folders on your Mac.</li>
-          <li>Codex and Gemini agents can’t make claude.ai artifacts at all.</li>
-          <li>You find out an account is out of usage when a session stops.</li>
-        </ul>
       </section>
 
       <section class="solve" aria-labelledby="solve-title">
@@ -147,11 +146,31 @@ const description = site.summary;
           </li>
           <li class="fix">
             <p class="fix__was"><span class="fix__x" aria-hidden="true">✕</span> an account that runs out mid-task</p>
-            <h3>Every account in one place</h3>
-            <p>Year-long sign-ins on every machine, and every account’s usage shared with every session.</p>
+            <h3>Your own accounts, on your own machines</h3>
+            <p>Year-long sign-ins for each of your Claude accounts on every machine you run, and each account’s usage visible to every session.</p>
             <a class="fix__link" href="/docs/guides/claude-accounts/">Add your accounts <span aria-hidden="true">→</span></a>
           </li>
         </ul>
+      </section>
+
+      <section class="why fit" aria-labelledby="fit-title">
+        <div class="why__col">
+          <h2 id="fit-title">You need this if</h2>
+          <ul>
+            <li>your agents run on more than one machine, or under more than one Claude account;</li>
+            <li>you run Codex or other agents next to Claude Code;</li>
+            <li>an agent reads email or the web, and you want it kept away from the others' rights and secrets;</li>
+            <li>you want your agents, secrets and the record of what they did on machines you control.</li>
+          </ul>
+        </div>
+        <div class="why__col">
+          <h2>You probably don't if</h2>
+          <p>
+            You use one Claude account on one laptop, and Claude Code's own features cover the rest. Use those, and come
+            back when you add a second machine or account. <a href="/docs/claude-code/">What Fleetlayer adds beyond Claude
+            Code</a>.
+          </p>
+        </div>
       </section>
 
       <section class="map" aria-labelledby="map-title">
@@ -442,14 +461,13 @@ const description = site.summary;
         <div class="why__col">
           <h2>For people who run many agents</h2>
           <p>
-            Most agent setups serve one project. Fleetlayer is for running many side by side: personal errands, email
-            triage, product work, infrastructure, background workers, each with its own machine or Unix user and its
-            own permissions, all visible from your own terminal.
+            Fleetlayer is for a person running many agents across several machines and accounts: personal errands, email
+            triage, product work, infrastructure, background workers, each with its own machine or Unix user and its own
+            permissions, all visible from your own terminal.
           </p>
           <p>
-            It's also built for people whose work and life share the same agents, like a solo founder with a family: the
-            company's agents and the household's on one system. Companies get what they need too (single sign-on, teams,
-            separate organisations, audit), kept out of the way until they need it.
+            It grows with you. A household or a team shares one system, and a company gets what it needs (single
+            sign-on, teams, separate organisations, audit) when it needs it.
           </p>
         </div>
       </section>
@@ -460,22 +478,25 @@ const description = site.summary;
           <div>
             <h3><span class="dot" aria-hidden="true"></span> Runs now</h3>
             <p>
-              The node, the control plane and the command line; plugins for herdr, Claude Code, session summaries,
-              Claude accounts and pages; one sign-in, with a passkey, for every service; everything on one laptop with
-              <code>fleetlayer up</code>; access rules with an audit log; releases that update every node themselves; a
-              whole server setup an agent can build for you, from
+              The node, the control plane, the dashboard and the command line; plugins for herdr and Rex, Claude Code,
+              session summaries, Claude accounts, pages and apps; access rules, approvals and an audit log; secrets per
+              role from 1Password, network access per role and the admin window; one passkey sign-in for every service;
+              every machine on your phone; moving any piece with one command; releases that update every node
+              themselves; and a whole server setup an agent can build for you, from
               <a href="https://github.com/fleetlayer/server-iac-example">an example repository</a>.
             </p>
           </div>
           <div>
             <h3><span class="dot dot--next" aria-hidden="true"></span> Being built</h3>
             <p>
-              The phone, and moving a piece with one command.
+              tmux support (in the next release), and more harnesses: Cursor, OpenCode, Aider and pi.
             </p>
           </div>
         </div>
         <p class="state__note">
-          Expect breaking changes. Releases and notes are on <a href={`${repo}/releases`}>GitHub</a>.
+          Expect breaking changes. What changed in each release is in the <a href="/docs/changelog/">changelog</a>.
+          Will it cost money? We might provide a hosted control plane and provision a VPS where you can run your remote
+          agents and services, but we haven't decided on anything yet.
         </p>
       </section>
     </main>

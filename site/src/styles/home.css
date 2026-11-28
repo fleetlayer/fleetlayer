@@ -831,6 +831,19 @@ main > section {
 .why p {
   max-width: var(--measure);
 }
+/* You need this if / you don't if: the same two columns, with a list. */
+.fit {
+  border-top: var(--rule-hair) solid var(--color-rule);
+}
+.fit ul {
+  max-width: var(--measure);
+  padding-left: 1.2em;
+  display: grid;
+  gap: var(--space-xs);
+}
+.fit li::marker {
+  color: var(--color-accent, currentColor);
+}
 
 /* Status. */
 .state {

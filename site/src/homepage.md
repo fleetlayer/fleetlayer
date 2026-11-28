@@ -1,22 +1,15 @@
 # Fleetlayer
 
-An open framework for running AI agents securely and at scale.
+Claude Code is awesome, until you add a second machine or account.
 
-Fleetlayer connects the Claude Code and Codex sessions you already run in [herdr](https://herdr.dev/), on your laptop, a
-home server or a VPS. Any agent can message any other agent, webhooks can be routed to specific agents, and each agent
-gets its own access rules. Source-available, early, built in public:
-https://github.com/fleetlayer/fleetlayer
+Fleetlayer connects the Claude Code and Codex sessions on your laptop, home server and VPS, under every account you
+use. They message each other, share your signed-in browser and files, and work under rules you set, on machines you
+control. Source-available (FSL-1.1-ALv2), early, built in public: https://github.com/fleetlayer/fleetlayer
 
-## Your whole fleet on one page
+## What starts going wrong
 
-The dashboard shows every machine and what it runs, every agent session and whether it's waiting on you, the events
-that arrived and which agent each reached, and the requests waiting for your approval. Live, behind your own sign-in,
-and everything on it works from the command line too. Screenshot: https://fleetlayer.ai/img/dashboard-light.webp.
-
-## Claude Code is awesome…
-
-…when you have one Claude account and run it on one machine. Add a second account, a server or another agent,
-and this starts happening:
+One Claude account on one machine is easy. Add a second account, a server, or another kind of agent, and this starts
+happening:
 
 - claude.ai artifacts say “access denied” unless you’re signed in to the right account.
 - A session on your server can’t message one on your laptop.
@@ -26,12 +19,29 @@ and this starts happening:
 - Codex and Gemini agents can’t make claude.ai artifacts at all.
 - You find out an account is out of usage when a session stops.
 
+## Your whole fleet on one page
+
+The dashboard shows every machine and what it runs, every agent session and whether it's waiting on you, the events
+that arrived and which agent each reached, and the requests waiting for your approval. Live, behind your own sign-in,
+and everything on it works from the command line too. Screenshot: https://fleetlayer.ai/img/dashboard-light.webp.
+
 ## Fleetlayer solves all of this, and much more
 
 - **Fleetlayer Pages and Apps.** Claude, Codex and Gemini agents write pages and interactive apps as plain folders, and Fleetlayer hosts them behind one sign-in. [How](https://fleetlayer.ai/docs/guides/pages/)
 - **Messages between any two agents.** Claude or Codex, on the same machine or another one: `fleetlayer msg send --to api@laptop`. [How](https://fleetlayer.ai/docs/guides/day-to-day/)
 - **Any agent can control your browser.** Agents on any machine and any Claude account can use the Chrome on your Mac, signed in as you (via Playwright MCP). [How](https://fleetlayer.ai/docs/guides/browser/)
-- **Every account in one place.** Year-long sign-ins on every machine, and every account's usage shared with every session. [How](https://fleetlayer.ai/docs/guides/claude-accounts/)
+- **Your own accounts, on your own machines.** Year-long sign-ins for each of your Claude accounts on every machine you run, and each account's usage visible to every session. [How](https://fleetlayer.ai/docs/guides/claude-accounts/)
+
+## You need this if
+
+- your agents run on more than one machine, or under more than one Claude account;
+- you run Codex or other agents next to Claude Code;
+- an agent reads email or the web, and you want it kept away from the others' rights and secrets;
+- you want your agents, secrets and the record of what they did on machines you control.
+
+You probably don't if you use one Claude account on one laptop and Claude Code's own features cover the rest. Use
+those, and come back when you add a second machine or account:
+https://fleetlayer.ai/docs/claude-code/
 
 ## How it fits
 
@@ -132,14 +142,21 @@ and you can still change models and harnesses whenever you like.
 
 ## Who it's for
 
-It's for people who run many agents side by side (errands, email triage, product work, infrastructure, workers), each
-with its own machine or Unix user and permissions, and for people whose work and life share the same agents.
+A person running many agents across several machines and accounts: errands, email triage, product work,
+infrastructure, workers, each with its own machine or Unix user and permissions. It grows with you: a household or a
+team shares one system, and a company gets what it needs (single sign-on, teams, separate organisations, audit) when
+it needs it.
 
 ## Where it is today
 
-Runs now: the node, the control plane and the command line; plugins for herdr, Claude Code, session summaries, Claude
-accounts and pages; one sign-in, with a passkey, for every service; everything on one laptop with `fleetlayer up`;
-access rules with an audit log; releases that update every node themselves; a whole server setup an agent can build
-for you, from [an example repository](https://github.com/fleetlayer/server-iac-example).
+Runs now: the node, the control plane, the dashboard and the command line; plugins for herdr and Rex, Claude Code,
+session summaries, Claude accounts, pages and apps; access rules, approvals and an audit log; secrets per role from
+1Password, network access per role and the admin window; one passkey sign-in for every service; every machine on your
+phone; moving any piece with one command; releases that update every node themselves; and a whole server setup an
+agent can build for you, from [an example repository](https://github.com/fleetlayer/server-iac-example).
 
-Being built: the phone, and moving a piece with one command. Expect breaking changes.
+Being built: tmux support (in the next release), and more harnesses: Cursor, OpenCode, Aider and pi. Expect breaking
+changes. What changed in each release: https://fleetlayer.ai/docs/changelog/
+
+Will it cost money? We might provide a hosted control plane and provision a VPS where you can run your remote agents
+and services, but we haven't decided on anything yet.

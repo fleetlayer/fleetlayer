@@ -12,7 +12,7 @@ export const site = {
   licence:
     "FSL-1.1-ALv2 (Functional Source License, source-available: use it for anything except a competing product or service; each release becomes Apache 2.0 two years after it ships)",
   summary:
-    "An open framework for running AI agents securely and at scale: it connects the Claude Code and Codex sessions you already run in herdr, on your laptop, a home server or a VPS, so any agent can message any other, webhooks reach the right agent, and each agent gets its own access rules. Source-available, self-hosted, no vendor lock-in.",
+    "Claude Code is awesome until you add a second machine or account: a session on your server can't message one on your laptop, and an agent there can't use the browser you're signed in to. Fleetlayer connects the Claude Code and Codex sessions on your laptop, home server and VPS, under your own accounts, so they message each other, share your signed-in browser and files, and work under access rules you set. Self-hosted and source-available.",
   // The groups whose pages go into llms-full.txt, the core an agent reads first. Every group also has a file of its own,
   // /llms/<group>.txt, listed at the top of llms-full.txt and in llms.txt.
   llmsFull: ["Start here", "Works with", "Set up", "Day to day", "Comparisons"],
