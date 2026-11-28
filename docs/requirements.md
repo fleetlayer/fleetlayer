@@ -7,7 +7,8 @@ What you need before you install Fleetlayer, what works with it today, and how t
 - **macOS or Linux,** on x86-64 or ARM (Apple silicon, a Raspberry Pi 4 or newer, an ARM VPS). There's no Windows
   build, and running it under WSL hasn't been tested.
 - **A session manager** for the agents, so Fleetlayer can see, message, start and close their sessions:
-  - [herdr](https://herdr.dev): the one Fleetlayer is built and tested with most;
+  - [herdr](https://herdr.dev): the one Fleetlayer is built and tested with most, the release from herdr.dev
+    included (0.9.5 tested);
   - [Rex](rex.md), Superlogical's terminal and session manager;
   - tmux, through [the tmux plugin](plugins/tmux.md), from the release after v0.4.1.
 

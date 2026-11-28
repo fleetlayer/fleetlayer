@@ -959,3 +959,10 @@ managers, machines that sleep.
   while a person scrolls (copy mode) go to copy mode, so nothing is typed then; a login shell started by tmux resets
   PATH from `/etc/profile` before reading the person's own profile, so new agents start through `$SHELL -lc 'exec
   "$0" "$@"'` with their arguments as positional parameters. Written: `docs/plugins/tmux.md`, `plugins/tmux/`.
+- **Starting a session on the herdr everyone downloads.** `fleetlayer session start` opened herdr tabs with `herdr tab
+  create --agent <harness> --`, which only a fork of herdr has: herdr 0.9.5 from herdr.dev answers `unknown option:
+  --agent`, so starting sessions failed for everyone on stock herdr. Solved in the herdr plugin: the first open tries
+  `--agent`, and on that answer the plugin remembers (for as long as it runs) to open a plain tab (`herdr tab create
+  --no-focus`, and `herdr workspace create` first when herdr has no workspace yet, renaming its numbered first tab),
+  then start the agent in it with `herdr agent start <name> --kind <harness> --pane <pane> -- <args>`, closing the tab
+  when the start fails. Written: `plugins/herdr/src/herdr.rs`, `docs/requirements.md`.

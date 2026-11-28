@@ -342,14 +342,37 @@ impl Failure {
     }
 }
 
-/// `herdr tab create --agent …`: answers once the agent takes input, with the new pane and the session ID if the
-/// agent reported it already, or with herdr's own message for a start-up screen or a failed start.
-pub async fn create_tab(herdr: &str, open: &OpenSession) -> Result<(String, Option<String>), String> {
-    let run = tokio::process::Command::new(herdr).args(tab_create(open)).output();
-    let out = tokio::time::timeout(std::time::Duration::from_secs(120), run)
+/// Whether this herdr's `tab create` takes `--agent` (0 not known yet, 1 yes, 2 no), learnt on the first open and
+/// kept for as long as the plugin runs. herdr releases up to 0.9.5 don't take it: they open the tab, then start the
+/// agent in it with `herdr agent start`.
+static AGENT_FLAG: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// What herdr prints for an option it doesn't know.
+pub fn unknown_agent_option(stderr: &[u8]) -> bool {
+    String::from_utf8_lossy(stderr).contains("unknown option: --agent")
+}
+
+async fn herdr_output(herdr: &str, args: &[String]) -> Result<std::process::Output, String> {
+    let run = tokio::process::Command::new(herdr).args(args).kill_on_drop(true).output();
+    tokio::time::timeout(std::time::Duration::from_secs(120), run)
         .await
         .map_err(|_| "herdr didn't answer within two minutes".to_string())?
-        .map_err(|e| spawn_error(herdr, &e))?;
+        .map_err(|e| spawn_error(herdr, &e))
+}
+
+/// Open a tab running the agent: answers once the agent takes input, with the new pane and the session ID if the
+/// agent reported it already, or with herdr's own message for a start-up screen or a failed start.
+pub async fn create_tab(herdr: &str, open: &OpenSession) -> Result<(String, Option<String>), String> {
+    use std::sync::atomic::Ordering;
+    if AGENT_FLAG.load(Ordering::Relaxed) == 2 {
+        return create_tab_then_start(herdr, open).await;
+    }
+    let out = herdr_output(herdr, &tab_create(open)).await?;
+    if !out.status.success() && unknown_agent_option(&out.stderr) {
+        AGENT_FLAG.store(2, Ordering::Relaxed);
+        return create_tab_then_start(herdr, open).await;
+    }
+    AGENT_FLAG.store(1, Ordering::Relaxed);
     if !out.status.success() {
         let mut e = herdr_error(&out.stderr);
         // A start that failed (a resume of a session the agent doesn't have, say) leaves a shell in the tab: close it,
@@ -369,6 +392,64 @@ pub async fn create_tab(herdr: &str, open: &OpenSession) -> Result<(String, Opti
         (Some(_), Some(p)) => Ok((p.into(), v.pointer("/result/agent").and_then(session_value))),
         _ => Err("herdr's answer named no tab or pane".into()),
     }
+}
+
+/// For a herdr whose `tab create` has no `--agent`: a plain tab (and a workspace for it when herdr has none yet),
+/// then `herdr agent start` in its pane, which answers once the agent takes input. A failed start closes the tab.
+async fn create_tab_then_start(herdr: &str, open: &OpenSession) -> Result<(String, Option<String>), String> {
+    let out = herdr_output(herdr, &plain_tab_create(open)).await?;
+    let created = if out.status.success() {
+        out.stdout
+    } else if String::from_utf8_lossy(&out.stderr).contains("workspace_not_found") {
+        let ws = herdr_output(herdr, &workspace_create(open)).await?;
+        if !ws.status.success() {
+            return Err(herdr_error(&ws.stderr));
+        }
+        ws.stdout
+    } else {
+        return Err(herdr_error(&out.stderr));
+    };
+    let v: Value = serde_json::from_slice(&created).map_err(|e| format!("reading herdr's answer: {e}"))?;
+    let (Some(tab), Some(pane)) = (
+        v.pointer("/result/tab/tab_id").and_then(Value::as_str).map(str::to_string),
+        v.pointer("/result/root_pane/pane_id").and_then(Value::as_str).map(str::to_string),
+    ) else {
+        return Err("herdr's answer named no tab or pane".into());
+    };
+    // A new workspace's first tab is numbered, not named: give it the session's name.
+    if v.pointer("/result/tab/label").and_then(Value::as_str) != Some(open.label.as_str()) {
+        let _ = run_plain(herdr, &["tab", "rename", &tab, &open.label]).await;
+    }
+    let out = herdr_output(herdr, &agent_start(open, &pane)).await?;
+    if !out.status.success() {
+        let mut e = herdr_error(&out.stderr);
+        match close_tab(herdr, &tab).await {
+            Ok(()) => e.push_str(". The tab it opened is closed."),
+            Err(c) => e.push_str(&format!(". Closing the tab it opened failed too: {}", c.message())),
+        }
+        return Err(e);
+    }
+    let v: Value = serde_json::from_slice(&out.stdout).map_err(|e| format!("reading herdr's answer: {e}"))?;
+    Ok((pane, v.pointer("/result/agent").and_then(session_value)))
+}
+
+pub fn plain_tab_create(open: &OpenSession) -> Vec<String> {
+    ["tab", "create", "--label", &open.label, "--cwd", &open.cwd, "--no-focus"].map(String::from).into()
+}
+
+pub fn workspace_create(open: &OpenSession) -> Vec<String> {
+    ["workspace", "create", "--label", "fleetlayer", "--cwd", &open.cwd, "--no-focus"].map(String::from).into()
+}
+
+/// `herdr agent start`, waiting up to 110 seconds (inside the two minutes the call is given) for the agent to take
+/// input, with the agent's arguments after `--`.
+pub fn agent_start(open: &OpenSession, pane: &str) -> Vec<String> {
+    let mut a: Vec<String> =
+        ["agent", "start", &open.label, "--kind", &open.harness, "--pane", pane, "--timeout", "110000", "--"]
+            .map(String::from)
+            .into();
+    a.extend(open.args.iter().cloned());
+    a
 }
 
 /// The codes of a start that failed for good: the agent exited, or never became ready (its screen shows why). Not a
@@ -505,6 +586,39 @@ pub async fn prompt(herdr: &str, pane: &str, text: &str) -> Result<(), Failure> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_herdr_without_tab_create_agent_opens_the_tab_then_starts_the_agent() {
+        // As herdr 0.9.5 (the release on herdr.dev, 28 November 2026) answers `tab create --agent`.
+        assert!(unknown_agent_option(b"unknown option: --agent\n"));
+        assert!(!unknown_agent_option(br#"{"error":{"code":"timeout","message":"x"}}"#));
+        let open = OpenSession {
+            label: "worker".into(),
+            cwd: "/w".into(),
+            harness: "claude".into(),
+            args: vec!["--name".into(), "worker".into()],
+            prompt: None,
+        };
+        assert_eq!(plain_tab_create(&open), ["tab", "create", "--label", "worker", "--cwd", "/w", "--no-focus"]);
+        assert_eq!(
+            agent_start(&open, "w1:p2"),
+            [
+                "agent",
+                "start",
+                "worker",
+                "--kind",
+                "claude",
+                "--pane",
+                "w1:p2",
+                "--timeout",
+                "110000",
+                "--",
+                "--name",
+                "worker"
+            ]
+        );
+        assert_eq!(workspace_create(&open)[..4], ["workspace", "create", "--label", "fleetlayer"]);
+    }
 
     #[test]
     fn a_missing_herdr_says_how_to_point_at_it() {
