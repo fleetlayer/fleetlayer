@@ -58,7 +58,7 @@ pub enum SecretsCommand {
     /// Forget which source a bundle is taken from (its node, or the key its source signs with), so the next sender is
     /// trusted from scratch: for a source that really moved or got a new key. Without a bundle, lists the pins.
     Unpin {
-        /// The bundle (`claude-tokens`, `cookies/x`, `1password/<node>`).
+        /// The bundle (`claude-auth-manager/tokens`, `cookies/x`, `1password/<node>`).
         bundle: Option<String>,
     },
 }
@@ -473,10 +473,10 @@ mod tests {
     fn unpin_finds_the_bundle_in_any_plugins_pins() {
         let home = tempfile::tempdir().unwrap();
         let file = home.path().join(".local/state/fleetlayer/claude-auth-manager/sources.json");
-        fleetlayer_secrets::pin::check(&file, "claude-tokens", Some("laptop"), None, None, 1).unwrap();
+        fleetlayer_secrets::pin::check(&file, "claude-auth-manager/tokens", Some("laptop"), None, None, 1).unwrap();
         assert_eq!(pin_files(home.path()), std::slice::from_ref(&file));
         assert_eq!(unpin(home.path(), Some("cookies/x")).unwrap(), 1, "not pinned anywhere");
-        assert_eq!(unpin(home.path(), Some("claude-tokens")).unwrap(), 0);
+        assert_eq!(unpin(home.path(), Some("claude-auth-manager/tokens")).unwrap(), 0);
         assert!(fleetlayer_secrets::pin::list(&file).is_empty());
         assert_eq!(unpin(home.path(), None).unwrap(), 0, "listing");
     }

@@ -366,7 +366,7 @@ Each bundle is taken from one source only: the node that first sent it, or the k
 saying a bundle "came from node … but it first came from …" or was "signed by another key" means another source is
 sending it. Don't unpin it yourself: tell your person. Only when they confirm the source really moved or got a new key
 does `fleetlayer secrets unpin <bundle>` (on the machine that refuses it) trust the next sender from scratch;
-`fleetlayer secrets unpin` alone lists the pins.
+`fleetlayer secrets unpin` alone lists the pins (the Claude accounts hub's bundle is `claude-auth-manager/tokens`).
 
 ## Moving a piece to another machine
 
