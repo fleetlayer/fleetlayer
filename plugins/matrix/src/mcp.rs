@@ -58,6 +58,21 @@ fn as_text(v: &Value) -> Value {
     json!({"type": "text", "text": serde_json::to_string_pretty(v).unwrap_or_default()})
 }
 
+/// `history`'s `limit`: a number, or a number written as a string (`fleetlayer tools call … limit=10` sends every
+/// value as a string); 20 when it's missing. Anything else is refused rather than read as the default.
+pub fn limit_arg(v: &Value) -> Result<u64, String> {
+    let n = match v {
+        Value::Null => return Ok(20),
+        Value::Number(n) => n.as_u64(),
+        Value::String(s) => s.trim().parse::<u64>().ok(),
+        _ => None,
+    };
+    match n {
+        Some(n) if (1..=100).contains(&n) => Ok(n),
+        _ => Err(format!("limit must be a whole number from 1 to 100, not {v}")),
+    }
+}
+
 /// One tool call, through the plugin's socket.
 pub async fn call(dir: &Path, name: &str, args: &Value) -> Value {
     let str_arg = |k: &str| args[k].as_str().map(str::to_string);
@@ -74,12 +89,12 @@ pub async fn call(dir: &Path, name: &str, args: &Value) -> Value {
             _ => Err("post needs room and text".into()),
         },
         "history" => match str_arg("room") {
-            Some(room) => {
-                let limit = args["limit"].as_u64().unwrap_or(20);
-                socket::ask(dir, &json!({"op": "history", "room": room, "limit": limit})).await.map(|v| {
+            Some(room) => match limit_arg(&args["limit"]) {
+                Ok(limit) => socket::ask(dir, &json!({"op": "history", "room": room, "limit": limit})).await.map(|v| {
                     vec![json!({"type": "text", "text": OUTSIDE_DATA}), as_text(&json!({"messages": v}))]
-                })
-            }
+                }),
+                Err(e) => Err(e),
+            },
             None => Err("history needs room".into()),
         },
         other => Err(format!("there's no tool called {other:?} here")),
@@ -171,5 +186,15 @@ mod tests {
         .await
         .unwrap();
         assert!(bad["result"]["content"][0]["text"].as_str().unwrap().contains("needs room and text"));
+    }
+
+    #[test]
+    fn a_limit_given_as_a_string_is_honoured() {
+        assert_eq!(limit_arg(&json!("10")), Ok(10));
+        assert_eq!(limit_arg(&json!(10)), Ok(10));
+        assert_eq!(limit_arg(&Value::Null), Ok(20));
+        assert!(limit_arg(&json!("ten")).is_err(), "not silently the default");
+        assert!(limit_arg(&json!(0)).is_err());
+        assert!(limit_arg(&json!("500")).is_err());
     }
 }

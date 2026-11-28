@@ -79,7 +79,7 @@ async fn handle(shared: &Shared, req: &Value) -> Result<Value, String> {
             Ok(json!({"eventId": id}))
         }
         "history" => {
-            let limit = req["limit"].as_u64().unwrap_or(20).min(100) as u32;
+            let limit = u32::try_from(crate::mcp::limit_arg(&req["limit"])?).unwrap_or(100);
             let messages = shared.history(text(req, "room")?, limit).await?;
             Ok(Value::Array(
                 messages
