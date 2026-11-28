@@ -3,9 +3,10 @@
 Each node keeps **one outbound WebSocket** to the control plane at `/v1/link`, so a node works behind NAT with no
 port open on its machine. The node authenticates with its token as a bearer token (`Authorization: Bearer fln_…`);
 the control plane stores only the token's SHA-256 hash. The link carries **JSON-RPC 2.0**, one message per text frame,
-with requests in both directions (the same peer as plugins use, `fleetlayer-plugin`). Each side pings the other with
-`_fleetlayer.dev/ping` every 30 seconds and drops the link after three missed pings; the node reconnects with backoff
-up to a minute.
+with requests in both directions (the same peer as plugins use, `fleetlayer-plugin`). The control plane pings each node
+with `_fleetlayer.dev/ping` every 30 seconds and drops the link after three missed pings. The node drops a link it
+has heard nothing on (no ping, no other frame) for 100 seconds, since a path that died without closing (a laptop that
+slept, a NAT that forgot the connection) never says so, and it reconnects with backoff from 1 second up to a minute.
 
 ## Node → control plane
 

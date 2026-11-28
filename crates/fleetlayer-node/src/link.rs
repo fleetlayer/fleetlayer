@@ -21,6 +21,10 @@ use crate::config::ControlConfig;
 use crate::sessions::Change;
 
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
+/// The control plane pings every linked node every 30 seconds. A link that hears nothing at all for this long (no
+/// ping, no other frame) died without saying so: a laptop that slept, a NAT that forgot the connection. The node then
+/// drops it and links again, with the usual backoff, instead of waiting for a close that never comes.
+pub const READ_DEADLINE: Duration = Duration::from_secs(100);
 
 /// Notifications held while the link is down (summaries), sent in order when it's back. The oldest go first when
 /// it's full: the plugin's files keep everything anyway.
@@ -240,17 +244,10 @@ async fn connect_once(node: &Arc<Node>, cfg: &ControlConfig) -> anyhow::Result<(
             }
         }
     });
+    let url = cfg.url.clone();
     let reader = tokio::spawn(async move {
-        while let Some(Ok(msg)) = stream.next().await {
-            match msg {
-                Message::Text(t) => {
-                    if in_tx.send(t.to_string()).await.is_err() {
-                        break;
-                    }
-                }
-                Message::Close(_) => break,
-                _ => {}
-            }
+        if read_frames(&mut stream, &in_tx, READ_DEADLINE).await == ReadEnd::Silent {
+            tracing::warn!(%url, "nothing from the control plane for {}s; linking again", READ_DEADLINE.as_secs());
         }
     });
     let (peer, task) = fleetlayer_plugin::connect_frames(in_rx, out_tx, Arc::new(FromControl { node: node.clone() }));
@@ -315,6 +312,38 @@ async fn connect_once(node: &Arc<Node>, cfg: &ControlConfig) -> anyhow::Result<(
     reader.abort();
     writer.abort();
     Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ReadEnd {
+    /// The control plane closed the link, or it failed.
+    Closed,
+    /// Nothing arrived within the deadline.
+    Silent,
+}
+
+/// Pass the link's text frames on until it closes or stays silent for `deadline`. Any frame counts as a sign of life
+/// (a WebSocket ping too); only text frames carry JSON-RPC.
+async fn read_frames<S, E>(stream: &mut S, to: &mpsc::Sender<String>, deadline: Duration) -> ReadEnd
+where
+    S: futures::Stream<Item = Result<Message, E>> + Unpin,
+{
+    loop {
+        let msg = match tokio::time::timeout(deadline, stream.next()).await {
+            Err(_) => return ReadEnd::Silent,
+            Ok(Some(Ok(m))) => m,
+            Ok(_) => return ReadEnd::Closed,
+        };
+        match msg {
+            Message::Text(t) => {
+                if to.send(t.to_string()).await.is_err() {
+                    return ReadEnd::Closed;
+                }
+            }
+            Message::Close(_) => return ReadEnd::Closed,
+            _ => {}
+        }
+    }
 }
 
 async fn push_all(node: &Node, peer: &Peer) {
@@ -424,5 +453,49 @@ mod tests {
         assert!(follows_move("ws://a/v1/link", "ws://b/v1/link", Some(&"z&x=".repeat(12))).is_err(), "hex only");
         assert_eq!(web_base("wss://c.example/v1/link"), "https://c.example");
         assert_eq!(web_base("ws://10.0.0.5:7600/v1/link"), "http://10.0.0.5:7600");
+    }
+
+    /// A stub control plane that sends a frame and a ping, then goes quiet without closing: the node notices the
+    /// silence within its deadline, while a link that's only quiet for less than that stays up.
+    #[tokio::test]
+    async fn a_link_that_goes_silent_is_dropped() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            ws.send(Message::Text("{\"jsonrpc\":\"2.0\",\"method\":\"x\"}".into())).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            ws.send(Message::Ping(vec![1].into())).await.unwrap();
+            // Then nothing, and no close: the connection stays open, as a dead NAT path would look.
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            drop(ws);
+        });
+        let (ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/v1/link")).await.unwrap();
+        let (_sink, mut stream) = ws.split();
+        let (tx, mut rx) = mpsc::channel(8);
+        let started = std::time::Instant::now();
+        let end = read_frames(&mut stream, &tx, Duration::from_millis(400)).await;
+        assert_eq!(end, ReadEnd::Silent);
+        let took = started.elapsed();
+        assert!(took >= Duration::from_millis(500), "the ping kept it alive past the first deadline: {took:?}");
+        assert!(took < Duration::from_secs(5), "{took:?}");
+        assert_eq!(rx.recv().await.as_deref(), Some("{\"jsonrpc\":\"2.0\",\"method\":\"x\"}"));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_link_the_control_plane_closes_ends_as_closed() {
+        let (tx, _rx) = mpsc::channel(8);
+        let mut stream = futures::stream::iter(vec![Ok::<_, std::io::Error>(Message::Close(None))]);
+        assert_eq!(read_frames(&mut stream, &tx, Duration::from_secs(5)).await, ReadEnd::Closed);
+        let mut ended = futures::stream::iter(Vec::<Result<Message, std::io::Error>>::new());
+        assert_eq!(read_frames(&mut ended, &tx, Duration::from_secs(5)).await, ReadEnd::Closed);
+    }
+
+    #[test]
+    fn the_deadline_outlasts_three_missed_pings() {
+        // The control plane pings every 30 s: three gone by means the link is dead, not slow.
+        assert!(READ_DEADLINE > Duration::from_secs(90));
     }
 }
