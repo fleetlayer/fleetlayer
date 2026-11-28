@@ -17,8 +17,10 @@
 //!       required: [account, query]
 //!       fields:
 //!         account: '^[a-z0-9_-]{1,40}$'
-//!         query: 'from:\S+'
+//!         query: '.*from:\S+.*'
 //! ```
+//!
+//! A field's pattern must match its whole value.
 
 use std::collections::BTreeMap;
 
@@ -29,7 +31,16 @@ use serde::Deserialize;
 pub const DEFAULT_TTL: SignedDuration = SignedDuration::from_hours(2);
 pub const DEFAULT_MAX_TTL: SignedDuration = SignedDuration::from_hours(24);
 pub const DEFAULT_IDLE: SignedDuration = SignedDuration::from_mins(30);
-const MAX_PAYLOAD_BYTES: usize = 4096;
+/// Small enough that the person always sees a payload whole, with its reason, when asked to approve it.
+const MAX_PAYLOAD_BYTES: usize = 600;
+
+/// Characters a person can't see: controls, and the zero-width and direction marks that hide or reorder text.
+fn hidden(c: char) -> bool {
+    c.is_control()
+        || matches!(c, '\u{00ad}' | '\u{034f}' | '\u{061c}' | '\u{115f}' | '\u{1160}' | '\u{17b4}' | '\u{17b5}'
+            | '\u{180e}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}'
+            | '\u{3164}' | '\u{fe00}'..='\u{fe0f}' | '\u{feff}' | '\u{ffa0}' | '\u{e0000}'..='\u{e007f}')
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -201,7 +212,8 @@ fn kind(name: &str, raw: RawKind) -> Result<Kind, String> {
                 if !valid_name(&f) {
                     return Err(format!("payload field '{f}': lower-case letters, digits, '-', '_' and '.'"));
                 }
-                let re = Regex::new(&pattern).map_err(|e| format!("payload field '{f}': {e}"))?;
+                // The whole value must match, so a pattern can't be met by a fragment of a longer value.
+                let re = Regex::new(&format!("^(?:{pattern})$")).map_err(|e| format!("payload field '{f}': {e}"))?;
                 fields.insert(f, re);
             }
             for r in &p.required {
@@ -255,8 +267,11 @@ impl Kind {
             let Some(s) = v.as_str() else {
                 return Err(format!("payload field '{k}' must be a string"));
             };
-            if s.chars().any(char::is_control) {
-                return Err(format!("payload field '{k}' holds a control character"));
+            if let Some(c) = s.chars().find(|c| hidden(*c)) {
+                return Err(format!(
+                    "payload field '{k}' holds a control or invisible character (U+{:04X}): the person must see all of it",
+                    c as u32
+                ));
             }
             match rule.fields.get(k) {
                 Some(re) if !re.is_match(s) => {

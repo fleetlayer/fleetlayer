@@ -82,6 +82,9 @@ pub struct Lease {
     /// A process-tied lease with no connection since.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detached_since: Option<Timestamp>,
+    /// The channel its start and end events go to, fixed when it starts (the kind's `events:` then).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub events: Option<String>,
     /// A session-tied lease whose session or node wasn't seen since.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub missing_since: Option<Timestamp>,
@@ -164,12 +167,20 @@ pub enum Change {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct State {
+    /// Random per state file, in event dedupe keys: a state file started afresh numbers leases from 1 again, and its
+    /// events mustn't be taken for repeats of the old ones.
+    #[serde(default)]
+    pub epoch: String,
     pub next_id: u64,
     pub leases: BTreeMap<u64, Lease>,
     #[serde(default)]
     pub ended: VecDeque<Ended>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<Timestamp>,
+    /// Start and end events the control plane hasn't taken yet, oldest first: saved with the leases, so a service
+    /// that removes a filter when its lease ends hears about it even if the node was unlinked at that moment.
+    #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
+    pub outbox: VecDeque<fleetlayer_protocol::ext::Event>,
 }
 
 /// What a caller asks for.
@@ -243,6 +254,18 @@ impl Engine {
         }
         if state.next_id == 0 {
             state.next_id = 1;
+        }
+        if state.epoch.is_empty() {
+            state.epoch = new_epoch(now);
+        }
+        // A waiting lease that only waited while its caller did lost its caller with the restart: it leaves the
+        // queue, or it would take a slot nobody waits for. The caller asks again.
+        let orphans: Vec<u64> =
+            state.leases.values().filter(|l| l.bound && l.phase == Phase::Waiting).map(|l| l.id).collect();
+        for id in orphans {
+            if let Some(lease) = state.leases.remove(&id) {
+                state.ended.push_back(Ended { lease, ended_at: now, why: EndReason::Cancelled, detail: Some("the authority restarted while it waited".into()), by: None });
+            }
         }
         Engine { state }
     }
@@ -347,6 +370,7 @@ impl Engine {
             bound: req.wait && !kind.approval,
             attached: 0,
             missing_since: None,
+            events: None,
         };
         self.state.leases.insert(id, lease);
         let mut changes = self.promote(settings, now);
@@ -568,7 +592,7 @@ impl Engine {
         changes
     }
 
-    fn start(&mut self, _kind: &Kind, id: u64, now: Timestamp) -> Change {
+    fn start(&mut self, kind: &Kind, id: u64, now: Timestamp) -> Change {
         let first_of_key = {
             let l = &self.state.leases[&id];
             !self.state.leases.values().any(|o| o.id != id && o.phase == Phase::Held && o.same_claim(l))
@@ -577,6 +601,7 @@ impl Engine {
         l.phase = Phase::Held;
         l.started_at = Some(now);
         l.expires_at = Some(now + SignedDuration::from_secs(l.ttl_secs));
+        l.events = kind.events.clone();
         Change::Started { lease: l.clone(), first_of_key, in_call: false }
     }
 
@@ -616,6 +641,13 @@ impl Engine {
             })
             .collect()
     }
+}
+
+/// Eight hex digits from the time and the process: unique enough to tell one state file's leases from another's.
+fn new_epoch(now: Timestamp) -> String {
+    use sha2::Digest;
+    let seed = format!("{}:{}:{:?}", now.as_nanosecond(), std::process::id(), std::thread::current().id());
+    hex::encode(sha2::Sha256::digest(seed.as_bytes()))[..8].to_string()
 }
 
 /// A time to the second, for people.

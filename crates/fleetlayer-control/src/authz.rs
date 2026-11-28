@@ -385,7 +385,13 @@ pub async fn check_as(
         Some(e) => e.message.clone(),
         None => out.because.join(", "),
     };
-    Ok(fleetlayer_protocol::link::AccessDecision { allowed: out.allowed, rules: out.because, reason })
+    Ok(fleetlayer_protocol::link::AccessDecision {
+        allowed: out.allowed,
+        rules: out.because,
+        reason,
+        pending: out.pending,
+        ..Default::default()
+    })
 }
 
 /// A source node asking about a bundle it would send (`sync:<bundle>@<target>`, verb `sync`) before it does the work,
@@ -432,7 +438,7 @@ async fn peek(
     verb: &str,
     target: &str,
 ) -> fleetlayer_protocol::link::AccessDecision {
-    let no = |reason: String| fleetlayer_protocol::link::AccessDecision { allowed: false, rules: vec![], reason };
+    let no = |reason: String| fleetlayer_protocol::link::AccessDecision { reason, ..Default::default() };
     match dry(app, tenant, who, verb, target).await {
         Dry::Allowed { .. } => {
             let held = crate::policy::approval_target(target);
@@ -443,11 +449,20 @@ async fn peek(
                 // an approval `for: once`: looking isn't using, and the request that follows spends it.
                 let _ = crate::approvals::check_spending(app, tenant, who, verb, &held, 0, None, false).await;
             }
-            fleetlayer_protocol::link::AccessDecision { allowed: true, rules: vec![], reason: "allowed".into() }
+            fleetlayer_protocol::link::AccessDecision { allowed: true, reason: "allowed".into(), ..Default::default() }
         }
-        Dry::Ask { pending: Some(id), .. } => no(format!("waiting for the person to approve request {id}")),
-        Dry::Ask { pending: None, .. } => no(format!("not asked yet: {who}'s own node files the request")),
-        Dry::Refused { request, .. } => no(format!("the person refused request {request}")),
+        Dry::Ask { pending: Some(id), .. } => fleetlayer_protocol::link::AccessDecision {
+            pending: Some(id.clone()),
+            ..no(format!("waiting for the person to approve request {id}"))
+        },
+        Dry::Ask { pending: None, .. } => fleetlayer_protocol::link::AccessDecision {
+            not_asked: true,
+            ..no(format!("not asked yet: {who}'s own node files the request"))
+        },
+        Dry::Refused { request, .. } => fleetlayer_protocol::link::AccessDecision {
+            refused: Some(request.clone()),
+            ..no(format!("the person refused request {request}"))
+        },
         Dry::Denied => no("refused by the access policy".into()),
     }
 }

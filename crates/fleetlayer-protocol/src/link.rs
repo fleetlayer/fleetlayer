@@ -383,13 +383,22 @@ pub struct AccessCheck {
     pub peek: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct AccessDecision {
     pub allowed: bool,
     /// The rules behind it.
     pub rules: Vec<String>,
     /// One line for a person to read.
     pub reason: String,
+    /// Waiting for the person: the approval request's ID (from v0.4.0; older control planes say it only in `reason`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<String>,
+    /// The person refused it: the approval request's ID (from v0.4.0, answered to a `peek`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refused: Option<String>,
+    /// A `peek` found it needs the person and nobody has asked yet (from v0.4.0).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub not_asked: bool,
 }
 
 /// `link/pages_open`: a session asks to push a page into a space.

@@ -49,7 +49,7 @@ slot_helper() {
   local slot="${FLEETLAYER_DEV_SLOT:-}"
   [ -z "$slot" ] && [ -f "$dir/.dev-slot" ] && slot=$(cat "$dir/.dev-slot")
   [ -z "$slot" ] && slot=$(command -v fleetlayer-dev-slot || true)
-  case $slot in "" | /*) ;; *) [ -x "$dir/$slot" ] && slot="$dir/$slot" ;; esac
+  case $slot in "" | /*) ;; none) slot= ;; *) [ -x "$dir/$slot" ] && slot="$dir/$slot" ;; esac
   printf '%s' "$slot"
 }
 
@@ -67,9 +67,10 @@ run() {
   # fmt, check and clippy don't link: they take a light slot (more run at once); build and test take a heavy one.
   case "$cmd" in fmt | format | check | clippy) export FLEETLAYER_DEV_SLOT_CLASS=light ;; *) export FLEETLAYER_DEV_SLOT_CLASS=heavy ;; esac
   if [ -n "$slot" ]; then
+    # Without a slot it doesn't build: unlimited builds are what the slots prevent. FLEETLAYER_DEV_SLOT=none skips it.
     slot_id=$(FLEETLAYER_LEASE_PID=$$ "$slot" acquire "fleetlayer on-dev $cmd ($(basename "$dir"))") || {
-      echo "on-dev: couldn't take a build slot; running anyway" >&2
-      slot_id=""
+      echo "on-dev: couldn't take a build slot, so not building (FLEETLAYER_DEV_SLOT=none to build without one)" >&2
+      return 75
     }
     [ -n "$slot_id" ] && trap '"$slot" release "$slot_id" >/dev/null 2>&1 || true' RETURN
   fi

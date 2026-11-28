@@ -29,15 +29,15 @@ root=/opt/code/fleetlayer/images
 slot=${FLEETLAYER_DEV_SLOT:-}
 [ -z "$slot" ] && [ -f "$dir/.dev-slot" ] && slot=$(cat "$dir/.dev-slot")
 [ -z "$slot" ] && slot=$(command -v fleetlayer-dev-slot || true)
-case $slot in "" | /*) ;; *) [ -x "$dir/$slot" ] && slot="$dir/$slot" ;; esac
+case $slot in "" | /*) ;; none) slot= ;; *) [ -x "$dir/$slot" ] && slot="$dir/$slot" ;; esac
 slot_id= anchor=
 if [ -n "$slot" ]; then
   sleep 7200 < /dev/null > /dev/null 2>&1 &
   anchor=$!
   slot_id=$(FLEETLAYER_LEASE_PID=$anchor "$slot" acquire "fleetlayer build-images $sha") || {
-    echo "build-images: couldn't take a build slot; building anyway" >&2
+    echo "build-images: couldn't take a build slot, so not building (FLEETLAYER_DEV_SLOT=none to build without one)" >&2
     kill "$anchor" 2> /dev/null || true
-    slot_id= anchor=
+    exit 75
   }
 fi
 git archive "$sha" | ssh "$host" "mkdir -p $root/src && cd $root/src && find . -mindepth 1 -maxdepth 1 ! -name target -exec rm -rf {} + && tar -x -m -C ." 2>&1 | grep -v setlocale || true

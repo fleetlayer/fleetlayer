@@ -489,9 +489,8 @@ fn whys_are_one_line_and_long_enough() {
     assert!(crate::check_why("the vendor's API for the invoice import").is_ok());
     assert!(crate::check_why("too short").is_err());
     let looked = |reason: &str| fleetlayer_protocol::link::AccessDecision {
-        allowed: false,
-        rules: vec![],
         reason: reason.into(),
+        ..Default::default()
     };
     assert_eq!(
         crate::engine::answer_from(&looked("not asked yet: -@x's own node files the request")),

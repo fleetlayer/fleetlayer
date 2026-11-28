@@ -66,8 +66,8 @@ kinds:
     payload:
       required: [account, query]
       fields:                   # each field's value must match its pattern
-        account: '^[a-z0-9_-]{1,40}$'
-        query: 'from:\S+'
+        account: '[a-z0-9_-]{1,40}'
+        query: '.*\bfrom:\S+.*'
 ```
 
 The plugin reads the file again within 15 seconds of a change: no restart. Check an edit first with
@@ -80,7 +80,7 @@ the last good kinds running, and the plugin reports the problem.
 | `ttl`, `max_ttl` | The time limit a lease gets, and the most a caller may ask for with `--ttl`. |
 | `idle` | A held lease whose session has been idle (or waiting on the person) this long ends. `--idle` sets it per lease. |
 | `approval` | Each new payload is decided by the access policy (below) before the lease can start. Needs `payload`. |
-| `payload` | The kind takes a JSON object of strings: `required` fields, a pattern per field in `fields`, and `others: true` to allow fields not named. Leave it out and the kind takes none. |
+| `payload` | The kind takes a JSON object of strings, at most 600 bytes: `required` fields, a pattern per field in `fields` that must match the whole value, and `others: true` to allow fields not named. Control and invisible characters (zero-width, direction marks) are refused, so the person sees everything they approve. Leave it out and the kind takes none. |
 | `max_per_holder` | The most leases of this kind one holder may have at once. |
 | `events` | A channel for `lease.started` and `lease.ended` events. Leave it out for none. |
 | `stuck_after` | Someone waiting this long is a problem (default: the ttl). |
@@ -118,6 +118,10 @@ of its sessions). On the authority's machine, `fleetlayer-leases release <id>` e
 | A session (`acquire` run by an agent) | The session, by its `<tab>@<node>` | The session stops running (after 2 minutes unseen), its node goes offline (after 5 minutes), or a held lease's session stays idle or waits on the person for the idle limit |
 | A script, or `--pid` | A process on the caller's machine | The process exits: a keeper (`fleetlayer lease keep`, started in the background by `acquire`) watches it, holds a connection to the authority while it lives, and releases the lease when it exits. If the keeper itself goes away, the lease ends 2 minutes later |
 
+If the authority restarts while a caller waits with `--wait`, that waiting lease leaves the queue (nobody waits for it
+any more), and `fleetlayer lease acquire --wait` asks again by itself for up to ten minutes. A keeper cut off from the
+authority longer than its grace takes a new lease for the same process when it can reach it again.
+
 Every lease also ends at its TTL. A session-tied lease suits work done in the agent's own turns. For a long build in
 the background, tie the lease to the build's process (`--pid`), or keep waiting for it in the foreground: an agent
 that ends its turn is idle, and loses the lease after the idle limit. If the authority can't read the fleet (its node
@@ -141,6 +145,8 @@ ask:
     for: 365d                  # an approved payload starts at once for every session for a year
 ```
 
+- A lease whose reason and payload together are too long to show the person whole (over 1000 characters) is refused,
+  never put to them cut short.
 - The person sees an approval request naming the holder, the reason and the payload
   (`fleetlayer-control approvals list`, or wherever `access.ask` events reach them). Approving it approves that
   payload of that kind for every session, because the request is the plugin's: the next session that asks for the
@@ -161,8 +167,13 @@ A kind with `events: <channel>` publishes on that channel, with the kind as the 
   `process_gone`, `cancelled`, `kind_removed`) and `by`, and `body.lastOfKey` is true when no held lease has the same
   payload any more: remove the filter. Only leases that started have an ended event.
 
-Each event has a `dedupeKey` (`lease:plugin:leases@<node>:<id>:started`), so a repeat is dropped. A service that
-missed events catches up with `fleetlayer lease list --json --all`: the held leases, and every lease that ended in the
+Events are kept in the plugin's state file (its outbox) with the change that made them, and sent in order until the
+control plane takes them, so a node that was unlinked, or a plugin that restarted, delays an event but never loses
+it; an outbox event waiting more than 5 minutes is a status problem. A lease's events go to the channel it got when
+it started, so a lease of a kind removed or changed since still ends with an event. `body.seq` is 1 for started and 2
+for ended, and each event has a `dedupeKey` (`lease:plugin:leases@<node>:<epoch>:<id>:started`, where the epoch is
+random per state file, so a state file started afresh never repeats a key), so a repeat is dropped. A service that
+was down catches up with `fleetlayer lease list --json --all`: the held leases, and every lease that ended in the
 last day. The plugin publishes as `plugin:leases@<node>`, which needs `publish` on the channel. Events go to whoever
 subscribes to the channel, and to its fallback session when nobody does.
 
@@ -202,7 +213,9 @@ ln -s "$PWD/scripts/fleetlayer-dev-slot" ~/.local/bin/   # or for every checkout
 ```
 
 It takes a lease of `build-server` (`$FLEETLAYER_DEV_SLOT_KIND` for another kind), tied to the calling script's
-process, so a killed `on-dev` releases its slot within seconds. `build-images` builds in the background on the build
+process, so a killed `on-dev` releases its slot within seconds. When a machine has a helper and no slot can be taken,
+the scripts don't build (unlimited builds are what the slots prevent): they stop with exit code 75.
+`FLEETLAYER_DEV_SLOT=none` builds without one, on purpose. `build-images` builds in the background on the build
 server, so it holds its slot until the build's status file appears (at most two hours). The same helper works for
 any project's scripts.
 
@@ -220,7 +233,9 @@ any project's scripts.
 
 ## Moving it
 
-All its state is the state directory (`state.json`, `log.jsonl`), and its settings are the one file.
+All its state is the state directory (`state.json`, its backup `state.json.bak`, `log.jsonl`), and its settings are
+the one file. The state file is written whole and flushed to disk; if it can't be read at start (a disk fault), the
+plugin starts from the backup, the state before the last change, and says so in its log.
 `fleetlayer move leases <machine>` carries both to that machine's node ([Moving a piece](../guides/moving.md)); add
 the `tools:` entry there too, and point `$FLEETLAYER_LEASES` at the new node if you set it. Leases survive the move:
 a process-tied lease's keeper reconnects within 2 minutes of the authority starting again.

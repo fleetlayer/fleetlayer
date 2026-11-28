@@ -65,6 +65,10 @@ pub const ROUND: Duration = Duration::from_secs(15);
 /// How long the fleet may be unreadable before it's a problem (session-tied leases then can't end with their
 /// sessions).
 const FLEET_PROBLEM_AFTER: SignedDuration = SignedDuration::from_mins(5);
+/// The longest justification the control plane takes, and so the most of a payload the person can be shown.
+const MAX_WHY: usize = 1000;
+/// How long an event may wait in the outbox before it's a problem.
+const OUTBOX_PROBLEM_AFTER: SignedDuration = SignedDuration::from_mins(5);
 
 pub struct Authority {
     pub paths: Paths,
@@ -81,18 +85,16 @@ pub struct Authority {
     fleet_error: Mutex<Option<(Timestamp, String)>>,
     pub last_round: Mutex<Option<Timestamp>>,
     reported: Mutex<Option<(Option<String>, Timestamp)>>,
+    /// One flush of the outbox at a time, so events go out in order.
+    flushing: Mutex<()>,
+    outbox_error: Mutex<Option<String>>,
     node: Arc<dyn Node>,
 }
 
 impl Authority {
     pub fn open(paths: Paths, me: String, node: Arc<dyn Node>) -> anyhow::Result<Arc<Authority>> {
         std::fs::create_dir_all(&paths.state_dir)?;
-        let state: State = match std::fs::read(paths.state_file()) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|e| anyhow::anyhow!("reading {}: {e}", paths.state_file().display()))?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => State::default(),
-            Err(e) => return Err(e.into()),
-        };
+        let state = read_state(&paths)?;
         let a = Arc::new(Authority {
             paths,
             me,
@@ -106,6 +108,8 @@ impl Authority {
             fleet_error: Mutex::new(None),
             last_round: Mutex::new(None),
             reported: Mutex::new(None),
+            flushing: Mutex::new(()),
+            outbox_error: Mutex::new(None),
             node,
         });
         Ok(a)
@@ -146,7 +150,12 @@ impl Authority {
         engine.state.updated_at = Some(Timestamp::now());
         match serde_json::to_vec_pretty(&engine.state) {
             Ok(bytes) => {
-                if let Err(e) = write_atomic(&self.paths.state_file(), &bytes) {
+                // The last good state stays beside it, for a state file a disk fault leaves unreadable.
+                let (file, backup) = (self.paths.state_file(), self.paths.state_file().with_extension("json.bak"));
+                if file.exists() {
+                    let _ = std::fs::copy(&file, &backup);
+                }
+                if let Err(e) = write_atomic(&file, &bytes) {
                     tracing::error!("saving {}: {e}", self.paths.state_file().display());
                 }
             }
@@ -162,14 +171,58 @@ impl Authority {
             return;
         }
         let settings = self.settings.lock().await.clone();
-        for c in changes {
-            self.log(&c);
+        let mut queued = false;
+        for c in &changes {
+            self.log(c);
+            let epoch = engine.state.epoch.clone();
+            if let Some(e) = self.event_for(&epoch, c) {
+                engine.state.outbox.push_back(e);
+                queued = true;
+            }
+        }
+        if queued {
+            // Saved before it's sent: the event survives a restart or an unlinked node.
+            self.save(engine).await;
             let me = self.clone();
-            let settings = settings.clone();
-            tokio::spawn(async move { me.announce(&settings, c).await });
+            tokio::spawn(async move { me.flush().await });
+        }
+        for c in changes {
+            let me = self.clone();
+            tokio::spawn(async move { me.tell_holder(&c).await });
         }
         let readings = self.readings_now(engine, &settings);
         self.node.readings(readings);
+    }
+
+    /// Send the outbox in order, removing each event the control plane takes. Stops at the first that fails (not
+    /// linked, refused by the policy) and tries again next round; an event the node calls malformed is dropped, as a
+    /// retry can't fix it. The dedupe keys make a repeat harmless.
+    pub async fn flush(&self) {
+        let _one = self.flushing.lock().await;
+        loop {
+            let Some(e) = self.engine.lock().await.state.outbox.front().cloned() else { return };
+            let result = self.node.publish(e.clone()).await;
+            let mut engine = self.engine.lock().await;
+            match result {
+                Ok(()) => {}
+                Err(err) if err.code == fleetlayer_protocol::rpc::code::INVALID_PARAMS => {
+                    tracing::error!(event = ?e.dedupe_key, "the node won't take this lease event; dropping it: {}", err.message);
+                }
+                Err(err) => {
+                    let mut last = self.outbox_error.lock().await;
+                    if last.as_deref() != Some(err.message.as_str()) {
+                        tracing::warn!(event = ?e.dedupe_key, "publishing a lease event (kept, tried again each round): {}", err.message);
+                    }
+                    *last = Some(err.message);
+                    return;
+                }
+            }
+            if engine.state.outbox.front().is_some_and(|f| f.dedupe_key == e.dedupe_key) {
+                engine.state.outbox.pop_front();
+            }
+            *self.outbox_error.lock().await = None;
+            self.save(&mut engine).await;
+        }
     }
 
     fn log(&self, c: &Change) {
@@ -191,54 +244,41 @@ impl Authority {
         }
     }
 
-    /// Events on the kind's channel, and a message to a session holder that isn't waiting on the call.
-    async fn announce(&self, settings: &Settings, c: Change) {
-        let (lease, kind_name) = match &c {
-            Change::Started { lease, .. } => (lease, lease.kind.clone()),
-            Change::Ended { ended, .. } => (&ended.lease, ended.lease.kind.clone()),
-        };
-        let kind = settings.kinds.get(&kind_name);
-        if let Some(channel) = kind.and_then(|k| k.events.clone()) {
-            let event = match &c {
-                Change::Started { lease, first_of_key, .. } => Event {
-                    channel,
-                    kind: "lease.started".into(),
-                    subject: Some(lease.kind.clone()),
-                    at: Timestamp::now(),
-                    dedupe_key: Some(format!("lease:{}:{}:started", self.me, lease.id)),
-                    summary: format!(
-                        "{} lease #{} started for {}: {}",
-                        lease.kind, lease.id, lease.holder, lease.reason
-                    ),
-                    body: json!({"lease": lease, "firstOfKey": first_of_key, "authority": self.me}),
-                },
-                Change::Ended { ended, was_held, last_of_key } => {
-                    // A lease that never started had nothing to undo.
-                    if !was_held {
-                        return self.tell_holder(&c).await;
-                    }
-                    Event {
-                        channel,
-                        kind: "lease.ended".into(),
-                        subject: Some(ended.lease.kind.clone()),
-                        at: Timestamp::now(),
-                        dedupe_key: Some(format!("lease:{}:{}:ended", self.me, ended.lease.id)),
-                        summary: format!(
-                            "{} lease #{} of {} ended: {}",
-                            ended.lease.kind,
-                            ended.lease.id,
-                            ended.lease.holder,
-                            ended.why.words()
-                        ),
-                        body: json!({"lease": ended, "lastOfKey": last_of_key, "authority": self.me}),
-                    }
+    /// The event a change publishes on its kind's channel, if the kind has one. A lease that never started has no
+    /// ended event: there was nothing to undo.
+    fn event_for(&self, epoch: &str, c: &Change) -> Option<Event> {
+        // The channel the lease got when it started: a kind removed or changed since still ends with an event.
+        Some(match c {
+            Change::Started { lease, first_of_key, .. } => Event {
+                channel: lease.events.clone()?,
+                kind: "lease.started".into(),
+                subject: Some(lease.kind.clone()),
+                at: Timestamp::now(),
+                dedupe_key: Some(format!("lease:{}:{epoch}:{}:started", self.me, lease.id)),
+                summary: format!("{} lease #{} started for {}: {}", lease.kind, lease.id, lease.holder, lease.reason),
+                body: json!({"lease": lease, "seq": 1, "firstOfKey": first_of_key, "authority": self.me}),
+            },
+            Change::Ended { ended, was_held, last_of_key } => {
+                if !was_held {
+                    return None;
                 }
-            };
-            if let Err(e) = self.node.publish(event).await {
-                tracing::warn!(lease = lease.id, "publishing the lease's event: {}", e.message);
+                Event {
+                    channel: ended.lease.events.clone()?,
+                    kind: "lease.ended".into(),
+                    subject: Some(ended.lease.kind.clone()),
+                    at: Timestamp::now(),
+                    dedupe_key: Some(format!("lease:{}:{epoch}:{}:ended", self.me, ended.lease.id)),
+                    summary: format!(
+                        "{} lease #{} of {} ended: {}",
+                        ended.lease.kind,
+                        ended.lease.id,
+                        ended.lease.holder,
+                        ended.why.words()
+                    ),
+                    body: json!({"lease": ended, "seq": 2, "lastOfKey": last_of_key, "authority": self.me}),
+                }
             }
-        }
-        self.tell_holder(&c).await;
+        })
     }
 
     async fn tell_holder(&self, c: &Change) {
@@ -343,6 +383,7 @@ impl Authority {
         for id in asking {
             self.ask(id).await;
         }
+        self.flush().await;
         *self.last_round.lock().await = Some(Timestamp::now());
         self.report().await;
     }
@@ -367,10 +408,7 @@ impl Authority {
             engine.get(id).filter(|l| l.phase == Phase::Asking).map(|l| {
                 let target = format!("service:leases/{}/{}", l.kind, l.payload_key.clone().unwrap_or_default());
                 let payload = l.payload.as_ref().map(Value::to_string).unwrap_or_default();
-                let mut why = format!("lease #{} for {}: {} — {} {payload}", l.id, l.holder, l.reason, l.kind);
-                if why.chars().count() > 1000 {
-                    why = why.chars().take(997).collect::<String>() + "...";
-                }
+                let why = format!("lease #{} for {}: {} — {} {payload}", l.id, l.holder, l.reason, l.kind);
                 // Filed once the policy said it waits for the person: later asks only look.
                 let filed = l.approval.as_deref().is_some_and(|a| a.contains("waiting for the person"));
                 (target, why, filed)
@@ -378,6 +416,18 @@ impl Authority {
         }) else {
             return;
         };
+        // The person must see the whole payload to approve it: one too long to show isn't put to them.
+        if why.chars().count() > MAX_WHY {
+            let mut engine = self.engine.lock().await;
+            let changes = engine.asked(
+                id,
+                None,
+                Some(format!("its reason and payload are too long to show the person whole (over {MAX_WHY} characters)")),
+                Timestamp::now(),
+            );
+            self.changed(&mut engine, changes).await;
+            return;
+        }
         let decision = self.node.access(&self.me, &target, &why, filed).await;
         let settings = self.settings.lock().await.clone();
         let mut engine = self.engine.lock().await;
@@ -390,15 +440,17 @@ impl Authority {
                 }
                 engine.approved(&settings, id, now)
             }
-            Ok(d) if d.reason.contains("waiting for the person") => {
-                let pending = d.reason.clone();
-                engine.asked(id, Some(pending), None, now)
-            }
-            // The request it waited on is gone (it expired unanswered): file a new one next round.
-            Ok(d) if d.reason.contains("not asked yet") => {
-                engine.asked(id, Some("asking the access policy again".into()), None, now)
-            }
-            Ok(d) => engine.asked(id, None, Some(d.reason), now),
+            Ok(d) => match decided(&d) {
+                Decided::Pending(request) => engine.asked(
+                    id,
+                    Some(format!("waiting for the person to approve request {request}")),
+                    None,
+                    now,
+                ),
+                // The request it waited on is gone (it expired unanswered): file a new one next round.
+                Decided::NotAsked => engine.asked(id, Some("asking the access policy again".into()), None, now),
+                Decided::Refused => engine.asked(id, None, Some(d.reason), now),
+            },
             Err(e) => {
                 // Can't ask now (not linked, access.check not granted): it keeps asking, and says why. The control
                 // plane's refusals come back as answers, above.
@@ -435,6 +487,17 @@ impl Authority {
                 if holders.is_empty() { "nobody holds a slot".to_string() } else { holders.join("; ") }
             ));
         }
+        if let Some(first) = engine.state.outbox.front()
+            && first.at + OUTBOX_PROBLEM_AFTER <= now
+        {
+            problems.push(format!(
+                "{} lease event(s) haven't reached the control plane since {} ({}), so the services acting on them \
+                 don't know",
+                engine.state.outbox.len(),
+                short(first.at),
+                self.outbox_error.lock().await.clone().unwrap_or_else(|| "not sent yet".into())
+            ));
+        }
         if let Some((since, e)) = self.fleet_error.lock().await.clone()
             && since + FLEET_PROBLEM_AFTER <= now
         {
@@ -449,6 +512,7 @@ impl Authority {
             "held": engine.state.leases.values().filter(|l| l.phase == Phase::Held).count(),
             "waiting": engine.state.leases.values().filter(|l| l.phase == Phase::Waiting).count(),
             "asking": engine.state.leases.values().filter(|l| l.phase == Phase::Asking).count(),
+            "outbox": engine.state.outbox.len(),
             "lastRound": now,
             "fleetReadAt": *self.fleet_ok_at.lock().await,
         });
@@ -749,6 +813,38 @@ impl Authority {
     }
 }
 
+/// What a refused access decision means for an asking lease.
+#[derive(Debug, PartialEq)]
+pub enum Decided {
+    /// Waiting for the person, on this request.
+    Pending(String),
+    /// Only looked, and no request is filed (it expired): file one.
+    NotAsked,
+    Refused,
+}
+
+/// Read a decision that isn't `allowed`: from its fields (control planes from v0.4.0), else from its wording.
+pub fn decided(d: &AccessDecision) -> Decided {
+    if let Some(r) = &d.pending {
+        return Decided::Pending(r.clone());
+    }
+    if d.refused.is_some() {
+        return Decided::Refused;
+    }
+    if d.not_asked {
+        return Decided::NotAsked;
+    }
+    // An older control plane says it only in words.
+    if let Some(rest) = d.reason.split("waiting for the person to approve request ").nth(1) {
+        let id: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-').collect();
+        return Decided::Pending(id);
+    }
+    if d.reason.contains("not asked yet") {
+        return Decided::NotAsked;
+    }
+    Decided::Refused
+}
+
 /// Resolves when the caller's connection closes (the watch's guard isn't held across awaits: it isn't `Send`).
 async fn hung_up(closed: &mut watch::Receiver<bool>) {
     let _ = closed.wait_for(|c| *c).await;
@@ -797,8 +893,43 @@ pub fn parse_fleet(v: &Value) -> FleetView {
     f
 }
 
+/// Replace a file so that a crash or a power cut leaves the old or the new one whole: write a temporary file, flush
+/// it to disk, rename it over, and flush the directory.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
     let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path)
+    let mut f = std::fs::File::create(&tmp)?;
+    f.write_all(bytes)?;
+    f.sync_all()?;
+    drop(f);
+    std::fs::rename(&tmp, path)?;
+    if let Some(dir) = path.parent()
+        && let Ok(d) = std::fs::File::open(dir)
+    {
+        let _ = d.sync_all();
+    }
+    Ok(())
+}
+
+/// The state file, or its backup (the state before the last save) when the file itself can't be read.
+fn read_state(paths: &Paths) -> anyhow::Result<State> {
+    let read = |p: &Path| -> anyhow::Result<Option<State>> {
+        match std::fs::read(p) {
+            Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes).map_err(|e| anyhow::anyhow!("{}: {e}", p.display()))?)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(anyhow::anyhow!("{}: {e}", p.display())),
+        }
+    };
+    let backup = paths.state_file().with_extension("json.bak");
+    match read(&paths.state_file()) {
+        Ok(Some(s)) => Ok(s),
+        Ok(None) => Ok(read(&backup).unwrap_or(None).unwrap_or_default()),
+        Err(e) => match read(&backup) {
+            Ok(Some(s)) => {
+                tracing::error!("{e}; starting from the backup {} instead", backup.display());
+                Ok(s)
+            }
+            _ => Err(anyhow::anyhow!("{e} (and no readable backup at {}): fix or remove it", backup.display())),
+        },
+    }
 }

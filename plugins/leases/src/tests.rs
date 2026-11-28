@@ -349,6 +349,7 @@ struct Fake {
     sent: StdMutex<Vec<(String, String)>>,
     statuses: StdMutex<Vec<Option<String>>>,
     readings: StdMutex<Vec<Reading>>,
+    unlinked: StdMutex<bool>,
 }
 
 #[async_trait]
@@ -362,6 +363,9 @@ impl runner::Node for Fake {
         Ok(if d.len() > 1 { d.remove(0) } else { d[0].clone() })
     }
     async fn publish(&self, event: Event) -> Result<(), RpcError> {
+        if *self.unlinked.lock().unwrap() {
+            return Err(RpcError::not_here("server isn't linked to a control plane now"));
+        }
         self.events.lock().unwrap().push(event);
         Ok(())
     }
@@ -378,7 +382,7 @@ impl runner::Node for Fake {
 }
 
 fn decision(allowed: bool, reason: &str) -> AccessDecision {
-    AccessDecision { allowed, rules: vec![], reason: reason.into() }
+    AccessDecision { allowed, reason: reason.into(), ..Default::default() }
 }
 
 async fn authority(dir: &std::path::Path, fake: Arc<Fake>) -> Arc<Authority> {
@@ -567,4 +571,136 @@ async fn a_lease_past_its_ttl_is_a_problem() {
     let last = fake.statuses.lock().unwrap().last().cloned().flatten().unwrap();
     assert!(last.contains("ran into its TTL"), "{last}");
     eventually(|| fake.sent.lock().unwrap().iter().any(|(_, t)| t.contains("expired at its TTL"))).await;
+}
+
+#[tokio::test]
+async fn an_end_event_the_node_couldnt_send_is_kept_and_sent_later() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = Arc::new(Fake::default());
+    *fake.fleet.lock().unwrap() = json!({"nodes": [], "sessions": []});
+    *fake.decisions.lock().unwrap() = vec![decision(true, "allowed")];
+    let a = authority(dir.path(), fake.clone()).await;
+    let sock = a.paths.socket();
+    let args = json!({"kind": "gmail-filter", "reason": "watching CI myself while I fix it", "tie": "process",
+        "pid": 4242, "payload": {"account": "work", "query": "from:ci@example.com"}});
+    let r = crate::serve::ask(&sock, "acquire", Some("-@laptop"), args, |_| {}).await.unwrap();
+    let id = r["lease"]["id"].as_u64().unwrap();
+    eventually(|| fake.events.lock().unwrap().len() == 1).await;
+    // The node loses its link; the lease ends meanwhile.
+    *fake.unlinked.lock().unwrap() = true;
+    crate::serve::ask(&sock, "release", None, json!({"id": id}), |_| {}).await.unwrap();
+    eventually(|| a.engine.try_lock().is_ok_and(|e| e.state.outbox.len() == 1)).await;
+    a.round().await;
+    assert_eq!(fake.events.lock().unwrap().len(), 1, "not sent while unlinked");
+    // It survives a restart of the authority (it's in the state file).
+    let saved: State = serde_json::from_slice(&std::fs::read(a.paths.state_file()).unwrap()).unwrap();
+    assert_eq!(saved.outbox.len(), 1);
+    assert_eq!(saved.outbox[0].kind, "lease.ended");
+    // Linked again: the next round sends it, once.
+    *fake.unlinked.lock().unwrap() = false;
+    a.round().await;
+    a.round().await;
+    let events = fake.events.lock().unwrap().clone();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[1].kind, "lease.ended");
+    assert_eq!(events[1].body["lastOfKey"], true);
+    assert!(a.engine.lock().await.state.outbox.is_empty());
+}
+
+// ---------------------------------------------------------------- the review's findings
+
+#[test]
+fn a_waiter_whose_caller_was_cut_off_by_a_restart_leaves_the_queue() {
+    let s = s();
+    let mut e = Engine::new(State::default(), t0());
+    e.acquire(&s, build("a@laptop", false), t0()).unwrap();
+    e.acquire(&s, build("b@laptop", false), t0()).unwrap();
+    let (c, _) = e.acquire(&s, build("c@laptop", true), t0()).unwrap();
+    e.attach(c);
+    let saved = serde_json::to_string(&e.state).unwrap();
+    let e = Engine::new(serde_json::from_str(&saved).unwrap(), t0() + mins(1));
+    assert!(e.get(c).is_none(), "nobody waits for it any more");
+    assert_eq!(e.ended(c).unwrap().why, EndReason::Cancelled);
+    assert_eq!(e.state.leases.len(), 2, "the held ones stay");
+}
+
+#[test]
+fn payload_patterns_match_whole_values_and_hidden_characters_are_refused() {
+    let k = &s().kinds["gmail-filter"];
+    // 'from:\S+' must be the whole query, not a fragment of it.
+    let e = k.check_payload(Some(&json!({"account": "work", "query": "label:x from:a@b.com"}))).unwrap_err();
+    assert!(e.contains("doesn't match"), "{e}");
+    let e = k.check_payload(Some(&json!({"account": "work", "query": "from:a@b.com\u{200b}"}))).unwrap_err();
+    assert!(e.contains("invisible") && e.contains("U+200B"), "{e}");
+    let long = format!("from:{}", "a".repeat(700));
+    assert!(k.check_payload(Some(&json!({"account": "work", "query": long}))).unwrap_err().contains("longer than"));
+}
+
+#[test]
+fn approval_answers_are_read_from_their_fields_and_from_older_wording() {
+    use crate::runner::{Decided, decided};
+    let d = |pending: Option<&str>, refused: Option<&str>, not_asked: bool, reason: &str| AccessDecision {
+        allowed: false,
+        rules: vec![],
+        reason: reason.into(),
+        pending: pending.map(Into::into),
+        refused: refused.map(Into::into),
+        not_asked,
+    };
+    assert_eq!(decided(&d(Some("ap_1"), None, false, "whatever words")), Decided::Pending("ap_1".into()));
+    assert_eq!(decided(&d(None, Some("ap_1"), false, "waiting for the person to approve request ap_1")), Decided::Refused);
+    assert_eq!(decided(&d(None, None, true, "")), Decided::NotAsked);
+    // An older control plane: words only.
+    assert_eq!(
+        decided(&d(None, None, false, "x needs its person's approval to write y: waiting for the person to approve request ap_9. Try again")),
+        Decided::Pending("ap_9".into())
+    );
+    assert_eq!(decided(&d(None, None, false, "not asked yet: -@x's own node files the request")), Decided::NotAsked);
+    assert_eq!(decided(&d(None, None, false, "refused by the access policy")), Decided::Refused);
+}
+
+#[tokio::test]
+async fn a_lease_of_a_kind_removed_since_it_started_still_ends_with_an_event() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = Arc::new(Fake::default());
+    *fake.fleet.lock().unwrap() = json!({"nodes": [], "sessions": []});
+    *fake.decisions.lock().unwrap() = vec![decision(true, "allowed")];
+    let a = authority(dir.path(), fake.clone()).await;
+    let sock = a.paths.socket();
+    let args = json!({"kind": "gmail-filter", "reason": "watching CI myself while I fix it", "tie": "process",
+        "pid": 4242, "payload": {"account": "work", "query": "from:ci@example.com"}});
+    let r = crate::serve::ask(&sock, "acquire", Some("-@laptop"), args, |_| {}).await.unwrap();
+    let id = r["lease"]["id"].as_u64().unwrap();
+    eventually(|| fake.events.lock().unwrap().len() == 1).await;
+    let epoch = a.engine.lock().await.state.epoch.clone();
+    assert_eq!(epoch.len(), 8);
+    assert_eq!(fake.events.lock().unwrap()[0].dedupe_key.as_deref(), Some(format!("lease:plugin:leases@server:{epoch}:{id}:started").as_str()));
+    // The kind goes from the settings; its held lease ends later, and the filter's owner still hears it.
+    std::fs::write(dir.path().join("leases.yaml"), "kinds:\n  build-server:\n    slots: 1\n").unwrap();
+    a.round().await;
+    crate::serve::ask(&sock, "release", None, json!({"id": id}), |_| {}).await.unwrap();
+    eventually(|| fake.events.lock().unwrap().len() == 2).await;
+    let ev = fake.events.lock().unwrap()[1].clone();
+    assert_eq!((ev.kind.as_str(), ev.channel.as_str(), ev.body["seq"].as_u64()), ("lease.ended", "leases", Some(2)));
+}
+
+#[tokio::test]
+async fn an_unreadable_state_file_starts_from_its_backup() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = Arc::new(Fake::default());
+    *fake.fleet.lock().unwrap() = json!({"nodes": [], "sessions": []});
+    let a = authority(dir.path(), fake.clone()).await;
+    let sock = a.paths.socket();
+    let args = json!({"kind": "build-server", "reason": "cargo test for leases", "tie": "process", "pid": 4242});
+    crate::serve::ask(&sock, "acquire", Some("-@laptop"), args.clone(), |_| {}).await.unwrap();
+    crate::serve::ask(&sock, "list", None, json!({}), |_| {}).await.unwrap();
+    let paths = a.paths.clone();
+    // A second change, so the backup holds the first lease; then the file is cut short, as a power cut can leave it.
+    crate::serve::ask(&sock, "acquire", Some("-@server"), args, |_| {}).await.unwrap();
+    std::fs::write(paths.state_file(), b"{\"next").unwrap();
+    let again = Authority::open(paths.clone(), "plugin:leases@server".into(), fake.clone()).unwrap();
+    assert!(!again.engine.lock().await.state.leases.is_empty(), "started from the backup");
+    std::fs::write(paths.state_file().with_extension("json.bak"), b"nope").unwrap();
+    let e = Authority::open(paths, "plugin:leases@server".into(), fake).err().unwrap().to_string();
+    assert!(e.contains("no readable backup"), "{e}");
 }

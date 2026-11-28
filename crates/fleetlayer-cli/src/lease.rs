@@ -109,7 +109,20 @@ pub async fn run(socket: &Path, command: LeaseCommand, as_json: bool) -> anyhow:
             let pid = pid.unwrap_or_else(std::os::unix::process::parent_id);
             let args = json!({"kind": kind, "reason": reason, "payload": payload, "wait": wait, "ttl": ttl,
                 "idle": idle, "tie": tie, "pid": pid});
-            let v = call(socket, &target, "acquire", args, true).await?;
+            // A wait cut off by the authority, its node or the control plane restarting asks again (its place in line
+            // is gone with the connection) for up to ten minutes, rather than leaving the script to go without.
+            let deadline = std::time::Instant::now() + Duration::from_secs(600);
+            let mut backoff = Duration::from_secs(2);
+            let v = loop {
+                match call(socket, &target, "acquire", args.clone(), true).await {
+                    Err(e) if wait && transient(&e) && std::time::Instant::now() < deadline => {
+                        eprintln!("{e}; asking again in {}s", backoff.as_secs());
+                        tokio::time::sleep(backoff).await;
+                        backoff = (backoff * 2).min(Duration::from_secs(30));
+                    }
+                    other => break other?,
+                }
+            };
             let lease = &v["lease"];
             let id = lease["id"].as_u64().ok_or_else(|| anyhow::anyhow!("the authority's answer has no lease: {v}"))?;
             if lease["tie"]["kind"] == "process" {
@@ -356,6 +369,14 @@ fn keep_in_background(id: u64, pid: u32, (tool, node): &(String, String)) -> any
     Ok(())
 }
 
+/// The authority couldn't be reached or went away mid-call: worth asking again.
+fn transient(e: &anyhow::Error) -> bool {
+    let m = e.to_string();
+    ["went away", "can't reach", "didn't answer", "isn't linked", "closed the tools socket", "stopped waiting"]
+        .iter()
+        .any(|s| m.contains(s))
+}
+
 pub fn alive(pid: u32) -> bool {
     let Ok(pid) = i32::try_from(pid) else { return false };
     match nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None) {
@@ -366,16 +387,17 @@ pub fn alive(pid: u32) -> bool {
 
 /// Keep a process-tied lease while `pid` lives: hold it over one connection, reconnecting when that drops; release
 /// it when the process exits; stop when the lease ends.
-async fn keep(socket: &Path, target: &(String, String), id: u64, pid: u32) -> anyhow::Result<()> {
+async fn keep(socket: &Path, target: &(String, String), mut id: u64, pid: u32) -> anyhow::Result<()> {
     let mut backoff = Duration::from_secs(2);
     loop {
         if !alive(pid) {
             let _ = call(socket, target, "release", json!({"id": id}), false).await;
             return Ok(());
         }
-        let held = async {
+        let holding = id;
+        let held = async move {
             let mut conn = open(socket, target).await?;
-            conn.call("hold", json!({"id": id}), false).await
+            conn.call("hold", json!({"id": holding}), false).await
         };
         tokio::pin!(held);
         let mut tick = tokio::time::interval(Duration::from_secs(2));
@@ -392,6 +414,22 @@ async fn keep(socket: &Path, target: &(String, String), id: u64, pid: u32) -> an
             Some(Ok(_)) => return Ok(()),
             Some(Err(e)) => {
                 let m = e.to_string();
+                // Cut off longer than the authority's grace while the process still works: take a lease again (in
+                // line, if someone took the slot meanwhile) and keep that one.
+                if m.contains("the process holding it went away") && alive(pid) {
+                    match reclaim(socket, target, id, pid).await {
+                        Ok(new) => {
+                            id = new;
+                            backoff = Duration::from_secs(2);
+                            continue;
+                        }
+                        Err(_) => {
+                            tokio::time::sleep(backoff).await;
+                            backoff = (backoff * 2).min(Duration::from_secs(30));
+                            continue;
+                        }
+                    }
+                }
                 if m.contains("has ended") || m.contains("no lease #") || m.contains("only its own node") {
                     return Ok(());
                 }
@@ -401,6 +439,16 @@ async fn keep(socket: &Path, target: &(String, String), id: u64, pid: u32) -> an
             }
         }
     }
+}
+
+/// A new lease like the one that ended (same kind, payload and reason), tied to the same process; its ID once held.
+async fn reclaim(socket: &Path, target: &(String, String), old: u64, pid: u32) -> anyhow::Result<u64> {
+    let v = call(socket, target, "show", json!({"id": old}), false).await?;
+    let e = &v["ended"];
+    let args = json!({"kind": e["kind"], "reason": e["reason"], "payload": e["payload"], "wait": true,
+        "tie": "process", "pid": pid});
+    let v = call(socket, target, "acquire", args, false).await?;
+    v["lease"]["id"].as_u64().ok_or_else(|| anyhow::anyhow!("no lease in the answer"))
 }
 
 /// `fleetlayer lease list` for people and agents.
