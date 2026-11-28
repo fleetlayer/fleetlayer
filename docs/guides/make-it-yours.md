@@ -35,9 +35,12 @@ Fleetlayer is Rust. The repository pins its toolchain in `rust-toolchain.toml`, 
 
 ```sh
 cargo build --release
+cargo build --release --manifest-path plugins/matrix/Cargo.toml
 ```
 
 The binaries land in `target/release/` (`fleetlayer`, `fleetlayer-node`, `fleetlayer-control`, and one per plugin).
+The Matrix plugin is a workspace of its own, with its own lockfile, so it needs the second command, and its binary
+lands in `plugins/matrix/target/release/`.
 
 A Rust build keeps every core busy for minutes and its `target/` folder grows to tens of gigabytes. On a Mac or a
 desktop that's fine. On a small VM or an always-on box that other agents share, build on a bigger Linux machine of the
@@ -51,13 +54,18 @@ Before installing, run the checks CI runs:
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+cargo fmt --all --check --manifest-path plugins/matrix/Cargo.toml
+cargo clippy --all-targets --manifest-path plugins/matrix/Cargo.toml -- -D warnings
+cargo test --manifest-path plugins/matrix/Cargo.toml
 ```
 
 ## 4. Install your build, and turn off self-update
 
-> **Set the node's update mode first.** A node installed by Fleetlayer's installer updates itself from official
-> releases, and an update points the links in `~/.local/bin` at the release's binaries, which replaces your build.
-> In `~/.config/fleetlayer/node.yaml` on every machine that runs your build:
+> **Set the node's update mode first.** A node running the installer's binaries (under `~/.local/lib/fleetlayer/`)
+> updates itself from official releases, and an update points the links in `~/.local/bin` at the release's binaries,
+> which replaces your build. A node started from your own build only reports new releases, but until the service and
+> the links point at your build, the installer's node is the one running. In `~/.config/fleetlayer/node.yaml` on
+> every machine that runs your build:
 >
 > ```yaml
 > update:
@@ -68,7 +76,8 @@ Then put your binaries somewhere of their own and link them onto your PATH:
 
 ```sh
 mkdir -p ~/.local/opt/fleetlayer-custom
-cp target/release/fleetlayer* ~/.local/opt/fleetlayer-custom/
+find target/release plugins/matrix/target/release -maxdepth 1 -name 'fleetlayer*' -type f -perm -u+x \
+  -exec cp {} ~/.local/opt/fleetlayer-custom/ \;     # executables only, not cargo's .d files
 for f in ~/.local/opt/fleetlayer-custom/fleetlayer*; do ln -sf "$f" ~/.local/bin/; done
 fleetlayer-node install      # writes the service again and restarts it on your build
 fleetlayer status            # shows the version and that the node is linked
@@ -86,7 +95,7 @@ When a release comes out, ask your agent to rebase your branch on its tag, rebui
 
 ```sh
 git fetch https://github.com/fleetlayer/fleetlayer.git --tags
-git rebase v0.4.1    # the new release's tag
+git rebase <tag>    # the new release's tag, such as v0.5.0
 ```
 
 The smaller your change, the easier this stays. A change that lands upstream needs no rebasing at all, which is the

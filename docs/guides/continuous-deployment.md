@@ -77,11 +77,12 @@ CI needs to push to one repo, so give it exactly that: an SSH deploy key with wr
 2. **You** add the public key to `infra` as a deploy key with write access (the repo's Settings › Deploy keys).
 3. **You** add the private key to `my-app` as an Actions secret, `INFRA_DEPLOY_KEY`.
 
-The same key can sign the deploy commits, so they show as verified if `infra` requires signed commits:
+The same key can sign the deploy commits, so they show as verified if `infra` requires signed commits. Here the job
+has written the `INFRA_DEPLOY_KEY` secret to `~/.ssh/infra-deploy`:
 
 ```sh
 git -C infra config gpg.format ssh
-git -C infra config user.signingkey "$HOME/.ssh/infra"
+git -C infra config user.signingkey "$HOME/.ssh/infra-deploy"
 git -C infra config commit.gpgsign true
 ```
 
@@ -277,7 +278,8 @@ with its history, and it's also the place to check migrations before anything sh
 - **Some merges never get a deploy run.** Their waiting runs were replaced by newer ones (step 4). The newest commit
   still deploys and contains the others. Look at the run that went through, not the cancelled ones.
 - **The job says the values file doesn't have the lines it rewrites.** Someone reformatted the values file, or renamed
-  the comment. Put the comment line back directly above `tag:`, exactly as the job's `sed` expects.
+  the comment. Restore the `# my-app commit: <sha>` line exactly as the job's `sed` expects: on a line of its own,
+  with the full 40-character commit.
 - **A merged pull request's migration was refused.** Split it: add in this deploy, remove in a later one with
   `[allow-destructive-migration]` in its commit message. Until then, nothing deploys, because every later run sees the
   same migration in its range. Revert the migration on main if the fix will take a while.

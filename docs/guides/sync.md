@@ -100,8 +100,8 @@ bundled with every release) does that:
 - **Each version is sealed** to each target node's own key before it leaves the source, so the control plane relays
   it without being able to read it, and doesn't store it.
 - **Each target makes its folder match**: every file written, and files the plugin wrote for an earlier version
-  removed. A file it didn't write is never touched. It keeps its record of what it wrote in `.fleetlayer-files.json`
-  in that folder.
+  removed. A file it didn't write is never touched. It keeps its record of what it wrote in
+  `.fleetlayer-file-sync.json` in that folder.
 - **Text files only**, at most 1 MB each and 20 MB a set. Files and folders whose names start with `.` are left out.
 
 Pick the source for each set: the machine where you and your agents edit skills. Make it an always-on machine if you
@@ -184,9 +184,10 @@ fleetlayer-control approvals list
 fleetlayer-control approvals approve <id>
 ```
 
-The source sends within about 15 seconds of your approval, and the approval renews each time it's used, so it lapses only after 30 days without a
-sync. A target that hasn't got the latest version is retried with backoff (a minute, doubling to an hour). A refusal
-by your access rules, or a request you denied, waits for the next version instead.
+The source sends within seconds of your approval: the control plane tells it the target is now wanted. The approval
+renews each time it's used, so it lapses only after 30 days without a sync. A target that hasn't got the latest version
+is retried with backoff (a minute, doubling to an hour). A refusal by your access rules, or a request you denied,
+waits for the next version instead.
 
 ## 3. Per-machine instructions
 

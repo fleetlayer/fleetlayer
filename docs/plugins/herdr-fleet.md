@@ -94,7 +94,7 @@ HERDR_BIN=~/.local/state/fleetlayer/herdr-fleet/bin/herdr
 HERDR_CLAUDE_CONFIG_DIRS=~/.local/state/fleetlayer/herdr-fleet/claude   # the phone relay's transcript folders
 ```
 
-For herdr's phone relay, that's two lines in its service's environment ([the phone guide](../guides/phone.md)).
+For herdr's phone relay, that's three lines in its service's environment ([the phone guide](../guides/phone.md)).
 
 ## IDs
 

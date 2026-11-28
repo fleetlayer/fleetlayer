@@ -11,7 +11,7 @@ A Rust workspace's `target/` folder grows to tens of gigabytes, and a full build
 minutes. On a VM with four cores and 8 GB that means a full disk, swapping, and every other agent on the machine
 slowing to a crawl. Keep the agents where they are and send the builds somewhere bigger.
 
-Fleetlayer's own [`scripts/on-dev`](../../scripts/on-dev) is a worked example, about 60 lines of shell. Each command
+Fleetlayer's own [`scripts/on-dev`](../../scripts/on-dev) is a worked example, about 100 lines of shell. Each command
 copies the checkout to the build server over SSH, then runs cargo there:
 
 ```sh
@@ -19,23 +19,27 @@ scripts/on-dev check            # cargo check on the build server
 scripts/on-dev fmt              # cargo fmt --check
 scripts/on-dev clippy           # clippy --all-targets -D warnings
 scripts/on-dev test -p fleetlayer-node    # anything after the command goes to cargo
+scripts/on-dev build            # cargo build
 scripts/on-dev lock             # cargo update there, Cargo.lock copied back
 scripts/on-dev format           # cargo fmt there, the formatted .rs files copied back
+scripts/on-dev sync             # only copy the checkout there
 scripts/on-dev clean            # delete this checkout's copy and its target/ there
 ```
 
 What makes it work:
 
 1. **The host is set per machine, outside git.** It reads `$FLEETLAYER_DEV_HOST`, or a gitignored `.dev-host` file at
-   the checkout's root, and stops with a clear message if neither is set. The repo never names a hostname.
+   the checkout's root, and stops with a clear message if neither is set. The repo never names a hostname. The file
+   can list several hosts, one per line, each with its own build-slot name and memory limits. Each checkout always
+   uses the same host for each kind of command (picked from its name), so its `target/` stays warm there.
 2. **One copy per checkout.** The remote folder is named after the checkout's directory, so each git worktree gets
    its own copy and its own `target/`. Two agents in two worktrees never fight over one build folder.
 3. **Only the source is copied.** `rsync --filter=':- .gitignore' --exclude=.git --delete-after` skips everything
    gitignored (the local `target/` included) and removes files you deleted locally.
-4. **It leaves room for others.** Cargo runs under `nice -n 10`, pinned to 8 cores, inside a memory scope (12 GB with
-   `-j 8` for build and test, 6 GB with `-j 4` for fmt, check and clippy), after taking a build slot, so many agents
-   share the build server without overloading it ([Many agents, a few build machines](shared-build-machines.md)).
-   Pick numbers that suit your server.
+4. **It leaves room for others.** Cargo runs under `nice -n 10`, pinned to 8 cores, inside a memory scope (by default
+   12 GB with `-j 8` for build and test, 6 GB with `-j 4` for fmt, check and clippy, both settable per host), after
+   taking a build slot, so many agents share the build server without overloading it ([Many agents, a few build
+   machines](shared-build-machines.md)). Pick numbers that suit your server.
 5. **The exit code comes back.** The script returns cargo's status (it reads `PIPESTATUS` past the output filter), so
    an agent can tell a failed test from a passing one.
 

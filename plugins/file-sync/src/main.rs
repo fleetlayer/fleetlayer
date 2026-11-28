@@ -15,13 +15,13 @@
 //!
 //! Bundles are named `file-sync/<set>`. A version is published when the directory's contents change (checked every
 //! `every_minutes`). Applying makes the target directory match: every file written, and files this plugin wrote for an
-//! earlier version but missing now removed. A file it didn't write (listed in `.fleetlayer-files.json`, its record
-//! of what it wrote) is never touched. Files are text, at most 1 MB each and 20 MB a set, and keep their executable bit.
-//! A symbolic link pointing inside the directory is made as the same link on the target (a node too old for links
+//! earlier version but missing now removed. A file it didn't write (listed in `.fleetlayer-file-sync.json`, its record
+//! of what it wrote) is never touched. Files are text, at most 1 MB each and 20 MB a set, and keep their executable
+//! bit. A symbolic link pointing inside the directory is made as the same link on the target (a node too old for links
 //! writes a copy of the file instead); one pointing outside, to nothing or to a hidden file is never followed. Anything
-//! left out (not text, such a link, a socket) is a warning in the log and listed in the `file-sync.set` reading
-//! (`{set, files, skipped, version, publishedAt}`, every check). A target that doesn't get a version is retried and
-//! reported by the node (`sync.status` readings), so set it up with the targets upgraded first.
+//! left out (not text, such a link, a socket) is a warning in the log and listed in the `file-sync.set` reading (`{set,
+//! files, skipped, version, publishedAt}`, every check). A target that doesn't get a version is retried and reported by
+//! the node (`sync.status` readings), so set it up with the targets upgraded first.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

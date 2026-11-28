@@ -15,10 +15,15 @@ the same from any machine in the fleet:
   on; you use it to give an agent its next job without opening its tab.
 - **`fleetlayer session start`** opens a new agent session on any machine, with its first prompt, and **`fleetlayer
   session resume`** brings a stored one back. An agent hands a side job to a fresh session this way.
+- **`fleetlayer session answer`** answers the prompt a session is blocked on without attaching to it. **`fleetlayer
+  session close`** closes a session's tab, **`fleetlayer session command`** types an allowed slash command
+  (`/compact`, `/clear`) into an idle session, and **`fleetlayer session handoff`** moves a session's work to a new
+  session, usually on another machine, with a note on where things stand.
 - **`fleetlayer summaries`** searches what every session has done, hour by hour. Ask your agent "what happened with the
   login bug yesterday" and this is what it runs.
 - **`fleetlayer subscribe`** routes webhooks (CI results, alerts) to the session that owns the work. The agent working
-  on a branch subscribes itself.
+  on a branch subscribes itself. **`fleetlayer events`** lists the events that couldn't reach a session (it was
+  offline, or waiting on a person) since it last asked.
 
 Steps only you can do, such as approving a request, are marked as such.
 
@@ -80,6 +85,15 @@ The session's terminal fills yours, and what you type goes to it, as if you were
 agent is `blocked` on a prompt only you can answer, or to see what it's doing before you redirect it. **Ctrl-]**
 leaves. The session keeps running, and its own tab is untouched: you're one more viewer, alongside the session manager
 and anyone else attached.
+
+To answer a blocked prompt without attaching, find its ID in `meta.prompt` of `fleetlayer sessions --json` (the
+questions and their numbered options are there too) and pick an option:
+
+```sh
+fleetlayer session answer planning@laptop --prompt <id> --pick 2
+```
+
+The node refuses the answer if that prompt isn't showing any more.
 
 To look without any risk of typing into it:
 
@@ -144,7 +158,7 @@ belong to your session manager and stay the same across restarts. Name tabs for 
 and address them as `<tab>@<node>`.
 
 **A wrong name gets suggestions.** Send to `triage` when the tab is called `email triage`, and the error suggests up
-to three running tabs whose names contain what you typed:
+to three running tabs whose names contain what you typed or are a typo away from it:
 
 ```text
 fleetlayer: no session named 'triage' here or on any other node; did you mean 'email triage@server'? (…)
@@ -231,8 +245,7 @@ One session's timeline, by its session ID (the last column of `fleetlayer sessio
 fleetlayer summaries --session 3f2a9c1e-… --limit 50
 ```
 
-It lists the session's records in the order the work happened, starting with the earliest, so raise `--limit` for a
-long-running session.
+It lists the session's newest records (10 by default), oldest first, so raise `--limit` to see further back.
 
 Results include only sessions this node may `read`, plus its own.
 
@@ -259,8 +272,18 @@ fleetlayer-control endpoint add --label github --channel ci     # prints /hooks/
 ```
 
 Expose only the hooks listener (`--hooks-listen`, port 7601 by default) to the internet, through a Cloudflare Tunnel or
-your reverse proxy, and add the URL as a webhook in GitHub. Then the session working on a branch subscribes
-itself (tell agents to do this when they start on a branch, in their `AGENTS.md`):
+your reverse proxy, and add the URL as a webhook in GitHub. Then each agent subscribes to the CI results of what it
+pushes (tell agents to do this in their `AGENTS.md`):
+
+```sh
+git push && fleetlayer subscribe ci --commit
+```
+
+With `--commit`, results are matched by the commit (`HEAD` by default), so a push to a branch others push to as well,
+such as `main`, reaches only the session that pushed it. The subscription ends by itself once every run of that commit
+has completed. [CI results](ci-results.md) walks through the whole path.
+
+A session that has a branch to itself can subscribe to the branch instead, once:
 
 ```sh
 fleetlayer subscribe ci --subject your-org/your-repo@your-branch

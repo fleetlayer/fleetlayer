@@ -156,9 +156,17 @@ failure email, judges which session owns that repository or branch (from the ses
 and proposes a card with a forward action; it can also resume an ended session, or start a new one. By default you
 approve each forward. A rule you make, together with the project's policy allowing forwards, lets routine ones go out
 automatically, and those still show in the deck's timeline. Nothing in it is CI-specific: you set up a deck, its
-runner and a triage agent ([getting started](https://quietdeck.ai/getting-started/)). While an agent is fixing CI, a
-Quietdeck lease can keep the failure emails out of your inbox until it's done
-([leases](https://quietdeck.ai/leases/)).
+runner and a triage agent ([getting started](https://quietdeck.ai/getting-started/)).
+
+While an agent is fixing CI, a lease can keep the failure emails out of your inbox until it's done. With a
+`gmail-filter` kind set up in Fleetlayer's [leases plugin](../plugins/leases.md), the agent asks for a filter, you
+approve that filter once, and the service that owns your filters creates it when the lease starts and removes it when
+the lease ends:
+
+```sh
+fleetlayer lease acquire gmail-filter --reason "Fixing the build and watching CI myself" \
+  --payload '{"account":"work","query":"from:notifications@github.com"}'
+```
 
 A triage agent reads strangers' email, so give it its own Unix user and limit whom it may message:
 [Run an agent that reads strangers' text](untrusted-input.md).

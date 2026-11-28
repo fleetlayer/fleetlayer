@@ -39,6 +39,13 @@ machine](agent-instructions.md)), this block goes in the shared one: it's true e
 | `fleetlayer-claude-accounts` | `plugins/claude-auth-manager/skill/` | Setup-token sessions: never `/login`, what's missing and what replaces it, reading usage |
 | `pages` | `plugins/pages/skill/` | Pages for you to look at: reports, screenshots, mock-ups |
 | `apps` | `plugins/pages/apps-skill/` | Small interactive apps behind your sign-in |
+| `fleetlayer-signin` | `plugins/signin/skill/` | Running the sign-in service: putting a service behind it, inviting people and taking their access away, adding Google Workspace or another OpenID Connect provider, rotating keys |
+| `fleetlayer-leases` | `plugins/leases/skill/` | `fleetlayer lease`: a slot on a shared build server before a heavy build or test run, or a claim you approve once, such as a mail filter while an agent watches CI |
+| `fleetlayer-scheduler` | `plugins/scheduler/skill/` | Messages to a session on a schedule (every few hours, a cron expression) or once at a set time, and checking the entries |
+| `fleetlayer-matrix` | `plugins/matrix/skill/` | Hearing a Matrix room's messages (an alerts room, a team room) as events, and answering in the room as its bot |
+| `fleetlayer-cookies` | `plugins/cookies/skill/` | Using a site as you from the command line on a machine without your browser, with cookies copied from your signed-in browser |
+| `fleetlayer-1password` | `plugins/1password/skill/` | 1Password items granted to the machine's role (`op://` references) without a 1Password token, and setting the plugin up |
+| `fleetlayer-egress` | `plugins/egress/skill/` | Network access rules: what a refused connection looks like, asking for a host with a reason, and setting the rules up per role |
 
 Install all of them on every machine, not only on the machines that run each plugin: the browser and the folders are
 used from *other* machines than the one that shares them. A skill for something your fleet doesn't have costs nothing;
