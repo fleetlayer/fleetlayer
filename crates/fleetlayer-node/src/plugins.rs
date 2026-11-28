@@ -270,7 +270,9 @@ async fn run_once(node: &Arc<Node>, plugin: &Arc<PluginHandle>) -> Result<String
                     machine: node.machine.clone(),
                     user: node.user.clone(),
                     home: node.home.display().to_string(),
-                    config: cfg.config.clone(),
+                    // A plugin with no `config:` section gets `{}`, so every setting takes its default (null would
+                    // fail a plugin that reads its section as a struct).
+                    config: if cfg.config.is_null() { json!({}) } else { cfg.config.clone() },
                 },
             )),
             ..Default::default()

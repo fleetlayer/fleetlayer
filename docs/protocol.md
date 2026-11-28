@@ -78,7 +78,7 @@ The node's `initialize` request:
 - `protocol` is the Fleetlayer extension's version (an integer, bumped only for breaking changes, like ACP's).
 - `node` is the name the control plane knows this node by (one per machine, or per Unix user on a shared machine);
   `machine` is the host's name, the same for every node on it.
-- `config` is the plugin's own section of the node's config file, passed through untouched.
+- `config` is the plugin's own section of the node's config file, passed through untouched (`{}` when it has none).
 
 The plugin's answer names the roles it takes:
 

@@ -234,6 +234,18 @@ point them at the dashboard, if their fleet runs one: `fleetlayer services` list
 It shows nothing you can't read with `fleetlayer fleet`, `fleetlayer readings` and `fleetlayer me`, so use those
 yourself.
 
+## Heavy work: take a slot first
+
+Before a big build, a full test run or anything else that loads a shared machine, take a lease of its kind and
+release it after, when the fleet has a leases authority (`fleetlayer lease list` shows its kinds):
+
+```sh
+id=$(fleetlayer lease acquire build-server --reason "full test run" --wait)
+fleetlayer lease release "$id"
+```
+
+The `fleetlayer-leases` skill says more, including claims the person approves once.
+
 ## Secrets
 
 Secrets (tokens, keys, cookies) may be delivered to your Unix user's role by the person's secrets sources. Use them by

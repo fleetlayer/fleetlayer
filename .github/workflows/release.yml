@@ -29,7 +29,7 @@ jobs:
       BINARIES: >-
         fleetlayer fleetlayer-node fleetlayer-control fleetlayer-herdr fleetlayer-rex fleetlayer-claude-code fleetlayer-summaries
         fleetlayer-file-sync fleetlayer-claude-auth-manager fleetlayer-claude-accounts fleetlayer-pages fleetlayer-gateway
-        fleetlayer-signin fleetlayer-shared-folders fleetlayer-scheduler fleetlayer-cookies fleetlayer-1password fleetlayer-egress fleetlayer-herdr-fleet fleetlayer-dashboard fleetlayer-matrix
+        fleetlayer-signin fleetlayer-shared-folders fleetlayer-scheduler fleetlayer-leases fleetlayer-cookies fleetlayer-1password fleetlayer-egress fleetlayer-herdr-fleet fleetlayer-dashboard fleetlayer-matrix
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -40,7 +40,7 @@ jobs:
         run: >
           cargo build --release --locked --target ${{ matrix.target }}
           -p fleetlayer-cli -p fleetlayer-node -p fleetlayer-control
-          -p fleetlayer-herdr -p fleetlayer-rex -p fleetlayer-claude-code -p fleetlayer-summaries -p fleetlayer-file-sync -p fleetlayer-claude-auth-manager -p fleetlayer-accounts -p fleetlayer-pages -p fleetlayer-gateway -p fleetlayer-signin -p fleetlayer-shared-folders -p fleetlayer-scheduler -p fleetlayer-cookies -p fleetlayer-1password -p fleetlayer-egress -p fleetlayer-herdr-fleet -p fleetlayer-dashboard
+          -p fleetlayer-herdr -p fleetlayer-rex -p fleetlayer-claude-code -p fleetlayer-summaries -p fleetlayer-file-sync -p fleetlayer-claude-auth-manager -p fleetlayer-accounts -p fleetlayer-pages -p fleetlayer-gateway -p fleetlayer-signin -p fleetlayer-shared-folders -p fleetlayer-scheduler -p fleetlayer-leases -p fleetlayer-cookies -p fleetlayer-1password -p fleetlayer-egress -p fleetlayer-herdr-fleet -p fleetlayer-dashboard
       # A workspace of its own, built into the same target folder.
       - name: Build fleetlayer-matrix
         run: >

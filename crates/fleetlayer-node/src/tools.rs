@@ -16,7 +16,7 @@
 //!
 //! A session elsewhere uses it as its MCP server: `fleetlayer mcp browser@laptop`. That connects to its own node's
 //! `node.tools.sock`; the node asks the control plane (`link/tool_open`), which checks access and asks this node to start
-//! the tool (`link/tool_serve`) with `{session}` replaced by the caller's tab. Both nodes then open a WebSocket to
+//! the tool (`link/tool_serve`) with `{session}` replaced by the caller's tab (`{caller}` by `<tab>@<node>`). Both nodes then open a WebSocket to
 //! `/v1/stream/<id>` and the control plane joins them. One process per connection; it's killed when either side
 //! closes.
 
@@ -538,6 +538,13 @@ pub fn outbound(filter: Option<&ToolFilter>, line: &str) -> String {
     v.to_string()
 }
 
+/// A tool's arguments for one caller: `{session}` is the caller's tab made safe as a name ([`session_name`]), and
+/// `{caller}` is the caller as the control plane recorded it, `<tab>@<node>` (`-@<node>` for a script), for a tool that
+/// decides by who calls (the leases authority's shim). Each stays one argument: no shell reads them.
+pub fn substitute(args: &[String], session: &str, caller: &str) -> Vec<String> {
+    args.iter().map(|a| a.replace("{session}", session).replace("{caller}", caller)).collect()
+}
+
 /// A session name safe to pass as an argument: letters, digits, space, `-` and `_`, at most 40 characters.
 pub fn session_name(caller: &str) -> String {
     let tab = caller.split('@').next().unwrap_or("session");
@@ -956,7 +963,7 @@ pub async fn serve(node: Arc<Node>, req: ToolServe) -> Result<Value, RpcError> {
         });
         return Ok(serde_json::json!({}));
     }
-    let args: Vec<String> = tool.args.iter().map(|a| a.replace("{session}", &name)).collect();
+    let args: Vec<String> = substitute(&tool.args, &name, &req.caller);
     let mut env = tool.env.clone();
     for (var, file) in &tool.env_files {
         let file = expand(&node, file);
@@ -1095,6 +1102,16 @@ async fn open(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arguments_name_the_caller() {
+        let args = vec!["serve".to_string(), "--caller".into(), "{caller}".into(), "--session-name={session}".into()];
+        assert_eq!(
+            substitute(&args, &session_name("billing tests@laptop"), "billing tests@laptop"),
+            vec!["serve", "--caller", "billing tests@laptop", "--session-name=billing tests"]
+        );
+        assert_eq!(substitute(&args, &session_name("-@laptop"), "-@laptop")[2], "-@laptop");
+    }
 
     #[test]
     fn session_names_are_safe_arguments() {

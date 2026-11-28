@@ -22,6 +22,23 @@ wait=
 if [ "${1:-}" = --wait ]; then wait=1; shift; fi
 sha=$(git rev-parse --short=7 "${1:-HEAD}")
 root=/opt/code/fleetlayer/images
+# A build slot, as scripts/on-dev takes (its helper from $FLEETLAYER_DEV_SLOT, .dev-slot or fleetlayer-dev-slot on
+# PATH). The build runs in the background on the host, so the slot is tied to a stand-in process that a watcher stops
+# once the host writes the status file (or after two hours), which releases it.
+slot=${FLEETLAYER_DEV_SLOT:-}
+[ -z "$slot" ] && [ -f "$dir/.dev-slot" ] && slot=$(cat "$dir/.dev-slot")
+[ -z "$slot" ] && slot=$(command -v fleetlayer-dev-slot || true)
+case $slot in "" | /*) ;; *) [ -x "$dir/$slot" ] && slot="$dir/$slot" ;; esac
+slot_id= anchor=
+if [ -n "$slot" ]; then
+  sleep 7200 < /dev/null > /dev/null 2>&1 &
+  anchor=$!
+  slot_id=$(FLEETLAYER_LEASE_PID=$anchor "$slot" acquire "fleetlayer build-images $sha") || {
+    echo "build-images: couldn't take a build slot; building anyway" >&2
+    kill "$anchor" 2> /dev/null || true
+    slot_id= anchor=
+  }
+fi
 git archive "$sha" | ssh "$host" "mkdir -p $root/src && cd $root/src && find . -mindepth 1 -maxdepth 1 ! -name target -exec rm -rf {} + && tar -x -m -C ." 2>&1 | grep -v setlocale || true
 ssh "$host" "SHA=$sha R=$registry/fleetlayer ROOT=$root PUSH='$push_env' bash -s" > /dev/null 2>&1 <<'REMOTE' &
 cd $ROOT/src
@@ -30,13 +47,22 @@ nohup sh -c "
 DOCKER_BUILDKIT=1 docker build -f deploy/Dockerfile -t $R/control:$SHA . > $ROOT/$SHA.log 2>&1 &&
 docker run --rm $R/control:$SHA --help > /dev/null 2>&1 &&
 $PUSH docker push $R/control:$SHA >> $ROOT/$SHA.log 2>&1 &&
+<<<<<<< HEAD
 docker run --rm --memory 12g --memory-swap 12g -v $ROOT/src:/src -v fleetlayer-cargo-registry:/usr/local/cargo/registry -w /src rust:1.99.1-bookworm sh -c 'cargo build --release --locked -j 4 -p fleetlayer-cli -p fleetlayer-node -p fleetlayer-herdr -p fleetlayer-rex -p fleetlayer-claude-code -p fleetlayer-summaries -p fleetlayer-file-sync -p fleetlayer-claude-auth-manager -p fleetlayer-accounts -p fleetlayer-pages -p fleetlayer-signin -p fleetlayer-shared-folders -p fleetlayer-scheduler -p fleetlayer-cookies -p fleetlayer-1password -p fleetlayer-egress -p fleetlayer-herdr-fleet -p fleetlayer-dashboard -p fleetlayer-gateway && cargo build --release --locked -j 4 --manifest-path plugins/matrix/Cargo.toml --target-dir target && rm -rf dist && mkdir dist && cp target/release/fleetlayer-matrix target/release/fleetlayer target/release/fleetlayer-node target/release/fleetlayer-herdr target/release/fleetlayer-rex target/release/fleetlayer-claude-code target/release/fleetlayer-summaries target/release/fleetlayer-file-sync target/release/fleetlayer-claude-auth-manager target/release/fleetlayer-claude-accounts target/release/fleetlayer-pages target/release/fleetlayer-signin target/release/fleetlayer-shared-folders target/release/fleetlayer-scheduler target/release/fleetlayer-cookies target/release/fleetlayer-1password target/release/fleetlayer-egress target/release/fleetlayer-herdr-fleet target/release/fleetlayer-dashboard target/release/fleetlayer-gateway dist/ && bash scripts/collect-skills dist/skills' >> $ROOT/$SHA.log 2>&1 &&
 cd dist && printf 'FROM scratch\nCOPY fleetlayer fleetlayer-matrix fleetlayer-node fleetlayer-herdr fleetlayer-rex fleetlayer-claude-code fleetlayer-summaries fleetlayer-file-sync fleetlayer-claude-auth-manager fleetlayer-claude-accounts fleetlayer-pages fleetlayer-signin fleetlayer-shared-folders fleetlayer-scheduler fleetlayer-cookies fleetlayer-1password fleetlayer-egress fleetlayer-herdr-fleet fleetlayer-dashboard fleetlayer-gateway /\nCOPY skills /skills\n' > Dockerfile.node-bin &&
+=======
+docker run --rm --memory 12g --memory-swap 12g -v $ROOT/src:/src -v fleetlayer-cargo-registry:/usr/local/cargo/registry -w /src rust:1.99.1-bookworm sh -c 'cargo build --release --locked -j 4 -p fleetlayer-cli -p fleetlayer-node -p fleetlayer-herdr -p fleetlayer-rex -p fleetlayer-claude-code -p fleetlayer-summaries -p fleetlayer-file-sync -p fleetlayer-claude-auth-manager -p fleetlayer-accounts -p fleetlayer-pages -p fleetlayer-signin -p fleetlayer-shared-folders -p fleetlayer-scheduler -p fleetlayer-leases -p fleetlayer-cookies -p fleetlayer-1password -p fleetlayer-egress -p fleetlayer-herdr-fleet -p fleetlayer-gateway && rm -rf dist && mkdir dist && cp target/release/fleetlayer target/release/fleetlayer-node target/release/fleetlayer-herdr target/release/fleetlayer-rex target/release/fleetlayer-claude-code target/release/fleetlayer-summaries target/release/fleetlayer-file-sync target/release/fleetlayer-claude-auth-manager target/release/fleetlayer-claude-accounts target/release/fleetlayer-pages target/release/fleetlayer-signin target/release/fleetlayer-shared-folders target/release/fleetlayer-scheduler target/release/fleetlayer-leases target/release/fleetlayer-cookies target/release/fleetlayer-1password target/release/fleetlayer-egress target/release/fleetlayer-herdr-fleet target/release/fleetlayer-gateway dist/ && bash scripts/collect-skills dist/skills' >> $ROOT/$SHA.log 2>&1 &&
+cd dist && printf 'FROM scratch\nCOPY fleetlayer fleetlayer-node fleetlayer-herdr fleetlayer-rex fleetlayer-claude-code fleetlayer-summaries fleetlayer-file-sync fleetlayer-claude-auth-manager fleetlayer-claude-accounts fleetlayer-pages fleetlayer-signin fleetlayer-shared-folders fleetlayer-scheduler fleetlayer-leases fleetlayer-cookies fleetlayer-1password fleetlayer-egress fleetlayer-herdr-fleet fleetlayer-gateway /\nCOPY skills /skills\n' > Dockerfile.node-bin &&
+>>>>>>> ac92382 (Leases: fleetlayer-leases, one authority for every lease in a fleet (counted slots, claims approved once through the access policy, start and end events), ending at a TTL or when the holding session, node or process goes away; fleetlayer lease; on-dev and build-images take a build slot through scripts/fleetlayer-dev-slot; the node handles a plugin's event/publish, passes {caller} to shared tools, and sends {} for a plugin without config)
 DOCKER_BUILDKIT=1 docker build --platform linux/amd64 -f Dockerfile.node-bin -t $R/node-bin:$SHA . >> $ROOT/$SHA.log 2>&1 &&
 $PUSH docker push $R/node-bin:$SHA >> $ROOT/$SHA.log 2>&1
 echo done \$? > $ROOT/$SHA.status" < /dev/null > /dev/null 2>&1 &
 REMOTE
 sleep 5
+if [ -n "$slot_id" ]; then
+  nohup sh -c "i=0; while [ \$i -lt 360 ] && ! ssh '$host' 'test -s $root/$sha.status' > /dev/null 2>&1; do i=\$((i+1)); sleep 20; done; '$slot' release '$slot_id' > /dev/null 2>&1; kill $anchor 2> /dev/null" < /dev/null > /dev/null 2>&1 &
+  echo "Holding build slot $slot_id until the build finishes."
+fi
 echo "Building $sha on $host: $root/$sha.status says done 0 when control and node-bin are pushed."
 [ -n "$wait" ] || exit 0
 for _ in $(seq 1 90); do

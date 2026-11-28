@@ -1,5 +1,6 @@
 //! fleetlayer: the command line. It talks to this machine's node over its local socket.
 
+mod lease;
 mod mcp_bridge;
 mod pages;
 mod relocate;
@@ -180,6 +181,12 @@ enum Command {
     Pages {
         #[command(subcommand)]
         command: PagesCommand,
+    },
+    /// Leases from the fleet's leases authority: a build server's slots, claims the person approves. Take one before
+    /// heavy work, release it after.
+    Lease {
+        #[command(subcommand)]
+        command: lease::LeaseCommand,
     },
     /// Messages between sessions.
     Msg {
@@ -903,7 +910,7 @@ fn default_socket() -> PathBuf {
     fleetlayer_protocol::local::default_node_socket()
 }
 
-struct NoRequests;
+pub(crate) struct NoRequests;
 
 #[async_trait]
 impl Handler for NoRequests {
@@ -990,6 +997,10 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     if let Command::Pages { command: PagesCommand::Push { dir, space, name, new, why } } = &cli.command {
         let push = pages::Push { dir, space, name: name.as_deref(), new: *new, why: why.as_deref(), caller: caller() };
         return pages::push(&socket.with_extension("tools.sock"), push).await;
+    }
+    if let Command::Lease { .. } = &cli.command {
+        let Command::Lease { command } = cli.command else { unreachable!() };
+        return lease::run(&socket, command, cli.json).await;
     }
     if let Command::Mcp { target, why, call_timeout } = &cli.command {
         let limit = std::time::Duration::from_secs(*call_timeout);
@@ -1278,7 +1289,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 }
             }
         }
-        Command::Mcp { .. } | Command::Attach { .. } | Command::Pages { .. } => {}
+        Command::Mcp { .. } | Command::Lease { .. } | Command::Attach { .. } | Command::Pages { .. } => {}
         Command::Tools { command } => {
             let (method, args) = match &command {
                 ToolsCommand::Enable { tool, duration } => {

@@ -880,3 +880,17 @@ managers, machines that sleep.
   session was closed or waiting on the person was gone for it. Solved: every event is kept with its delivery results,
   and `fleetlayer events` lists what failed to reach the calling session since it last asked (7 days back), marking
   it read. Written: `skills/fleetlayer/SKILL.md` ("Channels"), `docs/link.md`.
+- **Too many agents building at once run a shared server out of memory.** Many agent sessions on several machines
+  each start Rust builds and test runs on one build server, and together they exhaust its memory (it happened: the
+  host ran out of memory with every session building at once). Per-build limits (a memory scope, fewer jobs) help
+  one build but not ten. Solved with leases: one authority on an always-on node hands out counted slots
+  (`fleetlayer lease acquire build-server --wait`), first come first served, and every lease ends by itself when its
+  session stops or idles, its process exits, or its TTL passes, so a crashed agent never holds a slot for good.
+  Footguns: a lease tied to a session is lost when the agent ends its turn with a build still running in the
+  background (it goes idle), so long background builds tie the lease to the build's process (`--pid`); a script's
+  lease must follow the script's own process, not the helper's (`$(helper acquire)` runs in a subshell that exits at
+  once), so on-dev passes its PID; a build that runs in the background on the server (an image build) holds its slot
+  through a stand-in process a watcher stops when the build's status file appears. The same primitive carries claims
+  the person approves once (a mail filter while an agent watches CI): Fleetlayer keeps the lease, the approval
+  (through the access policy) and the expiry, and the service that owns the filter acts on start and end events.
+  Written: `docs/plugins/leases.md`, `plugins/leases/skill/SKILL.md`, `scripts/fleetlayer-dev-slot`.

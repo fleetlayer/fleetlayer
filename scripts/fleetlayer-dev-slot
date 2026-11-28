@@ -1,0 +1,19 @@
+#!/bin/sh
+# fleetlayer-dev-slot: the build-slot helper scripts/on-dev and scripts/build-images call, on `fleetlayer lease`
+# (docs/plugins/leases.md). Point them at it with `echo scripts/fleetlayer-dev-slot > .dev-slot`, or put it on PATH.
+#
+#   fleetlayer-dev-slot acquire <reason>   waits for a slot, prints the lease's ID
+#   fleetlayer-dev-slot release <id>
+#
+# The lease is tied to the process in $FLEETLAYER_LEASE_PID (on-dev sets it to itself), else to the process that ran
+# this: when that process exits, the slot is released even if nobody calls release. The kind of lease is
+# $FLEETLAYER_DEV_SLOT_KIND (default build-server), at the authority `fleetlayer lease` finds (or $FLEETLAYER_LEASES).
+set -eu
+kind=${FLEETLAYER_DEV_SLOT_KIND:-build-server}
+FLEETLAYER_LEASE_PID=${FLEETLAYER_LEASE_PID:-$PPID}
+export FLEETLAYER_LEASE_PID
+case "${1:-}" in
+  acquire) exec fleetlayer lease acquire "$kind" --reason "${2:-a build}" --wait ;;
+  release) exec fleetlayer lease release "${2:?give the lease ID}" ;;
+  *) echo "usage: fleetlayer-dev-slot acquire <reason> | release <id>" >&2; exit 2 ;;
+esac

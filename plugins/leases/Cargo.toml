@@ -1,0 +1,31 @@
+[package]
+name = "fleetlayer-leases"
+description = "fleetlayer-leases: leases and counted slots for agents across a fleet (build slots, approved claims), with expiry when their holder dies"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+fleetlayer-protocol.workspace = true
+fleetlayer-plugin.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+jiff.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+async-trait = "0.1.92"
+yaml_serde = "0.10.7"
+regex = "1.13.2"
+sha2 = "0.11"
+hex = "0.4"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[lints]
+workspace = true

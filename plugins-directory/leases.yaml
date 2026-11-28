@@ -1,0 +1,39 @@
+name: leases
+summary: Leases for agents across a fleet, such as a build server's slots or claims the person approves once, which end by themselves when their holder dies.
+kind: plugin
+roles: []
+ships_with_fleetlayer: true
+status: beta
+licence: Apache-2.0
+maintainer: Fleetlayer
+source: https://github.com/fleetlayer/fleetlayer/tree/main/plugins/leases
+install: bundled
+command: fleetlayer-leases
+platforms: [linux, macos]
+min_fleetlayer: 0.3.14
+protocol: 1
+grants: [fleet.query, access.check, event.publish, message.send, reading.publish]
+config: |
+  plugins:
+    - name: leases
+      command: fleetlayer-leases
+      grants: [fleet.query, access.check, event.publish, message.send, reading.publish]
+      # kinds go in ~/.config/fleetlayer/leases.yaml
+  tools:
+    - name: leases
+      command: fleetlayer-leases
+      args: [serve, --caller, "{caller}"]
+      allow: ["*"]
+      check_calls: true
+      call_targets: { acquire: ["/kind"] }
+security: >-
+  Agents reach the authority only through the tool its node shares, as the caller the control plane recorded, so every
+  call is checked by the access policy and audited. Only a lease's own node may release it. Approvals are requests in
+  the plugin's own name, decided by the access policy. Keeps its state in one directory and reads only its settings
+  file; it's as trusted as its node's Unix user.
+docs: plugins/leases
+description: |
+  Agents on every machine take a slot before a heavy build and wait their turn, so a shared build server never runs
+  more than it can take. Claims the person approves once (a mail filter while an agent watches CI) start and end
+  with events that the owning service acts on. Every lease ends at its TTL or when its session, node or process goes
+  away, and the plugin reports leases that ran into their TTL and queues that are stuck.
