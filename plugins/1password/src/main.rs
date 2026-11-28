@@ -966,7 +966,7 @@ fn check_source(
     let change =
         fleetlayer_secrets::pin::check(pins, &a.bundle, a.from.as_deref(), configured, signer.as_deref(), a.version)?;
     if let Some(c) = &change {
-        tracing::warn!(bundle = %c.bundle, was = %c.was, now = %c.now, "the bundle's trusted source changed");
+        tracing::warn!(bundle = %c.bundle, was = ?c.was, now = %c.now, "the bundle's trusted source changed");
     }
     Ok(change)
 }

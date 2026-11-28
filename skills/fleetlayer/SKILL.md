@@ -136,7 +136,8 @@ fleetlayer session resume <session-id> --prompt "Carry on from where you stopped
 ```
 
 The folder must be absolute, or start with `~/` for the home folder of the machine it runs on (not the home folder
-itself); a tab name already running is refused. `--model` and `--effort` (low, medium, high, xhigh, max) choose the
+itself); a tab name already running is refused, and so is one on another node with `@`, `:`, line breaks or invisible
+characters (emoji made with zero-width joiners or variation selectors, like ✔️, count; ✅ is fine). `--model` and `--effort` (low, medium, high, xhigh, max) choose the
 agent's model and thinking effort, on start and resume; left out, the agent's own defaults. `--harness` takes
 `claude` (the default), `codex`, `pi`, `omp`, `opencode`, `cursor` or `gemini` (docs/harnesses.md says what works with
 each); OpenCode, Cursor and Gemini take `--model` but refuse `--effort`. A resume that fails (the

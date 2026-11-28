@@ -518,11 +518,14 @@ impl Handler for Shared {
                     .cloned()
                     .ok_or_else(|| RpcError::not_here(format!("no receive entry for {}", a.bundle)))?;
                 let pins = plugin.home.join(".local/state/fleetlayer/cookies/sources.json");
-                if let Err(e) = check_source(&pins, &a, r.from.as_deref()) {
-                    tracing::error!("{e}");
-                    plugin.refused.lock().await.insert(set.clone(), (e.clone(), Timestamp::now()));
-                    return Ok(json!({"applied": false, "error": e}));
-                }
+                let pin_change = match check_source(&pins, &a, r.from.as_deref()) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::error!("{e}");
+                        plugin.refused.lock().await.insert(set.clone(), (e.clone(), Timestamp::now()));
+                        return Ok(json!({"applied": false, "error": e}));
+                    }
+                };
                 let body: Body = match a.items.iter().find(|i| i.name == ITEM).map(|i| serde_json::from_str(&i.content))
                 {
                     Some(Ok(b)) => b,
@@ -567,11 +570,16 @@ impl Handler for Shared {
                 }
                 tracing::info!(set, version = a.version, cookies = body.cookies.len(), domains = ?body.domains,
                     files = snapshot.written.len(), errors = errors.len(), "received");
-                if errors.is_empty() {
-                    Ok(json!({"applied": true, "written": snapshot.written.len()}))
+                let mut answer = if errors.is_empty() {
+                    json!({"applied": true, "written": snapshot.written.len()})
                 } else {
-                    Ok(json!({"applied": false, "error": errors.join("; ")}))
+                    json!({"applied": false, "error": errors.join("; ")})
+                };
+                // The source changed even if writing failed: the node still hears it.
+                if let Some(c) = &pin_change {
+                    answer["pinChanged"] = c.to_json();
                 }
+                Ok(answer)
             }
             ext::method::SYNC_FORGET => {
                 // A role's window ended: every file written and every registry list goes.
@@ -1103,7 +1111,7 @@ fn check_source(
     let change =
         fleetlayer_secrets::pin::check(pins, &a.bundle, a.from.as_deref(), configured, signer.as_deref(), a.version)?;
     if let Some(c) = &change {
-        tracing::warn!(bundle = %c.bundle, was = %c.was, now = %c.now, "the bundle's trusted source changed");
+        tracing::warn!(bundle = %c.bundle, was = ?c.was, now = %c.now, "the bundle's trusted source changed");
     }
     Ok(change)
 }

@@ -162,7 +162,8 @@ pub async fn start_session(
         && (!shown(tab) || tab.contains('@') || tab.contains(':'))
     {
         return Err(RpcError::invalid_params(
-            "a tab name is at most 128 characters, with no @, :, control or hidden characters",
+            "a tab name is at most 128 characters, with no @, :, control or hidden characters (zero-width joiners and \
+             variation selectors count, so an emoji built from them, like ✔️ or 👩‍💻, can't be used; one like ✅ can)",
         ));
     }
     let caller = format!("{}@{from_node}", t.caller);
@@ -1067,6 +1068,8 @@ mod tests {
                 let e = start_session(&app, "default", "laptop", req("planning", tab)).await.unwrap_err();
                 assert!(e.message.contains("tab name"), "{tab:?}: {}", e.message);
             }
+            let e = start_session(&app, "default", "laptop", req("planning", "\u{2714}\u{FE0F} ci")).await.unwrap_err();
+            assert!(e.message.contains("emoji"), "the refusal says why an emoji tab is refused: {}", e.message);
             let e = start_session(&app, "default", "laptop", req("plan\u{2066}ning", "ok")).await.unwrap_err();
             assert!(e.message.contains("caller"), "{}", e.message);
         }

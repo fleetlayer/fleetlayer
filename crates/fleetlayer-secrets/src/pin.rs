@@ -15,12 +15,13 @@ use serde_json::{Value, json};
 
 use crate::sign::KEY_PREFIX;
 
-/// A pin that changed with this delivery: the bundle's trusted source was `was` and is now `now`. Never silent: the
-/// plugin logs it and answers it to the node, which publishes it as a `sync.pin` reading.
+/// A pin that changed with this delivery: the bundle's trusted source was `was` (None: it had none, and a signing key
+/// is pinned on first sight) and is now `now`. Never silent: the plugin logs it and answers it to the node, which
+/// publishes it as a `sync.pin` reading.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PinChange {
     pub bundle: String,
-    pub was: String,
+    pub was: Option<String>,
     pub now: String,
 }
 
@@ -119,7 +120,7 @@ pub fn check(
             Some(p) if p == from => match signer {
                 // The pinned node now signs: trust its key from here on, wherever it moves.
                 Some(k) => {
-                    change = Some(PinChange { bundle: bundle.into(), was: p, now: k.into() });
+                    change = Some(PinChange { bundle: bundle.into(), was: Some(p), now: k.into() });
                     Some(k.to_string())
                 }
                 None => Some(p),
@@ -131,7 +132,14 @@ pub fn check(
                      unpin {bundle}` on this machine"
                 ));
             }
-            None => Some(signer.unwrap_or(from).to_string()),
+            // A first pin to a key is reported too: from here on, only that key's bundles are taken.
+            None => match signer {
+                Some(k) => {
+                    change = Some(PinChange { bundle: bundle.into(), was: None, now: k.into() });
+                    Some(k.to_string())
+                }
+                None => Some(from.to_string()),
+            },
         }
     };
     let updated = Entry { source, version: version.max(entry.version) };
@@ -194,8 +202,14 @@ mod tests {
             check(&pin, "claude-tokens", Some("agents"), None, Some(other), 1).unwrap_err().contains("another key")
         );
         assert!(check(&pin, "claude-tokens", Some("laptop"), None, None, 1).unwrap_err().contains("unsigned"));
-        // A first delivery that's signed pins the key straight away.
-        assert!(check(&pin, "fresh", Some("x"), None, Some(k), 1).is_ok());
+        // A first delivery that's signed pins the key straight away, and says so.
+        let first = check(&pin, "fresh", Some("x"), None, Some(k), 1).unwrap().unwrap();
+        assert_eq!((first.was, first.now.as_str()), (None, k));
+        assert_eq!(
+            check(&pin, "cookies/new", Some("x"), None, None, 1),
+            Ok(None),
+            "a first node pin isn't a key change"
+        );
         assert!(check(&pin, "fresh", Some("y"), None, Some(k), 1).is_ok());
         // A node pin and another node's signed bundle: still refused (it isn't the pinned source).
         assert!(check(&pin, "cookies/x", Some("laptop"), None, None, 1).is_ok());
@@ -212,7 +226,7 @@ mod tests {
         std::fs::write(&pin, r#"{"claude-tokens": "laptop"}"#).unwrap();
         assert_eq!(check(&pin, "claude-tokens", Some("laptop"), None, None, 5), Ok(None));
         let change = check(&pin, "claude-tokens", Some("laptop"), None, Some("ed25519:K"), 6).unwrap().unwrap();
-        assert_eq!((change.was.as_str(), change.now.as_str()), ("laptop", "ed25519:K"));
+        assert_eq!((change.was.as_deref(), change.now.as_str()), (Some("laptop"), "ed25519:K"));
         assert_eq!(
             check(&pin, "claude-tokens", Some("server"), None, Some("ed25519:K"), 7),
             Ok(None),

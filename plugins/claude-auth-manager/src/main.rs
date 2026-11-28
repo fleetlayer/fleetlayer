@@ -401,7 +401,7 @@ impl Handler for Shared {
                 if let Some(home) = self.0.home.lock().await.clone() {
                     register(&home, &accounts);
                 }
-                match slots::apply(&layout, store.as_ref(), &accounts) {
+                let mut answer = match slots::apply(&layout, store.as_ref(), &accounts) {
                     Ok(r) => {
                         if let Some(kept) = self.0.kept.lock().await.clone() {
                             keep(store.as_ref(), &kept, &item.content);
@@ -414,15 +414,15 @@ impl Handler for Shared {
                             skipped = r.skipped.len(),
                             "applied the tokens"
                         );
-                        let mut answer =
-                            json!({"applied": true, "written": r.written, "removed": r.removed, "skipped": r.skipped});
-                        if let Some(c) = &pin_change {
-                            answer["pinChanged"] = c.to_json();
-                        }
-                        Ok(answer)
+                        json!({"applied": true, "written": r.written, "removed": r.removed, "skipped": r.skipped})
                     }
-                    Err(e) => Ok(json!({"applied": false, "error": e.to_string()})),
+                    Err(e) => json!({"applied": false, "error": e.to_string()}),
+                };
+                // The source changed even if applying failed: the node still hears it.
+                if let Some(c) = &pin_change {
+                    answer["pinChanged"] = c.to_json();
                 }
+                Ok(answer)
             }
             ext::method::SYNC_FORGET => {
                 // A role's window ended: every managed slot goes, as an empty bundle would remove them.
@@ -600,7 +600,7 @@ fn check_source(
     let change =
         fleetlayer_secrets::pin::check(pins, &a.bundle, a.from.as_deref(), configured, signer.as_deref(), a.version)?;
     if let Some(c) = &change {
-        tracing::warn!(bundle = %c.bundle, was = %c.was, now = %c.now, "the bundle's trusted source changed");
+        tracing::warn!(bundle = %c.bundle, was = ?c.was, now = %c.now, "the bundle's trusted source changed");
     }
     Ok(change)
 }

@@ -217,7 +217,9 @@ the reply line), unless you typed it in a shell on that same machine. From an ag
 arrives marked as outside data.
 
 **Across machines it's under the access policy**: the verb is `start`, on `<tab>@<node>` (a resume without `--tab`
-shows the session ID in place of the tab, so write rules on `*@<node>`). By default an agent asks you first, and your
+shows the session ID in place of the tab, so write rules on `*@<node>`). The tab name is shown to you in the approval,
+so it may not hold `@`, `:`, line breaks or invisible characters; that rules out emoji built with zero-width joiners or
+variation selectors (✔️, 👩‍💻), while single-character ones (✅) are fine. By default an agent asks you first, and your
 approval lasts 10 minutes; `fleetlayer-control approvals approve <id>` approves, and a policy with `ask: []` turns
 asking off. `--json` prints `{node, tab, address, sessionId, promptError}` for other programs: `sessionId` is null
 until the agent reports one, and `promptError` says why when the session started but its prompt didn't go in.
