@@ -215,16 +215,22 @@ memory available after the idle ones.
 When the heavy queue is long most of the day, the next step is another build host, not more slots on the first. More
 slots on one host means less memory per build or a host that runs out.
 
-The shape: one pair of kinds per host (`build-a`, `build-a-light`, `build-b`, `build-b-light`), and scripts that take
-whichever host has a free slot. The script tries each host's kind without `--wait`, takes the first that's free, and
-waits on the shortest queue when none is. The checkout is copied to the host it got.
+The shape: one pair of kinds per host (`build-a`, `build-a-light`, `build-b`, `build-b-light`), each sized for that
+host's memory. `.dev-host` (or `$FLEETLAYER_DEV_HOST`) lists the hosts, one per line, each with its slot name and the
+memory for heavy and light commands:
 
-Letting `scripts/on-dev` and the slot helper pick a host by themselves is coming. Until then, split sessions between
-hosts by hand: give each machine's agents their own `.dev-host` (or `$FLEETLAYER_DEV_HOST`) and their own
-`$FLEETLAYER_DEV_SLOT_KIND`, so each host's slots guard its own memory.
+```text
+build-a  build-a  12G 6G
+build-b  build-b  8G  4G
+```
+
+`scripts/on-dev` gives each checkout one host, picked from the checkout's name, and keeps it: that host already has the
+checkout's copy and its warm `target/`, so moving between hosts for each command would cost a cold build every time.
+With a dozen worktrees, the names spread them over the hosts. It then takes that host's slot (heavy or light) and runs
+inside that host's memory limits. `scripts/build-images` uses the first host.
 
 **Check:** `fleetlayer lease list` shows one pair of kinds per host, and each host's builds hold only that host's kind
-(the reason names the checkout, and `.dev-host` in that checkout names the host).
+(the reason names the checkout).
 
 ## 6. Watch it
 

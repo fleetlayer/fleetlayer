@@ -9,7 +9,7 @@
 # this: when that process exits, the slot is released even if nobody calls release. The kind of lease is
 # $FLEETLAYER_DEV_SLOT_KIND (default build-server), at the authority `fleetlayer lease` finds (or $FLEETLAYER_LEASES).
 set -eu
-kind=${FLEETLAYER_DEV_SLOT_KIND:-build-server}
+kind=${FLEETLAYER_DEV_SLOT_KIND:-${FLEETLAYER_DEV_SLOT_RESOURCE:-build-server}}
 # on-dev says whether a command links (heavy) or not (light: fmt, check, clippy); light slots are a kind of their own.
 [ "${FLEETLAYER_DEV_SLOT_CLASS:-heavy}" = light ] && kind="${kind}-light"
 FLEETLAYER_LEASE_PID=${FLEETLAYER_LEASE_PID:-$PPID}

@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Fleetlayer's Rust builds, tests and lints run on docspring-dev, the home server, not on a laptop or the small agents
-# VM: Rust target/ folders grow to tens of GB. Each command copies the checkout there first
-# (/opt/code/fleetlayer/checkouts/<name>, with its own target/), then runs cargo pinned to CPUs 0-7 under nice, in a 12 GB memory scope, which
-# leaves 8 cores for the CI jobs that also run there.
+# Fleetlayer's Rust builds, tests and lints run on a build server, not on a laptop or a small agents VM: Rust target/
+# folders grow to tens of GB. Each command copies the checkout there first (/opt/code/fleetlayer/checkouts/<name>, with
+# its own target/), takes a build slot, then runs cargo pinned to CPUs 0-7 under nice, inside a memory scope.
 #
 #   scripts/on-dev fmt | check [args] | clippy [args] | test [args] | build [args]
 #       cargo fmt --check; cargo check; clippy --all-targets -D warnings; cargo test; cargo build.
@@ -15,14 +14,22 @@
 #
 # The checkout is the one the current directory is in (the main one or a worktree); its name there is its directory's.
 #
-# The build host comes from $FLEETLAYER_DEV_HOST, or from .dev-host at the checkout's root (gitignored): an SSH host
-# with Rust (rustup) and rsync.
+# The build hosts come from $FLEETLAYER_DEV_HOST, or from .dev-host at the checkout's root (gitignored): one SSH host
+# with Rust (rustup) and rsync per line, optionally followed by its build-slot name and the memory for heavy and light
+# commands (`build-a build-a 12G 6G`). With several hosts, each checkout always uses the same one (picked from its
+# name), so its target/ stays warm there.
 set -euo pipefail
 dir=$(git rev-parse --show-toplevel)
-host=${FLEETLAYER_DEV_HOST:-$(cat "$dir/.dev-host" 2>/dev/null || true)}
-[ -n "$host" ] || { echo "scripts/on-dev: set FLEETLAYER_DEV_HOST or write the build host to .dev-host" >&2; exit 2; }
-remote_root=/opt/code/fleetlayer/checkouts
 name=$(basename "$dir")
+hosts=${FLEETLAYER_DEV_HOST:-$(grep -v '^[[:space:]]*\(#\|$\)' "$dir/.dev-host" 2>/dev/null || true)}
+[ -n "$hosts" ] || { echo "scripts/on-dev: set FLEETLAYER_DEV_HOST or write the build host to .dev-host" >&2; exit 2; }
+count=$(printf '%s\n' "$hosts" | wc -l)
+pick=$(( $(printf '%s' "$name" | cksum | cut -d' ' -f1) % count + 1 ))
+read -r host slot_name heavy_mem light_mem <<<"$(printf '%s\n' "$hosts" | sed -n "${pick}p")"
+export FLEETLAYER_DEV_SLOT_RESOURCE=${slot_name:-}
+heavy_mem=${heavy_mem:-12G}
+light_mem=${light_mem:-6G}
+remote_root=/opt/code/fleetlayer/checkouts
 remote=$remote_root/$name
 
 die() { echo "scripts/on-dev: $*" >&2; exit 1; }
@@ -70,9 +77,9 @@ run() {
   # Light commands (fmt, check, clippy) get a smaller memory scope. Both share a compile cache when the host has one:
   # kache first (each checkout keeps its own target/, with dependency outputs restored as copy-on-write clones), else
   # sccache in its own directory and server port, so it never mixes with other projects' builds on the host.
-  local mem=12G
-  [ "${FLEETLAYER_DEV_SLOT_CLASS:-heavy}" = light ] && mem=6G
-  local cache="if command -v kache >/dev/null; then export RUSTC_WRAPPER=kache; elif command -v sccache >/dev/null; then export RUSTC_WRAPPER=sccache SCCACHE_DIR=/opt/code/fleetlayer/sccache SCCACHE_CACHE_SIZE=20G SCCACHE_SERVER_PORT=4227; fi;"
+  local mem=$heavy_mem
+  [ "${FLEETLAYER_DEV_SLOT_CLASS:-heavy}" = light ] && mem=$light_mem
+  local cache="[ -f /opt/code/fleetlayer/kache.toml ] && export KACHE_CONFIG=/opt/code/fleetlayer/kache.toml; if command -v kache >/dev/null; then export RUSTC_WRAPPER=kache; elif command -v sccache >/dev/null; then export RUSTC_WRAPPER=sccache SCCACHE_DIR=/opt/code/fleetlayer/sccache SCCACHE_CACHE_SIZE=20G SCCACHE_SERVER_PORT=4227; fi;"
   ssh "$host" "cd '$remote' && export PATH=\$HOME/.cargo/bin:\$PATH && { $cache true; } && systemd-run --scope -q -p MemoryMax=$mem -p MemorySwapMax=0 nice -n 10 taskset -c 0-7 $quoted" 2>&1 |
     grep --line-buffered -v setlocale
   status=${PIPESTATUS[0]}
