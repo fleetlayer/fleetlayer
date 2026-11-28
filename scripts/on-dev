@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fleetlayer's Rust builds, tests and lints run on docspring-dev, the home server, not on a laptop or the small agents
 # VM: Rust target/ folders grow to tens of GB. Each command copies the checkout there first
-# (/opt/code/fleetlayer/checkouts/<name>, with its own target/), then runs cargo pinned to CPUs 0-23 under nice, which
+# (/opt/code/fleetlayer/checkouts/<name>, with its own target/), then runs cargo pinned to CPUs 0-7 under nice, in a 12 GB memory scope, which
 # leaves 8 cores for the CI jobs that also run there.
 #
 #   scripts/on-dev fmt | check [args] | clippy [args] | test [args] | build [args]
@@ -41,7 +41,7 @@ run() {
   printf -v quoted '%q ' "$@"
   local status
   set +e
-  ssh "$host" "cd '$remote' && export PATH=\$HOME/.cargo/bin:\$PATH && nice -n 10 taskset -c 0-23 $quoted" 2>&1 |
+  ssh "$host" "cd '$remote' && export PATH=\$HOME/.cargo/bin:\$PATH && systemd-run --scope -q -p MemoryMax=12G -p MemorySwapMax=0 nice -n 10 taskset -c 0-7 $quoted" 2>&1 |
     grep --line-buffered -v setlocale
   status=${PIPESTATUS[0]}
   set -e
@@ -51,10 +51,10 @@ run() {
 case $cmd in
   sync) sync ;;
   fmt) sync; run cargo fmt --all --check ;;
-  check) sync; run cargo check -q --locked -j 24 --workspace --all-targets "$@" ;;
-  clippy) sync; run cargo clippy -q --locked -j 24 --workspace --all-targets "$@" -- -D warnings ;;
-  build) sync; run cargo build -q --locked -j 24 "$@" ;;
-  test) sync; run cargo test -q --locked -j 24 --workspace "$@" ;;
+  check) sync; run cargo check -q --locked -j 8 --workspace --all-targets "$@" ;;
+  clippy) sync; run cargo clippy -q --locked -j 8 --workspace --all-targets "$@" -- -D warnings ;;
+  build) sync; run cargo build -q --locked -j 8 "$@" ;;
+  test) sync; run cargo test -q --locked -j 8 --workspace "$@" ;;
   format) sync; run cargo fmt --all; rsync -a --no-owner --no-group --exclude=target --include='*/' --include='*.rs' --exclude='*' "$host:$remote/" "$dir/" ;;
   lock) sync; run cargo update -q "$@"; rsync -a "$host:$remote/Cargo.lock" "$dir/Cargo.lock" ;;
   clean) ssh "$host" "rm -rf '$remote'" ;;
