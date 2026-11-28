@@ -488,6 +488,11 @@ fn a_desk_command_that_hangs_is_stopped() {
     std::thread::sleep(std::time::Duration::from_millis(200));
     let left = std::process::Command::new("pgrep").args(["-f", "sleep 31"]).output().unwrap();
     assert!(left.stdout.is_empty(), "the shell's child is still running: {}", String::from_utf8_lossy(&left.stdout));
+    // A command that answers and leaves a child in the background holding its output doesn't hang the look.
+    let started = std::time::Instant::now();
+    let s = desk::sample_command("(sleep 32 &) ; echo '{\"locked\": true, \"idleSeconds\": 3}'").unwrap();
+    assert_eq!(s, Sample { locked: Some(true), idle_seconds: Some(3) });
+    assert!(started.elapsed() < std::time::Duration::from_secs(3), "it waited for the background child");
     let s = desk::sample_command("echo '{\"locked\": false, \"idleSeconds\": 7}'").unwrap();
     assert_eq!(s, Sample { locked: Some(false), idle_seconds: Some(7) });
 }

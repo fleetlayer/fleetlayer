@@ -104,6 +104,11 @@ fn run(cmd: &str, args: &[&str]) -> Result<String, String> {
             None => std::thread::sleep(Duration::from_millis(20)),
         }
     };
+    // Whatever it left running in the background still holds the pipes: stop the group so the reads end.
+    let _ = std::process::Command::new("kill")
+        .args(["-KILL", "--", &format!("-{}", child.id())])
+        .stderr(std::process::Stdio::null())
+        .status();
     let (out, err) = (out.join().unwrap_or_default(), err.join().unwrap_or_default());
     if !status.success() {
         return Err(format!("{cmd} {}: {}", args.join(" "), err.trim()));

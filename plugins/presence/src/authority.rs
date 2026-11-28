@@ -358,18 +358,10 @@ impl Authority {
                 since.round(jiff::Unit::Second).unwrap_or(*since)
             ));
         }
-        let people: Value = i
-            .saved
-            .people
-            .iter()
-            .filter(|(n, _)| i.settings.people.contains_key(*n))
-            .map(|(n, k)| (n.clone(), json!(k.current)))
-            .collect::<serde_json::Map<_, _>>()
-            .into();
-        let desks: Vec<Value> =
-            i.desks.iter().map(|((person, node), d)| json!({"person": person, "node": node, "at": d.at})).collect();
+        // Counts only: the status reading is readable by more than the people `get` is decided for.
         let problem = (!problems.is_empty()).then(|| problems.join("; "));
-        self.node.status(problem, json!({"lastRound": now, "people": people, "desks": desks}));
+        self.node
+            .status(problem, json!({"lastRound": now, "people": i.settings.people.len(), "desksHeard": i.desks.len()}));
     }
 
     /// A caller's request: `op` with `args`, from `caller` (the control plane's record of who called; None for the
