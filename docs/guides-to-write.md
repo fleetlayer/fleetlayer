@@ -787,6 +787,12 @@ managers, machines that sleep.
   let only a person's own token type free text, one line that isn't `/…` or `!…`, because the agent takes it as
   their words. When the read-back fails, take your text back out only if it's at the end of the line. Where it lives: `docs/protocol.md` ("Slash commands", "Saying something, as the person"),
   `crates/fleetlayer-node/src/act.rs`.
+- **A Rust command line that panics when its output is cut off.** `println!` panics with "failed printing to stdout:
+  Broken pipe" when the reader has gone (`fleetlayer sessions | head`, a script that stopped reading), because Rust
+  ignores SIGPIPE. Print through a function that exits quietly on a broken pipe instead (`to_stdout` in
+  `crates/fleetlayer-cli/src/main.rs`, shadowing `println!` and `print!` for the whole crate), and keep SIGPIPE
+  ignored, so a socket that closes (a node restarting under `fleetlayer mcp`) is an error to handle, not a death.
+  Test: `crates/fleetlayer-cli/tests/stdout.rs`.
 - **Sending an agent a prompt on a schedule.** The usual way is a cron line that types into the agent's terminal,
   which goes wrong quietly: it types into whatever runs there (a shell, a permission prompt), fires a burst after the
   machine was asleep, and nobody hears when it stops working. The scheduler plugin sends through the node instead, so

@@ -1,5 +1,15 @@
 //! fleetlayer: the command line. It talks to this machine's node over its local socket.
 
+// Every command prints through these, in place of the standard macros, which panic when stdout has gone away (a
+// pager or `head` that quit, a client that hung up): the command ends quietly instead, like other Unix tools.
+macro_rules! println {
+    () => { $crate::to_stdout(format_args!("\n")) };
+    ($($arg:tt)*) => { $crate::to_stdout(format_args!("{}\n", format_args!($($arg)*))) };
+}
+macro_rules! print {
+    ($($arg:tt)*) => { $crate::to_stdout(format_args!($($arg)*)) };
+}
+
 mod lease;
 mod mcp_bridge;
 mod pages;
@@ -1133,6 +1143,19 @@ fn caller() -> Value {
         "sessionId": env("CLAUDE_CODE_SESSION_ID"),
         "address": env("FLEETLAYER_SESSION_ADDRESS").or_else(|| env("HERDR_PANE_ID")),
     })
+}
+
+/// Write to stdout; once the reader has gone, exit at once (0 for a closed pipe, which only means nobody reads any
+/// more; 1 for any other failure), never panic.
+pub(crate) fn to_stdout(args: std::fmt::Arguments) {
+    use std::io::Write;
+    if let Err(e) = std::io::stdout().lock().write_fmt(args) {
+        if e.kind() == std::io::ErrorKind::BrokenPipe {
+            std::process::exit(0);
+        }
+        let _ = writeln!(std::io::stderr(), "fleetlayer: writing to stdout: {e}");
+        std::process::exit(1);
+    }
 }
 
 #[tokio::main]
