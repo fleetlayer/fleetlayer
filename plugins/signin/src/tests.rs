@@ -140,7 +140,7 @@ async fn control_plane(seen: Arc<Mutex<Seen>>) -> String {
                     _ => return (StatusCode::NOT_FOUND, Json(json!({}))),
                 };
                 (StatusCode::OK, Json(json!({"id": b["approval"], "from": "admin-window@laptop", "verb": "activate",
-                    "to": "window:infra", "detail": "rotate <the> keys", "status": status, "holdMs": 0, "createdAt": 1})))
+                    "to": "window:infra", "detail": "rotate <the> keys", "status": status, "holdMs": 5_400_000, "createdAt": 1})))
             }),
         )
         .route(
@@ -1461,6 +1461,7 @@ async fn a_step_up_shows_the_request_checks_a_fresh_passkey_and_tells_the_contro
     let r = call(&a, "GET", "/stepup?tenant=acme&approval=ap_1", Some(&cookie), None, "").await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.text);
     assert!(r.text.contains("window:infra") && r.text.contains("rotate &lt;the&gt; keys"), "{}", r.text);
+    assert!(r.text.contains("<th>For</th><td>1 h 30 min</td>"), "how long it opens for: {}", r.text);
     assert!(r.text.contains("Confirm with your passkey"));
     // Decided already, or no such request: no button.
     let r = call(&a, "GET", "/stepup?tenant=acme&approval=ap_done", Some(&cookie), None, "").await;

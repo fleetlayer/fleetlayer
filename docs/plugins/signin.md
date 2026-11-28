@@ -25,7 +25,11 @@ services that can't sign people in themselves all work. SAML providers come late
    It may look up who belongs where, use invites, ask access checks and record sign-ins, and nothing else.
    `fleetlayer-control signin revoke signin` stops it at once.
 
-2. **Add the plugin** to the node on an always-on machine, behind your HTTPS proxy:
+2. **Add the plugin** to a node of its own, under its own Unix user (or in a container), on an always-on machine,
+   behind your HTTPS proxy. No agent may be able to read its folder or its token. Its signing keys are worth a
+   sign-in as anyone, and the control plane takes its token's word for a passkey confirmation by any admin of any
+   place ([below](#confirming-a-request-with-a-passkey)). So an agent that could read them could approve things as
+   your admins:
 
    ```yaml
    plugins:

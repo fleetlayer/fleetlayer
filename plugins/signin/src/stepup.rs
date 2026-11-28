@@ -85,13 +85,28 @@ fn enc(s: &str) -> String {
     form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }
 
+/// How long, in words: `holdMs` of a request (the control plane won't approve longer than the page showed).
+fn duration(ms: i64) -> String {
+    let mins = (ms + 59_999) / 60_000;
+    match mins {
+        m if m < 60 => format!("{m} minute{}", if m == 1 { "" } else { "s" }),
+        m if m % 60 == 0 => format!("{} hour{}", m / 60, if m == 60 { "" } else { "s" }),
+        m => format!("{} h {} min", m / 60, m % 60),
+    }
+}
+
 /// The request's lines, for the page.
 fn describe(v: &Value) -> String {
     let field = |k: &str| v[k].as_str().map(esc).unwrap_or_default();
+    let hold = v["holdMs"]
+        .as_i64()
+        .filter(|h| *h > 0)
+        .map(|h| format!("<tr><th>For</th><td>{}</td></tr>", duration(h)))
+        .unwrap_or_default();
     let detail = v["detail"].as_str().map(|d| format!("<p class=\"why\">{}</p>", esc(d))).unwrap_or_default();
     format!(
         "<table><tr><th>From</th><td>{}</td></tr><tr><th>Asks to</th><td>{}</td></tr><tr><th>On</th><td>{}</td></tr>\
-         </table>{detail}",
+         {hold}</table>{detail}",
         field("from"),
         field("verb"),
         field("to")

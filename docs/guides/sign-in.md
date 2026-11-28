@@ -61,6 +61,12 @@ plugins:
         token_file: ~/.config/fleetlayer/signin-heartbeat-token
 ```
 
+Give it a node of its own, under its own Unix user (or in a container), whose folder and token no agent can read.
+Its signing keys are worth a sign-in as anyone. The control plane also takes its token's word that an admin
+confirmed a request with their passkey ([Sign-in](../plugins/signin.md#confirming-a-request-with-a-passkey)). So an
+agent that read them could approve things as you. A machine's agents usually run as other users, so a new user just
+for sign-in, with its own node, is enough.
+
 It points the proxy's `signin.example.com` at `127.0.0.1:7680`, restarts the node (`fleetlayer-node install` again,
 or restart its service), and checks `https://signin.example.com/healthz`.
 
