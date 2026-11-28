@@ -769,8 +769,7 @@ managers, machines that sleep.
   default, so set `mounts: []`), port forwarding, a Unix user per role, a node per user, what stays on the Mac
   (Xcode, signing, Keychain and Touch ID, Claude in Chrome, computer use), RAM and disk sizing, and the footguns.
   OrbStack gets a short section: the best macOS integration, paid for business use, and it mounts all of `/Users` by
-  default, so turn that off. Being tried on a real Mac now. To write: `docs/guides/mac-vm.md`, from the trial's notes
-  once the setup works.
+  default, so turn that off. Written: `docs/guides/mac-vm.md`.
 - **Sudo for an agent, only for a window.** An agent that can change a machine (sudo, production keys) shouldn't hold
   that power all day. Fleetlayer's `activation: window` roles refuse everything by or to the role until the person
   approves a window, then close its sessions, remove what was delivered and run hooks at the end. Footguns: the sudo
