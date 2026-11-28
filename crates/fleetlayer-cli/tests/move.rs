@@ -417,6 +417,9 @@ fn the_hub_moves_with_its_folder() {
         .filter(|n| n.starts_with("claude-hub.moved-"))
         .collect();
     assert_eq!(kept.len(), 1, "{kept:?}");
+    let old_copy = f.a.path(&format!(".local/state/fleetlayer/{}", kept[0]));
+    assert!(old_copy.join("kept-by-the-test").is_file(), "the old copy is kept");
+    assert!(!old_copy.join("signing-key").exists(), "but never the key that signs as the hub");
 }
 
 #[test]

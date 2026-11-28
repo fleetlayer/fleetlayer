@@ -439,11 +439,26 @@ fn restart_here(kind: &Kind, here: &Here, j: &Journal) -> anyhow::Result<()> {
     services::start(kind)
 }
 
+/// Whether a file is a key that signs for a component (the Claude hub's `signing-key`, or `<tokens>.signing-key`
+/// beside its tokens file): a copy left behind could still sign as it, from this machine, so it's never kept.
+fn is_signing_key(p: &Path) -> bool {
+    p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n == "signing-key" || n.ends_with(".signing-key"))
+}
+
 fn retire_path(p: &Path, keep: Option<&str>) -> anyhow::Result<String> {
     match keep {
+        Some(_) if p.is_file() && is_signing_key(p) => {
+            std::fs::remove_file(p)?;
+            Ok("deleted (a signing key isn't kept)".into())
+        }
         Some(stamp) => {
             let to = PathBuf::from(format!("{}.moved-{stamp}", p.display()));
             std::fs::rename(p, &to)?;
+            let key = to.join("signing-key");
+            if to.is_dir() && key.is_file() {
+                std::fs::remove_file(&key)?;
+                return Ok(format!("kept as {}, without its signing key", to.display()));
+            }
             Ok(format!("kept as {}", to.display()))
         }
         None if p.is_dir() => {
@@ -1009,5 +1024,22 @@ mod tests {
         assert_eq!(bracket("fd7a::1"), "[fd7a::1]");
         assert_eq!(instance_for(Path::new("/tmp/x y/server home")), "move-server-home");
         assert_eq!(shell_quote("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn a_kept_old_copy_never_holds_a_signing_key() {
+        let d = tempfile::tempdir().unwrap();
+        let hub = d.path().join("claude-hub");
+        std::fs::create_dir_all(&hub).unwrap();
+        std::fs::write(hub.join("signing-key"), "k").unwrap();
+        std::fs::write(hub.join("hub.json"), "{}").unwrap();
+        let said = retire_path(&hub, Some("20261128")).unwrap();
+        assert!(said.ends_with("without its signing key"), "{said}");
+        let kept = d.path().join("claude-hub.moved-20261128");
+        assert!(kept.join("hub.json").is_file() && !kept.join("signing-key").exists());
+        let beside = d.path().join("tokens.json.signing-key");
+        std::fs::write(&beside, "k").unwrap();
+        assert_eq!(retire_path(&beside, Some("20261128")).unwrap(), "deleted (a signing key isn't kept)");
+        assert!(!beside.exists() && !d.path().join("tokens.json.signing-key.moved-20261128").exists());
     }
 }
