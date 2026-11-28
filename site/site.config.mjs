@@ -65,11 +65,8 @@ export const pages = [
   { file: "plugins/signin", group: "Plugins", label: "Sign-in" },
   { file: "plugins/shared-folders", group: "Plugins", label: "Folders" },
   { file: "plugins/scheduler", group: "Plugins", label: "Scheduler" },
-<<<<<<< HEAD
   { file: "plugins/matrix", group: "Plugins", label: "Matrix rooms" },
-=======
   { file: "plugins/leases", group: "Plugins", label: "Leases" },
->>>>>>> ac92382 (Leases: fleetlayer-leases, one authority for every lease in a fleet (counted slots, claims approved once through the access policy, start and end events), ending at a TTL or when the holding session, node or process goes away; fleetlayer lease; on-dev and build-images take a build slot through scripts/fleetlayer-dev-slot; the node handles a plugin's event/publish, passes {caller} to shared tools, and sends {} for a plugin without config)
   { file: "plugins/herdr-fleet", group: "Plugins", label: "Every herdr as one" },
   { file: "plugins/cookies", group: "Plugins", label: "Cookies" },
   { file: "plugins/1password", group: "Plugins", label: "1Password" },
