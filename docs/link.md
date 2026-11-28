@@ -38,6 +38,17 @@ slept, a NAT that forgot the connection) never says so, and it reconnects with b
 | `link/role_windows` | request | `{caller}` → `{windows: [{role, state, endsAt?, id?, longestMs, member}]}` (`fleetlayer role list`). |
 | `link/window` | notification, control plane → node | `{id, role, open, endsAt, member}`: a window opened or closed. A member node (one of the role's) closes its sessions, removes what was delivered to it and runs its `on_end` hook at the end, and keeps `endsAt` on disk to close the window by itself; a node watching the role (`windows:` in its config, sent as `windows` in `link/hello`) runs its hooks. Sent again when a node links, for open windows and closed ones it hasn't confirmed (however long ago), and once a minute to linked nodes that haven't confirmed. |
 | `link/window_closed` | request | `{id, problem?}` → `{}`: a node a window concerns (one of the role's, or one watching it) confirms it closed the window, or says what didn't work (kept, and shown in `/healthz`, until a clean confirmation). |
+| `link/summary` | notification | `{event}`: a session summary from the node's summaries plugin (its `_fleetlayer.dev/summary/publish`), stored by the control plane. |
+| `link/summaries_search` | request | `{q, limit?, session?, mentions?}` → `{summaries}`: summaries matching `q` (20 by default, 200 at most), one session's timeline with `session`, or those that mention a name with `mentions`. Only sessions the node may read, and its own, come back. |
+| `link/tool_open` | request | `{tool, node, caller, justification?}` → `{streamId}`: open a stream to a tool `node` shares (`fleetlayer mcp`). Checked as `use_tool` on `tool:<tool>@<node>`; then `node` gets `link/tool_serve`. Both sides connect to `/v1/stream/<streamId>` with their node token; a stream nobody opens within a minute is forgotten. |
+| `link/command_open` | request | `{command, node, caller, justification?}` → `{streamId}`: open a stream to run a command `node` shares (`fleetlayer run`). Refused here only when `run` on `command:<name>@<node>` is denied outright; the run itself is decided with `link/command_call`. Then `node` gets `link/command_serve`. |
+| `link/command_call` | request | `{streamId, argsHash, detail?, audit?, justification?, peek?}` → `{decision, approval?, reason}`: the node serving a command stream asks about one run, as `link/tool_call` does for a tool call. Decided as `run` on `command:<name>@<node>`, audited with `audit` (the program and arguments, files by name, size and hash), and asked `for: once` by default. |
+| `link/terminal_open` | request | `{session, node, caller, mode, cols, rows, justification?}` → `{streamId}`: open a stream to a session's terminal on `node`. Checked as `read` on `<session>@<node>` for `observe`, `attach` for `input` and `control`; then `node` gets `link/terminal_serve`. |
+| `link/transcript_read` | request | `{node, session, caller, justification?}` plus the range fields of `_fleetlayer.dev/transcript/read` (protocol section 10) → `{sessionId, format, size, offset, next, data, cut?, skipped?}`. Checked as `read` on `<session>@<node>`; then `node` gets `link/transcript_serve`. The control plane passes the bytes on and keeps none. |
+| `link/sync_publish` | request | `{bundle, version, copies: [{node, sealed}]}` → `{results: [{target, ok, error?}]}`: a bundle sealed to each target's key (protocol section 8). Each copy is checked as `sync` on `sync:<bundle>@<target>` for `-@<node>`, then sent to the target as `link/sync_deliver`. A target that's offline is noted, and gets the bundle when it's back (`link/sync_wanted`). The control plane keeps no copy. |
+| `link/readings` | notification | `{readings}`: readings the node's plugins published (protocol section 9). |
+| `link/reading_subscribe` | request | `{kinds}` → `{readings}`: the reading kinds this node's plugins want, replacing its earlier list, answered with the newest of each it may read. |
+| `link/reading_latest` | request | `{kinds}` → `{readings}`: the newest readings of `kinds` this node may read, without changing its subscription (`fleetlayer readings`). |
 
 A session is the node's registry entry: `{sessionId, manager, harnessPlugin, cwd, title, updatedAt, meta, ended}`,
 where `meta` is the `fleetlayer.dev/session` object from protocol section 4.
@@ -49,19 +60,30 @@ where `meta` is the `fleetlayer.dev/session` object from protocol section 4.
 | `link/deliver` | `{name, deliveryId, kind, subkind?, untrusted, from, text}` → `{via}`. The node resolves `name` (a tab or a session ID) among its own sessions and delivers as protocol section 5 says. |
 | `link/pages_serve` | `{streamId, space, name, new?, date?, caller}` → `{}`. The node runs its pages plugin's `receive` command on stream `streamId` (`docs/plugins/pages.md`, "From another machine"). |
 | `link/session_serve` | `{tab?, cwd?, harness?, prompt?, resume?, caller}` → `{node, tab, address, sessionId, promptError}`. The node starts the session as [protocol.md](protocol.md#starting-sessions) describes, within two and a half minutes. |
-| `link/session_act_serve` | `{session, action, prompt?, answers?, caller}` → `{node, sessionId, tab, done}`. The node closes the session, or answers its prompt after checking on screen that the same prompt shows (`-32015` when not). |
+| `link/session_act_serve` | `{session, action, prompt?, answers?, command?, text?, caller}` → `{node, sessionId, tab, done}`. The node closes the session, answers its prompt after checking on screen that the same prompt shows (`-32015` when not), types an allowed slash command (`command`), or types what a person said (`say`). |
+| `link/tool_serve` | `{streamId, tool, caller}` → `{}`. The node starts the shared tool for `caller` and connects it to stream `streamId`. |
+| `link/command_serve` | `{streamId, command, caller, justification?}` → `{}`. The node takes one run of a shared command from stream `streamId` (`docs/guides/shared-commands.md`). |
+| `link/terminal_serve` | `{streamId, session, mode, cols, rows, caller}` → `{}`. The node streams the session's terminal into stream `streamId` (protocol section 4, "Terminals"). |
+| `link/transcript_serve` | `{session, caller}` plus the range fields → `{sessionId, format, size, offset, next, data, cut?, skipped?}`: part of one of its sessions' transcripts, for a caller. |
+| `link/transcript_search_serve` | `{text, limit, perSession?, caller}` → `{node, hits, searched, partial?}`: search its transcripts for a caller (see `link/transcript_search`). |
+| `link/catchup` | `{sessionId}` → the session's catch-up from its summaries plugin, for `POST /v1/sessions/<id>/catchup`. |
+| `link/sync_deliver` | `{bundle, version, from, sealed}` → `{applied}`, or `{reason}` when it was deliberately not applied, or `{error}`: a sealed bundle for this node, applied by its `sync_target` plugins. |
+| `link/sync_wanted` | notification, `{bundle, node}`: a target that missed a bundle is back, or its sync was just approved: publish the bundle again for it. |
+| `link/reading_update` | notification, `{readings}`: new readings of the kinds this node subscribed to, from any node it may read. |
 | `link/moved` | notification, `{url, proof}`: the control plane has moved to this `ws://` or `wss://` link URL (`fleetlayer move control`). It's sent as the old copy stops. The node sends its token there only after `GET <web address>/v1/move-proof?nonce=<proof>` answers 200 (the new copy holds the old one's folder), never follows `wss://` down to `ws://`, keeps its old address as the fallback, and saves the new one as `control.url` in node.yaml once that answer says `"confirmed": true` (the move passed its health check). If the move isn't confirmed within an hour, the node stops trying the new address. |
 
 ## Access control
 
-Ordered rules on `<tab>@<node>` patterns (`*` matches any run of characters; a sender with no session is `-@<node>`),
-first match wins, then the tenant's default (`allow` on a new control plane). A plugin sending a message is
-`plugin:<name>@<node>`, so a rule can give a runner that carries out only approved actions more reach than the agent on
-the same node. A session may always answer a session that messaged it in the last 24 hours (the reply window), so an
-agent limited to a short list can still reply to whoever wrote. They decide `link/send`, and which
-sessions `link/fleet` shows a node (those its `-@<node>` may message, plus its own). A node may subscribe and
-unsubscribe only its own sessions. Every refusal is also published as an `access.denied` event on the `access`
-channel (kept in the event log; subscribe a session or set the channel's fallback to hear about them). Managed with `fleetlayer-control acl list|add|remove|default|check`.
+The tenant's access policy decides each request, as [access-control.md](access-control.md) describes: who is a
+`<tab>@<node>` (a sender with no session is `-@<node>`, a plugin `plugin:<name>@<node>`), each method's verb and
+target are given in the tables above, and deny wins. `link/send` is decided as `message` on the target session, and a
+session may always answer a session that messaged it in the last 24 hours (the reply window). `link/fleet` shows a
+node its own sessions and those its `-@<node>` may `read`. A tenant with no policy of its own uses the built-in
+default, which is a version 2 policy too. A tenant still on the older version 1 rules (ordered first-match rules on
+`<tab>@<node>` patterns, managed with `fleetlayer-control acl list|add|remove|default|check`) decides `link/send` by
+those rules, and `link/fleet` shows the sessions the node may message. A node may subscribe and unsubscribe only its
+own sessions. Every refusal is also published as an `access.denied` event on the `access` channel (kept in the event
+log; subscribe a session or set the channel's fallback to hear about them).
 
 ## Routing
 
@@ -73,7 +95,7 @@ channel (kept in the event log; subscribe a session or set the channel's fallbac
 - **Webhooks** arrive on the control plane's second listener, `POST /hooks/<endpoint id>/<secret>`, the only one that
   needs to face the internet. GitHub webhooks get the subject `<owner/repo>@<branch>`. Alertmanager's (known by its
   body, or `?kind=alertmanager`) become one `alertmanager.alert` event per alert, `[FIRING] HighMemory (warning,
-  talira): Memory above 90%`, with the alert's `alertname` as subject (another label with `?subject_label=`, or a fixed
+  web): Memory above 90%`, with the alert's `alertname` as subject (another label with `?subject_label=`, or a fixed
   `?subject=`) and a dedupe key from its fingerprint, status and start, so a repeated notification goes nowhere.
   Anything else uses its `summary`/`text`/`message` field, or `?subject=` and `?kind=` in the URL.
 - **Missed events:** every event is kept with its delivery results, so a session that was offline reads what it missed

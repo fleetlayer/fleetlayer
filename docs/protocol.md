@@ -38,7 +38,8 @@ Fleetlayer's extensions is still a valid ACP agent to any other ACP client.
 - **Errors** use JSON-RPC error codes, plus ACP's: `-32601` for an unknown method, `-32002` for an unknown session.
   Fleetlayer adds `-32010` "not here" (the session isn't on this machine or isn't running) and `-32011` "refused"
   (the plugin understood the request and won't do it; the message says why, in a sentence a person can read),
-  `-32012` "busy", `-32013` "no channel" and `-32014` "no such" (section 5).
+  `-32012` "busy", `-32013` "no channel", `-32014` "no such" (section 5) and `-32015` "prompt gone" (the blocked
+  prompt an answer was for isn't showing any more).
 
 ## 2. Naming rules for extensions
 
@@ -98,12 +99,13 @@ The plugin's answer names the roles it takes:
 | `session_manager` | Knows where sessions run (workspaces, tabs, panes); lists them, streams their status, opens and closes them, types into them | `fleetlayer-herdr` |
 | `harness` | Knows one agent program from the inside: delivers messages through its own channel, points at its transcripts, reads usage | a Claude Code plugin using Claude Code's messaging socket |
 | `event_source` | Turns something outside (a Matrix room, a mailbox, a monitor) into events | a Matrix reader |
-| `action` | Carries out typed actions for the runner, with no AI tokens spent | Quietdeck's mail plugin |
+| `action` | Carries out typed actions for the runner, with no AI tokens spent (not built yet: [section 7](#7-actions-the-runner-role)) | a mail plugin that archives threads |
 | `sync_target` | Applies bundles another plugin published, on this machine | the node side of `claude-auth-manager` |
 | `sync_source` | Publishes bundles (files, secrets) to other nodes | the hub side of `claude-auth-manager` |
 
 One plugin may take several roles. A plugin whose answer has no `fleetlayer.dev/plugin` key is a plain ACP agent:
-the node can start sessions with it through ACP's own `session/new` and `session/prompt` (not in the first build).
+the node could start sessions with it through ACP's own `session/new` and `session/prompt`. Not built yet: the node
+starts no plain ACP agents.
 
 If the plugin's `protocol` is one the node doesn't support, the node logs it, reports the plugin as broken, and
 doesn't restart it until it's upgraded.
@@ -430,7 +432,7 @@ Errors, so the sender can say what happened:
 | Code | Meaning | The sender says |
 |---|---|---|
 | `-32010` not here | The session exists but has stopped, or its node is offline | "offline" |
-| `-32014` no such | No session or node has that name; `data.suggestions` lists up to three running names containing it | "no session named 'triage' on agents-triage; did you mean 'quietdeck triage@agents-triage'?" |
+| `-32014` no such | No session or node has that name; `data.suggestions` lists up to three running names containing it | "no session named 'api' on laptop; did you mean 'api tests@laptop'?" |
 | `-32012` busy | Running, but can't take input now (blocked on a permission prompt or a question) | "it's waiting on a person" |
 | `-32013` no channel | This plugin has no way in for this session (no socket); the node may try another | (internal) |
 | `-32011` refused | Anything else, with a sentence why | the sentence |
@@ -496,7 +498,7 @@ It's the subscriber itself, `plugin:<name>@<node>`, and gets each event as the e
 ```json
 {"jsonrpc": "2.0", "id": 9, "method": "_fleetlayer.dev/event/subscribe", "params": {"channel": "alerts"}}
 {"jsonrpc": "2.0", "id": 4, "method": "_fleetlayer.dev/event/deliver",
- "params": {"id": 4183, "event": {"channel": "alerts", "kind": "alertmanager.firing", "subject": "...",
+ "params": {"id": 4183, "event": {"channel": "alerts", "kind": "alertmanager.alert", "subject": "...",
             "summary": "...", "body": {}, "at": "2026-11-28T09:12:03Z"}, "source": "alertmanager webhook"}}
 ```
 
@@ -514,10 +516,14 @@ It's the subscriber itself, `plugin:<name>@<node>`, and gets each event as the e
   access than its agents runs on a node of its own, under its own Unix user.
 - Only the control plane publishes on `session.status` and `access`; a plugin's or a node's event there is refused.
 
-Event sources should also heartbeat with `_fleetlayer.dev/event/heartbeat` `{source, at}` so a source that goes quiet
-is noticed: the control plane raises `source.stale` when a heartbeat is late.
+An event source that can go quiet (a lost connection to the room or mailbox it reads) says so with
+`_fleetlayer.dev/plugin/status` ([section 10](#10-what-plugins-can-ask-the-node)), so the
+node's health shows it.
 
 ## 7. Actions: the runner role
+
+Not built yet: the node accepts the `action` role in a plugin's `initialize` answer, but nothing sends or handles the
+methods below. This is the design.
 
 The runner carries out typed actions without spending AI tokens, and wakes an agent only when judgment is needed. An
 `action` plugin declares the action types it handles, each with a JSON Schema for its input:
@@ -528,11 +534,10 @@ The runner carries out typed actions without spending AI tokens, and wakes an ag
 ]}}
 ```
 
-The node sends `_fleetlayer.dev/action/run` `{actionId, type, input, deadline?}` and the plugin answers
+The node would send `_fleetlayer.dev/action/run` `{actionId, type, input, deadline?}` and the plugin answer
 `{status, output?, error?}` where `status` is `done`, `failed`, `skipped` (a freshness check found nothing to do), or
-`needs_judgment` (hand it to an agent, with `reason`). The node checks `input` against the schema before sending it.
-
-The plugin can send `_fleetlayer.dev/action/progress` `{actionId, message}` while it works.
+`needs_judgment` (hand it to an agent, with `reason`). The node would check `input` against the schema before sending
+it, and the plugin could send `_fleetlayer.dev/action/progress` `{actionId, message}` while it works.
 
 ## 8. Sync and sealed secrets
 
@@ -616,10 +621,10 @@ applied, so the next delivery of the same version is applied again.
 
 A control plane that lied about a node's key could read secrets meant for it. So the sending node pins each target's
 key the first time it seals to it (in `~/.local/state/fleetlayer/known-keys.json`), and refuses a changed key until
-the person removes the old pin by hand. Showing each key's fingerprint to the person, in the hub's page, is planned.
-That's trust on first use: for a node nothing has sealed to yet, a control plane that lied could hand over a key of its
-own, and the first bundle would be sealed to it. Compare the key's fingerprint (`keyFingerprint` in `fleetlayer status
---json` on the target) with the pin on the sender before trusting a new node with secrets.
+the person removes the old pin by hand. That's trust on first use: for a node nothing has sealed to yet, a control
+plane that lied could hand over a key of its own, and the first bundle would be sealed to it. Compare the key's
+fingerprint (`keyFingerprint` in `fleetlayer status --json` on the target) with the one the sender logs when it pins
+the key ("pinned a node's key") before trusting a new node with secrets.
 
 ## 9. Readings
 
@@ -650,12 +655,14 @@ Numbers, never secrets, flow with readings: account usage and reset times, healt
 
 | Request | What it does |
 |---|---|
-| `_fleetlayer.dev/message/send` `{to, text, untrusted?, subkind?}` | Send to a session anywhere: `to` is `<name>@<node>`, `<name>` (this node first) or a session ID; `untrusted` marks the text as outside data for the recipient; `subkind` is a finer kind for its harness (`forward`). Fails at once if it isn't running. |
+| `_fleetlayer.dev/message/send` `{to, text, untrusted?, subkind?}` | Send to a session anywhere: `to` is `<name>@<node>`, `<name>` (this node first) or a session ID; `untrusted` marks the text as outside data for the recipient; `subkind` is a finer kind for its harness (`forward`). Fails at once if it isn't running (grant `message.send`) |
 | `_fleetlayer.dev/event/publish` | [Section 6](#6-events-the-event-source-role) (grant `event.publish`) |
 | `_fleetlayer.dev/event/subscribe`, `/unsubscribe`, `/missed` | [Section 6](#receiving-events-plugins-as-subscribers) (grant `event.subscribe`) |
-| `_fleetlayer.dev/sync/publish` | [Section 8](#8-sync-and-sealed-secrets) |
-| `_fleetlayer.dev/reading/publish`, `/reading/subscribe` | [Section 9](#9-readings) |
-| `_fleetlayer.dev/sessions/query` `{node?, name?, harness?}` | This node's sessions (grant `sessions.query`) |
+| `_fleetlayer.dev/sync/publish` | [Section 8](#8-sync-and-sealed-secrets) (grant `sync.publish`) |
+| `_fleetlayer.dev/reading/publish`, `/reading/subscribe` | [Section 9](#9-readings) (grants `reading.publish`, `reading.subscribe`) |
+| `_fleetlayer.dev/sessions/query` `{}` | `{sessions}`: every session on this node (grant `sessions.query`) |
+| `_fleetlayer.dev/sessions/subscribe` `{}` | `{sessions, ownMessages}`: this node's sessions now, and the messages session managers type in by themselves (an auto-continue), which aren't the person's. Changes follow as `_fleetlayer.dev/sessions/update` notifications, or `{change: "reset", sessions}` after a gap (grant `sessions.watch`) |
+| `_fleetlayer.dev/summary/publish` `{event}` | A notification: a session summary, passed on to the control plane (grant `summary.publish`; dropped without it) |
 | `_fleetlayer.dev/transcript/read` `{to, offset?, tail?, max?, before?, lineMax?, types?, agentId?, why?}` | `{sessionId, format, size, offset, next, data, cut?, skipped?}`: part of a session's transcript (`data` base64, with every secret delivered to the serving node redacted from the plain text; `next` is where the following read starts, since redaction changes the length), here or on another node, checked as `read` on it. From byte `offset`, or the last `tail` bytes starting at a line (the last whole line when none starts in them; 256 MB at most), ending at byte `before`; at most `max` bytes (1 MiB at most), whole lines only: a forward read the first that fit, a tail the newest. A line longer than `lineMax` (or `max`) comes back cut, never dropped: a JSON line keeps its shape with its longest strings ending `…[cut: 1.4 MB]`, or becomes `{type, _fleetlayerCut: {bytes, head}}`, and carries `_fleetlayerCut: {bytes}`; `types` (`user`, `assistant`, `tool_result`...) keeps only those lines. The answer counts them in `cut` and `skipped`. The session's harness plugin names the file (`_fleetlayer.dev/harness/transcript`); the control plane passes the bytes on and keeps none (grant `transcript.read`) |
 | `_fleetlayer.dev/fleet/query` `{}` | `{nodes, sessions}`: every node and session in the fleet that this node may see, as the control plane has them, without summaries, so it's light enough to poll every few seconds (grant `fleet.query`) |
 | `_fleetlayer.dev/access/check` `{tenant, who, can, to}` | `{allowed, rules, reason}`: may this person (`person:<handle>` or their ID) or agent do this to something the tenant owns (`service:…`, `page:…`, `app:…`)? Grant `access.check`; answered only if the node is a member of that tenant ([`sso.md`](sso.md)) |
@@ -722,19 +729,20 @@ node drops a plugin's entries when the plugin exits, and lists them in `node/sta
 
 ## 11. Installing and running plugins
 
-A plugin is a directory with a manifest, `plugin.toml`:
+A plugin is an executable. The node runs the plugins listed under `plugins:` in `node.yaml`:
 
-```toml
-name = "herdr"
-version = "0.1.0"
-description = "Fleetlayer adapter for herdr"
-command = "fleetlayer-herdr"
-args = []
-roles = ["session_manager"]
+```yaml
+plugins:
+  - name: herdr
+    command: fleetlayer-herdr      # a path, or a name on PATH
+    args: []
+    config: {}                     # passed to the plugin untouched, in initialize
+    grants: [sessions.query]       # what it may ask the node for (section 10)
+    enabled: true
 ```
 
-- The node runs the plugins its config enables (`plugins:` in `node.yaml`), each with its own `config:` section and
-  `grants:`.
+- There's no manifest: the plugin says what it does in its `initialize` answer
+  ([section 3](#3-initialization-and-roles)).
 - The node pings each plugin with `_fleetlayer.dev/ping` `{}` (answer `{}`) every 30 seconds. A plugin that exits or
   misses three pings is restarted, with backoff up to 5 minutes. Its state (running, restarting, broken, and its last
   stderr lines) is part of the node's health, which the control plane alerts on.
@@ -744,12 +752,14 @@ roles = ["session_manager"]
 
 ## 12. The node's link to the control plane
 
-Not part of the plugin protocol, summarised here for context; `docs/link.md` will define it.
+Not part of the plugin protocol, summarised here for context; [link.md](link.md) defines it.
 
-- One outbound **WebSocket** per node to the control plane (so it works behind NAT, with no inbound port), JSON
-  frames, a `hello` with the node's enrolment token and protocol version, and request/response frames with IDs.
-- Up: session snapshots and changes, events, readings, sealed bundles and their status, plugin health.
-- Down: messages to deliver, actions to run, sealed bundles, requests to open, close or interrupt a session.
+- One outbound **WebSocket** per node to the control plane (so it works behind NAT, with no inbound port), carrying
+  JSON-RPC. The node sends its token as `Authorization: Bearer` when it connects, then `link/hello` with its protocol
+  and version, machine, user, public key and the windows it watches.
+- Up: session snapshots and changes, events, readings, sealed bundles and their status, summaries.
+- Down: messages to deliver, sealed bundles, readings it subscribed to, requests to start, close, answer or type into
+  a session.
 - Streams the control plane pairs between two nodes: a shared tool (`link/tool_open`, `link/tool_serve`, and
   `link/tool_call` for the MCP gate), a terminal, and a shared command (`link/command_open`, `link/command_serve`, and
   `link/command_call` for each run, decided as `run` on `command:<name>@<node>`, with a detail for the person that
@@ -766,15 +776,9 @@ Not part of the plugin protocol, summarised here for context; `docs/link.md` wil
   session-manager role sidesteps that by never owning the session; if ACP's session-status or multi-client work lands,
   move to it and propose `humanAttached` upstream as an RFD.
 - **ACP v2** (in preview since 20 November 2026) replaces `session/load` with `replayFrom` on `session/resume` and
-  changes `_meta` on updates to patch semantics. Draft 1 targets v1; revisit when v2 is stable.
-- **Tools on another machine** (planned next after the Claude Code harness). A node can export a stdio tool, such as
-  an MCP server that drives the person's own browser on their laptop, to sessions on other nodes:
-  `fleetlayer mcp <tool>@<node>` runs as the session's MCP command, the exporting node starts one server per
-  connection (named after the calling session), checks the caller against its allowlist and logs it. The bytes go
-  node to node over the person's own network, never through the control plane, which only says where the node is and
-  hands out a short-lived pass.
+  changes `_meta` on updates to patch semantics. This protocol targets ACP v1; revisit when v2 is stable.
 - **The chat view.** Reading a session's turns live (for the phone app) could use ACP's message and tool-call updates
-  from a harness plugin. Not in draft 1.
+  from a harness plugin. Not built yet.
 - **Bundles the control plane may keep.** A bundle that isn't secret (skills, AGENTS.md files) could be kept by the
   control plane, so a target that comes online gets the latest version even while the source machine is asleep. Not
   built: every bundle is sealed today (section 8), and the file-sync plugin seals too.

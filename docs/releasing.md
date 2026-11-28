@@ -54,9 +54,9 @@ for `fleetlayer-<rest>`), and notarised by Apple. That does two things for you:
 
 - **Permissions you give survive upgrades.** macOS remembers a permission (Files and Folders, Local Network) for a
   command-line program by its path, and checks the program there against what it saw when you answered: for a signed
-  program, the team and identifier, which stay the same in every release. So from v0.3.13 the installer and the
-  node's own update keep every binary at one path, `~/.local/lib/fleetlayer/`, and replace the files there. Moving to
-  that layout is a new path, so macOS asks once more, then never again for an upgrade.
+  program, the team and identifier, which stay the same in every release. So the installer and the node's own
+  update keep every binary at one path, `~/.local/lib/fleetlayer/`, and replace the files there. An install from
+  before that layout moves once, to a new path, so macOS asks once more, then never again for an upgrade.
 - **A tarball downloaded in a browser runs.** Without notarisation, macOS refuses it ("Apple could not verify...").
 
 Two things to know:

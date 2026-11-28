@@ -89,7 +89,7 @@ GET /v1/events?after=latest
 → {"events": [], "next": 4182}
 
 GET /v1/events?after=4182&channel=alerts,ci&wait=30
-→ {"events": [{"id": 4183, "channel": "alerts", "kind": "alertmanager.firing", "subject": "...",
+→ {"events": [{"id": 4183, "channel": "alerts", "kind": "alertmanager.alert", "subject": "...",
                "summary": "...", "body": {...}, "source": "...", "at": 1764300000000}],
    "next": 4183}
 ```

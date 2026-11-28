@@ -53,7 +53,7 @@ Claude setup tokens, browser cookies and 1Password items go the same way:
 5. **Readings** say when each secret last arrived and when it expires, never its value. The control plane's audit log
    records every delivery, never the value.
 
-From the next release, every plugin that writes secrets on a node also lists them in the node's **registry**
+Every plugin that writes secrets on a node also lists them in the node's **registry**
 (`~/.local/state/fleetlayer/secrets/`, readable only by the node's user), by reference: `op://vault/item/field`,
 `cookie://x/ct0`, `claude://account/2`. That's how the node knows what to scrub, and what `fleetlayer secrets run` may
 fill in.

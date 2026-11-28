@@ -41,7 +41,7 @@ agents they limit can't change.
 | A channel | `channel:<name>` | `channel:ci` |
 | A group | `group:<name>` | `group:untrusted-input` |
 | A person, a team, the admins | `person:<handle>`, `team:<name>`, `role:admin` | `person:sam` |
-| A web service, or someone's data in it | `service:<name>[/<owner>/<path>]` | `service:quietdeck/sam/inbox` |
+| A web service, or someone's data in it | `service:<name>[/<owner>/<path>]` | `service:mail/sam/inbox` |
 | An internet host a role may connect to | `host:<name>[:<port>]` | `host:api.github.com`, `host:*.pastebin.com` |
 | A page, or an app, in a space | `page:<space>/<path>`, `app:<space>/<name>` | `page:handbook/*` |
 | What someone owns | `owned-by:person:<handle>`, `owned-by:team:<name>`; `owner` in `to` | `owned-by:team:support` |
@@ -351,18 +351,27 @@ inherits nothing, and so is an approve token's owner.
 ## Roles that never ask
 
 Approvals are on by default, but a role whose work never needs the person (a homelab agent, a CI runner) shouldn't
-ask: list `ask:` with that role left out, through `except:`.
+ask: list `ask:` with that role left out, through `except:`. Writing `ask:` replaces every default ask, so list the
+ones you keep, as here.
 
 ```yaml
 ask:
   - who: "*"
-    except: ["*@homeserver", "*@ci"]    # these roles get on with it
+    except: ["*@homelab", "*@ci"]    # these roles get on with it
     can: [start, attach, answer, close]
     for: 10m
   - who: "*"
-    except: ["*@homeserver", "*@ci"]
-    can: [use_tool, sync, admin, write]
+    except: ["*@homelab", "*@ci"]
+    can: [command, run]
+    for: once
+  - who: "*"
+    except: ["*@homelab", "*@ci"]
+    can: [use_tool, sync, admin, write, connect]
     for: 30d
+  - who: "*"                            # every read of the browser's cookies, for every role
+    can: sync
+    to: "sync:cookies-from-browser/*"
+    for: once
 ```
 
 Their `deny` and `only` rules still hold; only the asking stops. Keep asking for roles that touch production or
@@ -492,7 +501,7 @@ who may connect, and the node's own `tools:` list filters by name.
 |---|---|
 | `acl apply <file> [--check]` | Make the stored policy match the file; `--check` prints the difference without applying |
 | `acl explain --from <who> --can <verb> --to <what>` | The decision in a tenant (`--tenant`), and the rules that made it |
-| `acl test <tests.yaml>` | Check expected decisions (`{from, can, to, expect: allow\|deny}`, with `role` and `teams` for a person) against a policy file, offline; exits non-zero on a mismatch |
+| `acl test <tests.yaml> --policy <file>` | Check expected decisions (`{from, can, to, expect: allow\|deny}`, with `role` and `teams` for a person) against a policy file, offline; exits non-zero on a mismatch |
 | `acl suggest [--days 7]` | The smallest `only` rules that allow what each agent actually did, from the message log |
 | `acl log [--limit 30]` | Recent refusals, and what audit rules would have refused |
 | `role list` | Roles with windows, whether each is open, and recent windows (who asked, when it closed, nodes that haven't confirmed) |
@@ -512,8 +521,7 @@ The decision engine is [Cedar](https://www.cedarpolicy.com) (Apache-2.0, from AW
 the YAML file compiles to Cedar policies. `deny` and `only` become `forbid` policies, `allow` and the default become
 `permit` policies, and Cedar's rule that a `forbid` always beats a `permit` gives principle 1. Group membership is
 worked out from the patterns when a request arrives. Cedar names the policies behind each decision, which `acl
-explain` shows with the YAML rule each came from. Teams that outgrow the YAML can add raw Cedar policies in a
-`cedar:` block of the same file.
+explain` shows with the YAML rule each came from.
 
 Every refusal is published as an `access.denied` event on the `access` channel, and every decision an audit rule would
 have refused as `access.audit`.

@@ -11,7 +11,7 @@ It's off by default. Most fleets start without it, and an agent sets it up when 
 
 ## How it works
 
-A role is a Unix user with its own node ([Credentials](credentials.md#whats-coming)). For each restricted role:
+A role is a Unix user with its own node ([Credentials](credentials.md#the-principles)). For each restricted role:
 
 1. **A firewall rule per Unix user.** nftables matches the role's users (`meta skuid`), and the subordinate uids each
    may run processes as (its ranges in `/etc/subuid`, which rootless podman uses). Their connections to ports 443
