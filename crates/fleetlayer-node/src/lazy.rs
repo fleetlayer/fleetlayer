@@ -9,7 +9,7 @@
 //! `notifications/tools/list_changed`. With no cache, or one written for other settings, the server starts at once
 //! and fills the cache from that connection. `lazy: false` in a tool's settings turns this off.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
@@ -58,14 +58,34 @@ impl Spawn {
     }
 }
 
-/// What the server answered last time, for the settings in `key`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// What the server answered last time, for the settings in `key`: each answer (`{"result": …}` or `{"error": …}`)
+/// under the request it answers (`answer_key`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Cache {
     pub key: String,
-    /// The protocol version the caller asked for; a caller asking for another one starts the server.
-    pub protocol: Value,
-    pub initialize: Value,
-    pub tools: Value,
+    pub answers: BTreeMap<String, Value>,
+}
+
+/// Where a request's answer is kept: `initialize` per protocol version the caller asks for, and the discovery probe
+/// (`server/discover`, which Claude Code sends before `initialize`) and `tools/list` by method. Nothing else: other
+/// answers can change from call to call, or the request does something.
+fn answer_key(v: &Value) -> Option<String> {
+    v.get("id")?;
+    match v["method"].as_str()? {
+        "initialize" => Some(format!("initialize {}", v["params"]["protocolVersion"].as_str()?)),
+        "tools/list" if v["params"]["cursor"].is_null() => Some("tools/list".into()),
+        "server/discover" => Some("server/discover".into()),
+        _ => None,
+    }
+}
+
+/// The answer part of a response (`result` or `error`), to keep.
+fn answer_of(v: &Value) -> Option<Value> {
+    match (v.get("result"), v.get("error")) {
+        (Some(r), _) => Some(json!({"result": r})),
+        (None, Some(e)) => Some(json!({"error": e})),
+        _ => None,
+    }
 }
 
 /// The settings a cache was written for: the command, its arguments (before `{session}` is filled in), the
@@ -77,14 +97,18 @@ pub fn key(command: &str, args: &[String], env: &HashMap<String, String>, cwd: &
     hex::encode(Sha256::digest(text.as_bytes()))
 }
 
+/// The cache for these settings, if one was written; an empty one counts as none.
 pub fn load(path: &std::path::Path, key: &str) -> Option<Cache> {
     let cache: Cache = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
-    (cache.key == key).then_some(cache)
+    (cache.key == key && !cache.answers.is_empty()).then_some(cache)
 }
 
 fn save(path: &std::path::Path, cache: &Cache) {
     let tmp = path.with_extension("tmp");
-    let written = std::fs::write(&tmp, serde_json::to_vec_pretty(cache).unwrap_or_default())
+    let written = path
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::write(&tmp, serde_json::to_vec_pretty(cache).unwrap_or_default()))
         .and_then(|()| std::fs::rename(&tmp, path));
     if let Err(e) = written {
         tracing::warn!("writing {}: {e}", path.display());
@@ -112,17 +136,40 @@ async fn send<W: AsyncWrite + Unpin>(w: &mut W, v: &Value) -> bool {
     w.write_all(format!("{v}\n").as_bytes()).await.is_ok() && w.flush().await.is_ok()
 }
 
-async fn reply<W: AsyncWrite + Unpin>(w: &mut W, id: &Value, result: &Value) -> bool {
-    send(w, &json!({"jsonrpc": "2.0", "id": id, "result": result})).await
+async fn reply<W: AsyncWrite + Unpin>(w: &mut W, id: &Value, answer: &Value) -> bool {
+    let mut v = answer.clone();
+    v["jsonrpc"] = json!("2.0");
+    v["id"] = id.clone();
+    send(w, &v).await
 }
 
-/// The ids of the caller's `initialize` and `tools/list` requests, and their answers, to fill the cache from a
-/// connection that started the server at once.
-#[derive(Default)]
-struct Watch {
-    initialize: Option<(Value, Value)>,
-    tools: Option<Value>,
-    answers: (Option<Value>, Option<Value>),
+/// The cache being kept up to date from what passes through: requests whose answers are kept, by id.
+struct Keeper {
+    cache: Cache,
+    path: PathBuf,
+    pending: HashMap<String, String>,
+}
+
+impl Keeper {
+    fn asked(&mut self, v: &Value) {
+        if let Some(k) = answer_key(v) {
+            self.pending.insert(v["id"].to_string(), k);
+        }
+    }
+
+    fn answered(&mut self, v: &Value) {
+        if v.get("method").is_some() {
+            return;
+        }
+        let Some(id) = v.get("id") else { return };
+        let Some(k) = self.pending.remove(&id.to_string()) else { return };
+        if let Some(a) = answer_of(v)
+            && self.cache.answers.get(&k) != Some(&a)
+        {
+            self.cache.answers.insert(k, a);
+            save(&self.path, &self.cache);
+        }
+    }
 }
 
 async fn front(
@@ -146,18 +193,19 @@ async fn front(
                 return;
             };
             let v: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
-            let answered = match v["method"].as_str() {
-                Some("initialize") if init.is_none() && v["params"]["protocolVersion"] == cache.protocol => {
-                    let ok = reply(&mut w, &v["id"], &cache.initialize).await;
-                    init = Some(v);
-                    ok
+            let cached = answer_key(&v).and_then(|k| cache.answers.get(&k));
+            let answered = match (cached, v["method"].as_str()) {
+                (Some(a), m) => {
+                    if m == Some("initialize") {
+                        init = Some(v.clone());
+                    }
+                    reply(&mut w, &v["id"], a).await
                 }
-                Some("notifications/initialized") if init.is_some() => {
+                (None, Some("notifications/initialized")) if init.is_some() => {
                     initialized = true;
                     true
                 }
-                Some("tools/list") if init.is_some() => reply(&mut w, &v["id"], &cache.tools).await,
-                Some("ping") => reply(&mut w, &v["id"], &json!({})).await,
+                (None, Some("ping")) => reply(&mut w, &v["id"], &json!({"result": {}})).await,
                 _ => {
                     first = Some(line);
                     break;
@@ -170,64 +218,78 @@ async fn front(
     }
     let mut child = match child {
         Some(c) => c,
-        None => match spawn.start() {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(tool = %spawn.tool, "starting {}: {e}", spawn.command);
-                if let Some(id) =
-                    first.as_deref().and_then(|l| serde_json::from_str::<Value>(l).ok()).map(|v| v["id"].clone())
-                    && !id.is_null()
-                {
-                    let error = json!({"code": -32603, "message": format!("{} couldn't start: {e}", spawn.tool)});
-                    send(&mut w, &json!({"jsonrpc": "2.0", "id": id, "error": error})).await;
+        None => {
+            let why = first
+                .as_deref()
+                .and_then(|l| serde_json::from_str::<Value>(l).ok())
+                .and_then(|v| v["method"].as_str().map(str::to_string))
+                .unwrap_or_else(|| "a message".into());
+            tracing::info!(tool = %spawn.tool, "starting the server for the caller's {why}");
+            match spawn.start() {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(tool = %spawn.tool, "starting {}: {e}", spawn.command);
+                    if let Some(id) =
+                        first.as_deref().and_then(|l| serde_json::from_str::<Value>(l).ok()).map(|v| v["id"].clone())
+                        && !id.is_null()
+                    {
+                        let error = json!({"code": -32603, "message": format!("{} couldn't start: {e}", spawn.tool)});
+                        send(&mut w, &json!({"jsonrpc": "2.0", "id": id, "error": error})).await;
+                    }
+                    return;
                 }
-                return;
             }
-        },
+        }
     };
     let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
         return;
     };
     let mut out = BufReader::new(stdout).lines();
-    if let (Some(init), Some(cache)) = (&init, &cache) {
-        tracing::info!(tool = %spawn.tool, "starting the server at the caller's first call");
-        let fresh = replay(&mut stdin, &mut out, &mut w, init, initialized).await;
-        match fresh {
-            Some((initialize, tools)) => {
-                let new = Cache { key: key.clone(), protocol: cache.protocol.clone(), initialize, tools };
-                if new != *cache {
-                    save(&path, &new);
-                    if new.tools != cache.tools {
-                        send(&mut w, &json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})).await;
-                    }
-                }
-            }
-            None => {
-                tracing::warn!(tool = %spawn.tool, "the server didn't answer initialize and tools/list in time");
-                return;
-            }
+    let mut keeper = Keeper {
+        cache: cache.clone().unwrap_or(Cache { key, answers: BTreeMap::new() }),
+        path,
+        pending: HashMap::new(),
+    };
+    if let Some(init) = &init {
+        // The caller's initialize was answered from the cache: bring the server to the same point, then check its
+        // answers are still the ones kept.
+        let Some((initialize, tools)) = replay(&mut stdin, &mut out, &mut w, init, initialized).await else {
+            tracing::warn!(tool = %spawn.tool, "the server didn't answer initialize and tools/list in time");
+            return;
+        };
+        let init_key = answer_key(init).unwrap_or_default();
+        let fresh = |k: &str, a: Value| (k.to_string(), json!({"result": a}));
+        let (ik, ia) = fresh(&init_key, initialize);
+        let (tk, ta) = fresh("tools/list", tools);
+        let tools_changed = keeper.cache.answers.get(&tk) != Some(&ta);
+        if keeper.cache.answers.get(&ik) != Some(&ia) {
+            // Another server (an upgrade): what it answered before is stale.
+            keeper.cache.answers.clear();
+        }
+        if tools_changed || !keeper.cache.answers.contains_key(&ik) {
+            keeper.cache.answers.insert(ik, ia);
+            keeper.cache.answers.insert(tk, ta);
+            save(&keeper.path, &keeper.cache);
+        }
+        if tools_changed {
+            send(&mut w, &json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})).await;
         }
     }
-    if let Some(line) = first
-        && !send_line(&mut stdin, &line).await
-    {
-        return;
+    let keeper = Arc::new(Mutex::new(keeper));
+    if let Some(line) = first {
+        if let Ok(v) = serde_json::from_str::<Value>(&line) {
+            keeper.lock().unwrap_or_else(|e| e.into_inner()).asked(&v);
+        }
+        if !send_line(&mut stdin, &line).await {
+            return;
+        }
     }
-    // Pass everything through, and fill the cache from a connection that had none.
-    let watch = Arc::new(Mutex::new(Watch::default()));
-    let filling = cache.is_none();
-    let up_watch = watch.clone();
+    // Pass everything through, keeping the answers the cache holds up to date.
+    let up_keeper = keeper.clone();
     let up = async move {
         while let Ok(Some(line)) = lines.next_line().await {
-            if filling && let Ok(v) = serde_json::from_str::<Value>(&line) {
-                let mut wt = up_watch.lock().unwrap_or_else(|e| e.into_inner());
-                match v["method"].as_str() {
-                    Some("initialize") => {
-                        wt.initialize = Some((v["id"].clone(), v["params"]["protocolVersion"].clone()))
-                    }
-                    Some("tools/list") => wt.tools = Some(v["id"].clone()),
-                    _ => {}
-                }
+            if let Ok(v) = serde_json::from_str::<Value>(&line) {
+                up_keeper.lock().unwrap_or_else(|e| e.into_inner()).asked(&v);
             }
             if !send_line(&mut stdin, &line).await {
                 break;
@@ -236,28 +298,9 @@ async fn front(
         let _ = stdin.shutdown().await;
     };
     let down = async {
-        let mut saved = !filling;
         while let Ok(Some(line)) = out.next_line().await {
-            if !saved && let Ok(v) = serde_json::from_str::<Value>(&line) {
-                let mut wt = watch.lock().unwrap_or_else(|e| e.into_inner());
-                if wt.initialize.as_ref().is_some_and(|(id, _)| *id == v["id"]) {
-                    wt.answers.0 = Some(v["result"].clone());
-                } else if wt.tools.as_ref() == Some(&v["id"]) {
-                    wt.answers.1 = Some(v["result"].clone());
-                }
-                if let ((Some(init), Some(tools)), Some((_, protocol))) = (&wt.answers, &wt.initialize)
-                    && !init.is_null()
-                    && !tools.is_null()
-                {
-                    let c = Cache {
-                        key: key.clone(),
-                        protocol: protocol.clone(),
-                        initialize: init.clone(),
-                        tools: tools.clone(),
-                    };
-                    save(&path, &c);
-                    saved = true;
-                }
+            if let Ok(v) = serde_json::from_str::<Value>(&line) {
+                keeper.lock().unwrap_or_else(|e| e.into_inner()).answered(&v);
             }
             if w.write_all(format!("{line}\n").as_bytes()).await.is_err() {
                 break;
@@ -339,6 +382,7 @@ mod tests {
         printf '%s\n' "$l" >> "$LOG"
         id=$(printf '%s' "$l" | sed -nE 's/.*"id":("[^"]*"|[0-9]+).*/\1/p')
         case "$l" in
+          *server/discover*) printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"Method not found"}}\n' "$id" ;;
           *'"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-06-18","serverInfo":{"name":"fake","version":"%s"}}}\n' "$id" "$VERSION" ;;
           *'"tools/list"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"%s"}]}}\n' "$id" "$TOOL" ;;
           *tools/call*) printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[]}}\n' "$id" ;;
@@ -412,6 +456,20 @@ mod tests {
             (init["result"].clone(), tools["result"].clone())
         }
 
+        /// What Claude Code 2.1.332 sends at launch: a `server/discover` probe, then initialize at 2025-11-25,
+        /// initialized and tools/list. Answers the tools/list result.
+        async fn claude_code_start(&mut self) -> Value {
+            self.send(json!({"jsonrpc":"2.0","id":"server-discover-probe-1","method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}})).await;
+            assert_eq!(self.next().await["id"], "server-discover-probe-1");
+            self.send(json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{"roots":{"listChanged":true}},"clientInfo":{"name":"claude-code","version":"2.1.332"}}})).await;
+            assert_eq!(self.next().await["id"], 0);
+            self.send(json!({"jsonrpc":"2.0","method":"notifications/initialized"})).await;
+            self.send(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"})).await;
+            let tools = self.next().await;
+            assert_eq!(tools["id"], 1);
+            tools["result"].clone()
+        }
+
         async fn leave(mut self) {
             self.w.shutdown().await.unwrap();
             let mut rest = String::new();
@@ -432,7 +490,8 @@ mod tests {
         assert_eq!(init["serverInfo"]["version"], "1");
         c.leave().await;
         let cache = load(&f.cache, "k").expect("a cache");
-        assert_eq!((cache.initialize, cache.tools), (init, tools));
+        assert_eq!(cache.answers["initialize 2025-06-18"]["result"], init);
+        assert_eq!(cache.answers["tools/list"]["result"], tools);
         assert!(load(&f.cache, "other settings").is_none(), "a cache is only for the settings it was written for");
     }
 
@@ -489,8 +548,46 @@ mod tests {
         );
         c.leave().await;
         let cache = load(&f.cache, "k").unwrap();
-        assert_eq!(cache.initialize["serverInfo"]["version"], "2");
-        assert_eq!(cache.tools["tools"][0]["name"], "browser_find");
+        assert_eq!(cache.answers["initialize 2025-06-18"]["result"]["serverInfo"]["version"], "2");
+        assert_eq!(cache.answers["tools/list"]["result"]["tools"][0]["name"], "browser_find");
+    }
+
+    #[tokio::test]
+    async fn claude_codes_discover_probe_starts_nothing_once_cached() {
+        // Claude Code opens with server/discover before initialize: every idle session started a server.
+        let f = Fake::new();
+        let mut c = f.serve("1", "browser_navigate");
+        let first = c.claude_code_start().await;
+        c.leave().await;
+        std::fs::write(&f.log, "").unwrap();
+        let mut c = f.serve("1", "browser_navigate");
+        assert_eq!(c.claude_code_start().await, first, "answered from the cache");
+        c.leave().await;
+        settle().await;
+        assert_eq!(f.log(), "", "the server never started");
+    }
+
+    #[tokio::test]
+    async fn a_second_protocol_version_is_cached_too() {
+        // A client asking for another protocol version starts the server once, and its answers join the cache.
+        let f = Fake::new();
+        let mut c = f.serve("1", "browser_navigate");
+        c.claude_code_start().await;
+        c.leave().await;
+        let mut c = f.serve("1", "browser_navigate");
+        c.start().await;
+        c.leave().await;
+        std::fs::write(&f.log, "").unwrap();
+        for _ in 0..2 {
+            let mut c = f.serve("1", "browser_navigate");
+            c.start().await;
+            c.leave().await;
+            let mut c = f.serve("1", "browser_navigate");
+            c.claude_code_start().await;
+            c.leave().await;
+        }
+        settle().await;
+        assert_eq!(f.log(), "", "both clients answered from the cache");
     }
 
     #[tokio::test]

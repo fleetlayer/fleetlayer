@@ -87,7 +87,7 @@ What each line is for:
   connects to Chrome, and opens a tab, at its first call of any kind, so a cleanup call for a session that never used
   the browser would open the very tab it meant to close.
 - **Nothing runs until it's used:** a session connects at launch whether or not it will use the browser. From
-  v0.3.13 the node answers a new connection from what Playwright MCP answered last time (kept in
+  v0.4.0 the node answers a new connection from what Playwright MCP answered last time (kept in
   `~/.local/state/fleetlayer/tools/browser.mcp-cache.json`) and starts the process only at the session's first browser
   call, so twenty idle sessions cost nothing on the laptop. When Playwright MCP is upgraded, the first call after it
   notices the new tools, rewrites that file and tells the session. `lazy: false` starts it at every connection
