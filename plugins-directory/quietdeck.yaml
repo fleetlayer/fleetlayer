@@ -1,0 +1,35 @@
+name: quietdeck
+summary: Email triage on a deck: an agent proposes, you approve. Built on Fleetlayer, with its runner as a plugin.
+kind: plugin
+roles: [event_source, action]
+ships_with_fleetlayer: false
+status: beta
+licence: FSL-1.1-ALv2
+maintainer: Quietdeck
+source: https://github.com/QuietdeckAI/quietdeck
+install: {command: "cargo install --locked --git https://github.com/QuietdeckAI/quietdeck quietdeck-node quietdeck-cli"}
+command: quietdeck-node
+platforms: [linux, macos]
+min_fleetlayer: 0.3.12
+protocol: 1
+needs: [a Quietdeck deck (the web app and API), herdr]
+grants: [message.send]
+docs: https://quietdeck.ai/
+config: |
+  plugins:
+    - name: runner
+      command: quietdeck-node
+      args: [fleetlayer-plugin]
+      grants: [message.send]
+security: >-
+  The runner sends messages to sessions as plugin:runner@<node>, under the access policy, with forwarded email marked
+  as outside data. It acts on mail (drafts, sends, archives, filters) only for actions the person approved on the deck,
+  or under rules the person granted. Run it under its own Unix user, never the triage agent's: it holds the mail
+  sign-ins the triage agent mustn't have.
+description: |
+  [Quietdeck](https://quietdeck.ai/) is a product built on Fleetlayer. An email triage agent reads your inboxes and
+  posts cards to a deck (Inbox and Work), and you approve what it proposes. Its runner, started by the Fleetlayer node
+  as the `runner` plugin, carries out what you approved and forwards mail, alerts and reports to the agent that owns the
+  work through Fleetlayer's messaging. Quietdeck uses Fleetlayer's sessions, summaries, approvals and access policy
+  rather than its own. It's source-available under the Functional Source License, which becomes Apache 2.0 two years
+  after each release.
