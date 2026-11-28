@@ -816,16 +816,18 @@ pub async fn get_policy(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiR
     Ok(Json(json!({"text": text, "builtin": builtin, "policy": policy})))
 }
 
-/// `/healthz`: ok when the database answers, with the number of linked nodes.
-/// `{ok, linkedNodes, degraded: [reason]}`. 200 while the server can answer, so Kubernetes' probes don't restart it
-/// over a problem a restart won't fix; `ok` is false while something is degraded (an audit write failed within the
-/// last five minutes, or a policy file couldn't be applied). `?strict` answers 503 then, for an uptime check that only reads the status.
-/// Since when `/healthz` has found the database busy (milliseconds; 0 while it isn't).
-static DB_BUSY_SINCE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+/// How long the database may stay busy before `/healthz` fails outright (503 for every check, not only `?strict`).
+const HEALTH_DB_STUCK: Duration = Duration::from_secs(60);
 
 /// How long `/healthz` waits for a database connection before it reports the database busy.
 const HEALTH_DB_WAIT: Duration = Duration::from_secs(2);
 
+/// `/healthz`: ok when the database answers, with the number of linked nodes.
+/// `{ok, linkedNodes, degraded: [reason]}`. 200 while the server can answer, so Kubernetes' probes don't restart it
+/// over a problem a restart won't fix; `ok` is false while something is degraded (an audit write failed within the
+/// last five minutes, a policy file couldn't be applied, or the database was busy: no connection free within two
+/// seconds). `?strict` answers 503 then, for an uptime check that only reads the status. A database busy for over a
+/// minute is an outage: 503 for every check.
 pub async fn healthz(
     State(app): State<Arc<App>>,
     Query(q): Query<HashMap<String, String>>,
@@ -834,23 +836,27 @@ pub async fn healthz(
     // long write, that's a moment of contention (degraded), not a server to take out of a proxy's rotation, which
     // would turn it into 503s for everyone.
     let mut degraded: Vec<String> = vec![];
-    use std::sync::atomic::Ordering::Relaxed;
     let db_free = match tokio::time::timeout(HEALTH_DB_WAIT, sqlx::query("SELECT 1").execute(&app.db)).await {
         Ok(Ok(_)) => {
-            DB_BUSY_SINCE.store(0, Relaxed);
+            *app.audit.db_busy_since.lock().unwrap_or_else(|e| e.into_inner()) = None;
             true
         }
         Ok(Err(e)) if !matches!(e, sqlx::Error::PoolTimedOut) => return Err(StatusCode::SERVICE_UNAVAILABLE),
         _ => {
-            let now = db::now_ms();
-            let since = match DB_BUSY_SINCE.compare_exchange(0, now, Relaxed, Relaxed) {
-                Ok(_) => now,
-                Err(s) => s,
-            };
+            let since = *app
+                .audit
+                .db_busy_since
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get_or_insert_with(|| std::time::Instant::now() - HEALTH_DB_WAIT);
+            // A short spell is contention; a database busy this long is an outage, and every check fails.
+            if since.elapsed() >= HEALTH_DB_STUCK {
+                return Err(StatusCode::SERVICE_UNAVAILABLE);
+            }
             degraded.push(format!(
                 "the database is busy: no connection free within {} seconds, busy for {} seconds (a long write holds it)",
                 HEALTH_DB_WAIT.as_secs(),
-                (now - since) / 1000 + HEALTH_DB_WAIT.as_secs() as i64
+                since.elapsed().as_secs()
             ));
             false
         }
@@ -1064,9 +1070,13 @@ mod tests {
         assert!(v["degraded"][0].as_str().unwrap().starts_with("the database is busy"), "{v}");
         let (status, _) = healthz(State(app.clone()), query(true)).await.unwrap();
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "?strict still tells the uptime check");
+        // Busy for over a minute: an outage, and every check fails.
+        *app.audit.db_busy_since.lock().unwrap() = Some(std::time::Instant::now() - HEALTH_DB_STUCK);
+        assert_eq!(healthz(State(app.clone()), query(false)).await.unwrap_err(), StatusCode::SERVICE_UNAVAILABLE);
         drop(held);
-        let (_, Json(v)) = healthz(State(app), query(false)).await.unwrap();
+        let (_, Json(v)) = healthz(State(app.clone()), query(false)).await.unwrap();
         assert_eq!(v["ok"], true);
+        assert!(app.audit.db_busy_since.lock().unwrap().is_none(), "a free database ends the spell");
     }
 
     #[tokio::test]

@@ -70,6 +70,8 @@ pub struct Audit {
     failed: std::sync::Mutex<Option<(std::time::Instant, String)>>,
     /// Denials seen again within the window: key → (first seen, repeats since, entry).
     repeats: Mutex<HashMap<String, (i64, i64, String, Entry)>>,
+    /// Since when `/healthz` has found the database busy (no connection free), while it is.
+    pub db_busy_since: std::sync::Mutex<Option<std::time::Instant>>,
 }
 
 fn lp(out: &mut Vec<u8>, v: &str) {
@@ -79,7 +81,14 @@ fn lp(out: &mut Vec<u8>, v: &str) {
 
 impl Audit {
     pub fn new(key: Option<Vec<u8>>) -> Audit {
-        Audit { key, anchors: None, write: Mutex::new(()), failed: Default::default(), repeats: Mutex::default() }
+        Audit {
+            key,
+            anchors: None,
+            write: Mutex::new(()),
+            failed: Default::default(),
+            repeats: Mutex::default(),
+            db_busy_since: Default::default(),
+        }
     }
 
     pub fn with_anchors(mut self, dir: Option<PathBuf>) -> Audit {
