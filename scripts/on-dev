@@ -69,7 +69,7 @@ run() {
   if [ -n "$slot" ]; then
     # Without a slot it doesn't build: unlimited builds are what the slots prevent. FLEETLAYER_DEV_SLOT=none skips it.
     slot_id=$(FLEETLAYER_LEASE_PID=$$ "$slot" acquire "fleetlayer on-dev $cmd ($(basename "$dir"))") || {
-      echo "on-dev: couldn't take a build slot, so not building (FLEETLAYER_DEV_SLOT=none to build without one)" >&2
+      echo "on-dev: couldn't take a build slot (the helper's error is above), so not building. Run it again once the helper works, or set FLEETLAYER_DEV_SLOT=none to build without a slot on purpose." >&2
       return 75
     }
     [ -n "$slot_id" ] && trap '"$slot" release "$slot_id" >/dev/null 2>&1 || true' RETURN

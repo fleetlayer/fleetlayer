@@ -35,7 +35,7 @@ if [ -n "$slot" ]; then
   sleep 7200 < /dev/null > /dev/null 2>&1 &
   anchor=$!
   slot_id=$(FLEETLAYER_LEASE_PID=$anchor "$slot" acquire "fleetlayer build-images $sha") || {
-    echo "build-images: couldn't take a build slot, so not building (FLEETLAYER_DEV_SLOT=none to build without one)" >&2
+    echo "build-images: couldn't take a build slot (the helper's error is above), so not building. Run it again once the helper works, or set FLEETLAYER_DEV_SLOT=none to build without a slot on purpose." >&2
     kill "$anchor" 2> /dev/null || true
     exit 75
   }
