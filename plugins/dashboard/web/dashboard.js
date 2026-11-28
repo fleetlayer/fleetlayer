@@ -1,3 +1,17 @@
+// On a narrow screen the tabs scroll sideways: bring the current page's tab into view.
+(() => {
+  const tabs = document.querySelector(".tabs");
+  const here = tabs && tabs.querySelector('[aria-current="page"]');
+  if (!tabs || !here) return;
+  const centre = () => {
+    if (tabs.scrollWidth <= tabs.clientWidth) return;
+    const t = tabs.getBoundingClientRect(), h = here.getBoundingClientRect();
+    tabs.scrollLeft += h.left - t.left - (t.width - h.width) / 2;
+  };
+  // Measured once the web fonts are in: the fallback font's narrower tabs would put it in the wrong place.
+  if (document.fonts) document.fonts.ready.then(centre); else centre();
+})();
+
 // The live view: fetch the page's <main> again every few seconds and swap it in when it changed. Paused while the tab
 // is hidden or while someone is pressing a button in it; a lost sign-in reloads the page (to sign in again).
 (() => {

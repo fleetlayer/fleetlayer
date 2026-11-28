@@ -103,14 +103,6 @@ fn sentence(s: &str) -> String {
     if s.is_empty() || s.ends_with(['.', '!', '?', ':']) { s.to_string() } else { format!("{s}.") }
 }
 
-fn capitalise(s: &str) -> String {
-    let mut c = s.chars();
-    match c.next() {
-        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-        None => String::new(),
-    }
-}
-
 /// What the viewer may do, and the form token for doing it.
 pub struct Ctx<'a> {
     pub can_act: bool,
@@ -281,20 +273,27 @@ pub fn overview(s: &Snapshot, c: &Ctx) -> String {
     let windows = s.open_windows();
 
     let mut o = errors(s);
-    let summary = if waiting == 0 && problems == 0 {
+    // The same count as the "Needs you" list below: what's waiting, the open windows and the problems.
+    let need = waiting + windows.len() + problems;
+    let summary = if need == 0 {
         format!(r#"{}Everything's running. Nothing needs you."#, dot("ok", "Healthy"))
     } else {
         let mut parts = vec![];
         if waiting > 0 {
-            parts.push(format!("{} waiting on you", plural(waiting, "thing", "things")));
+            parts.push(format!("{waiting} waiting for an answer"));
+        }
+        if !windows.is_empty() {
+            parts.push(format!("{} open", plural(windows.len(), "admin window", "admin windows")));
         }
         if problems > 0 {
             parts.push(plural(problems, "problem", "problems"));
         }
         format!(
-            "{}{}.",
+            "{}{} {}: {}.",
             dot(if problems > 0 { "bad" } else { "warn" }, "Needs a look"),
-            esc(&capitalise(&parts.join(", ")))
+            plural(need, "thing", "things"),
+            if need == 1 { "needs you" } else { "need you" },
+            esc(&parts.join(", "))
         )
     };
     o.push_str(&page_head("Fleet", &summary));

@@ -304,7 +304,7 @@ impl Demo {
         let readings = json!({"readings": [
             status("laptop", "macos", vec![plugin("herdr", "running", None, &[], sm), plugin("claude-code", "running", None, &[], h),
                 plugin("shared-folders", "running", None, &[], &[]),
-                plugin("cookies", "running", Some("Chrome's cookies can't be read: give the terminal Full Disk Access"), &[], &[])]),
+                plugin("cookies", "running", Some("The x.com cookies have expired: sign in to x.com again in Chrome"), &[], &[])]),
             status("studio", "macos", vec![plugin("herdr", "running", None, &[], sm), plugin("claude-code", "running", None, &[], h)]),
             status("workers", "linux", vec![plugin("herdr", "running", None, &[], sm), plugin("claude-code", "running", None, &[], h),
                 plugin("summaries", "running", None, &[], &["observer"]), plugin("scheduler", "running", None, &[], &["event_source"]),
