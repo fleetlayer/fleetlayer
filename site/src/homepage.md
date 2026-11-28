@@ -183,7 +183,7 @@ it needs it.
 - Any piece moved to another machine with one command: https://fleetlayer.ai/docs/guides/moving/
 - Signed releases that update every node themselves: https://fleetlayer.ai/docs/releasing/
 - Heartbeats and health checks for everything in the background: https://fleetlayer.ai/docs/guides/monitoring/
-- A whole server set up by an agent, from an example: https://fleetlayer.ai/docs/guides/server-setup/
+- A production-grade server set up by an agent, from an example: https://fleetlayer.ai/docs/guides/server-setup/
 
 Coming soon:
 
