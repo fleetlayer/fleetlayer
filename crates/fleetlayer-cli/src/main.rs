@@ -501,32 +501,67 @@ async fn mcp(
     why: Option<&str>,
     limit: std::time::Duration,
 ) -> anyhow::Result<()> {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     let (tool, node) = target.rsplit_once('@').ok_or_else(|| anyhow::anyhow!("give <tool>@<node>"))?;
+    let open = {
+        let (socket, tool, node, why) =
+            (socket.to_path_buf(), tool.to_string(), node.to_string(), why.map(str::to_string));
+        move || {
+            let (socket, tool, node, why) = (socket.clone(), tool.clone(), node.clone(), why.clone());
+            Box::pin(async move { open_tool(&socket, &tool, &node, why.as_deref()).await })
+                as std::pin::Pin<Box<dyn std::future::Future<Output = Result<_, String>> + Send>>
+        }
+    };
+    // What the tool answered before, so a session that starts while its machine sleeps still loads it.
+    let kept = std::env::var_os("HOME")
+        .filter(|_| !target.contains('/'))
+        .map(|h| std::path::PathBuf::from(h).join(".local/state/fleetlayer/mcp").join(format!("{target}.json")));
+    let answers = mcp_bridge::Answers::load(kept);
+    let mut connect: mcp_bridge::Connect = Box::new(open);
+    let link = match connect().await {
+        Ok(link) => Some(link),
+        // Nothing kept to answer with: say why, as before.
+        Err(e) if answers.is_empty() => anyhow::bail!("{e}"),
+        Err(e) => {
+            eprintln!("fleetlayer: {target}: {e}; answering from what it said before until it's back");
+            None
+        }
+    };
+    mcp_bridge::bridge(tokio::io::stdin(), tokio::io::stdout(), link, connect, answers, target, limit).await;
+    // Exit now: tokio reads stdin on a blocking thread, and the runtime would wait for that read (for the client to
+    // close stdin) before exiting.
+    std::process::exit(0)
+}
+
+/// Open a stream to `tool` on `node` through this node's tools socket.
+async fn open_tool(
+    socket: &std::path::Path,
+    tool: &str,
+    node: &str,
+    why: Option<&str>,
+) -> Result<(mcp_bridge::Reader, mcp_bridge::Writer), String> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     let stream = tokio::net::UnixStream::connect(socket)
         .await
-        .map_err(|e| anyhow::anyhow!("can't reach the node's tools socket {} ({e})", socket.display()))?;
+        .map_err(|e| format!("can't reach the node's tools socket {} ({e})", socket.display()))?;
     let (r, mut w) = stream.into_split();
     let c = caller();
     let req = json!({"tool": tool, "node": node, "sessionId": c["sessionId"], "address": c["address"], "why": why});
-    w.write_all(format!("{req}\n").as_bytes()).await?;
+    w.write_all(format!("{req}\n").as_bytes()).await.map_err(|e| e.to_string())?;
     let mut r = BufReader::new(r);
     let mut line = String::new();
     match tokio::time::timeout(std::time::Duration::from_secs(30), r.read_line(&mut line)).await {
-        Ok(read) => read?,
-        Err(_) => anyhow::bail!(
-            "{target} didn't answer within 30s (the node or the control plane may be restarting, or {node} asleep)"
-        ),
+        Ok(read) => read.map_err(|e| e.to_string())?,
+        Err(_) => {
+            return Err(format!(
+                "{tool}@{node} didn't answer within 30s (the node or the control plane may be restarting, or {node} asleep)"
+            ));
+        }
     };
     let answer: Value = serde_json::from_str(&line).unwrap_or_default();
     if let Some(e) = answer["error"].as_str() {
-        anyhow::bail!("{e}");
+        return Err(e.to_string());
     }
-    // When stdin ends, the tool gets end-of-file and exits, which ends the bridge; when the tool ends, so do we.
-    mcp_bridge::bridge(tokio::io::stdin(), tokio::io::stdout(), r, w, target, limit).await;
-    // Exit now: tokio reads stdin on a blocking thread, and the runtime would wait for that read (for the client to
-    // close stdin) before exiting, so a tool whose node went away would hang the client's call instead of failing it.
-    std::process::exit(0)
+    Ok((Box::new(r), Box::new(w)))
 }
 
 /// One MCP request to a shared tool, through the node's tools socket: open the stream as `fleetlayer mcp` does,

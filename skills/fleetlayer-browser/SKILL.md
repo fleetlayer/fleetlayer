@@ -49,8 +49,12 @@ renews while you use it.
 - **"browser@laptop didn't answer within 120s (the machine may be asleep, or its node restarting)":** tell your
   person once rather than retrying in a loop; the next call works normally once the machine is back. For pages that
   are slow on purpose, add `--call-timeout 300` after the target in the MCP server's command.
-- **The browser shows as disconnected:** the other machine went away (asleep, its node restarting) about 90 seconds
-  earlier. A browser left idle stays connected. Your next use reconnects once the machine is back.
+- **"browser@laptop can't be reached now" or "went away during this call":** the other machine is asleep or its node
+  is restarting. The tool stays loaded in your session (from v0.4.0): try again later and the next call reconnects by
+  itself. Don't restart your session for it. A session started while the machine slept still has the tools, as long as
+  this machine reached it once before.
+- **No browser tools at all:** your session started before the browser was added to this machine's MCP settings
+  (`claude mcp list` shows it now). MCP servers load only when a session starts: ask your person to restart it.
 - **"Playwright Extension not found" or an extension error:** the laptop's setup needs fixing (the person's job,
   covered in Fleetlayer's browser guide).
 - **Refused by access control** ("may not use_tool tool:browser@…"): this session isn't allowed the browser. Tell
