@@ -280,7 +280,7 @@ deck)`, with the approval and in the audit log. Making and removing tokens is re
 
 **A passkey to open a window.** Approving a role window (a request with verb `activate` on `window:<role>`) with an
 approve token needs the owner to confirm that one request with their passkey first, at the sign-in service's
-`/stepup?tenant=<slug>&approval=<id>&return=<url>` page ([the sign-in service](plugins/signin.md), "Confirming a
+`/stepup?tenant=<slug>&approval=<id>&return=<url>` page ([the sign-in service](plugins/signin.md#confirming-a-request-with-a-passkey), "Confirming a
 request with a passkey"). The sign-in service reports it to the control plane,
 which accepts the approval within 5 minutes, once; without it the approval is refused with a 403 that says so. The
 control plane enforces this, not the deck. Refusing a window, closing one and every other approval need no passkey.
