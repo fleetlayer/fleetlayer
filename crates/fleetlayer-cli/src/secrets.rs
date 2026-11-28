@@ -55,6 +55,49 @@ pub enum SecretsCommand {
     /// Remove everything delivered to this node: the files the plugins wrote and the registry. The next delivery puts
     /// them back.
     Forget,
+    /// Forget which source a bundle is taken from (its node, or the key its source signs with), so the next sender is
+    /// trusted from scratch: for a source that really moved or got a new key. Without a bundle, lists the pins.
+    Unpin {
+        /// The bundle (`claude-tokens`, `cookies/x`, `1password/<node>`).
+        bundle: Option<String>,
+    },
+}
+
+/// Every plugin's pinned sources on this machine: `~/.local/state/fleetlayer/<plugin>/sources.json`.
+fn pin_files(home: &std::path::Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = std::fs::read_dir(home.join(".local/state/fleetlayer"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path().join("sources.json"))
+        .filter(|p| p.is_file())
+        .collect();
+    out.sort();
+    out
+}
+
+fn unpin(home: &std::path::Path, bundle: Option<&str>) -> anyhow::Result<i32> {
+    let files = pin_files(home);
+    let Some(bundle) = bundle else {
+        for f in &files {
+            for (b, source) in fleetlayer_secrets::pin::list(f) {
+                println!("{b}  {source}  ({})", f.display());
+            }
+        }
+        return Ok(0);
+    };
+    let mut done = false;
+    for f in &files {
+        if let Some(was) = fleetlayer_secrets::pin::unpin(f, bundle).map_err(anyhow::Error::msg)? {
+            println!("{bundle} was taken only from {was}; the next sender is trusted from scratch ({}).", f.display());
+            done = true;
+        }
+    }
+    if !done {
+        eprintln!("fleetlayer: no pin for {bundle} on this machine (`fleetlayer secrets unpin` lists them)");
+        return Ok(1);
+    }
+    Ok(0)
 }
 
 fn home() -> PathBuf {
@@ -167,6 +210,7 @@ pub async fn run(cmd: SecretsCommand) -> anyhow::Result<i32> {
             }
             Ok(0)
         }
+        SecretsCommand::Unpin { bundle } => unpin(&home(), bundle.as_deref()),
         SecretsCommand::Grants | SecretsCommand::Forget => unreachable!("asks the node"),
     }
 }
@@ -423,5 +467,17 @@ mod tests {
         let live = d.path().join(".claude/projects/p");
         std::fs::create_dir_all(&live).unwrap();
         assert!(live_folders(d.path()).iter().any(|l| live.starts_with(l)));
+    }
+
+    #[test]
+    fn unpin_finds_the_bundle_in_any_plugins_pins() {
+        let home = tempfile::tempdir().unwrap();
+        let file = home.path().join(".local/state/fleetlayer/claude-auth-manager/sources.json");
+        fleetlayer_secrets::pin::check(&file, "claude-tokens", Some("laptop"), None, None, 1).unwrap();
+        assert_eq!(pin_files(home.path()), std::slice::from_ref(&file));
+        assert_eq!(unpin(home.path(), Some("cookies/x")).unwrap(), 1, "not pinned anywhere");
+        assert_eq!(unpin(home.path(), Some("claude-tokens")).unwrap(), 0);
+        assert!(fleetlayer_secrets::pin::list(&file).is_empty());
+        assert_eq!(unpin(home.path(), None).unwrap(), 0, "listing");
     }
 }

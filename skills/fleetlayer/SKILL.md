@@ -362,6 +362,12 @@ it: tell your person which reference you need and why (`fleetlayer secrets grant
 redacts delivered secrets from your messages and summaries; if it does, it raises an alert to rotate that secret, so
 say so to your person too.
 
+Each bundle is taken from one source only: the node that first sent it, or the key its source signs with. A log line
+saying a bundle "came from node … but it first came from …" or was "signed by another key" means another source is
+sending it. Don't unpin it yourself: tell your person. Only when they confirm the source really moved or got a new key
+does `fleetlayer secrets unpin <bundle>` (on the machine that refuses it) trust the next sender from scratch;
+`fleetlayer secrets unpin` alone lists the pins.
+
 ## Moving a piece to another machine
 
 When the person asks to move a piece of Fleetlayer to another machine ("move pages to the server"), use

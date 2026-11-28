@@ -411,6 +411,13 @@ pub async fn deliver(node: &Arc<Node>, d: SyncDeliver) -> Result<Value, RpcError
         applied.insert(d.bundle.clone(), json!(d.version));
         write_map(&applied_path, &applied).map_err(RpcError::internal)?;
     }
+    // The bundle's trusted source changed (a source that now signs, pinned by its key from here on): never silently.
+    if let Some(c) = r.get("pinChanged").filter(|c| c.is_object()) {
+        tracing::warn!(bundle = %d.bundle, from = %d.from, was = %c["was"], now = %c["now"], "a bundle's trusted source changed");
+        let reading = json!({"kind": "sync.pin", "key": format!("{}@{}", d.bundle, node.name), "at": jiff::Timestamp::now(),
+            "data": {"bundle": d.bundle, "from": d.from, "was": c["was"], "now": c["now"], "version": d.version}});
+        crate::readings::publish(node, &reading).await;
+    }
     // A plugin that delivers secrets lists them in the registry as it applies: redact them from now on.
     node.secrets.refresh();
     tracing::info!(bundle = %d.bundle, version = d.version, from = %d.from, applied = %r["applied"], "applied a bundle");

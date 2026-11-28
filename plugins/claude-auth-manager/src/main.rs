@@ -379,20 +379,16 @@ impl Handler for Shared {
                 }
                 let layout = self.0.layout.lock().await.clone().ok_or_else(|| RpcError::refused("not a node"))?;
                 let store = self.0.store.lock().await.clone().ok_or_else(|| RpcError::refused("not a node"))?;
+                let mut pin_change = None;
                 if let Some(home) = self.0.home.lock().await.clone() {
                     let pins = home.join(".local/state/fleetlayer/claude-auth-manager/sources.json");
                     let from = self.0.from.lock().await.clone();
-                    if let Err(e) = signer_of(&a).and_then(|signer| {
-                        fleetlayer_secrets::pin::check(
-                            &pins,
-                            &a.bundle,
-                            a.from.as_deref(),
-                            from.as_deref(),
-                            signer.as_deref(),
-                        )
-                    }) {
-                        tracing::error!("{e}");
-                        return Ok(json!({"applied": false, "error": e}));
+                    match check_source(&pins, &a, from.as_deref()) {
+                        Ok(c) => pin_change = c,
+                        Err(e) => {
+                            tracing::error!("{e}");
+                            return Ok(json!({"applied": false, "error": e}));
+                        }
                     }
                 }
                 let item = a
@@ -418,7 +414,12 @@ impl Handler for Shared {
                             skipped = r.skipped.len(),
                             "applied the tokens"
                         );
-                        Ok(json!({"applied": true, "written": r.written, "removed": r.removed, "skipped": r.skipped}))
+                        let mut answer =
+                            json!({"applied": true, "written": r.written, "removed": r.removed, "skipped": r.skipped});
+                        if let Some(c) = &pin_change {
+                            answer["pinChanged"] = c.to_json();
+                        }
+                        Ok(answer)
                     }
                     Err(e) => Ok(json!({"applied": false, "error": e.to_string()})),
                 }
@@ -588,6 +589,21 @@ async fn publish_loop(peer: Peer, file: PathBuf, targets: Vec<String>, key: flee
     }
 }
 
+/// Whether this delivery comes from the bundle's trusted source (`fleetlayer_secrets::pin`), checking its signature if
+/// it has one. A change of trusted source is logged here and answered to the node.
+fn check_source(
+    pins: &std::path::Path,
+    a: &SyncApply,
+    configured: Option<&str>,
+) -> Result<Option<fleetlayer_secrets::pin::PinChange>, String> {
+    let signer = signer_of(a)?;
+    let change =
+        fleetlayer_secrets::pin::check(pins, &a.bundle, a.from.as_deref(), configured, signer.as_deref(), a.version)?;
+    if let Some(c) = &change {
+        tracing::warn!(bundle = %c.bundle, was = %c.was, now = %c.now, "the bundle's trusted source changed");
+    }
+    Ok(change)
+}
 /// The key that signed a delivered bundle, if it's signed (`fleetlayer_secrets::sign`); an error when its signature
 /// doesn't hold.
 fn signer_of(a: &SyncApply) -> Result<Option<String>, String> {
@@ -636,7 +652,7 @@ mod signing_tests {
             let a = apply(from, version);
             let signer = signer_of(&a).unwrap();
             assert_eq!(signer.as_deref(), Some(key.id().as_str()));
-            fleetlayer_secrets::pin::check(&pins, BUNDLE, a.from.as_deref(), None, signer.as_deref())
+            fleetlayer_secrets::pin::check(&pins, BUNDLE, a.from.as_deref(), None, signer.as_deref(), version)
                 .unwrap_or_else(|e| panic!("{from}: {e}"));
         }
         let mut forged = apply("agents", 3);
