@@ -25,7 +25,7 @@ pub mod method {
     /// them, without summaries (light enough to poll). `{}` → `{nodes, sessions}`; grant `fleet.query`.
     pub const FLEET_QUERY: &str = "_fleetlayer.dev/fleet/query";
     /// Plugin → node: part of a session's transcript, here or on another node (`read` on it). `{to, offset?, tail?,
-    /// max?}` → `link::TranscriptChunk`; grant `transcript.read`.
+    /// max?, before?, lineMax?, types?}` (`link::TranscriptRange`) → `link::TranscriptChunk`; grant `transcript.read`.
     pub const TRANSCRIPT_READ: &str = "_fleetlayer.dev/transcript/read";
     /// Plugin → node: a summary event (`crate::summary::SummaryEvent`), for the control plane.
     pub const SUMMARY_PUBLISH: &str = "_fleetlayer.dev/summary/publish";

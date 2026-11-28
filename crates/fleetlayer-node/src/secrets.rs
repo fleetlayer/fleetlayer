@@ -175,12 +175,20 @@ pub fn scrub_hits<'a>(node: &Node, text: &'a str, context: &str) -> (Cow<'a, str
 pub fn scrub_with<'a>(secrets: &Secrets, text: &'a str, context: &str) -> (Cow<'a, str>, Vec<Hit>) {
     let scrubber = secrets.scrubber();
     let (out, hits) = scrubber.scrub(text);
-    if !hits.is_empty() {
-        let refs: Vec<String> = hits.iter().map(|h| format!("{} ({})", h.reference, h.form.label())).collect();
-        tracing::error!(context, secrets = ?refs, "redacted delivered secrets from data leaving this node; rotate them");
-        secrets.record(&hits, context);
-    }
+    secrets.report(&hits, context);
     (out, hits)
+}
+
+impl Secrets {
+    /// Log and alert on secrets redacted from data leaving this node (by [`Secrets::scrubber`] directly, where the
+    /// scrubbing ran away from the node, in a blocking task).
+    pub fn report(&self, hits: &[Hit], context: &str) {
+        if !hits.is_empty() {
+            let refs: Vec<String> = hits.iter().map(|h| format!("{} ({})", h.reference, h.form.label())).collect();
+            tracing::error!(context, secrets = ?refs, "redacted delivered secrets from data leaving this node; rotate them");
+            self.record(hits, context);
+        }
+    }
 }
 
 /// What a frame to the control plane is, for the alert: its JSON-RPC method.
