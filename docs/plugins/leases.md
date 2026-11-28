@@ -69,7 +69,7 @@ kinds:
     payload:
       required: [component]
       fields:
-        component: '[a-z0-9_/-]{1,64}'
+        component: '[a-z0-9_-]{1,40}(/[a-z0-9_-]{1,40})?'
 
   gmail-filter:
     approval: true              # the access policy decides each new payload, once
@@ -90,7 +90,7 @@ the last good kinds running, and the plugin reports the problem.
 | Field | |
 |---|---|
 | `slots` | At most this many held at once; the others wait, first come first served. Leave it out for no limit. |
-| `per` | Count `slots` per value of this payload field instead of for the whole kind: a lock per named thing. `terraform` above lets one session hold `racks/us` while another holds `dns`, and a second session asking for `racks/us` waits in that component's own line. The field must be one of the payload's `required` fields. |
+| `per` | Count `slots` per value of this payload field instead of for the whole kind: a lock per named thing. `terraform` above lets one session hold `racks/us` while another holds `dns`, and a second session asking for `racks/us` waits in that component's own line. The field must be one of the payload's `required` fields, with a pattern; its value is kept in one spelling (trimmed, lower case, no empty or `./` path parts), so `Racks//US/` and `racks/us` are the same lock. The policy decides who may take a lease of the kind (`tool:leases/acquire/<kind>`), not which values: anyone who may take it may lock any value its pattern allows. |
 | `ttl`, `max_ttl` | The time limit a lease gets, and the most a caller may ask for with `--ttl`. |
 | `idle` | A held lease whose session has been idle (or waiting on the person) this long ends. `--idle` sets it per lease. |
 | `approval` | Each new payload is decided by the access policy (below) before the lease can start. Needs `payload`. |

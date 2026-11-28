@@ -354,14 +354,20 @@ fn github_body(kind: &str, j: &Value) -> Value {
             ])
             .map(|r| r.strip_prefix("refs/heads/").unwrap_or(r)),
         ),
-        ("sha", first(&["/check_suite/head_sha", "/check_run/head_sha", "/pull_request/head/sha", "/after", "/sha"])),
+        (
+            "sha",
+            first(&["/check_suite/head_sha", "/check_run/head_sha", "/pull_request/head/sha", "/after"])
+                .or_else(|| first(&["/sha"]).filter(|_| kind == "status")),
+        ),
         ("conclusion", first(&["/check_suite/conclusion", "/check_run/conclusion"])),
         // A commit status (CircleCI and others report each job as one): its job and state
         ("context", first(&["/context"]).filter(|_| kind == "status")),
         ("state", first(&["/state"]).filter(|_| kind == "status")),
         (
             "url",
-            first(&["/check_run/html_url", "/pull_request/html_url", "/issue/html_url", "/compare", "/target_url"]),
+            first(&["/check_run/html_url", "/pull_request/html_url", "/issue/html_url", "/compare"])
+                .or_else(|| first(&["/target_url"]).filter(|_| kind == "status"))
+                .filter(|u| u.starts_with("https://") || u.starts_with("http://")),
         ),
     ];
     for (k, v) in fields {
@@ -836,7 +842,13 @@ mod tests {
         let b = github_body("pull_request", &pr);
         assert_eq!((b["number"].as_i64(), b["merged"].as_bool()), (Some(1093), Some(true)));
         assert_eq!((b["branch"].as_str(), b["sha"].as_str()), (Some("feature"), Some("9f8e")));
-        // A push's own fields aren't read as a status
-        assert!(github_body("push", &json!({"state": "x", "after": "abc"})).get("state").is_none());
+        // Another event's fields aren't read as a status's
+        let push =
+            github_body("push", &json!({"state": "x", "sha": "nope", "target_url": "https://x", "after": "abc"}));
+        assert!(push.get("state").is_none() && push.get("url").is_none(), "{push}");
+        assert_eq!(push["sha"], "abc");
+        // Only web links
+        let odd = github_body("status", &json!({"sha": "1", "state": "success", "target_url": "javascript:alert(1)"}));
+        assert!(odd.get("url").is_none(), "{odd}");
     }
 }

@@ -160,7 +160,7 @@ kinds:
     payload:
       required: [component]
       fields:
-        component: '[a-z0-9_/-]{1,64}'
+        component: '[a-z0-9_-]{1,40}(/[a-z0-9_-]{1,40})?'
 "#;
 
 fn claim(holder: &str, component: &str, wait: bool) -> Request {
@@ -209,15 +209,70 @@ fn slots_counted_per_field_make_a_lock_per_named_thing() {
 }
 
 #[test]
+fn a_per_value_has_one_spelling() {
+    let s = settings::parse(PER).unwrap();
+    let k = &s.kinds["component"];
+    let a = k.check_payload(Some(&json!({"component": " ./Racks//US/ "}))).unwrap().unwrap();
+    assert_eq!(a["component"], "racks/us");
+    let b = k.check_payload(Some(&json!({"component": "racks/us"}))).unwrap().unwrap();
+    assert_eq!(payload_key(&a), payload_key(&b), "the same lock, and the same approval");
+    let mut e = Engine::new(State::default(), t0());
+    let (x, _) = e.acquire(&s, claim("a@laptop", "Racks/US", false), t0()).unwrap();
+    assert_eq!(e.get(x).unwrap().group.as_deref(), Some("racks/us"));
+    assert!(matches!(e.acquire(&s, claim("b@laptop", "racks//us", false), t0()), Err(Refusal::Busy { .. })));
+}
+
+#[test]
+fn leases_from_before_per_count_against_every_group() {
+    let before = settings::parse(
+        r#"
+kinds:
+  component:
+    slots: 1
+    payload:
+      required: [component]
+      fields:
+        component: '[a-z0-9_-]{1,40}(/[a-z0-9_-]{1,40})?'
+"#,
+    )
+    .unwrap();
+    let mut e = Engine::new(State::default(), t0());
+    let (a, _) = e.acquire(&before, claim("a@laptop", "racks/us", false), t0()).unwrap();
+    // Its field was renamed since: it has no group under the settings now
+    e.state.leases.get_mut(&a).unwrap().payload = Some(json!({"module": "racks/us"}));
+    let now = settings::parse(PER).unwrap();
+    // A group-less held lease holds every group's one slot
+    let (b, ch) = e.acquire(&now, claim("b@laptop", "dns", true), t0()).unwrap();
+    assert!(started(&ch).is_empty(), "it waits for the lease from before");
+    let ch = e.release(&now, a, Some("a@laptop"), t0() + mins(1)).unwrap();
+    assert_eq!(started(&ch), vec![b]);
+}
+
+#[test]
+fn a_stuck_line_is_reported_per_group() {
+    let s = settings::parse(&PER.replace("slots: 1", "slots: 1\n    stuck_after: 30m")).unwrap();
+    let mut e = Engine::new(State::default(), t0());
+    e.acquire(&s, claim("a@laptop", "racks/us", false), t0()).unwrap();
+    e.acquire(&s, claim("b@laptop", "dns", false), t0()).unwrap();
+    e.acquire(&s, claim("c@laptop", "racks/us", true), t0()).unwrap();
+    let stuck = e.stuck(&s, t0() + mins(31));
+    assert_eq!(stuck.len(), 1, "{stuck:?}");
+    assert_eq!(stuck[0].0, "component racks/us");
+    assert!(stuck[0].2[0].contains("a@laptop"), "{stuck:?}");
+}
+
+#[test]
 fn per_needs_slots_and_a_required_field() {
     let e = settings::parse(
         r#"
 kinds:
   noslots: { per: x, payload: { required: [x], fields: { x: '.*' } } }
   notrequired: { slots: 1, per: x, payload: { fields: { x: '.*' } } }
+  nopattern: { slots: 1, per: x, payload: { required: [x], others: true } }
 "#,
     )
     .unwrap_err();
+    assert!(e.contains("'nopattern'") && e.contains("needs a pattern"), "{e}");
     assert!(e.contains("'noslots'") && e.contains("needs slots"), "{e}");
     assert!(e.contains("'notrequired'") && e.contains("required fields"), "{e}");
 }

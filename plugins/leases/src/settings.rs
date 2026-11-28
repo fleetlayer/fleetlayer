@@ -14,7 +14,7 @@
 //!     payload:
 //!       required: [component]
 //!       fields:
-//!         component: '[a-z0-9_/-]{1,64}'
+//!         component: '[a-z0-9_-]{1,40}(/[a-z0-9_-]{1,40})?'
 //!   gmail-filter:             # no slots: any number, each approved once per payload
 //!     approval: true
 //!     ttl: 24h
@@ -242,6 +242,10 @@ fn kind(name: &str, raw: RawKind) -> Result<Kind, String> {
         if !payload.as_ref().is_some_and(|p| p.required.contains(per)) {
             return Err(format!("per: '{per}' must be one of the payload's required fields"));
         }
+        // A pattern keeps what names one thing tight: without one, any text would be a lock of its own
+        if !payload.as_ref().is_some_and(|p| p.fields.contains_key(per)) {
+            return Err(format!("per: '{per}' needs a pattern under payload.fields"));
+        }
     }
     if raw.approval && payload.is_none() {
         return Err("approval needs a payload: the person approves each payload once".into());
@@ -266,7 +270,7 @@ impl Kind {
     /// What a lease's slots are counted against: the value of its `per` field, or None for the whole kind.
     pub fn group_of(&self, payload: Option<&serde_json::Value>) -> Option<String> {
         let per = self.per.as_ref()?;
-        payload.and_then(|p| p.get(per)).and_then(|v| v.as_str()).map(str::to_owned)
+        payload.and_then(|p| p.get(per)).and_then(|v| v.as_str()).map(normalise)
     }
 
     /// Check a payload against the kind's rule; the canonical payload (keys sorted) on success.
@@ -299,6 +303,14 @@ impl Kind {
                     c as u32
                 ));
             }
+            // The field a kind counts `per` names one thing in one spelling: `Racks//US/` is `racks/us`
+            let normal_value;
+            let (s, v) = if self.per.as_deref() == Some(k.as_str()) {
+                normal_value = serde_json::Value::String(normalise(s));
+                (normal_value.as_str().unwrap_or_default(), &normal_value)
+            } else {
+                (s, v)
+            };
             match rule.fields.get(k) {
                 Some(re) if !re.is_match(s) => {
                     return Err(format!("payload field '{k}' doesn't match {}", re.as_str()));
@@ -322,6 +334,19 @@ impl Kind {
         }
         Ok(Some(v))
     }
+}
+
+/// One spelling for the thing a `per` field names, so the same thing is always the same lock: trimmed, lower case, and
+/// as a path without empty or `.` parts (`./Racks//US/` is `racks/us`).
+pub fn normalise(value: &str) -> String {
+    value
+        .trim()
+        .to_lowercase()
+        .split('/')
+        .map(str::trim)
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// A payload's key: the first 16 hex digits of the SHA-256 of its canonical JSON. Leases with the same key claim the

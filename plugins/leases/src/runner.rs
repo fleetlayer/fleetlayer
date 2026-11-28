@@ -478,8 +478,7 @@ impl Authority {
                 e.lease.reason
             ));
         }
-        for (kind, since) in engine.stuck(&settings, now) {
-            let holders = engine.holders(&kind);
+        for (kind, since, holders) in engine.stuck(&settings, now) {
             problems.push(format!(
                 "the {kind} queue is stuck: its first in line has waited since {} ({})",
                 short(since),

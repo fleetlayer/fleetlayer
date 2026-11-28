@@ -403,17 +403,13 @@ impl Engine {
         Ok((id, changes))
     }
 
-    /// `<holder> since <time>: <reason>` for each held lease of a kind.
-    pub fn holders(&self, kind: &str) -> Vec<String> {
-        self.holders_in(kind, None)
-    }
-
     /// The holders a lease waits for: of its whole kind, or of its group (the value of the kind's `per` field).
     pub fn holders_for(&self, id: u64) -> Vec<String> {
         let Some(l) = self.state.leases.get(&id) else { return vec![] };
         self.holders_in(&l.kind, l.group.as_deref())
     }
 
+    /// `<holder> since <time>: <reason>` for each held lease of a kind, or of one group of it.
     fn holders_in(&self, kind: &str, group: Option<&str>) -> Vec<String> {
         self.state
             .leases
@@ -609,6 +605,13 @@ impl Engine {
     /// first.
     fn promote(&mut self, settings: &Settings, now: Timestamp) -> Vec<Change> {
         let mut changes = vec![];
+        // Each lease's group from the settings now, so a kind that starts counting `per` a field (or renames it)
+        // counts the leases it already has.
+        for l in self.state.leases.values_mut() {
+            if let Some(kind) = settings.kinds.get(&l.kind) {
+                l.group = kind.group_of(l.payload.as_ref());
+            }
+        }
         for kind in settings.kinds.values() {
             // First in line first, within each group (the whole kind, unless it counts slots `per` a field): one that
             // can't start keeps everyone behind it in its group waiting, and other groups go ahead.
@@ -674,24 +677,37 @@ impl Engine {
     }
 
     /// Kinds whose first waiting lease has waited past the kind's `stuck_after`.
-    pub fn stuck(&self, settings: &Settings, now: Timestamp) -> Vec<(String, Timestamp)> {
-        settings
-            .kinds
-            .values()
-            .filter_map(|k| {
-                let first = self.waiting(&k.name).first().map(|l| l.requested_at)?;
-                (first + k.stuck_after <= now).then(|| (k.name.clone(), first))
-            })
-            .collect()
+    /// Each line that's stuck: its kind (and group, for a kind that counts `per` a field), since when its first has
+    /// waited, and who holds what it waits for.
+    pub fn stuck(&self, settings: &Settings, now: Timestamp) -> Vec<(String, Timestamp, Vec<String>)> {
+        let mut out = vec![];
+        for k in settings.kinds.values() {
+            let mut seen: Vec<Option<String>> = vec![];
+            for l in self.waiting(&k.name) {
+                if seen.contains(&l.group) {
+                    continue;
+                }
+                seen.push(l.group.clone());
+                if l.requested_at + k.stuck_after <= now {
+                    let what = match &l.group {
+                        Some(g) => format!("{} {g}", k.name),
+                        None => k.name.clone(),
+                    };
+                    out.push((what, l.requested_at, self.holders_for(l.id)));
+                }
+            }
+        }
+        out
     }
 }
 
-/// Eight hex digits from the time and the process: unique enough to tell one state file's leases from another's.
-/// Whether a lease is in a group: any lease when the group is None (a whole kind).
+/// Whether a lease counts in a group: every lease when the group is None (a whole kind), and a lease with no group of
+/// its own (taken before the kind counted `per` a field, or without that field since a rename) in every group.
 fn in_group(l: &Lease, group: Option<&str>) -> bool {
-    group.is_none() || l.group.as_deref() == group
+    group.is_none() || l.group.is_none() || l.group.as_deref() == group
 }
 
+/// Eight hex digits from the time and the process: unique enough to tell one state file's leases from another's.
 fn new_epoch(now: Timestamp) -> String {
     use sha2::Digest;
     let seed = format!("{}:{}:{:?}", now.as_nanosecond(), std::process::id(), std::thread::current().id());
