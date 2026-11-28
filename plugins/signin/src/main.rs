@@ -14,7 +14,7 @@
 //!     listen: 127.0.0.1:7680
 //!     clients:
 //!       - name: hub
-//!         redirect_uris: [https://hub.example.com/auth/callback]
+//!         redirect_uris: [https://hub.example.com/_/auth/callback]
 //!         secret_file: ~/.config/fleetlayer/signin-clients/hub
 //! ```
 //!

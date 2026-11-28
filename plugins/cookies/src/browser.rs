@@ -8,8 +8,9 @@
 //! tool configured with them).
 //!
 //! `browser_cookie_list` answers `name=value (domain: d, path: p)` lines: no expiry or flags, so a cookie read this
-//! way has `expires: None`. Playwright reads the profile's cookies into its own process on this machine and filters
-//! them there; only the share's domains (and names) reach this plugin.
+//! way has `expires: None`. Every cookie of the share's domains reaches this plugin's process on this machine (it asks
+//! Chrome for each domain's cookies); the plugin keeps only the share's names, and only those leave the machine,
+//! sealed.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;

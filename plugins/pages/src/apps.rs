@@ -191,7 +191,7 @@ pub fn inspect(space: &str, cfg: &SpaceConfig, name: &str) -> Option<Info> {
             )));
         } else if cfg.untrusted {
             problems.push(Problem::new(format!(
-                "This space's apps can't reach other sites, so {o} is blocked. Only the space's owner can allow it."
+                "This space's apps can't reach other sites, so {o} is blocked: network entries are refused while the space is untrusted."
             )));
         } else {
             network.push(o.to_string());

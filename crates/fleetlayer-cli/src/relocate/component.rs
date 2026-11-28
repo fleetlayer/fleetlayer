@@ -370,7 +370,7 @@ pub fn inspect(here: &Here, kind: &Kind, announced: &[Value]) -> anyhow::Result<
             let file = here.layout.control_yaml();
             let text = std::fs::read_to_string(&file).map_err(|_| {
                 anyhow::anyhow!(
-                    "no control plane settings at {} (it's written by `fleetlayer up` from v0.3.13; run `fleetlayer up` once on this machine first)",
+                    "no control plane settings at {} (`fleetlayer up` writes them: run it once on this machine first)",
                     file.display()
                 )
             })?;
