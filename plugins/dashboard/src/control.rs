@@ -69,9 +69,12 @@ impl Control {
         self.send(self.http.get(format!("{}{path}", self.base)), path).await
     }
 
-    /// What the dashboard's token is: `admin`, `delegate`, `read`... (`GET /v1/token`).
-    pub async fn scope(&self) -> Result<String, Failed> {
-        Ok(self.get("/v1/token").await?["scope"].as_str().unwrap_or("read").to_string())
+    /// What the dashboard's token is (`GET /v1/token`): its scope (`admin`, `delegate`, `read`...) and its tenant's ID
+    /// and slug.
+    pub async fn token(&self) -> Result<crate::web::TokenInfo, Failed> {
+        let v = self.get("/v1/token").await?;
+        let s = |k: &str| v[k].as_str().unwrap_or_default().to_string();
+        Ok(crate::web::TokenInfo { scope: s("scope"), tenant: s("tenant"), slug: s("tenantSlug") })
     }
 
     /// With a delegate token, the control plane acts as this person (their ID) and records it as theirs.

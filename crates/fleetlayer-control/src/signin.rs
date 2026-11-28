@@ -419,10 +419,6 @@ async fn admin_of(app: &App, r: &AdminRequest) -> Result<(String, String), (Stat
     Ok((tenant.id.clone(), handle))
 }
 
-fn need<'a>(v: &'a Option<String>, what: &str) -> Result<&'a str, (StatusCode, String)> {
-    v.as_deref().filter(|s| !s.is_empty()).ok_or_else(|| bad(format!("{what} is needed")))
-}
-
 /// `POST /v1/signin/admin/view`: the tenant's members, pending invites and teams.
 pub async fn post_admin_view(
     State(app): State<Arc<App>>,
@@ -456,56 +452,19 @@ pub async fn post_admin_action(
     let token = guard(&app, &headers).await?;
     let (tenant, handle) = admin_of(&app, &r).await?;
     let by = format!("person:{handle} (signin:{token})");
-    let db = &app.db;
-    let out = match action.as_str() {
-        "invite" => {
-            let i = crate::people::NewInvite {
-                handle: need(&r.handle, "handle")?,
-                role: r.role.as_deref().unwrap_or("member"),
-                teams: &r.teams,
-                person: None,
-            };
-            let code = crate::people::invite(db, &tenant, i, &by).await.map_err(bad)?;
-            json!({"code": code})
-        }
-        "invite_revoke" => {
-            crate::people::invite_revoke(db, &tenant, need(&r.handle, "handle")?, &by).await.map_err(bad)?;
-            json!({})
-        }
-        "member_role" => {
-            let role = need(&r.role, "role")?;
-            crate::people::member_role(db, &tenant, need(&r.handle, "handle")?, role, &by).await.map_err(bad)?;
-            json!({})
-        }
-        "member_remove" => {
-            crate::people::member_remove(db, &tenant, need(&r.handle, "handle")?, &by).await.map_err(bad)?;
-            json!({})
-        }
-        "team_add" => {
-            let parent = r.parent.as_deref().filter(|p| !p.is_empty());
-            crate::people::team_add(db, &tenant, need(&r.team, "team")?, parent, &by).await.map_err(bad)?;
-            json!({})
-        }
-        "team_remove" => {
-            crate::people::team_remove(db, &tenant, need(&r.team, "team")?, &by).await.map_err(bad)?;
-            json!({})
-        }
-        "team_member" => {
-            crate::people::team_member(
-                db,
-                &tenant,
-                need(&r.team, "team")?,
-                need(&r.handle, "handle")?,
-                r.add.unwrap_or(true),
-                r.maintainer.unwrap_or(false),
-                &by,
-            )
-            .await
-            .map_err(bad)?;
-            json!({})
-        }
-        other => return Err((StatusCode::NOT_FOUND, format!("no admin action {other}"))),
+    let change = crate::people::Change {
+        handle: r.handle,
+        role: r.role,
+        teams: r.teams,
+        team: r.team,
+        parent: r.parent,
+        add: r.add,
+        maintainer: r.maintainer,
     };
+    let out = crate::people::apply(&app.db, &tenant, &action, &change, &by).await.map_err(|e| match e {
+        crate::people::ApplyError::NoSuchAction => (StatusCode::NOT_FOUND, format!("no admin action {action}")),
+        crate::people::ApplyError::Bad(m) => bad(m),
+    })?;
     Ok(Json(out))
 }
 

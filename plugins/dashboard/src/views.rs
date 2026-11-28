@@ -113,6 +113,8 @@ pub struct Ctx<'a> {
     pub now: i64,
     /// The passkey step-up page for an approval that opens a role window, when this viewer may open one here.
     pub stepup: &'a dyn Fn(&str) -> Option<String>,
+    /// This page's path, for its forms to come back to.
+    pub here: &'a str,
 }
 
 // ------------------------------------------------------------------ building blocks
@@ -207,9 +209,10 @@ fn approval_buttons(id: &str, verb: &str, c: &Ctx) -> String {
     // goes through the sign-in service's step-up page, and comes back to confirm.
     if verb == "activate" {
         let deny = format!(
-            r#"<form class="row-actions" method="post" action="/_/approvals/{id}"><input type="hidden" name="csrf" value="{csrf}"><button class="btn btn-sm" name="decision" value="deny">Deny</button>{approve}</form>"#,
+            r#"<form class="row-actions" method="post" action="/_/approvals/{id}"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="back" value="{here}"><button class="btn btn-sm" name="decision" value="deny">Deny</button>{approve}</form>"#,
             id = esc(&enc(id)),
             csrf = esc(c.csrf),
+            here = esc(c.here),
             approve = match (c.stepup)(id) {
                 Some(url) => format!(
                     r#"<a class="btn btn-sm btn-primary" href="{}">{}Approve with passkey</a>"#,
@@ -222,9 +225,10 @@ fn approval_buttons(id: &str, verb: &str, c: &Ctx) -> String {
         return deny;
     }
     format!(
-        r#"<form class="row-actions" method="post" action="/_/approvals/{id}"><input type="hidden" name="csrf" value="{csrf}"><button class="btn btn-sm" name="decision" value="deny">Deny</button><button class="btn btn-sm btn-primary" name="decision" value="approve">{check}Approve</button></form>"#,
+        r#"<form class="row-actions" method="post" action="/_/approvals/{id}"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="back" value="{here}"><button class="btn btn-sm" name="decision" value="deny">Deny</button><button class="btn btn-sm btn-primary" name="decision" value="approve">{check}Approve</button></form>"#,
         id = esc(&enc(id)),
         csrf = esc(c.csrf),
+        here = esc(c.here),
         check = icon("check"),
     )
 }
@@ -234,9 +238,10 @@ fn close_button(role: &str, c: &Ctx) -> String {
         return String::new();
     }
     format!(
-        r#"<form class="row-actions" method="post" action="/_/windows/{r}/close"><input type="hidden" name="csrf" value="{csrf}"><button class="btn btn-sm">Close now</button></form>"#,
+        r#"<form class="row-actions" method="post" action="/_/windows/{r}/close"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="back" value="{here}"><button class="btn btn-sm">Close now</button></form>"#,
         r = esc(&enc(role)),
-        csrf = esc(c.csrf)
+        csrf = esc(c.csrf),
+        here = esc(c.here),
     )
 }
 
@@ -948,6 +953,7 @@ mod tests {
             csrf: "tok",
             now: now_ms(),
             stepup: &|id: &str| Some(format!("https://signin.test/stepup?approval={id}")),
+            here: "/",
         }
     }
 
@@ -981,7 +987,7 @@ mod tests {
     #[test]
     fn without_admin_there_are_no_buttons() {
         let s = crate::demo::Demo::new().snapshot();
-        let c = Ctx { can_act: false, csrf: "tok", now: now_ms(), stepup: &|_: &str| None };
+        let c = Ctx { can_act: false, csrf: "tok", now: now_ms(), stepup: &|_: &str| None, here: "/access" };
         assert!(!overview(&s, &c).contains("/_/approvals/"));
         assert!(!access(&s, &c).contains("Close now"));
     }
@@ -996,7 +1002,7 @@ mod tests {
             "approved through the passkey page: {o}"
         );
         assert!(o.contains(r#"value="deny""#) && !o.contains(r#"value="approve""#), "{o}");
-        let none = Ctx { can_act: true, csrf: "tok", now: now_ms(), stepup: &|_: &str| None };
+        let none = Ctx { can_act: true, csrf: "tok", now: now_ms(), stepup: &|_: &str| None, here: "/access" };
         assert!(!access(&s, &none).contains("stepup"), "no passkey page, no approve button");
     }
 

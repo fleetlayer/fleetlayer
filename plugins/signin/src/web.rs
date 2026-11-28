@@ -447,6 +447,9 @@ pub struct AuthorizeQuery {
     tenant: Option<String>,
     #[serde(rename = "fleetlayer.dev/tenant")]
     fleetlayer_tenant: Option<String>,
+    /// OpenID Connect's `max_age`: the person must have used their passkey within this many seconds, or sign in
+    /// again first. A service asks for it before a change that's hard to undo (the dashboard: removing someone).
+    max_age: Option<i64>,
 }
 
 /// Back to the client with an error, once its redirect URI is known to be its own.
@@ -499,6 +502,13 @@ async fn authorize(
         let ret: String = form_urlencoded::byte_serialize(here.as_bytes()).collect();
         return Redirect::to(&format!("/login?return={ret}")).into_response();
     };
+    // Too long since their passkey for what the service asks: sign in again (a new session), then come back here.
+    if let Some(max) = q.max_age
+        && now_ms() - session.verified_at > max.max(0).saturating_mul(1000)
+    {
+        let ret: String = form_urlencoded::byte_serialize(here.as_bytes()).collect();
+        return Redirect::to(&format!("/login?return={ret}")).into_response();
+    }
     let session_key = sha256_hex(&cookie_value);
     let person_id = session.person.clone();
     let person = match app.control.person(&person_id).await {
@@ -626,7 +636,8 @@ async fn authorize(
                 nonce: q.nonce.clone(),
                 challenge,
                 sid: crate::logout::sid(&session_key),
-                auth_time: now_ms() / 1000,
+                // When they last used their passkey (the session's), not when this code was made.
+                auth_time: session.verified_at / 1000,
                 expires: now_ms() + CODE_MS,
                 email: q.scope.as_deref().unwrap_or("").split(' ').any(|s| s == "email"),
             },

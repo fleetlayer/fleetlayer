@@ -25,8 +25,17 @@ pub struct App {
     pub cache: Cache,
     /// The sign-in service's address, for its passkey step-up page (`/stepup`).
     pub issuer: Option<String>,
-    /// What the dashboard's own token is (`GET /v1/token`): `delegate`, `admin`, `read`...
-    scope: std::sync::RwLock<Option<String>>,
+    /// What the dashboard's own token is (`GET /v1/token`).
+    token: std::sync::RwLock<Option<TokenInfo>>,
+}
+
+/// The dashboard's control plane token: its scope, and the tenant it shows (people signed in to another are turned
+/// away).
+#[derive(Debug, Clone, Default)]
+pub struct TokenInfo {
+    pub scope: String,
+    pub tenant: String,
+    pub slug: String,
 }
 
 /// What a viewer may do through the dashboard.
@@ -49,22 +58,35 @@ impl App {
             trusted_proxies,
             cache: Cache::default(),
             issuer: None,
-            scope: std::sync::RwLock::new(None),
+            token: std::sync::RwLock::new(None),
         }
     }
 
     /// Ask the control plane what the dashboard's token is (at start, then every minute).
     pub async fn refresh_scope(&self) {
         if let Source::Control(c) = &self.source {
-            match c.scope().await {
-                Ok(s) => *self.scope.write().unwrap_or_else(|e| e.into_inner()) = Some(s),
+            match c.token().await {
+                Ok(t) => *self.token.write().unwrap_or_else(|e| e.into_inner()) = Some(t),
                 Err(e) => tracing::warn!("asking the control plane what the dashboard's token is: {e}"),
             }
         }
     }
 
     fn token_scope(&self) -> Option<String> {
-        self.scope.read().unwrap_or_else(|e| e.into_inner()).clone()
+        self.token.read().unwrap_or_else(|e| e.into_inner()).as_ref().map(|t| t.scope.clone())
+    }
+
+    /// Whether a person signed in to `tenant` (an ID or a slug, from their ID token) belongs here: the dashboard shows
+    /// one tenant, its token's. When that can't be told yet, they don't (fail closed). The demo has no tenant.
+    pub async fn tenant_ok(&self, tenant: &str) -> bool {
+        if matches!(self.source, Source::Demo(_)) {
+            return true;
+        }
+        if self.token.read().unwrap_or_else(|e| e.into_inner()).is_none() {
+            self.refresh_scope().await;
+        }
+        let t = self.token.read().unwrap_or_else(|e| e.into_inner());
+        t.as_ref().is_some_and(|t| !tenant.is_empty() && (tenant == t.tenant || tenant == t.slug))
     }
 
     /// A signed-in person acts as themselves, through a delegate token, so the control plane checks and records them;
@@ -288,6 +310,15 @@ async fn viewer(app: &App, headers: &HeaderMap, here: &str) -> Result<Viewer, Re
         let next: String = form_urlencoded::byte_serialize(here.as_bytes()).collect();
         return Err(Redirect::to(&format!("/_/login?next={next}")).into_response());
     };
+    if let Some(p) = &v.person
+        && !app.tenant_ok(&p.tenant).await
+    {
+        return Err(simple(
+            StatusCode::FORBIDDEN,
+            "Not this dashboard",
+            "<p>You're signed in to another place than the one this dashboard shows. Sign out and sign in to this one.</p>",
+        ));
+    }
     match app.auth.may_view(&v).await {
         Access::Yes => Ok(v),
         Access::No => Err(simple(
@@ -353,7 +384,7 @@ async fn page(State(app): St, headers: HeaderMap, Query(q): Query<PageQuery>, wh
     let powers = app.powers(&v).await;
     let snap = app.cache.get(&app.source).await;
     let stepup = |id: &str| if powers.windows { app.stepup_url(&v, id) } else { None };
-    let c = Ctx { can_act: powers.act, csrf: &v.csrf, now: views::now_ms(), stepup: &stepup };
+    let c = Ctx { can_act: powers.act, csrf: &v.csrf, now: views::now_ms(), stepup: &stepup, here: path };
     let mut main = match which {
         Page::Overview => views::overview(&snap, &c),
         Page::Machines => views::machines(&snap, &c),
@@ -392,24 +423,21 @@ async fn not_found(State(app): St, headers: HeaderMap) -> Response {
 struct DecideForm {
     csrf: String,
     decision: String,
+    /// The page the form was on, to go back to (the browser sends no Referer: `no-referrer`).
+    #[serde(default)]
+    back: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct CsrfForm {
     csrf: String,
+    #[serde(default)]
+    back: Option<String>,
 }
 
-/// Where to go back to after an action: the page it came from, when that's a page here.
-fn back(headers: &HeaderMap, msg: &str) -> Response {
-    let from = headers
-        .get(header::REFERER)
-        .and_then(|r| r.to_str().ok())
-        .and_then(|r| {
-            let path = r.split_once("://").map(|(_, rest)| rest.find('/').map_or("/", |i| &rest[i..])).unwrap_or(r);
-            let path = path.split('?').next().unwrap_or("/");
-            NAV.iter().find(|(_, h, _)| *h == path).map(|(_, h, _)| *h)
-        })
-        .unwrap_or("/access");
+/// Where to go back to after an action: the page the form was on, when that's a page here, else Access.
+fn back(from: Option<&str>, msg: &str) -> Response {
+    let from = from.and_then(|f| NAV.iter().find(|(_, h, _)| *h == f).map(|(_, h, _)| *h)).unwrap_or("/access");
     let m: String = form_urlencoded::byte_serialize(msg.as_bytes()).collect();
     Redirect::to(&format!("{from}?msg={m}")).into_response()
 }
@@ -482,14 +510,34 @@ async fn decide(
         "deny" => false,
         _ => return StatusCode::BAD_REQUEST.into_response(),
     };
+    let to = f.back.as_deref();
     // Opening a role window needs the approver's own passkey for that request: only a signed-in person, through a
-    // delegate token, approves one here (the control plane checks the step-up); never the admin token.
-    let snap = app.cache.get(&app.source).await;
-    if approve && snap.approvals.iter().any(|a| a.id == id && a.verb == "activate") && !app.powers(&v).await.windows {
-        return back(
-            &headers,
-            "Opening a role window is approved with your passkey: sign in to the dashboard as yourself, or approve it from your deck.",
-        );
+    // delegate token, approves one here (the control plane checks the step-up); never the admin token. So an approval
+    // goes ahead only when a fresh read shows the request, and that it doesn't open a window or this person may.
+    if approve {
+        let fresh = match &app.source {
+            Source::Control(c) => c
+                .get("/v1/approvals")
+                .await
+                .ok()
+                .and_then(|v| serde_json::from_value::<Vec<crate::model::Approval>>(v["approvals"].clone()).ok()),
+            Source::Demo(d) => Some(d.snapshot().approvals),
+        };
+        let Some(list) = fresh else {
+            return back(
+                to,
+                "The request can't be read from the control plane right now, so nothing was approved. Try again.",
+            );
+        };
+        let Some(a) = list.iter().find(|a| a.id == id && a.status == "pending") else {
+            return back(to, "That request isn't waiting any more.");
+        };
+        if a.verb == "activate" && !app.powers(&v).await.windows {
+            return back(
+                to,
+                "Opening a role window is approved with your passkey: sign in to the dashboard as yourself, or approve it from your deck.",
+            );
+        }
     }
     let msg = match &app.source {
         Source::Demo(_) => format!("Demo: the request would be {}.", if approve { "approved" } else { "denied" }),
@@ -502,7 +550,7 @@ async fn decide(
         },
     };
     app.cache.forget().await;
-    back(&headers, &msg)
+    back(to, &msg)
 }
 
 async fn close_window(
@@ -527,13 +575,25 @@ async fn close_window(
         },
     };
     app.cache.forget().await;
-    back(&headers, &msg)
+    back(f.back.as_deref(), &msg)
 }
 
 /// `/_/approvals/<id>/confirm`: where the sign-in service's passkey page sends the person back. The step-up is
 /// recorded; this page shows the request once more and approves it with one press, within the five minutes it holds.
-async fn confirm(State(app): St, headers: HeaderMap, UrlPath(id): UrlPath<String>) -> Response {
-    let v = match viewer(&app, &headers, &format!("/_/approvals/{id}/confirm")).await {
+async fn confirm(
+    State(app): St,
+    headers: HeaderMap,
+    UrlPath(id): UrlPath<String>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let here = format!("/_/approvals/{}/confirm", form_urlencoded::byte_serialize(id.as_bytes()).collect::<String>());
+    // Arriving from the sign-in service is a cross-site navigation, which doesn't carry the SameSite=Strict session
+    // cookie: go round once through a page here, so the browser sends it.
+    if auth::session_id(&headers).is_none() && !q.contains_key("again") {
+        return Html(fleetlayer_oidc::continue_page(&format!("{here}?again=1"), "Fleetlayer", "Continue"))
+            .into_response();
+    }
+    let v = match viewer(&app, &headers, &here).await {
         Ok(v) => v,
         Err(r) => return r,
     };
@@ -558,7 +618,7 @@ async fn confirm(State(app): St, headers: HeaderMap, UrlPath(id): UrlPath<String
         StatusCode::OK,
         "Open the window?",
         &format!(
-            r#"<p><span class="addr">{}</span> asks to open the <span class="addr">{}</span> window.{}</p><p>Your passkey confirmed it. Approve within five minutes.</p><form class="login-form" method="post" action="/_/approvals/{}"><input type="hidden" name="csrf" value="{}"><button class="btn btn-primary btn-block" name="decision" value="approve">Open the window</button></form><a class="btn btn-ghost btn-block" href="/access">Not now</a>"#,
+            r#"<p><span class="addr">{}</span> asks to open the <span class="addr">{}</span> window.{}</p><p>Your passkey confirmed it. Approve within five minutes.</p><form class="login-form" method="post" action="/_/approvals/{}"><input type="hidden" name="csrf" value="{}"><input type="hidden" name="back" value="/access"><button class="btn btn-primary btn-block" name="decision" value="approve">Open the window</button></form><a class="btn btn-ghost btn-block" href="/access">Not now</a>"#,
             esc(&a.from),
             esc(what),
             a.detail.as_deref().map(|d| format!(" {}", esc(d))).unwrap_or_default(),
@@ -570,11 +630,21 @@ async fn confirm(State(app): St, headers: HeaderMap, UrlPath(id): UrlPath<String
 
 // ------------------------------------------------------------------ sign-in
 
+/// `/_/approvals/<id>/confirm`, with an ID of plain characters and nothing after it but `?again=1`.
+fn is_confirm_path(p: &str) -> bool {
+    let p = p.strip_suffix("?again=1").unwrap_or(p);
+    p.strip_prefix("/_/approvals/")
+        .and_then(|r| r.strip_suffix("/confirm"))
+        .is_some_and(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b)))
+}
+
 fn safe_next(next: Option<&str>) -> String {
     match next {
         Some(n) if n.starts_with('/') && !n.starts_with("//") && !n.starts_with("/\\") && !n.starts_with("/_/") => {
             n.to_string()
         }
+        // The one app page someone comes back to after signing in: confirming a window after their passkey.
+        Some(n) if is_confirm_path(n) => n.to_string(),
         _ => "/".into(),
     }
 }
@@ -689,6 +759,13 @@ async fn auth_callback(State(app): St, headers: HeaderMap, Query(q): Query<Callb
     let bound = auth::cookie_value(&headers, OIDC_COOKIE);
     match oidc.finish(code, state, bound.as_deref()).await {
         Ok((person, next)) => {
+            if !app.tenant_ok(&person.tenant).await {
+                tracing::warn!(who = %person.sub, tenant = %person.tenant, "a sign-in to another tenant was turned away");
+                return fail(
+                    StatusCode::FORBIDDEN,
+                    "You're signed in to another place than the one this dashboard shows.",
+                );
+            }
             tracing::info!(who = %person.sub, handle = ?person.handle, "signed in to the dashboard");
             let sid = app.auth.start(Some(person)).await;
             // A page, not a redirect: the SameSite=Strict cookie isn't sent on the issuer's cross-site redirect.
@@ -891,7 +968,7 @@ mod tests {
         let s2 = seen.clone();
         let person = |h: &HeaderMap| h.get("fleetlayer-person").and_then(|v| v.to_str().ok()).map(str::to_string);
         let router = Router::new()
-            .route("/v1/token", get(move || async move { axum::Json(serde_json::json!({"scope": scope, "name": "dashboard"})) }))
+            .route("/v1/token", get(move || async move { axum::Json(serde_json::json!({"scope": scope, "name": "dashboard", "tenant": "default", "tenantSlug": "home"})) }))
             .route("/v1/fleet", get(|| async { axum::Json(serde_json::json!({"nodes": [], "sessions": []})) }))
             .route("/v1/events", get(|| async { axum::Json(serde_json::json!({"events": []})) }))
             .route("/v1/readings", get(|| async { axum::Json(serde_json::json!({"readings": []})) }))
@@ -998,11 +1075,82 @@ mod tests {
         assert!(seen.lock().unwrap().is_empty(), "nothing reached the control plane");
     }
 
+    /// The login key's holder, with a dashboard whose token is `scope`.
+    async fn keyed_control(scope: &'static str, url: Option<String>) -> (Arc<App>, String, String, Seen) {
+        let (fake, seen) = fake_control(scope).await;
+        let key = auth::LoginKey::new("k".repeat(40)).unwrap();
+        let auth = Auth::new(Some(key), None, None, "dashboard".into()).unwrap();
+        let control = crate::control::Control::new(&url.unwrap_or(fake), "t").unwrap();
+        let app = Arc::new(App::new(Source::Control(control), auth, Some("https://d.example".into()), vec![]));
+        let sid = app.auth.start(None).await;
+        let cookie = format!("{}={sid}", auth::COOKIE);
+        let mut h = HeaderMap::new();
+        h.insert(header::COOKIE, cookie.parse().unwrap());
+        let csrf = app.auth.viewer(&h).await.unwrap().csrf;
+        (app, cookie, csrf, seen)
+    }
+
+    #[tokio::test]
+    async fn the_login_key_never_opens_a_window_and_an_unreadable_request_is_never_approved() {
+        let (app, cookie, csrf, seen) = keyed_control("admin", None).await;
+        // An empty cache can't let a window through: the request is read afresh.
+        app.cache.forget().await;
+        let r = post_form(&app, "/_/approvals/ap_win", &cookie, format!("csrf={csrf}&decision=approve&back=/")).await;
+        assert_eq!(r.status(), StatusCode::SEE_OTHER);
+        assert!(
+            r.headers()[header::LOCATION].to_str().unwrap().starts_with("/?msg=Opening"),
+            "back to the form's page"
+        );
+        assert!(seen.lock().unwrap().is_empty(), "nothing reached the control plane");
+        // An ordinary request goes ahead with the admin token; denying a window does too.
+        let r = post_form(&app, "/_/approvals/ap_tool", &cookie, format!("csrf={csrf}&decision=approve")).await;
+        assert_eq!(r.status(), StatusCode::SEE_OTHER);
+        let r = post_form(&app, "/_/approvals/ap_win", &cookie, format!("csrf={csrf}&decision=deny")).await;
+        assert_eq!(r.status(), StatusCode::SEE_OTHER);
+        assert_eq!(seen.lock().unwrap().len(), 2);
+
+        // A control plane that can't be read: the dashboard can't tell what its token is, so it acts for nobody.
+        let (app, cookie, csrf, _) = keyed_control("admin", Some("http://127.0.0.1:9".into())).await;
+        let r = post_form(&app, "/_/approvals/ap_tool", &cookie, format!("csrf={csrf}&decision=approve")).await;
+        assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn someone_signed_in_to_another_tenant_sees_nothing() {
+        let (app, _, _, _) = signed_in_person("delegate").await;
+        let elsewhere =
+            fleetlayer_oidc::Person { sub: "p_x".into(), tenant: "other".into(), handle: None, name: None, sid: None };
+        let sid = app.auth.start(Some(elsewhere)).await;
+        let (status, _, body) = get(&app, "/", Some(&format!("{}={sid}", auth::COOKIE))).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(body.contains("Not this dashboard"), "{body}");
+        assert!(app.tenant_ok("home").await && app.tenant_ok("default").await && !app.tenant_ok("").await);
+    }
+
+    #[tokio::test]
+    async fn coming_back_from_the_passkey_page_reaches_the_confirm_page() {
+        let (app, cookie, _, _) = signed_in_person("delegate").await;
+        // Cross-site, so no cookie: one round through a page here, which the browser then visits with it.
+        let (status, _, body) = get(&app, "/_/approvals/ap_win/confirm", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("/_/approvals/ap_win/confirm?again=1"), "{body}");
+        let (status, _, body) = get(&app, "/_/approvals/ap_win/confirm?again=1", Some(&cookie)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("Open the window"), "{body}");
+        // Signed out by then: to sign-in, and back to the confirm page after.
+        let (status, h, _) = get(&app, "/_/approvals/ap_win/confirm?again=1", None).await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(h[header::LOCATION], "/_/login?next=%2F_%2Fapprovals%2Fap_win%2Fconfirm");
+    }
+
     #[test]
     fn next_stays_on_this_site() {
         assert_eq!(safe_next(Some("/events")), "/events");
         assert_eq!(safe_next(Some("//evil.example")), "/");
         assert_eq!(safe_next(Some("https://evil.example")), "/");
         assert_eq!(safe_next(Some("/_/logout")), "/");
+        assert_eq!(safe_next(Some("/_/approvals/ap_1/confirm")), "/_/approvals/ap_1/confirm");
+        assert_eq!(safe_next(Some("/_/approvals/ap_1/confirm?again=1")), "/_/approvals/ap_1/confirm?again=1");
+        assert_eq!(safe_next(Some("/_/approvals/../logout/confirm")), "/");
     }
 }

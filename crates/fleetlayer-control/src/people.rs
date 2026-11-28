@@ -1083,6 +1083,82 @@ pub async fn person_remove(db: &Db, person: &str, by: &str) -> anyhow::Result<Ve
     Ok(nodes)
 }
 
+/// One change to a tenant's people, invites or teams, as the admin pages (the dashboard's, and the sign-in service's)
+/// ask for it: `action` and its fields.
+#[derive(Debug, Default, Clone, serde::Deserialize)]
+pub struct Change {
+    #[serde(default)]
+    pub handle: Option<String>,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub teams: Vec<String>,
+    #[serde(default)]
+    pub team: Option<String>,
+    #[serde(default)]
+    pub parent: Option<String>,
+    #[serde(default)]
+    pub add: Option<bool>,
+    #[serde(default)]
+    pub maintainer: Option<bool>,
+}
+
+#[derive(Debug)]
+pub enum ApplyError {
+    NoSuchAction,
+    Bad(String),
+}
+
+fn need<'a>(v: &'a Option<String>, what: &str) -> Result<&'a str, ApplyError> {
+    v.as_deref().filter(|s| !s.is_empty()).ok_or_else(|| ApplyError::Bad(format!("{what} is needed")))
+}
+
+/// Make one change (`invite`, `invite_revoke`, `member_role`, `member_remove`, `team_add`, `team_remove`,
+/// `team_member`) with the same functions as the command line, recorded as `by`. Answers `{code}` for an invite.
+pub async fn apply(db: &Db, tenant: &str, action: &str, c: &Change, by: &str) -> Result<serde_json::Value, ApplyError> {
+    let bad = |e: anyhow::Error| ApplyError::Bad(e.to_string());
+    Ok(match action {
+        "invite" => {
+            let i = NewInvite {
+                handle: need(&c.handle, "handle")?,
+                role: c.role.as_deref().unwrap_or("member"),
+                teams: &c.teams,
+                person: None,
+            };
+            serde_json::json!({"code": invite(db, tenant, i, by).await.map_err(bad)?})
+        }
+        "invite_revoke" => {
+            invite_revoke(db, tenant, need(&c.handle, "handle")?, by).await.map_err(bad)?;
+            serde_json::json!({})
+        }
+        "member_role" => {
+            member_role(db, tenant, need(&c.handle, "handle")?, need(&c.role, "role")?, by).await.map_err(bad)?;
+            serde_json::json!({})
+        }
+        "member_remove" => {
+            member_remove(db, tenant, need(&c.handle, "handle")?, by).await.map_err(bad)?;
+            serde_json::json!({})
+        }
+        "team_add" => {
+            let parent = c.parent.as_deref().filter(|p| !p.is_empty());
+            team_add(db, tenant, need(&c.team, "team")?, parent, by).await.map_err(bad)?;
+            serde_json::json!({})
+        }
+        "team_remove" => {
+            team_remove(db, tenant, need(&c.team, "team")?, by).await.map_err(bad)?;
+            serde_json::json!({})
+        }
+        "team_member" => {
+            let (team, handle) = (need(&c.team, "team")?, need(&c.handle, "handle")?);
+            team_member(db, tenant, team, handle, c.add.unwrap_or(true), c.maintainer.unwrap_or(false), by)
+                .await
+                .map_err(bad)?;
+            serde_json::json!({})
+        }
+        _ => return Err(ApplyError::NoSuchAction),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

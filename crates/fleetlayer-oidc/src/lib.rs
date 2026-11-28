@@ -219,6 +219,12 @@ impl Oidc {
 
     /// Where to send the browser to sign in, and the state to bind to it (a cookie), for coming back to `next`.
     pub async fn start(&self, next: &str) -> anyhow::Result<(String, String)> {
+        self.start_with(next, None).await
+    }
+
+    /// [`start`](Self::start), asking that the person has used their passkey within `max_age` seconds (OpenID
+    /// Connect's `max_age`): the issuer asks for it again first when it's older. The ID token's `auth_time` says when.
+    pub async fn start_with(&self, next: &str, max_age: Option<u64>) -> anyhow::Result<(String, String)> {
         let meta = self.meta().await?;
         let state = new_id();
         let nonce = new_id();
@@ -235,10 +241,11 @@ impl Oidc {
         let sep = if meta.authorization_endpoint.contains('?') { '&' } else { '?' };
         let url = format!(
             "{}{sep}response_type=code&client_id={}&redirect_uri={}&scope=openid%20profile&state={state}&nonce={nonce}\
-             &code_challenge={challenge}&code_challenge_method=S256",
+             &code_challenge={challenge}&code_challenge_method=S256{}",
             meta.authorization_endpoint,
             enc(&self.client),
             enc(&self.redirect_uri),
+            max_age.map(|m| format!("&max_age={m}")).unwrap_or_default(),
         );
         Ok((url, state))
     }

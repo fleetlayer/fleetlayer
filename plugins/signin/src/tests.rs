@@ -363,6 +363,15 @@ async fn an_invite_a_passkey_and_a_token_for_a_service_the_policy_allows() {
     assert_eq!(claims["fleetlayer.dev/tenant"], "acme");
     assert_eq!(claims["fleetlayer.dev/principal"], "person:a");
     assert_eq!(claims["groups"], json!(["acme", "acme/engineering", "acme/role:admin"]));
+    // auth_time is when they used their passkey; a service that wants a fresher one gets the passkey page first.
+    let auth_time = claims["auth_time"].as_i64().unwrap();
+    assert!((crate::store::now_ms() / 1000 - auth_time).abs() < 60, "{claims}");
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let r = call(&a, "GET", &format!("{}&max_age=0", authorize_uri("hub", &challenge)), Some(&cookie), None, "").await;
+    assert!(r.location.as_deref().is_some_and(|l| l.starts_with("/login?return=%2Fauthorize")), "{:?}", r.location);
+    let r =
+        call(&a, "GET", &format!("{}&max_age=600", authorize_uri("hub", &challenge)), Some(&cookie), None, "").await;
+    assert!(r.location.as_deref().is_some_and(|l| l.contains("code=")), "{:?}", r.location);
     // A code works once.
     assert_eq!(exchange(&a, &code, &verifier).await.status, StatusCode::BAD_REQUEST);
     // Userinfo with the access token.

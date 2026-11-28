@@ -277,8 +277,9 @@ pub async fn post_catchup(
     Ok(Json(c))
 }
 
-/// `GET /v1/token`: what the request's token is, so a service can show only what it may do. `{scope, name}` (`name`
-/// null for the admin token file's). Any token.
+/// `GET /v1/token`: what the request's token is, so a service can show only what it may do, and which tenant it
+/// belongs to, so a service people sign in to can turn away someone signed in to another. `{scope, name, tenant,
+/// tenantSlug}` (`name` null for the admin token file's). Any token.
 pub async fn get_token(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
     let Some(scope) = scope_of(&app, &headers).await else {
         return Err((StatusCode::UNAUTHORIZED, "a token is needed".into()));
@@ -296,7 +297,12 @@ pub async fn get_token(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiRe
         Scope::Approve => "approve",
         Scope::Delegate => "delegate",
     };
-    Ok(Json(json!({"scope": scope, "name": name})))
+    let slug: Option<String> = sqlx::query_scalar("SELECT slug FROM tenants WHERE id = ?")
+        .bind(DEFAULT_TENANT)
+        .fetch_optional(&app.db)
+        .await
+        .map_err(|e| internal(e.into()))?;
+    Ok(Json(json!({"scope": scope, "name": name, "tenant": DEFAULT_TENANT, "tenantSlug": slug})))
 }
 
 #[derive(serde::Deserialize)]
@@ -727,7 +733,10 @@ mod tests {
         assert!(get_fleet(State(app.clone()), h.clone()).await.is_ok());
         assert!(get_approvals(State(app.clone()), h.clone()).await.is_ok());
         let Json(t) = get_token(State(app.clone()), h.clone()).await.unwrap();
-        assert_eq!(t, json!({"scope": "delegate", "name": "dashboard"}));
+        assert_eq!(
+            (t["scope"].clone(), t["name"].clone(), t["tenant"].clone()),
+            (json!("delegate"), json!("dashboard"), json!("default"))
+        );
         // Deciding needs a named person, who is one of the tenant's admins; it's recorded as theirs.
         pending(&app, "ap_tool", "use_tool", "tool:browser@laptop").await;
         let path = |id: &str| axum::extract::Path(id.to_string());
