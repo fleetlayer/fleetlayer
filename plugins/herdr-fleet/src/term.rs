@@ -5,6 +5,9 @@
 //!
 //! Screens are read with the stream's `terminal.scrollback` command; typing uses `terminal.keys` and `terminal.paste`
 //! in `input` mode (herdr's `observe --input`), which never resizes the pane or takes it from the person's own window.
+//! herdr answers keys and pastes only when they fail; a helper that says `typed_replies` when the stream opens (the
+//! Rex and tmux plugins' helpers) also confirms each one with `terminal.typed`, and then typing counts as done only
+//! once it's confirmed.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -20,7 +23,8 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 const IDLE: Duration = Duration::from_secs(90);
 /// How long a scrollback read may take.
 const READ_TIMEOUT: Duration = Duration::from_secs(15);
-/// Keys and pastes have no reply when they work, only `terminal.error` when they don't: wait this long for one.
+/// Keys and pastes have no reply from herdr when they work, only `terminal.error` when they don't: wait this long for
+/// one. A stream whose helper confirms typing (`typed_replies`) is waited on for up to `READ_TIMEOUT` instead.
 const ERROR_WAIT: Duration = Duration::from_millis(400);
 /// The size pooled streams are opened at: the smallest herdr renders. Only frames follow it, and they're thrown away
 /// here; scrollback comes back at the pane's own width whatever the observer's size (herdr 0.9.5), so a tiny observer
@@ -64,6 +68,8 @@ struct Stream {
     tx: mpsc::Sender<String>,
     pending: Mutex<HashMap<String, oneshot::Sender<Value>>>,
     alive: AtomicBool,
+    /// The helper confirms keys and pastes with `terminal.typed` (it said `typed_replies` when it opened).
+    confirms: AtomicBool,
     last_used: Mutex<Instant>,
 }
 
@@ -161,6 +167,7 @@ impl Pool {
             tx,
             pending: Mutex::new(HashMap::new()),
             alive: AtomicBool::new(true),
+            confirms: AtomicBool::new(false),
             last_used: Mutex::new(Instant::now()),
         });
         tokio::spawn(async move {
@@ -177,7 +184,10 @@ impl Pool {
             while let Ok(Some(line)) = lines.next_line().await {
                 let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
                 match v["type"].as_str() {
-                    Some("terminal.scrollback") | Some("terminal.error") => {
+                    Some("terminal.opened") => {
+                        reader.confirms.store(v["typed_replies"].as_bool() == Some(true), Ordering::Relaxed);
+                    }
+                    Some("terminal.scrollback") | Some("terminal.typed") | Some("terminal.error") => {
                         if let Some(id) = v["id"].as_str()
                             && let Some(tx) = reader.pending.lock().await.remove(id)
                         {
@@ -213,17 +223,35 @@ impl Pool {
             s.alive.store(false, Ordering::Relaxed);
             return Err(Failure::new("server_unavailable", format!("the terminal stream to {address} closed")));
         }
-        let wait = if quiet_ok { ERROR_WAIT } else { READ_TIMEOUT };
-        match tokio::time::timeout(wait, rx).await {
+        let mut rx = rx;
+        let mut wait = if quiet_ok { ERROR_WAIT } else { READ_TIMEOUT };
+        let mut got = tokio::time::timeout(wait, &mut rx).await;
+        if got.is_err() && quiet_ok && s.confirms.load(Ordering::Relaxed) {
+            // This helper confirms typing: silence isn't success, so wait for its word.
+            wait = READ_TIMEOUT;
+            got = tokio::time::timeout(READ_TIMEOUT - ERROR_WAIT, &mut rx).await;
+        }
+        let confirms = s.confirms.load(Ordering::Relaxed);
+        match got {
             Ok(Ok(v)) if v["type"] == "terminal.error" => Err(Failure::new(
                 v["code"].as_str().unwrap_or("command_failed"),
                 v["message"].as_str().unwrap_or("the terminal refused it").to_string(),
             )),
             Ok(Ok(v)) => Ok(v),
             Ok(Err(_)) => Err(Failure::new("server_unavailable", format!("the terminal stream to {address} closed"))),
-            Err(_) if quiet_ok => {
+            Err(_) if quiet_ok && !confirms => {
                 s.pending.lock().await.remove(&id);
                 Ok(Value::Null)
+            }
+            Err(_) if quiet_ok => {
+                s.pending.lock().await.remove(&id);
+                Err(Failure::new(
+                    "timeout",
+                    format!(
+                        "{address} didn't confirm the typing within {} seconds: it may not have gone in",
+                        wait.as_secs()
+                    ),
+                ))
             }
             Err(_) => {
                 s.pending.lock().await.remove(&id);
@@ -286,7 +314,10 @@ mod tests {
                         return;
                     }
                     w.write_all(b"{\"ok\":true}\n").await.unwrap();
-                    w.write_all(b"{\"type\":\"terminal.opened\",\"mode\":\"observe\"}\n").await.unwrap();
+                    // "confirm@laptop" is a helper that confirms typing, and takes its time.
+                    let confirms = open["terminal"] == "confirm@laptop";
+                    let opened = json!({"type": "terminal.opened", "mode": open["mode"], "typed_replies": confirms});
+                    w.write_all(format!("{opened}\n").as_bytes()).await.unwrap();
                     while let Ok(Some(l)) = lines.next_line().await {
                         let v: Value = serde_json::from_str(&l).unwrap();
                         log.lock().await.push(format!(
@@ -299,6 +330,14 @@ mod tests {
                                 "text": format!("{} lines", v["lines"]), "format": v["format"], "truncated": false})),
                             Some("terminal.keys") if v["keys"][0] == "bad" => Some(json!({"type": "terminal.error",
                                 "id": v["id"], "code": "invalid_key", "message": "no key called bad"})),
+                            Some("terminal.keys" | "terminal.paste") if confirms => {
+                                tokio::time::sleep(Duration::from_millis(700)).await;
+                                Some(if v["keys"][0] == "lost" {
+                                    json!({"type": "terminal.error", "id": v["id"], "code": "command_failed", "message": "pressing keys: rex isn't running"})
+                                } else {
+                                    json!({"type": "terminal.typed", "id": v["id"]})
+                                })
+                            }
                             _ => None,
                         };
                         if let Some(r) = reply {
@@ -338,5 +377,17 @@ mod tests {
             ]
         );
         assert_eq!(pool.open_count().await, 2);
+    }
+
+    #[tokio::test]
+    async fn a_helper_that_confirms_typing_is_waited_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let (sock, _) = fake_node(dir.path()).await;
+        let pool = Pool::new(sock);
+        // Both answers come after the 400 ms herdr gets: a late failure is still the client's failure.
+        pool.paste("confirm@laptop", "hello").await.unwrap();
+        let e = pool.keys("confirm@laptop", &["lost".into()]).await.unwrap_err();
+        assert_eq!(e.code, "command_failed");
+        assert!(e.message.contains("rex isn't running"), "{}", e.message);
     }
 }

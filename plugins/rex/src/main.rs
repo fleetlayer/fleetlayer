@@ -181,8 +181,9 @@ fn terminal_command(
     let helper = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "fleetlayer-rex".into());
     let mode = match mode {
         ext::TerminalMode::Observe => "observe",
-        // Rex has no observer that types: typing takes the block, as control does.
-        ext::TerminalMode::Input | ext::TerminalMode::Control => "control",
+        // Input types keys and pastes without resizing the block; control also types raw input and resizes.
+        ext::TerminalMode::Input => "input",
+        ext::TerminalMode::Control => "control",
     };
     let mut args: Vec<String> = vec![
         "terminal".into(),
@@ -511,6 +512,8 @@ mod tests {
         let c =
             terminal_command(&Rex { program: "rex".into(), server: None }, "s", "b", ext::TerminalMode::Observe, 3, 1);
         assert_eq!(c.args, ["terminal", "observe", "s", "b", "20", "5", "rex"], "a usable minimum size, no server");
+        let c = terminal_command(&rex, "s", "b", ext::TerminalMode::Input, 80, 24);
+        assert_eq!(c.args[1], "input", "input mode types without taking the block's size");
     }
 
     #[test]

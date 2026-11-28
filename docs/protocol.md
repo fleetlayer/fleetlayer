@@ -384,7 +384,10 @@ answers with a helper that translates:
 - in: `{"type":"terminal.input", "text": …}` or `{"type":"terminal.input", "bytes": <base64>}`;
   `{"type":"terminal.resize", "cols", "rows"}`; `{"type":"terminal.release"}` (leave); `{"type":"terminal.keys",
   "keys":[…]}` and `{"type":"terminal.paste", "text"}` (press keys, paste text); `{"type":"terminal.scrollback",
-  "lines", "format", "id"}` (answered with `terminal.scrollback` `{text, truncated, id}`).
+  "lines", "format", "id"}` (answered with `terminal.scrollback` `{text, truncated, id}`). Keys and pastes carry an
+  `id` too: a failure is answered with `terminal.error` `{code, message, id}`. herdr is silent when they work; a
+  helper that says `"typed_replies": true` in `terminal.opened` (the Rex and tmux plugins' helpers) also answers each
+  one that worked with `{"type":"terminal.typed", "id"}`, so a caller can tell typed input from lost input.
 
 The three modes:
 

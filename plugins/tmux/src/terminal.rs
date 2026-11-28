@@ -132,14 +132,26 @@ async fn emit(out: &mut tokio::io::Stdout, v: Value) -> std::io::Result<()> {
     out.flush().await
 }
 
-/// Keys as `terminal.keys` names them (Fleetlayer's names), pressed in order.
-async fn press(a: &Args, keys: &[Value]) {
+/// Keys as `terminal.keys` names them (Fleetlayer's names), pressed in order; stops at the first that fails.
+async fn press(a: &Args, keys: &[Value]) -> Result<(), String> {
     let steps: Vec<fleetlayer_protocol::ext::KeyStep> =
         keys.iter().filter_map(Value::as_str).map(|k| fleetlayer_protocol::ext::KeyStep::Key(k.into())).collect();
     for step in steps {
-        if let Err(e) = a.tmux.keys(&a.pane, std::slice::from_ref(&step)).await {
-            tracing::warn!("pressing keys: {}", e.message());
-        }
+        a.tmux
+            .keys(&a.pane, std::slice::from_ref(&step))
+            .await
+            .map_err(|e| format!("pressing keys: {}", e.message()))?;
+    }
+    Ok(())
+}
+
+/// The answer to a key press or paste: `terminal.typed` when it went in, `terminal.error` when it didn't, so the
+/// caller never takes lost input for typed input.
+fn typing_reply(v: &Value, result: Result<(), String>) -> Value {
+    let id = v.get("id").cloned().unwrap_or(Value::Null);
+    match result {
+        Ok(()) => json!({"type": "terminal.typed", "id": id}),
+        Err(m) => json!({"type": "terminal.error", "code": "command_failed", "message": m, "id": id}),
     }
 }
 
@@ -156,7 +168,7 @@ pub async fn run(a: Args) -> anyhow::Result<()> {
     };
     emit(
         &mut out,
-        json!({"type": "terminal.opened", "mode": a.mode.name(), "width": first.width, "height": first.height}),
+        json!({"type": "terminal.opened", "mode": a.mode.name(), "width": first.width, "height": first.height, "typed_replies": true}),
     )
     .await?;
     let mut seq = 0u64;
@@ -183,12 +195,15 @@ pub async fn run(a: Args) -> anyhow::Result<()> {
                         }
                     }
                     Some("terminal.keys") if typing => {
-                        press(&a, v.get("keys").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[])).await;
+                        let r = press(&a, v.get("keys").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[])).await;
+                        emit(&mut out, typing_reply(&v, r)).await?;
                     }
                     Some("terminal.paste") if typing => {
-                        if let Some(t) = v.get("text").and_then(Value::as_str) && let Err(e) = a.tmux.paste(&a.pane, t, true).await {
-                            tracing::warn!("pasting: {}", e.message());
-                        }
+                        let r = match v.get("text").and_then(Value::as_str) {
+                            Some(t) => a.tmux.paste(&a.pane, t, true).await.map_err(|e| format!("pasting: {}", e.message())),
+                            None => Err("a paste with no text".into()),
+                        };
+                        emit(&mut out, typing_reply(&v, r)).await?;
                     }
                     Some("terminal.scrollback") => {
                         let lines = v.get("lines").and_then(Value::as_u64).unwrap_or(200);
@@ -199,6 +214,9 @@ pub async fn run(a: Args) -> anyhow::Result<()> {
                             Err(e) => json!({"type": "terminal.error", "message": e.message(), "id": id}),
                         };
                         emit(&mut out, reply).await?;
+                    }
+                    Some("terminal.keys" | "terminal.paste") => {
+                        emit(&mut out, typing_reply(&v, Err("this terminal was opened to watch, not to type".into()))).await?;
                     }
                     // The pane belongs to the person's layout: it keeps its size.
                     _ => {}
