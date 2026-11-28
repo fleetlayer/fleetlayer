@@ -560,7 +560,7 @@ Everything today is in the tenant `default` (nodes, policy, audit log, summaries
 2. **The sign-in service**, in three releases:
    - **2a.** OIDC provider (one token per tenant, PKCE required of every client, `sign_in` checked before any code),
      passkeys, invites, `/api/check`, health and heartbeat, the move test.
-   - **2b.** The admin pages (members, invites, clients; teams, tenants and providers under Advanced).
+   - **2b.** The admin pages (members, invites, clients, teams, tenants and providers).
    - **2c.** Back-channel logout, key rotation, `previous_issuers`. Built: logouts wait on disk and are retried until
      delivered or the session would have expired, and one undelivered for an hour fails `/healthz`; receivers in
      pages and the hub; `fleetlayer-signin keys rotate [--drop-previous]` and `fleetlayer-signin signout --person`.

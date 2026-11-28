@@ -49,6 +49,7 @@ export const pages = [
   { file: "guides/egress", group: "Guides", label: "Keep agents to the hosts they need" },
   { file: "guides/pages", group: "Guides", label: "Pages instead of artifacts" },
   { file: "guides/sign-in", group: "Guides", label: "One sign-in for your services" },
+  { file: "sso", group: "Guides", label: "Single sign-on, teams and tenants" },
   { file: "guides/monitoring", group: "Guides", label: "Monitoring" },
   { file: "guides/backups", group: "Guides", label: "Backups" },
   { file: "guides/agents-building-software", group: "Guides", label: "Agents that build software" },
@@ -73,5 +74,4 @@ export const pages = [
   { file: "releasing", group: "Reference", label: "Releases and updates" },
   { file: "protocol", group: "Reference", label: "Plugin protocol" },
   { file: "link", group: "Reference", label: "Node link" },
-  { file: "sso", group: "Advanced", label: "Sign-in and SSO" },
 ];

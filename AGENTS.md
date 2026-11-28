@@ -22,9 +22,9 @@ into it.
   started. One person starts with one tenant, one team and the built-in sign-in, created for them and never named in
   the interface. The moment they need a second team, a second tenant or their company's sign-in provider, it's already
   there and just works. In pages, the hub and the docs: plain words, the enterprise features summed up in one line
-  ("everything a company needs: single sign-on, teams, separate organisations, audit"), and their settings under an
-  **Advanced** section, collapsed by default. Never show an empty "Tenants" or "Identity providers" screen to someone
-  who has one of each.
+  ("everything a company needs: single sign-on, teams, separate organisations, audit"). Don't force them on anyone,
+  and don't hide them either: sign-in and single sign-on are ordinary settings and ordinary guides, never tucked under
+  an "Advanced" section. Never show an empty "Tenants" or "Identity providers" screen to someone who has one of each.
 - **Every component can move.** Someone can start with everything on their Mac (control plane, node, sign-in, the
   Claude hub, pages, apps) and later move any one piece to a home server or a VPS by asking an agent. So each
   component keeps all its state in one directory and its settings in one file, never assumes a hostname or that it
