@@ -19,18 +19,13 @@ happening:
 - Codex and Gemini agents can’t make claude.ai artifacts at all.
 - You find out an account is out of usage when a session stops.
 
-## Your whole fleet on one page
-
-The dashboard shows every machine and what it runs, every agent session and whether it's waiting on you, the events
-that arrived and which agent each reached, and the requests waiting for your approval. Live, behind your own sign-in,
-and everything on it works from the command line too. Screenshot: https://fleetlayer.ai/img/dashboard-light.webp.
-
 ## Fleetlayer solves all of this, and much more
 
 - **Fleetlayer Pages and Apps.** Claude, Codex and Gemini agents write pages and interactive apps as plain folders, and Fleetlayer hosts them behind one sign-in. [How](https://fleetlayer.ai/docs/guides/pages/)
 - **Messages between any two agents.** Claude or Codex, on the same machine or another one: `fleetlayer msg send --to api@laptop`. [How](https://fleetlayer.ai/docs/guides/day-to-day/)
 - **Any agent can control your browser.** Agents on any machine and any Claude account can use the Chrome on your Mac, signed in as you (via Playwright MCP). [How](https://fleetlayer.ai/docs/guides/browser/)
 - **Your own accounts, on your own machines.** Year-long sign-ins for each of your Claude accounts on every machine you run, and each account's usage visible to every session. [How](https://fleetlayer.ai/docs/guides/claude-accounts/)
+
 
 ## You need this if
 
@@ -42,6 +37,13 @@ and everything on it works from the command line too. Screenshot: https://fleetl
 You probably don't if you use one Claude account on one laptop and Claude Code's own features cover the rest. Use
 those, and come back when you add a second machine or account:
 https://fleetlayer.ai/docs/claude-code/
+
+
+## Your whole fleet on one page
+
+The dashboard shows every machine and what it runs, every agent session and whether it's waiting on you, the events
+that arrived and which agent each reached, and the requests waiting for your approval. Live, behind your own sign-in,
+and everything on it works from the command line too. Screenshot: https://fleetlayer.ai/img/dashboard-light.webp.
 
 ## How it fits
 
