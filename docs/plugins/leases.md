@@ -215,8 +215,11 @@ echo scripts/fleetlayer-dev-slot > .dev-slot       # in a checkout
 ln -s "$PWD/scripts/fleetlayer-dev-slot" ~/.local/bin/   # or for every checkout on this machine
 ```
 
-It takes a lease of `build-server` (`$FLEETLAYER_DEV_SLOT_KIND` for another kind), or of `build-server-light` for
-the commands that don't link (fmt, check, clippy: on-dev sets `FLEETLAYER_DEV_SLOT_CLASS=light`), tied to the calling script's
+It takes a lease of the build host's slot name (the second word of its `.dev-host` line, which the scripts pass as
+`$FLEETLAYER_DEV_SLOT_RESOURCE`; `build-server` when the line has none, `$FLEETLAYER_DEV_SLOT_KIND` to choose another),
+or of that name with `-light` for the commands that don't link (fmt, check, clippy: on-dev sets
+`FLEETLAYER_DEV_SLOT_CLASS=light`). With two build hosts, `build-a` and `build-b`, the authority has four kinds:
+`build-a`, `build-a-light`, `build-b` and `build-b-light`. The lease is tied to the calling script's
 process, so a killed `on-dev` releases its slot within seconds. When a machine has a helper and no slot can be taken,
 the scripts don't build (unlimited builds are what the slots prevent): they stop with exit code 75.
 `FLEETLAYER_DEV_SLOT=none` builds without one, on purpose. `build-images` builds in the background on the build

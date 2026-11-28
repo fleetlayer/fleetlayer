@@ -14,7 +14,9 @@
 set -euo pipefail
 dir=$(git rev-parse --show-toplevel)
 host=${FLEETLAYER_DEV_HOST:-$(grep -v '^[[:space:]]*\(#\|$\)' "$dir/.dev-host" 2>/dev/null | head -1 || true)}
-host=${host%% *}
+read -r host slot_name _ <<<"$host"
+# Its build-slot name (the second word of its .dev-host line), as on-dev passes it: the helper takes that kind of slot.
+export FLEETLAYER_DEV_SLOT_RESOURCE=${FLEETLAYER_DEV_SLOT_RESOURCE:-${slot_name:-}}
 registry=${FLEETLAYER_REGISTRY:-$(cat "$dir/.registry" 2>/dev/null || true)}
 docker_config=${FLEETLAYER_DOCKER_CONFIG:-$(cat "$dir/.docker-config" 2>/dev/null || true)}
 push_env=${docker_config:+DOCKER_CONFIG=$docker_config }
