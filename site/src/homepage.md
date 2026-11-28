@@ -152,16 +152,46 @@ infrastructure, workers, each with its own machine or Unix user and permissions.
 team shares one system, and a company gets what it needs (single sign-on, teams, separate organisations, audit) when
 it needs it.
 
-## Where it is today
+## Features
 
-Runs now: the node, the control plane, the dashboard and the command line; plugins for herdr and Rex, Claude Code,
-session summaries, Claude accounts, pages and apps; access rules, approvals and an audit log; secrets per role from
-1Password, network access per role and the admin window; one passkey sign-in for every service; every machine on your
-phone; moving any piece with one command; releases that update every node themselves; and a whole server setup an
-agent can build for you, from [an example repository](https://github.com/fleetlayer/server-iac-example).
+- Every session on every machine in one list, with what each agent is doing: https://fleetlayer.ai/docs/guides/day-to-day/
+- Messages between any two agents, Claude Code or Codex, on any machine: https://fleetlayer.ai/docs/guides/day-to-day/
+- Sessions started, resumed, answered and handed off on any machine: https://fleetlayer.ai/docs/guides/day-to-day/
+- A summary of each hour of every session: https://fleetlayer.ai/docs/plugins/summaries/
+- CI results to the agent that pushed, through webhooks: https://fleetlayer.ai/docs/guides/ci-results/
+- The dashboard: machines, sessions, events and approvals, live: https://fleetlayer.ai/docs/dashboard/
+- Every machine on your phone, through one herdr relay: https://fleetlayer.ai/docs/guides/phone/
+- Your own Claude accounts on every machine, with each account's usage: https://fleetlayer.ai/docs/guides/claude-accounts/
+- Your signed-in browser, for agents on any machine: https://fleetlayer.ai/docs/guides/browser/
+- Your Mac's screenshots and downloads, for agents anywhere: https://fleetlayer.ai/docs/guides/shared-folders/
+- Approved commands that run on another machine: https://fleetlayer.ai/docs/guides/shared-commands/
+- Executor's MCP tools, with each call checked by your policy: https://fleetlayer.ai/docs/guides/executor/
+- Pages and apps your agents publish, behind one sign-in: https://fleetlayer.ai/docs/guides/pages/
+- Prompts sent to a session on a schedule: https://fleetlayer.ai/docs/plugins/scheduler/
+- Matrix rooms as channels agents hear and answer: https://fleetlayer.ai/docs/plugins/matrix/
+- Leases, so many agents can share a few build machines: https://fleetlayer.ai/docs/guides/shared-build-machines/
+- Notes, skills and instructions kept the same on every machine: https://fleetlayer.ai/docs/guides/sync/
+- Access rules, approvals and a tamper-evident audit log: https://fleetlayer.ai/docs/access-control/
+- Agents that read strangers' text, kept in a Unix user of their own: https://fleetlayer.ai/docs/guides/untrusted-input/
+- Secrets per role from 1Password, scrubbed from what leaves a machine: https://fleetlayer.ai/docs/credentials/
+- Network access per role, with approvals for new hosts (Linux): https://fleetlayer.ai/docs/guides/egress/
+- An admin role that's off until you open a window: https://fleetlayer.ai/docs/guides/admin-window/
+- One passkey sign-in for your services, with single sign-on and teams: https://fleetlayer.ai/docs/guides/sign-in/
+- Your browser's cookies for command-line tools on other machines: https://fleetlayer.ai/docs/plugins/cookies/
+- herdr and Rex as session managers: https://fleetlayer.ai/docs/rex/
+- Everything on one laptop with fleetlayer up: https://fleetlayer.ai/docs/guides/laptop/
+- Any piece moved to another machine with one command: https://fleetlayer.ai/docs/guides/moving/
+- Signed releases that update every node themselves: https://fleetlayer.ai/docs/releasing/
+- Heartbeats and health checks for everything in the background: https://fleetlayer.ai/docs/guides/monitoring/
+- A whole server set up by an agent, from an example: https://fleetlayer.ai/docs/guides/server-setup/
 
-Being built: tmux support (in the next release), and more harnesses: Cursor, OpenCode, Aider and pi. Expect breaking
-changes. What changed in each release: https://fleetlayer.ai/docs/changelog/
+Coming soon:
+
+- tmux as a session manager (v0.4.2)
+- More harnesses: Cursor, OpenCode, Aider, pi and Gemini CLI
+- SAML sign-in providers
+
+Expect breaking changes: what changed in each release is in the changelog, https://fleetlayer.ai/docs/changelog/
 
 Will it cost money? We might provide a hosted control plane and provision a VPS where you can run your remote agents
 and services, but we haven't decided on anything yet.

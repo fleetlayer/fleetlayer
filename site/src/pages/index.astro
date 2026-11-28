@@ -487,29 +487,48 @@ const description = site.summary;
         </div>
       </section>
 
-      <section class="state" aria-labelledby="state-title">
-        <h2 id="state-title">Where it is today</h2>
-        <div class="state__grid">
-          <div>
-            <h3><span class="dot" aria-hidden="true"></span> Runs now</h3>
-            <p>
-              The node, the control plane, the dashboard and the command line; plugins for herdr and Rex, Claude Code,
-              session summaries, Claude accounts, pages and apps; access rules, approvals and an audit log; secrets per
-              role from 1Password, network access per role and the admin window; one passkey sign-in for every service;
-              every machine on your phone; moving any piece with one command; releases that update every node
-              themselves; and a whole server setup an agent can build for you, from
-              <a href="https://github.com/fleetlayer/server-iac-example">an example repository</a>.
-            </p>
-          </div>
-          <div>
-            <h3><span class="dot dot--next" aria-hidden="true"></span> Being built</h3>
-            <p>
-              tmux support (in the next release), and more harnesses: Cursor, OpenCode, Aider and pi.
-            </p>
-          </div>
-        </div>
-        <p class="state__note">
-          Expect breaking changes. What changed in each release is in the <a href="/docs/changelog/">changelog</a>.
+      <section class="features" aria-labelledby="features-title">
+        <h2 id="features-title">Features</h2>
+        <ul class="features__list">
+            <li><a href="/docs/guides/day-to-day/">Every session on every machine in one list, with what each agent is doing</a></li>
+            <li><a href="/docs/guides/day-to-day/">Messages between any two agents, Claude Code or Codex, on any machine</a></li>
+            <li><a href="/docs/guides/day-to-day/">Sessions started, resumed, answered and handed off on any machine</a></li>
+            <li><a href="/docs/plugins/summaries/">A summary of each hour of every session</a></li>
+            <li><a href="/docs/guides/ci-results/">CI results to the agent that pushed, through webhooks</a></li>
+            <li><a href="/docs/dashboard/">The dashboard: machines, sessions, events and approvals, live</a></li>
+            <li><a href="/docs/guides/phone/">Every machine on your phone, through one herdr relay</a></li>
+            <li><a href="/docs/guides/claude-accounts/">Your own Claude accounts on every machine, with each account&#x27;s usage</a></li>
+            <li><a href="/docs/guides/browser/">Your signed-in browser, for agents on any machine</a></li>
+            <li><a href="/docs/guides/shared-folders/">Your Mac&#x27;s screenshots and downloads, for agents anywhere</a></li>
+            <li><a href="/docs/guides/shared-commands/">Approved commands that run on another machine</a></li>
+            <li><a href="/docs/guides/executor/">Executor&#x27;s MCP tools, with each call checked by your policy</a></li>
+            <li><a href="/docs/guides/pages/">Pages and apps your agents publish, behind one sign-in</a></li>
+            <li><a href="/docs/plugins/scheduler/">Prompts sent to a session on a schedule</a></li>
+            <li><a href="/docs/plugins/matrix/">Matrix rooms as channels agents hear and answer</a></li>
+            <li><a href="/docs/guides/shared-build-machines/">Leases, so many agents can share a few build machines</a></li>
+            <li><a href="/docs/guides/sync/">Notes, skills and instructions kept the same on every machine</a></li>
+            <li><a href="/docs/access-control/">Access rules, approvals and a tamper-evident audit log</a></li>
+            <li><a href="/docs/guides/untrusted-input/">Agents that read strangers&#x27; text, kept in a Unix user of their own</a></li>
+            <li><a href="/docs/credentials/">Secrets per role from 1Password, scrubbed from what leaves a machine</a></li>
+            <li><a href="/docs/guides/egress/">Network access per role, with approvals for new hosts (Linux)</a></li>
+            <li><a href="/docs/guides/admin-window/">An admin role that&#x27;s off until you open a window</a></li>
+            <li><a href="/docs/guides/sign-in/">One passkey sign-in for your services, with single sign-on and teams</a></li>
+            <li><a href="/docs/plugins/cookies/">Your browser&#x27;s cookies for command-line tools on other machines</a></li>
+            <li><a href="/docs/rex/">herdr and Rex as session managers</a></li>
+            <li><a href="/docs/guides/laptop/">Everything on one laptop with <code>fleetlayer up</code></a></li>
+            <li><a href="/docs/guides/moving/">Any piece moved to another machine with one command</a></li>
+            <li><a href="/docs/releasing/">Signed releases that update every node themselves</a></li>
+            <li><a href="/docs/guides/monitoring/">Heartbeats and health checks for everything in the background</a></li>
+            <li><a href="/docs/guides/server-setup/">A whole server set up by an agent, from an example</a></li>
+        </ul>
+        <h3>Coming soon</h3>
+        <ul class="features__list features__list--soon">
+            <li><a href="/docs/plugins/tmux/">tmux as a session manager (v0.4.2)</a></li>
+            <li><a href="/docs/requirements/">More harnesses: Cursor, OpenCode, Aider, pi and Gemini CLI</a></li>
+            <li>SAML sign-in providers</li>
+        </ul>
+        <p class="features__note">
+          Expect breaking changes: what changed in each release is in the <a href="/docs/changelog/">changelog</a>.
           Will it cost money? We might provide a hosted control plane and provision a VPS where you can run your remote
           agents and services, but we haven't decided on anything yet.
         </p>
