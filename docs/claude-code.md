@@ -2,8 +2,8 @@
 
 Claude Code keeps adding features that used to need something like Fleetlayer: sessions that message each other,
 Remote Control from your phone, sessions in the cloud, scheduled routines and artifacts. If they cover what you do,
-use them. This page says what each one does, from Anthropic's own docs, where its edges are, and what Fleetlayer adds
-past them. Fleetlayer works alongside all of them: nothing here is either/or.
+use them. This page says what each one does, where its edges are, and what Fleetlayer adds past them. Fleetlayer works
+alongside all of them: nothing here is either/or.
 
 ## You probably don't need Fleetlayer if
 
@@ -41,8 +41,8 @@ tokens aren't supported.
 
 **Fleetlayer adds:** every session on every machine in one list, with what each is doing and whether it's waiting on
 you; `fleetlayer attach` to watch or drive any session's terminal; blocked prompts answered from anywhere; and one
-herdr phone relay for every machine ([Every machine on your phone](guides/phone.md)). It works with setup tokens, and
-with Codex sessions too.
+herdr phone relay for every machine ([Every machine on your phone](guides/phone.md)). It works with setup tokens.
+Codex sessions get all of it except blocked prompts, which Fleetlayer reads only from Claude Code.
 
 ### Sessions in the cloud, and scheduled routines
 

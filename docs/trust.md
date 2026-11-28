@@ -60,7 +60,7 @@ run as you unless you give them a user of their own.
 | Piece | Reads or holds | Can do |
 |---|---|---|
 | `fleetlayer-node` | Its key and token (`~/.config/fleetlayer/`), the session list from your session manager | Start, message and close sessions it's allowed to; deliver sealed secrets to plugins |
-| Control plane | Session names and status, summaries, who messaged whom and when, handoff notes, the audit log, and event bodies: webhook payloads, Matrix room messages, and session status with a blocked prompt's text (kept 7 days; other channels until pruned). The text of messages between sessions passes through and isn't stored. No credentials: hashes of tokens, and one GitHub webhook signing secret | Decide every request by the access policy; relay ciphertext it can't read |
+| Control plane | Session names and status, summaries, who messaged whom and when, handoff notes, the audit log, and event bodies: webhook payloads, Matrix room messages, and session status with a blocked prompt's text (session status kept 7 days; other channels' events until you delete them). The text of messages between sessions passes through and isn't stored. No credentials: hashes of tokens, and each GitHub webhook endpoint's signing secret | Decide every request by the access policy; relay ciphertext it can't read |
 | Claude Code plugin | Claude Code's session registry and transcripts on its machine; adds hooks to `~/.claude/settings.json` | Type messages into sessions; answer a blocked prompt when allowed |
 | Summaries | Transcripts on its machine | Send them to Claude with your own accounts, to write the summaries |
 | Claude accounts | Your Claude sign-ins and setup tokens (on the hub); a setup token per account (on each node) | Run Claude as you; move sessions between your accounts |
@@ -72,7 +72,7 @@ run as you unless you give them a user of their own.
 | Sign-in | Passkeys, the token-signing key | Sign people in to your services, by the access policy |
 
 Plugins you install from others run with the same rights as yours; their directory entries say what each can read
-and do ([plugin directory](directory.md)).
+and do ([plugin directory](https://fleetlayer.ai/docs/directory/)).
 
 ## The trust boundary is a Unix user
 

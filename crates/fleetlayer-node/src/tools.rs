@@ -85,7 +85,7 @@ pub struct ToolConfig {
     #[serde(default)]
     pub tools: Option<ToolFilter>,
     /// Offer it only while this node's link to the control plane goes out from one of these networks (CIDR, such as
-    /// `10.5.0.0/16`): a laptop's browser only while the laptop is at home. Empty: on any network.
+    /// `192.168.1.0/24`): a laptop's browser only while the laptop is at home. Empty: on any network.
     /// `fleetlayer tools enable <name> --for 2h` opts in anywhere for a while.
     #[serde(default)]
     pub networks: Vec<String>,

@@ -21,6 +21,12 @@ Most releases need only the installer or a node's own update. These need more, o
 - **A node installed before 26 November 2026** wrote its versioned path into its service file, so it kept running the
   old binary after updating. Rerun the installer, then `fleetlayer-node install`.
 
+## Unreleased
+
+- **tmux** (`fleetlayer-tmux`): puts the Claude Code, Codex and other agents in your tmux panes in the fleet, with
+  their status, messages, blocked prompts, sessions started and closed remotely, and `fleetlayer attach`. It uses only
+  tmux's own command line and never attaches a client, so your layout stays as it is. It ships in v0.4.2.
+
 ## v0.4.1 (28 November 2026)
 
 - **Upgrading:** migration 0030 runs on start, so back up the control plane's database first.
@@ -46,6 +52,10 @@ Most releases need only the installer or a node's own update. These need more, o
   `dashboard:` in the sign-in settings.
 - **Upgrading:** the control plane answers only `/v1/*`, `/healthz` and `/hooks/*`, so a proxy can send everything
   else on the same host to the dashboard.
+- **Upgrading:** the dashboard reads `/v1/readings` and `/v1/tools`, which are new in v0.4.0. Against an older control
+  plane, the parts that use them stay empty.
+- **Upgrading:** a node older than v0.4.0 doesn't publish the `node.status` reading, so the dashboard shows its
+  plugins as unknown until it's upgraded.
 - **The dashboard** (`fleetlayer-dashboard`): one page for machines, sessions, events, access, readings, people, teams
   and rules. It acts as the signed-in person, and changing people asks for a passkey used in the last 10 minutes.
 - **Leases** (`fleetlayer-leases`) and **shared commands**: `fleetlayer lease acquire|release|list` for build slots

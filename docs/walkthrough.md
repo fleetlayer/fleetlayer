@@ -6,7 +6,8 @@ to seeing what Fleetlayer does; the [guides](guides/laptop.md) set up the same t
 
 You need two machines you can SSH between (a laptop and a server, or two laptops), macOS or Linux, with
 [herdr](https://herdr.dev) and Claude Code on both ([requirements](requirements.md)). The examples call them `laptop`
-and `server`: each node is named after its machine's hostname.
+and `server`. The laptop's node is named after its hostname; the server's node takes the name you give
+`fleetlayer-control node add`, so pass the server's hostname there (the examples use `server`).
 
 ## How it fits
 

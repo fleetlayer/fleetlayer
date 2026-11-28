@@ -161,12 +161,12 @@ Its calls to the control plane, made at most once every three seconds however ma
 
 And for the People, Teams and Rules pages, as the signed-in person (`Fleetlayer-Person`, with the delegate token):
 `GET /v1/people`, `POST /v1/people/<action>` (`invite`, `invite_revoke`, `member_role`, `member_remove`, `team_add`,
-`team_remove`, `team_member`) and `GET /v1/policy`. They answer only for the tenant's admins, or the admin token.
+`team_remove`, `team_member`) and `GET /v1/policy`. They answer only for the tenant's admins, people the policy allows
+`admin` on `service:dashboard` (read only), or the admin token.
 
-`/v1/readings` and `/v1/tools` are new with the dashboard; against an older control plane those parts are just empty.
 Each node publishes a **`node.status`** reading every minute while it's linked: its health (the same judgement as its
 heartbeat) and each plugin's name, state, version, roles, restarts and problem, never a plugin's output, command line or
-settings. A node older than 0.4 doesn't, so the dashboard shows its plugins as unknown.
+settings.
 
 ## Monitoring
 

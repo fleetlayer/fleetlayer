@@ -4,19 +4,20 @@ What you need before you install Fleetlayer, what works with it today, and how t
 
 ## What you need
 
-- **macOS or Linux,** on x86-64 or ARM (Apple silicon, a Raspberry Pi 4 or newer, an ARM VPS). There's no Windows
-  build, and running it under WSL hasn't been tested.
+- **macOS or Linux,** on x86-64 or ARM (Apple silicon, a Raspberry Pi 4 or newer with a 64-bit OS, an ARM VPS).
+  There's no Windows build, and running it under WSL hasn't been tested.
 - **A session manager** for the agents, so Fleetlayer can see, message, start and close their sessions:
   - [herdr](https://herdr.dev): the one Fleetlayer is built and tested with most, the release from herdr.dev
     included (0.9.5 tested);
   - [Rex](rex.md), Superlogical's terminal and session manager;
-  - tmux, through [the tmux plugin](plugins/tmux.md), from the release after v0.4.1.
+  - tmux, through [the tmux plugin](plugins/tmux.md) (v0.4.2).
 
   Fleetlayer works with your session manager: it attaches to it and never takes it over, so your own terminals and apps
   keep working beside it.
-- **Outbound HTTPS** from each machine to the control plane. Each node keeps one outbound connection, so it works behind
-  NAT with no port opened on its machine. The control plane itself needs one address its nodes can reach: on one
-  laptop that's `localhost`; across machines, a private network (Tailscale, a LAN) or a public address behind TLS.
+- **An outbound connection** from each machine to the control plane: a WebSocket over TLS, or plain on a private
+  network. Each node keeps one outbound connection, so it works behind NAT with no port opened on its machine. The
+  control plane itself needs one address its nodes can reach: on one laptop that's `localhost`; across machines, a
+  private network (Tailscale, a LAN) or a public address behind TLS.
 - **`curl` and `tar`** for the installer. Nothing else: each release is a set of single binaries, with no runtime to
   install.
 
@@ -83,8 +84,8 @@ removing those folders. Have your agent do it, or follow these steps on each mac
 6. **Your own content stays.** Pages and apps your agents wrote are plain folders (`~/Fleetlayer/` after `fleetlayer
    up`); keep or delete them as you like.
 
-On a Mac, also remove the `fleetlayer-node` rows under System Settings > Privacy & Security (Files and Folders, Full
-Disk Access) if you gave it any, and, if you used the cookies plugin, its access to "Chrome Safe Storage" in Keychain
-Access.
+On a Mac, also remove the logs (`rm -f ~/Library/Logs/fleetlayer-*.log`), the `fleetlayer-node` rows under System
+Settings > Privacy & Security (Files and Folders, Full Disk Access) if you gave it any, and, if you used the cookies
+plugin, its access to "Chrome Safe Storage" in Keychain Access.
 
 Related: [Getting started](getting-started.md), [Set up a node that keeps running](guides/node-services.md).

@@ -12,16 +12,17 @@ how to run them.
   heartbeat. The `fleetlayer` command line talks to the node on its own machine.
 - **Plugins**, separate programs the node starts and talks to over JSON-RPC on stdin and stdout. They can be written
   in any language. A plugin takes one or more roles: a session manager knows where sessions run (`fleetlayer-herdr`,
-  `fleetlayer-rex` for [Rex](rex.md), `fleetlayer-tmux` for [tmux](plugins/tmux.md)); a harness knows one agent program from the inside
-  (`fleetlayer-claude-code` delivers through Claude Code's own messaging socket); others turn outside events into Fleetlayer events, apply files or secrets sent to the machine,
-  write session summaries, or serve pages. The protocol is the [Agent Client
-  Protocol](https://agentclientprotocol.com) plus Fleetlayer's extensions ([the plugin protocol](protocol.md)).
+  `fleetlayer-rex` for [Rex](rex.md), and from v0.4.2 `fleetlayer-tmux` for [tmux](plugins/tmux.md)); a harness knows
+  one agent program from the inside (`fleetlayer-claude-code` delivers through Claude Code's own messaging socket);
+  others turn outside events into Fleetlayer events, apply files or secrets sent to the machine, write session
+  summaries, or serve pages. The protocol is the [Agent Client Protocol](https://agentclientprotocol.com) plus
+  Fleetlayer's extensions ([the plugin protocol](protocol.md)).
 - **The control plane**, one per fleet. It knows every node and session, relays messages between nodes, routes
   webhooks and events to the sessions subscribed to them, and checks every request against the access policy, writing
   each decision to an audit log. It's a single program with a SQLite database, and you run it yourself: on your laptop
   to start, on a home server or a VPS later.
-- **The gateway**, on a laptop. It gives each service its own address (`http://pages.localhost:7680`), checks each
-  one's health, and tells you or an agent when something stops.
+- **The gateway**, on each machine that runs `fleetlayer up`. It gives each service its own address
+  (`http://pages.localhost:7680`), checks each one's health, and tells you or an agent when something stops.
 
 ## Names
 
@@ -42,7 +43,8 @@ checks the access policy and passes it to the node `home`. That node finds the s
 through the best channel it has: the agent's own messaging channel when a harness plugin offers one, otherwise typed
 into its terminal by the session manager. The message is labelled with who sent it and how to reply. If the sender
 reads untrusted input, the message is also marked as outside data, so the agent that receives it treats it as it would
-treat the email itself. A session may always answer a session that wrote to it in the last 24 hours.
+treat the email itself. A session may answer a session that wrote to it in the last 24 hours, even if its rules would
+otherwise limit whom it may message (an explicit deny still holds).
 
 Events work the same way. A webhook (a CI result, say) arrives at the control plane on a channel, and goes to the
 sessions subscribed to that channel or to one subject on it: the agent that wrote the branch hears that its build
@@ -53,7 +55,7 @@ failed. A channel can name a fallback session for events nobody subscribed to.
 The control plane holds no credentials. When a node enrols it makes a keypair, and its private key never leaves it.
 A plugin that needs to put a secret on other machines (the Claude sign-in hub sending year-long tokens, for example)
 encrypts it to each target node's public key. The control plane relays the ciphertext without being able to read it,
-and doesn't store it. Only numbers travel the other way: usage, health and session counts, as readings.
+and doesn't store it. The hub gets only numbers back: usage, health and session counts, as readings.
 
 ## Start small, move pieces later
 
@@ -65,8 +67,8 @@ stops the piece, copies its folder sealed and checked, starts it there and point
 
 ## Rules that shape the design
 
-- **Fleetlayer works with your session manager.** It attaches to herdr, Rex or tmux (and later T3 Code and
-  others) without taking it over. Your own apps and terminals keep working beside it.
+- **Fleetlayer works with your session manager.** It attaches to herdr, Rex or tmux (tmux comes in v0.4.2), and
+  later T3 Code and others, without taking it over. Your own apps and terminals keep working beside it.
 - **Plugins are separate processes.** Nothing is compiled into the node, so a plugin can't crash it, and you can write
   one in any language.
 - **Open protocols.** ACP for plugins, JSON-RPC over a WebSocket for the node's [link](link.md) to the control plane,
@@ -76,7 +78,4 @@ stops the piece, copies its folder sealed and checked, starts it there and point
 
 ## What's being built
 
-One sign-in for every service you run, with your company's provider or a simple built-in directory
-([Sign-in and SSO](sso.md)); one deployment shared by a household or a team, each person with their own agents and
-data; reaching every session from your phone with one pairing; and a server setup an agent can build for you on a fresh
-machine.
+Reaching every session from your phone with one pairing, and more harnesses: Cursor, OpenCode, Aider and pi.

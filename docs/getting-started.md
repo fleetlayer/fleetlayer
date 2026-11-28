@@ -1,8 +1,8 @@
 # Getting started
 
 Fleetlayer is early. Expect breaking changes. Before you install, check [what you need](requirements.md) (macOS or
-Linux, a session manager such as herdr, Claude Code or Codex), and read [what installing it trusts](trust.md) and how
-to verify a release first. To see it working across two machines first, follow the [ten-minute
+Linux, a session manager such as herdr, and Claude Code or Codex), and read [what installing it trusts](trust.md) and
+how to verify a release first. To see it working across two machines first, follow the [ten-minute
 walkthrough](walkthrough.md).
 
 The docs are written for your agent as much as for you. To have it set Fleetlayer up, ask it to, and point it at
@@ -24,8 +24,8 @@ Or build from source: `cargo build --release`, and put `target/release/fleetlaye
 
 ## Everything on one machine
 
-`fleetlayer up` starts the control plane, a node, the Claude sign-in hub, pages and the gateway on this machine, each at
-`http://<name>.localhost:7680`, with a status page at `http://fleetlayer.localhost:7680`. See
+`fleetlayer up` starts the control plane, a node, the Claude sign-in hub, pages, the dashboard and the gateway on this
+machine, each at `http://<name>.localhost:7680`, with a status page at `http://fleetlayer.localhost:7680`. See
 [Start on your laptop](guides/laptop.md). The rest of this page sets each piece up by hand.
 
 ## A node on one machine
@@ -113,7 +113,7 @@ tools:
     env_files: { PLAYWRIGHT_MCP_EXTENSION_TOKEN: ~/.config/browser-mcp/extension-token }   # read at start; keep it 0600
     description: Your Chrome, signed in to your sites   # optional: one line agents see in `fleetlayer me`
     allow: ["*@server"]          # <tab>@<node> patterns; nobody when empty
-    networks: ["10.5.0.0/16"]    # optional: offer it only while this machine is on these networks (at home)
+    networks: ["192.168.1.0/24"] # optional: offer it only while this machine is on these networks (at home)
     tools:
       deny: [browser_run_code_unsafe]   # always on in Playwright MCP: arbitrary code in the server's process
     # When a session's connection ends, close its tabs one at a time (browser_close only disconnects in extension
