@@ -181,20 +181,31 @@ pub async fn act_as_service(
     act_as(app, tenant, &format!("service:{service}"), session, node, action, why).await
 }
 
+/// Where a person can say something from, as the text's prefix names it (`From the Work tab: …`).
+pub const SAY_FROM: &[&str] = &["the Work tab", "the dashboard", "the phone"];
+
 /// A signed-in person says `text` in a session (`POST /v1/sessions/say`, with a delegate token naming them): checked
-/// as their `attach` on it, typed in as their own input with `prefix` before it, and audited as them with the text.
+/// as their `attach` on it, typed in as their own input after `From <from>: `, and audited as them with the text. One
+/// line, not starting with `/` or `!`, from one of [`SAY_FROM`].
 pub async fn say_as_person(
     app: &App,
     tenant: &str,
     person: &str,
     to: &str,
     text: &str,
-    prefix: &str,
+    from: &str,
 ) -> Result<l::SessionActed, RpcError> {
     let text = text.trim();
-    if text.is_empty() || text.len() > l::SAY_MAX {
-        return Err(RpcError::invalid_params(format!("say 1 to {} bytes", l::SAY_MAX)));
+    if text.is_empty() || text.len() > l::SAY_MAX || text.chars().any(char::is_control) {
+        return Err(RpcError::invalid_params(format!("say one line of 1 to {} bytes", l::SAY_MAX)));
     }
+    if text.starts_with('/') || text.starts_with('!') {
+        return Err(RpcError::invalid_params("what's said can't start with / or ! (a command or a shell line)"));
+    }
+    if !SAY_FROM.contains(&from) {
+        return Err(RpcError::invalid_params(format!("from is one of: {}", SAY_FROM.join(", "))));
+    }
+    let prefix = format!("From {from}: ");
     let (session, node) =
         split_target(to).ok_or_else(|| RpcError::invalid_params(format!("{to} isn't <tab>@<node>")))?;
     let action = l::SessionAction::Say { text: format!("{prefix}{text}") };
@@ -212,42 +223,99 @@ async fn act_as(
 ) -> Result<l::SessionActed, RpcError> {
     let target = format!("{session}@{node}");
     let verb = action.verb();
-    crate::authz::check_why(app, tenant, caller, verb, &target, why).await?;
-    let server =
-        app.links.peer(tenant, node).await.ok_or_else(|| RpcError::not_here(format!("node {node} is offline")))?;
-    let serve = l::SessionActServe { session: session.into(), action: action.clone(), caller: caller.into() };
-    let done: l::SessionActed =
-        server.request_within(l::method::SESSION_ACT_SERVE, &serve, Duration::from_secs(35)).await.map_err(|e| {
-            if e.code == fleetlayer_protocol::rpc::code::METHOD_NOT_FOUND {
-                RpcError::refused(format!("node {node} is too old to {verb} sessions: update it"))
-            } else {
-                e
-            }
-        })?;
+    crate::authz::act_rate(app, caller, &target)?;
+    match &action {
+        // An approval for a command holds for that command only (`for: once` by default): the person sees which.
+        l::SessionAction::Command { command } => check_command(app, tenant, caller, &target, command, why).await?,
+        _ => crate::authz::check_why(app, tenant, caller, verb, &target, why).await?,
+    }
     let typed = match &action {
         l::SessionAction::Close => None,
-        l::SessionAction::Answer { prompt, answers } => Some(format!(
-            "carried out: answered prompt {prompt} with {}",
-            serde_json::to_string(answers).unwrap_or_default()
-        )),
-        l::SessionAction::Command { command } => Some(format!("carried out: typed {command}")),
-        l::SessionAction::Say { text } => {
-            Some(format!("carried out: said {}", serde_json::to_string(text).unwrap_or_default()))
+        l::SessionAction::Answer { prompt, answers } => {
+            Some(format!("answer prompt {prompt} with {}", serde_json::to_string(answers).unwrap_or_default()))
         }
+        l::SessionAction::Command { command } => Some(format!("type {command}")),
+        l::SessionAction::Say { text } => Some(format!("say {}", serde_json::to_string(text).unwrap_or_default())),
     };
-    if let Some(reason) = typed {
-        let entry = crate::audit::Entry {
-            decision: "allowed".into(),
-            subject: caller.into(),
-            verb: verb.into(),
-            target,
-            reason,
+    // What's about to be typed is on record before the node types it, so a node that fails halfway leaves a trace.
+    let record = |reason: String| crate::audit::Entry {
+        decision: "allowed".into(),
+        subject: caller.into(),
+        verb: verb.into(),
+        target: target.clone(),
+        reason,
+    };
+    if let Some(t) = &typed {
+        app.audit.record(&app.db, tenant, record(format!("typing: {t}"))).await.map_err(|e| {
+            tracing::error!("the audit log can't be written, so nothing is typed into {target}: {e}");
+            RpcError::refused("the control plane's audit log can't be written now, so nothing is typed")
+        })?;
+    }
+    let result = serve_act(app, tenant, caller, session, node, &action).await;
+    if let Some(t) = typed {
+        let reason = match &result {
+            Ok(_) => format!("carried out: {t}"),
+            Err(e) => format!("failed: {t}: {}", e.message),
         };
-        if let Err(e) = app.audit.record(&app.db, tenant, entry).await {
+        if let Err(e) = app.audit.record(&app.db, tenant, record(reason)).await {
             tracing::error!("recording what was typed into a session in the audit log: {e}");
         }
     }
-    Ok(done)
+    result
+}
+
+/// `command` on `target` for `caller`, decided with the command as what an approval is bound to and shows.
+async fn check_command(
+    app: &App,
+    tenant: &str,
+    caller: &str,
+    target: &str,
+    command: &str,
+    why: Option<&str>,
+) -> Result<(), RpcError> {
+    // Rules written for the session's other names (its ID, its tab) refuse it too.
+    let names = crate::authz::session_names(app, target).await;
+    for alias in names.iter().skip(1) {
+        if matches!(crate::authz::dry(app, tenant, caller, "command", alias).await, crate::authz::Dry::Denied) {
+            crate::authz::check_why(app, tenant, caller, "command", alias, why).await?;
+        }
+    }
+    let canonical = names.first().map(String::as_str).unwrap_or(target);
+    let detail = format!("type {command} into {target}");
+    let call = crate::authz::CallContext { args_hash: command, detail: Some(&detail), audit: Some(&detail) };
+    let out = crate::authz::check_call(app, tenant, caller, "command", canonical, call, why).await?;
+    if let Some(e) = out.refusal {
+        return Err(e);
+    }
+    let mut to_spend = out.to_spend;
+    to_spend.sort();
+    to_spend.dedup();
+    if !crate::approvals::spend_all(&app.db, tenant, &to_spend).await.map_err(RpcError::internal)? {
+        return Err(RpcError::refused("that command's approval was used just now: ask again"));
+    }
+    Ok(())
+}
+
+async fn serve_act(
+    app: &App,
+    tenant: &str,
+    caller: &str,
+    session: &str,
+    node: &str,
+    action: &l::SessionAction,
+) -> Result<l::SessionActed, RpcError> {
+    let verb = action.verb();
+    let server =
+        app.links.peer(tenant, node).await.ok_or_else(|| RpcError::not_here(format!("node {node} is offline")))?;
+    let serve = l::SessionActServe { session: session.into(), action: action.clone(), caller: caller.into() };
+
+    server.request_within(l::method::SESSION_ACT_SERVE, &serve, Duration::from_secs(35)).await.map_err(|e| {
+        if e.code == fleetlayer_protocol::rpc::code::METHOD_NOT_FOUND {
+            RpcError::refused(format!("node {node} is too old to {verb} sessions: update it"))
+        } else {
+            e
+        }
+    })
 }
 
 /// Part of a session's transcript on another node, for a caller on `from_node`, after `read` on `<session>@<node>`.
@@ -597,6 +665,9 @@ mod tests {
         impl Handler for FakeNode {
             async fn request(&self, _peer: &Peer, method: &str, p: Value) -> Result<Value, RpcError> {
                 self.served.lock().await.push(p.clone());
+                if method == l::method::SESSION_ACT_SERVE && p["command"] == "/fail" {
+                    return Err(RpcError::new(fleetlayer_protocol::rpc::code::BUSY, "someone is typing in review"));
+                }
                 if method == l::method::SESSION_ACT_SERVE {
                     let done = match p["action"].as_str() {
                         Some("close") => "closed",
@@ -725,15 +796,70 @@ mod tests {
             assert_eq!(closed.done, "closed");
             let log: Vec<String> =
                 sqlx::query_scalar("SELECT reason FROM audit_log").fetch_all(&app.db).await.unwrap_or_default();
-            assert!(log.iter().any(|r| r.contains("answered prompt toolu_1 with [{\"pick\":2}]")), "{log:?}");
+            assert!(
+                log.iter().any(|r| r.contains("carried out: answer prompt toolu_1 with [{\"pick\":2}]")),
+                "{log:?}"
+            );
         }
 
         fn compact() -> l::SessionAction {
             l::SessionAction::Command { command: "/compact".into() }
         }
 
-        /// A slash command is asked by default from another node; a policy lets the runner and a service type one,
-        /// and each is audited with the command.
+        /// By default each command is asked for on its own: the person sees which command, and an approval types
+        /// that command once.
+        #[tokio::test]
+        async fn an_approval_types_that_one_command_once() {
+            let (app, home) = fleet().await;
+            let e = act_session(&app, "default", "laptop", act("planning", compact())).await.unwrap_err();
+            assert!(e.message.to_lowercase().contains("approv"), "{}", e.message);
+            let (id, detail): (String, Option<String>) =
+                sqlx::query_as("SELECT id, detail FROM approvals WHERE status = 'pending'")
+                    .fetch_one(&app.db)
+                    .await
+                    .unwrap();
+            assert_eq!(detail.as_deref(), Some("type /compact into review@home"));
+            crate::approvals::decide(&app.db, "default", &id, true, None, "person:nathan").await.unwrap().unwrap();
+
+            let clear = l::SessionAction::Command { command: "/clear".into() };
+            let e = act_session(&app, "default", "laptop", act("planning", clear)).await.unwrap_err();
+            assert!(e.message.to_lowercase().contains("approv"), "/compact's approval isn't /clear's: {}", e.message);
+            let done = act_session(&app, "default", "laptop", act("planning", compact())).await.unwrap();
+            assert_eq!(done.done, "typed");
+            let e = act_session(&app, "default", "laptop", act("planning", compact())).await.unwrap_err();
+            assert!(e.message.to_lowercase().contains("approv"), "used once: {}", e.message);
+            assert_eq!(home.served.lock().await.len(), 1);
+        }
+
+        /// What's typed is on record before the node types it, and the outcome after, even when the node fails.
+        #[tokio::test]
+        async fn typing_is_audited_before_and_after_even_when_the_node_fails() {
+            let (app, _home) = fleet().await;
+            crate::authz::store(&app.db, "default", "version: 2\ndefault: allow\nask: []\n").await.unwrap();
+            let fail = l::SessionAction::Command { command: "/fail".into() };
+            let e = act_session(&app, "default", "laptop", act("triage", fail)).await.unwrap_err();
+            assert!(e.message.contains("someone is typing"), "{}", e.message);
+            let log: Vec<String> = sqlx::query_scalar("SELECT reason FROM audit_log ORDER BY seq")
+                .fetch_all(&app.db)
+                .await
+                .unwrap_or_default();
+            let at = log.iter().position(|r| r == "typing: type /fail").expect("typing recorded first");
+            assert!(log[at + 1..].iter().any(|r| r.starts_with("failed: type /fail: someone is typing")), "{log:?}");
+        }
+
+        /// Acting on sessions is rate-limited per session (and per caller).
+        #[tokio::test]
+        async fn acting_on_a_session_is_rate_limited() {
+            let (app, _home) = fleet().await;
+            crate::authz::store(&app.db, "default", "version: 2\ndefault: allow\nask: []\n").await.unwrap();
+            for _ in 0..crate::authz::ACTS_ON_A_SESSION_PER_MINUTE {
+                act_session(&app, "default", "laptop", act("triage", compact())).await.unwrap();
+            }
+            let e = act_session(&app, "default", "laptop", act("other", compact())).await.unwrap_err();
+            assert!(e.message.contains("review@home was acted on 10 times"), "{}", e.message);
+        }
+
+        /// A policy lets the runner and a service type a command, and each is audited with the command.
         #[tokio::test]
         async fn commands_are_asked_by_default_and_audited_with_the_command() {
             let (app, home) = fleet().await;
@@ -759,7 +885,8 @@ mod tests {
             assert_eq!(served[1]["caller"], "service:quietdeck");
             let log: Vec<(String, String)> =
                 sqlx::query_as("SELECT subject, reason FROM audit_log").fetch_all(&app.db).await.unwrap_or_default();
-            assert!(log.iter().any(|(s, r)| s == "service:quietdeck" && r == "carried out: typed /compact"), "{log:?}");
+            assert!(log.iter().any(|(s, r)| s == "service:quietdeck" && r == "typing: type /compact"), "{log:?}");
+            assert!(log.iter().any(|(s, r)| s == "service:quietdeck" && r == "carried out: type /compact"), "{log:?}");
         }
 
         /// Only a person says something: a service can't, and a person's `say` is checked as their `attach`, typed with
@@ -782,21 +909,14 @@ mod tests {
             let owner = crate::people::Owner::Person(ids[0].clone());
             crate::people::node_owner(&app.db, "home", Some(&owner), "admin", "default").await.unwrap();
             crate::authz::store(&app.db, "default", "version: 2\ndefault: allow\nask: []\n").await.unwrap();
-            let e = say_as_person(&app, "default", "person:dana", "review@home", "yes", "From the Work tab: ")
-                .await
-                .unwrap_err();
+            let e =
+                say_as_person(&app, "default", "person:dana", "review@home", "yes", "the Work tab").await.unwrap_err();
             assert!(e.message.contains("person:dana may not attach"), "{}", e.message);
             assert!(home.served.lock().await.is_empty());
-            let done = say_as_person(
-                &app,
-                "default",
-                "person:nathan",
-                "review@home",
-                " Approved, go ahead ",
-                "From the Work tab: ",
-            )
-            .await
-            .unwrap();
+            let done =
+                say_as_person(&app, "default", "person:nathan", "review@home", " Approved, go ahead ", "the Work tab")
+                    .await
+                    .unwrap();
             assert_eq!(done.done, "said");
             let served = home.served.lock().await.clone();
             assert_eq!(
@@ -811,13 +931,24 @@ mod tests {
             assert!(
                 log.iter().any(|(s, v, r)| s == "person:nathan"
                     && v == "attach"
-                    && r == "carried out: said \"From the Work tab: Approved, go ahead\""),
+                    && r == "carried out: say \"From the Work tab: Approved, go ahead\""),
                 "{log:?}"
             );
-            let e = say_as_person(&app, "default", "person:nathan", "review@home", "  ", "From the Work tab: ")
-                .await
-                .unwrap_err();
+            let e =
+                say_as_person(&app, "default", "person:nathan", "review@home", "  ", "the Work tab").await.unwrap_err();
             assert_eq!(e.code, fleetlayer_protocol::rpc::code::INVALID_PARAMS);
+            // One line only (a second would go in on its own, without the prefix), never a command or shell line,
+            // and only from a known place.
+            for (text, from) in [
+                ("yes\n/clear", "the Work tab"),
+                ("/clear", "the Work tab"),
+                ("!ls", "the Work tab"),
+                ("yes", "Nathan himself"),
+            ] {
+                let e = say_as_person(&app, "default", "person:nathan", "review@home", text, from).await.unwrap_err();
+                assert_eq!(e.code, fleetlayer_protocol::rpc::code::INVALID_PARAMS, "{text:?} from {from}");
+            }
+            assert_eq!(home.served.lock().await.len(), 1);
         }
 
         fn handoff(caller: &str, from: &str, id: &str) -> l::SessionHandoff {

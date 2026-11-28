@@ -148,11 +148,10 @@ fleetlayer session close review@server
 ```
 
 To free a session's context, type a slash command into it as the person would (only `/compact` and `/clear` unless
-its node's `session_commands:` allows more; arguments may follow):
+its node's `session_commands:` allows more, exactly as listed, with no arguments):
 
 ```sh
 fleetlayer session command review@server /compact
-fleetlayer session command review@server /compact keep the deploy notes
 ```
 
 It's refused while the session is working, waits on a prompt, or someone is typing in it: try again once it's idle,

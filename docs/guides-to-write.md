@@ -783,8 +783,9 @@ managers, machines that sleep.
   when it reads back as exactly that text (wrapped lines and all), so a person who started typing in the same moment
   keeps their text and nothing is sent. A long paste shows as `[Pasted text #1 +3 lines]`, which counts as reading
   back. Slash commands open a suggestions menu; Enter on an exact name runs it. Keep commands to an allowlist
-  (`/compact`, `/clear`), and let only a person's own token type free text, because the agent takes it as their
-  words. Where it lives: `docs/protocol.md` ("Slash commands", "Saying something, as the person"),
+  of exact strings (`/compact`, `/clear`; `/compact <instructions>` would steer the agent), ask for each one, and
+  let only a person's own token type free text, one line that isn't `/…` or `!…`, because the agent takes it as
+  their words. When the read-back fails, take your text back out only if it's at the end of the line. Where it lives: `docs/protocol.md` ("Slash commands", "Saying something, as the person"),
   `crates/fleetlayer-node/src/act.rs`.
 - **Sending an agent a prompt on a schedule.** The usual way is a cron line that types into the agent's terminal,
   which goes wrong quietly: it types into whatever runs there (a shell, a permission prompt), fires a burst after the

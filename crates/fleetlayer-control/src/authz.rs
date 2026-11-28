@@ -907,6 +907,32 @@ pub fn search_rate(app: &App, caller: &str) -> Result<(), RpcError> {
     Ok(())
 }
 
+/// Closes, answers, commands and things said, per caller and per session, in a minute.
+pub const ACTS_PER_MINUTE: usize = 20;
+pub const ACTS_ON_A_SESSION_PER_MINUTE: usize = 10;
+
+/// Count a close, answer, command or saying by `caller` on `target`, refusing one past either limit.
+pub fn act_rate(app: &App, caller: &str, target: &str) -> Result<(), RpcError> {
+    let now = Instant::now();
+    let mut all = app.authz.searches.lock().unwrap_or_else(|e| e.into_inner());
+    all.retain(|_, q| q.back().is_some_and(|t| now.duration_since(*t) < Duration::from_secs(60)));
+    let keys = [(format!("act:{caller}"), ACTS_PER_MINUTE), (format!("act-on:{target}"), ACTS_ON_A_SESSION_PER_MINUTE)];
+    for (key, limit) in &keys {
+        if all.get(key).is_some_and(|q| q.len() >= *limit) {
+            let what = if key.starts_with("act:") {
+                format!("{caller} acted on sessions {limit} times")
+            } else {
+                format!("{target} was acted on {limit} times")
+            };
+            return Err(RpcError::refused(format!("{what} in the last minute: wait a little")));
+        }
+    }
+    for (key, _) in keys {
+        all.entry(key).or_default().push_back(now);
+    }
+    Ok(())
+}
+
 /// Whether `who` sees session `target` in the fleet's list: version 2 tenants' `read` rules, and in a tenant without
 /// one, the sessions it may message (version 1).
 pub async fn may_see(app: &App, _home: &str, who: &str, target: &str) -> bool {

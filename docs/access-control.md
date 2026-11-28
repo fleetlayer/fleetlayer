@@ -85,7 +85,11 @@ Saying something in a session as the person (`POST /v1/sessions/say` `{to, text,
 takes it as the person's own words, approvals included. So it takes a delegate token acting for a signed-in person
 (the `Fleetlayer-Person` header, as the dashboard sends), is decided as that person's `attach` on the session (by
 default, people may on sessions of nodes they own), is audited as them with the exact text, and arrives as
-`From <from>: <text>`. A send token, an agent or a node can't say anything.
+`From <from>: <text>`, `from` being `the Work tab`, `the dashboard` (the default) or `the phone`. The text is one line
+and can't start with `/` or `!`. A send token, an agent or a node can't say anything. Whoever holds a delegate token
+can speak as any member with `attach` on a session, with no fresh passkey, so a service holding one runs under its
+own Unix user with the token out of agents' reach. Both routes are rate-limited: 20 a minute per caller, 10 a
+minute per session.
 
 For the same reason, a node always sees, messages and drives its own sessions with no policy check: a message to a
 session on the same node is delivered straight to it, and so is `fleetlayer attach`. `message`, `read` and `attach`
@@ -151,7 +155,8 @@ Verbs: `message`, `use_tool`, `call` (one tool call through [the MCP gate](#the-
 another, not even `-@<node>`, doesn't see that node in the fleet view at all), `subscribe`, `publish`, and
 `start` (start, resume or interrupt a session on another node), `close` (close one), `answer` (answer the prompt a
 session is blocked on: a question, a plan, or a permission prompt, which approves what it asks), `command` (type an
-allowlisted slash command such as `/compact` into an idle session), and `attach` (type into a session's terminal;
+allowlisted slash command such as `/compact` into an idle session, asked for each command `for: once` by default),
+and `attach` (type into a session's terminal;
 watching it is `read`; for a person, also saying something in a session through `POST /v1/sessions/say`), and `connect` (reach an internet host, `host:<name>[:<port>]`, asked by
 the [egress plugin](egress.md) for a role's node: `-@<node>`). Give an overseer that answers for the person `answer` by name, never
 through a broad rule: `allow: [{ who: "plugin:runner@<node>", can: answer }]` with `answer` denied to everyone else.
@@ -177,8 +182,9 @@ justify:                       # the agent must say why, in one line, and it goe
     can: [use_tool, sync, start]
 ```
 
-Approvals are on by default: a policy that leaves `ask:` out asks before `start`, `attach`, `answer`, `close` and `command` (an
-approval holds 10 minutes) and
+Approvals are on by default: a policy that leaves `ask:` out asks before `start`, `attach`, `answer` and `close` (an
+approval holds 10 minutes), before each slash command typed into a session (`command`, `for: once`, showing the
+command), and
 before each agent's first `use_tool`, `sync`, `admin`, `write` or `connect` to a target (it holds 30 days; one for
 `use_tool`, `sync` or `connect` renews while it's used, so it lapses only after 30 days unused), the safe start for a
 fleet you don't know yet. Each run of a [shared command](guides/shared-commands.md) (`run`) asks too, `for: once`:
@@ -361,7 +367,7 @@ ask: list `ask:` with that role left out, through `except:`.
 ask:
   - who: "*"
     except: ["*@homeserver", "*@ci"]    # these roles get on with it
-    can: [start, attach, answer, close, command]
+    can: [start, attach, answer, close]
     for: 10m
   - who: "*"
     except: ["*@homeserver", "*@ci"]

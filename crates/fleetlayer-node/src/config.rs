@@ -43,8 +43,8 @@ pub struct NodeConfig {
     /// started or resumed on this node gets, such as its permission mode. Only this file sets them; a caller can't.
     #[serde(default)]
     pub harnesses: std::collections::BTreeMap<String, HarnessConfig>,
-    /// The slash commands `fleetlayer session command` may type into this node's sessions (each may be followed by
-    /// arguments). Default `[/compact, /clear]`; `[]` allows none.
+    /// The slash commands `fleetlayer session command` may type into this node's sessions, each exactly as written
+    /// (no arguments). Default `[/compact, /clear]`; `[]` allows none.
     #[serde(default = "default_session_commands")]
     pub session_commands: Vec<String>,
     /// Report the node's health to a monitor (a Gatus external endpoint, say).

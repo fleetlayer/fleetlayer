@@ -335,15 +335,14 @@ enum SessionCommand {
         why: Option<String>,
     },
     /// Type a slash command into a session as the person would: `fleetlayer session command review@server /compact`.
-    /// Only one its node allows (`session_commands:`, default /compact and /clear), and only while the session is
-    /// idle with an empty input line: refused while it works, waits on a prompt, or someone is typing in it. Asked by
-    /// default from another node.
+    /// Only one its node allows, exactly and with no arguments (`session_commands:`, default /compact and /clear),
+    /// and only while the session is idle with an empty input line: refused while it works, waits on a prompt, or
+    /// someone is typing in it. Each command is asked for by default from another node.
     Command {
         /// `<tab>@<node>`, a tab on this node, or a session ID.
         to: String,
-        /// The slash command, with any arguments (`/compact keep the API notes`).
-        #[arg(required = true, num_args = 1.., allow_hyphen_values = true)]
-        command: Vec<String>,
+        /// The slash command (`/compact`).
+        command: String,
         #[arg(long, env = "FLEETLAYER_WHY")]
         why: Option<String>,
     },
@@ -1660,7 +1659,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
         Command::Session { command: SessionCommand::Command { to, command, why } } => {
-            let req = json!({"to": to, "command": command.join(" "), "why": why, "caller": caller()});
+            let req = json!({"to": to, "command": command, "why": why, "caller": caller()});
             let v: Value =
                 peer.request_within("node/session_command", &req, std::time::Duration::from_secs(60)).await?;
             print_acted(&v, cli.json);

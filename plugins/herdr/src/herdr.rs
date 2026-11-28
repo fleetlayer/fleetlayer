@@ -432,7 +432,11 @@ pub async fn keys(herdr: &str, pane: &str, steps: &[ext::KeyStep]) -> Result<(),
             tokio::time::sleep(std::time::Duration::from_millis(350)).await;
         }
         match step {
-            ext::KeyStep::Key(k) => run_plain(herdr, &["agent", "send-keys", pane, k]).await?,
+            ext::KeyStep::Key(k) => {
+                let mut args = vec!["agent", "send-keys", pane];
+                args.extend(k.split_whitespace());
+                run_plain(herdr, &args).await?
+            }
             ext::KeyStep::Text(t) => run_plain(herdr, &["pane", "send-text", pane, t]).await?,
         }
     }

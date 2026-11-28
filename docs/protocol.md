@@ -251,21 +251,32 @@ grant `session.close`; across nodes `link/session_close`, verb `close`, asked by
 **Slash commands.** `fleetlayer session command <session> /compact` (`node/session_command` `{to, command, why?}`; a
 plugin: `_fleetlayer.dev/session/command`, grant `session.command`; across nodes `link/session_command`, verb `command`,
 asked by default; a service: `POST /v1/sessions/act`, below) types a slash command into the session as the person
-would, and presses Enter. The session's node allows only the commands in its `session_commands:` (default
-`[/compact, /clear]`; arguments may follow, `/compact keep the API notes`; `[]` allows none), and types one only when
-the session is idle: refused with `-32012` while it's working, blocked on a prompt, or someone is typing in it. To
-know that, it reads the screen and finds Claude Code's input box (the `❯` line between the last two rules) empty;
-no box, no typing. Enter goes only once the box reads back as the command alone, so a person who starts typing in
-the same moment keeps their text and nothing is sent. A command that went in is written to the audit log
-(`carried out: typed /compact`).
+would, and presses Enter. The session's node allows only the commands in its `session_commands:`, each exactly as
+written (default `[/compact, /clear]`; `[]` allows none). Arguments are refused: `/compact <instructions>` would let
+a caller steer the agent with words of its own. It types one only when the session is idle: refused with `-32012`
+while it's working, blocked on a prompt, or someone is typing in it. To know that, it reads the screen and finds
+Claude Code's input box (the `❯` line between the last two rules) empty; no box, no typing. Enter goes only when the
+box, read again right before, is exactly the command. When someone typed in the same moment, nothing is sent: the
+node takes its own text back out when it sits at the end of the line, and otherwise leaves the line alone.
+
+From another node or a service, each command is its own approval by default (`ask:` with `for: once`, the person
+seeing `type /compact into review@home`), and an approval holds for that command once. What's about to be typed is
+written to the audit log before the node is asked (`typing: type /compact`), then its outcome (`carried out: …` or
+`failed: …`); answers and things said are recorded the same way. A caller acts on sessions at most 20 times a
+minute, and a session is acted on at most 10 times a minute. On the session's own node there's no policy check, as
+for messages and attach: any agent on a node can `/clear` a sibling session, so an agent you trust less belongs on a
+node of its own.
 
 **Saying something, as the person.** `POST /v1/sessions/say` types text into a session and submits it, as the
 person's own input, with the same idle and empty-input checks as a command. This is the person speaking: an agent
 treats it as an instruction from them (an approval, a decision), which is why only a person can do it. It takes a
 delegate token acting for a signed-in person (`Fleetlayer-Person`, as the dashboard sends), is checked as that
 person's `attach` on the session, and is audited as them with the exact text. No node, plugin, agent or service can
-ask for it in its own name: there's no command, plugin method or link method for it. The text arrives prefixed with
-where it was said (`From the Work tab: …`).
+ask for it in its own name: there's no command, plugin method or link method for it. The text is one line (Enter
+submits, so a second line would arrive on its own) that doesn't start with `/` or `!` (a command, a shell line), and
+arrives prefixed with where it was said, one of `the Work tab`, `the dashboard` or `the phone` (`From the Work tab:
+…`). A delegate token can speak as any member the header names who has `attach` on the session, without a fresh
+passkey: keep it in a service that runs under its own Unix user, with the token where agents can't read it.
 
 ### Starting sessions
 

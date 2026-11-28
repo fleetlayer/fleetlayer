@@ -201,7 +201,9 @@ pub fn default_ask() -> Vec<AskRule> {
         hold: hold.into(),
     };
     vec![
-        rule(&["start", "attach", "answer", "close", "command"], "10m"),
+        rule(&["start", "attach", "answer", "close"], "10m"),
+        // Each slash command typed into a session, with the command in front of the person.
+        rule(&["command"], "once"),
         rule(&["use_tool", "sync", "admin", "write", "connect"], "30d"),
         // Each run of a shared command on another machine, with the program and arguments it will run in front of
         // the person.

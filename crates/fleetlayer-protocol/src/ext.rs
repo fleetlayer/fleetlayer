@@ -681,7 +681,8 @@ pub struct PromptAnswer {
     pub text: Option<String>,
 }
 
-/// `_fleetlayer.dev/session/keys`: each step is a key (`1`, `enter`, `down`, `space`, `tab`, `esc`) or literal text.
+/// `_fleetlayer.dev/session/keys`: each step is a key (`1`, `enter`, `down`, `space`, `tab`, `esc`, `backspace`), several
+/// keys separated by spaces pressed in one go (`backspace backspace`), or literal text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionKeys {

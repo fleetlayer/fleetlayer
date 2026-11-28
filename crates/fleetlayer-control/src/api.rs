@@ -896,7 +896,8 @@ pub struct PostSay {
     /// `<tab>@<node>`.
     to: String,
     text: String,
-    /// Where the person said it, put before the text (`From the Work tab: …`); default: the token's name.
+    /// Where the person said it, put before the text (`From the Work tab: …`): one of `route::SAY_FROM`. Default: the
+    /// dashboard.
     #[serde(default)]
     from: Option<String>,
 }
@@ -925,9 +926,9 @@ pub async fn post_say(State(app): State<Arc<App>>, headers: HeaderMap, Json(s): 
     let Some(handle) = t.handles.get(person).cloned() else {
         return Err((StatusCode::FORBIDDEN, format!("{person} isn't a member of the tenant")));
     };
-    let from: String = s.from.unwrap_or_default().chars().filter(|c| !c.is_control()).take(60).collect();
-    let prefix = format!("From {}: ", if from.trim().is_empty() { name.as_str() } else { from.trim() });
-    let done = crate::route::say_as_person(&app, &tenant, &format!("person:{handle}"), &s.to, &s.text, &prefix)
+    let from = s.from.as_deref().unwrap_or("the dashboard");
+    tracing::info!(person = %handle, token = %name, to = %s.to, "a person says something in a session");
+    let done = crate::route::say_as_person(&app, &tenant, &format!("person:{handle}"), &s.to, &s.text, from)
         .await
         .map_err(rpc_status)?;
     Ok(Json(serde_json::to_value(done).unwrap_or_default()))
