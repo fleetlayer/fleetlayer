@@ -217,6 +217,29 @@ fn declared(command: &str, config: &Value) -> Declared {
             d.dirs.push("~/.local/state/fleetlayer/summaries".into());
         }
         "fleetlayer-cookies" => d.dirs.push("~/.local/state/fleetlayer/cookies".into()),
+        "fleetlayer-matrix" => {
+            // Its signed-in device and encryption keys: a new device would lose every room key it holds.
+            d.dirs.push(or(&config["state_dir"], "~/.local/state/fleetlayer/matrix"));
+            d.files.extend(strs(&config["password_file"]));
+        }
+        "fleetlayer-1password" => {
+            d.dirs.push("~/.local/state/fleetlayer/1password".into());
+            for f in config["source"]["token_files"].as_array().into_iter().flatten() {
+                d.files.extend(strs(f));
+            }
+        }
+        "fleetlayer-egress" => {
+            d.files.push(or(&config["settings"], "~/.config/fleetlayer/egress.yaml"));
+            d.dirs.push(or(&config["state_dir"], "~/.local/state/fleetlayer/egress"));
+        }
+        "fleetlayer-dashboard" => {
+            d.files.extend(strs(&config["login_file"]));
+            d.files.extend(strs(&config["control"]["token_file"]));
+            d.files.extend(strs(&config["signin"]["secret_file"]));
+        }
+        // No state of their own: shared-folders and file-sync serve folders that stay where they are, herdr-fleet's
+        // folder holds only a socket and a link it makes again, summaries and the session managers keep theirs above
+        // or in their harness's own files.
         _ => {}
     }
     d
@@ -745,5 +768,40 @@ mod tests {
         assert_eq!(pages.content, vec![home.join("Fleetlayer/personal/pages")]);
         assert_eq!(pages.route.unwrap().hosts, vec!["*--*.apps"]);
         assert!(inspect_plugin(&here, "nope", &[]).is_err());
+    }
+
+    #[test]
+    fn matrix_1password_egress_and_the_dashboard_carry_their_state() {
+        let cfg = |v: &str| serde_json::from_str::<Value>(v).unwrap();
+        let d = declared("fleetlayer-matrix", &cfg(r#"{"password_file": "~/.config/fleetlayer/matrix-password"}"#));
+        assert_eq!(
+            (d.dirs, d.files),
+            (
+                vec!["~/.local/state/fleetlayer/matrix".to_string()],
+                vec!["~/.config/fleetlayer/matrix-password".to_string()]
+            )
+        );
+        let d = declared("/usr/local/bin/fleetlayer-matrix", &cfg(r#"{"state_dir": "~/m"}"#));
+        assert_eq!(d.dirs, ["~/m"]);
+        let d = declared("fleetlayer-1password", &cfg(r#"{"source": {"token_files": ["~/a", "~/b"]}}"#));
+        assert_eq!(
+            (d.dirs, d.files),
+            (vec!["~/.local/state/fleetlayer/1password".to_string()], vec!["~/a".to_string(), "~/b".to_string()])
+        );
+        let d = declared("fleetlayer-1password", &cfg(r#"{"receive": {}}"#));
+        assert!(d.files.is_empty(), "a target holds no token");
+        let d = declared("fleetlayer-egress", &cfg("{}"));
+        assert_eq!(
+            (d.dirs, d.files),
+            (
+                vec!["~/.local/state/fleetlayer/egress".to_string()],
+                vec!["~/.config/fleetlayer/egress.yaml".to_string()]
+            )
+        );
+        let d = declared(
+            "fleetlayer-dashboard",
+            &cfg(r#"{"control": {"token_file": "~/t"}, "signin": {"secret_file": "~/s"}}"#),
+        );
+        assert_eq!(d.files, ["~/t", "~/s"]);
     }
 }
