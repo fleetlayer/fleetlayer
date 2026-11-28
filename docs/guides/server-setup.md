@@ -1,4 +1,4 @@
-# A whole server, set up by an agent
+# A production-grade server, set up by an agent
 
 A laptop is a fine place to start, and a single VM is enough for a few agents. Once you run many kinds of agents side
 by side (personal errands, email triage, product work, infrastructure, a worker that builds things), you want a server
