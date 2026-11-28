@@ -1,9 +1,13 @@
 name: CI
 
+# Docs, site, plugin directory and README changes don't run CI (the Site workflow checks them), so a docs push
+# doesn't cancel the run of the code commit before it. The one guide the skill check reads still does.
 on:
   push:
     branches: [main]
+    paths: ["**", "!docs/**", "!site/**", "!plugins-directory/**", "!README.md", "!CONTRIBUTING.md", "docs/guides/agents-know-fleetlayer.md"]
   pull_request:
+    paths: ["**", "!docs/**", "!site/**", "!plugins-directory/**", "!README.md", "!CONTRIBUTING.md", "docs/guides/agents-know-fleetlayer.md"]
 
 permissions:
   contents: read
