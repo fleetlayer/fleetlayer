@@ -28,6 +28,13 @@ export const pages = [
     description:
       "How Fleetlayer works with Rex, the terminal and session manager from Superlogical: Rex keeps your sessions, and Fleetlayer lets the Claude Code and Codex agents in them message each other, receive webhooks and work under access rules.",
   },
+  {
+    file: "openclaw",
+    group: "Works with",
+    label: "OpenClaw",
+    description:
+      "Fleetlayer compared with OpenClaw, feature by feature: how to build your own OpenClaw from Fleetlayer's pieces, with each part on the machine that suits it, using Claude Code or Codex and your own session manager.",
+  },
   { file: "guides/laptop", group: "Set up", label: "Start on your laptop" },
   { file: "guides/node-services", group: "Set up", label: "Add a machine" },
   { file: "guides/agents-vm", group: "Set up", label: "A server VM for your agents" },
