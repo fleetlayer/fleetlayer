@@ -72,6 +72,9 @@ pub mod method {
     pub const READING_UPDATE: &str = "link/reading_update";
     /// Control plane → node: deliver to one of its sessions. `DeliverRequest` → `Delivered`.
     pub const DELIVER: &str = "link/deliver";
+    /// Control plane → node: deliver an event to one of its plugins (a subscription's target `plugin:<name>@<node>`).
+    /// `EventDeliverRequest` → `{}`.
+    pub const EVENT_DELIVER: &str = "link/event_deliver";
     /// Node → control plane: may this person or agent do this to something a tenant owns (a service's data, a page, an
     /// app)? Answered only if the node's `-@<node>` is a member of that tenant. `AccessCheck` → `AccessDecision`.
     pub const ACCESS_CHECK: &str = "link/access_check";
@@ -424,7 +427,16 @@ pub struct TargetResult {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EventDeliverRequest {
+    /// The plugin's name, without `plugin:`.
+    pub plugin: String,
+    #[serde(flatten)]
+    pub delivery: crate::ext::EventDelivery,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EventsRequest {
     /// `<tab>@<node>`: a session of the asking node.
     pub target: String,

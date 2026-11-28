@@ -901,11 +901,13 @@ pub async fn missed_events(
     Ok(out)
 }
 
-/// Forget a channel's events older than `keep_ms`.
-pub async fn prune_channel(db: &Db, channel: &str, keep_ms: i64) -> anyhow::Result<u64> {
-    let r = sqlx::query("DELETE FROM events WHERE channel = ? AND at < ?")
-        .bind(channel)
-        .bind(now_ms() - keep_ms)
+/// Forget events older than `keep_ms`, and those on `short` older than `short_ms`.
+pub async fn prune_events(db: &Db, keep_ms: i64, short: &str, short_ms: i64) -> anyhow::Result<u64> {
+    let now = now_ms();
+    let r = sqlx::query("DELETE FROM events WHERE at < ? OR (channel = ? AND at < ?)")
+        .bind(now - keep_ms)
+        .bind(short)
+        .bind(now - short_ms)
         .execute(db)
         .await?;
     Ok(r.rows_affected())

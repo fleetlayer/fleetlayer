@@ -446,6 +446,48 @@ async fn publish_event(
     peer.request_within(fleetlayer_protocol::link::method::PUBLISH, &v, PUBLISH_TIMEOUT).await
 }
 
+/// How long a plugin has to take an event.
+const EVENT_DELIVER_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Hand an event to one of this node's plugins, which subscribed to its channel: only a running plugin that still has
+/// the `event.subscribe` grant takes it.
+pub async fn deliver_event(node: &Node, plugin: &str, d: &ext::EventDelivery) -> Result<(), RpcError> {
+    let p = node.plugin(plugin).ok_or_else(|| RpcError::not_here(format!("plugin {plugin} isn't configured")))?;
+    if !p.config.granted("event.subscribe") {
+        return Err(RpcError::refused(format!("event.subscribe isn't granted to plugin {plugin} in node.yaml")));
+    }
+    let peer = p.peer().await.ok_or_else(|| RpcError::not_here(format!("plugin {plugin} isn't running")))?;
+    peer.request_within::<_, Value>(ext::method::EVENT_DELIVER, d, EVENT_DELIVER_TIMEOUT).await.map(|_| ())
+}
+
+/// A plugin's subscribe, unsubscribe or catch-up, as itself (`plugin:<name>@<node>`), through the control plane.
+async fn plugin_events(node: &Node, plugin: &str, method: &str, p: Value) -> Result<Value, RpcError> {
+    use fleetlayer_protocol::link as l;
+    let peer = node.link.peer().await.ok_or_else(|| {
+        RpcError::not_here(format!("{} isn't linked to a control plane now; try again later", node.name))
+    })?;
+    let target = format!("plugin:{plugin}@{}", node.name);
+    let channel = || p["channel"].as_str().filter(|c| !c.is_empty()).map(str::to_string);
+    match method {
+        ext::method::EVENT_MISSED => {
+            let r = l::EventsRequest {
+                target,
+                channel: channel(),
+                all: p["all"].as_bool().unwrap_or(false),
+                peek: p["peek"].as_bool().unwrap_or(false),
+                limit: p["limit"].as_u64().map(|n| n.min(500) as u32),
+            };
+            peer.request_within(l::method::EVENTS, &r, PUBLISH_TIMEOUT).await
+        }
+        _ => {
+            let channel = channel().ok_or_else(|| RpcError::invalid_params("channel"))?;
+            let s = json!({"channel": channel, "subject": p["subject"].as_str(), "target": target});
+            let m = if method == ext::method::EVENT_SUBSCRIBE { l::method::SUBSCRIBE } else { l::method::UNSUBSCRIBE };
+            peer.request_within(m, &s, PUBLISH_TIMEOUT).await
+        }
+    }
+}
+
 /// What's wrong with a plugin's event, if anything.
 fn event_problem(e: &ext::Event) -> Option<String> {
     let name_ok =
@@ -605,6 +647,10 @@ impl Handler for FromPlugin {
             ext::method::EVENT_PUBLISH => {
                 self.grant("event.publish")?;
                 answer(&publish_event(&self.node, self.plugin.name(), p).await?)
+            }
+            ext::method::EVENT_SUBSCRIBE | ext::method::EVENT_UNSUBSCRIBE | ext::method::EVENT_MISSED => {
+                self.grant("event.subscribe")?;
+                plugin_events(&self.node, self.plugin.name(), method, p).await
             }
             ext::method::SESSIONS_QUERY => {
                 self.grant("sessions.query")?;

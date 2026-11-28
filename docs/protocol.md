@@ -488,6 +488,28 @@ The node forwards it to the control plane, which delivers it to every session su
 - Every event reaches sessions as outside data. A session that was offline reads what it missed with `fleetlayer
   events` (the control plane keeps each event with its delivery results).
 
+### Receiving events: plugins as subscribers
+
+A plugin can subscribe to channels too (a runner that acts on alerts, a bridge that copies a room into another app).
+It's the subscriber itself, `plugin:<name>@<node>`, and gets each event as the event, never as text:
+
+```json
+{"jsonrpc": "2.0", "id": 9, "method": "_fleetlayer.dev/event/subscribe", "params": {"channel": "alerts"}}
+{"jsonrpc": "2.0", "id": 4, "method": "_fleetlayer.dev/event/deliver",
+ "params": {"id": 4183, "event": {"channel": "alerts", "kind": "alertmanager.firing", "subject": "...",
+            "summary": "...", "body": {}, "at": "2026-11-28T09:12:03Z"}, "source": "alertmanager webhook"}}
+```
+
+- `_fleetlayer.dev/event/subscribe` and `/unsubscribe` take `{channel, subject?}`; they need the `event.subscribe`
+  grant, and the policy decides `subscribe` on `channel:<channel>` for `plugin:<name>@<node>`.
+- The node hands each event over as a `_fleetlayer.dev/event/deliver` request; answer `{}` once you've taken it. An
+  error, no answer within 5 seconds, or a plugin that isn't running leaves it missed.
+- `_fleetlayer.dev/event/missed` `{channel?, all?, peek?, limit?}` answers the events it missed since it last asked,
+  oldest first, and marks them read (what `fleetlayer events` does for a session). Call it at start, then rely on
+  deliveries. `id` is the same in both, so a plugin that sees one twice can skip it.
+- Bodies are outside data. `session.status` events reach a plugin only when the policy lets it `read` the session.
+- Sessions can't subscribe a plugin, or read its missed events, with `--target`: only the plugin itself.
+
 Event sources should also heartbeat with `_fleetlayer.dev/event/heartbeat` `{source, at}` so a source that goes quiet
 is noticed: the control plane raises `source.stale` when a heartbeat is late.
 
@@ -626,6 +648,7 @@ Numbers, never secrets, flow with readings: account usage and reset times, healt
 |---|---|
 | `_fleetlayer.dev/message/send` `{to, text, untrusted?, subkind?}` | Send to a session anywhere: `to` is `<name>@<node>`, `<name>` (this node first) or a session ID; `untrusted` marks the text as outside data for the recipient; `subkind` is a finer kind for its harness (`forward`). Fails at once if it isn't running. |
 | `_fleetlayer.dev/event/publish` | [Section 6](#6-events-the-event-source-role) (grant `event.publish`) |
+| `_fleetlayer.dev/event/subscribe`, `/unsubscribe`, `/missed` | [Section 6](#receiving-events-plugins-as-subscribers) (grant `event.subscribe`) |
 | `_fleetlayer.dev/sync/publish` | [Section 8](#8-sync-and-sealed-secrets) |
 | `_fleetlayer.dev/reading/publish`, `/reading/subscribe` | [Section 9](#9-readings) |
 | `_fleetlayer.dev/sessions/query` `{node?, name?, harness?}` | This node's sessions (grant `sessions.query`) |

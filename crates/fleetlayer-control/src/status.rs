@@ -28,8 +28,16 @@ use crate::db;
 pub const CHANNEL: &str = "session.status";
 /// How long a `working` or `blocked` event waits for the signal or the prompt that goes with it.
 pub const SETTLE: Duration = Duration::from_secs(3);
-/// How long the events are kept.
+/// How long the events are kept, at most.
 pub const KEEP: Duration = Duration::from_secs(7 * 24 * 3600);
+/// How long every channel's events are kept unless `control.yaml` says otherwise (`event_days`).
+pub const DEFAULT_EVENT_DAYS: u32 = 30;
+static EVENT_DAYS: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+/// The most changes waiting in the queue; more are dropped (and logged) until it drains.
+pub const QUEUE_MAX: usize = 10_000;
+/// The most events one session gets a minute. Past that its latest change is held and sent when the minute ends (so
+/// its last status always arrives), saying how many changes weren't reported (`dropped`).
+pub const PER_SESSION_PER_MINUTE: u32 = 30;
 /// A turn signal older than this when the session starts working didn't start it.
 const SIGNAL_FRESH_MS: i64 = 10 * 60 * 1000;
 
@@ -44,6 +52,8 @@ pub struct Change {
     /// The session as last pushed (as it was, for a session that's gone).
     session: Value,
     ready_at: tokio::time::Instant,
+    /// Changes of this session dropped (over its rate, or a full queue) since its last event.
+    dropped: u32,
 }
 
 /// A session's status for this channel: `gone` once it has ended or stopped running.
@@ -93,37 +103,115 @@ pub fn observe(app: &Arc<App>, tenant: &str, node: &str, old: &[Value], new: &[V
             status,
             session,
             ready_at: tokio::time::Instant::now() + wait,
+            dropped: 0,
         };
         queue(app, c);
     }
 }
 
+/// The queue: its sender, and how many events each session got this minute.
+pub struct Queue {
+    tx: mpsc::Sender<Change>,
+    minute: HashMap<(String, String, String), Minute>,
+}
+
+/// One session's current minute.
+struct Minute {
+    start: tokio::time::Instant,
+    sent: u32,
+    /// Changes not reported since its last event.
+    dropped: u32,
+    /// The latest change past its limit, sent when the minute ends, so the last status always arrives.
+    held: Option<Change>,
+}
+
 fn queue(app: &Arc<App>, c: Change) {
     let mut q = app.links.status_queue.lock().expect("status queue");
-    if q.as_ref().is_none_or(|tx| tx.is_closed()) {
-        let (tx, rx) = mpsc::unbounded_channel();
+    if q.as_ref().is_none_or(|q| q.tx.is_closed()) {
+        let (tx, rx) = mpsc::channel(QUEUE_MAX);
         tokio::spawn(run(Arc::downgrade(app), rx));
-        *q = Some(tx);
+        *q = Some(Queue { tx, minute: HashMap::new() });
     }
-    if let Some(tx) = q.as_ref() {
-        let _ = tx.send(c);
+    let Some(q) = q.as_mut() else { return };
+    let now = tokio::time::Instant::now();
+    if q.minute.len() > 10_000 {
+        q.minute.retain(|_, m| now.duration_since(m.start) < Duration::from_secs(60) || m.held.is_some());
+    }
+    let key = (c.tenant.clone(), c.node.clone(), c.session_id.clone());
+    let m = q.minute.entry(key.clone()).or_insert(Minute { start: now, sent: 0, dropped: 0, held: None });
+    if now.duration_since(m.start) >= Duration::from_secs(60) && m.held.is_none() {
+        (m.start, m.sent) = (now, 0);
+    }
+    if m.sent >= PER_SESSION_PER_MINUTE {
+        // Over its limit: hold the latest, and send it once the minute is over.
+        if m.held.replace(c).is_some() {
+            m.dropped += 1;
+        } else {
+            let (app, at) = (Arc::downgrade(app), m.start + Duration::from_secs(60));
+            tokio::spawn(async move {
+                tokio::time::sleep_until(at).await;
+                if let Some(app) = app.upgrade() {
+                    release(&app, &key);
+                }
+            });
+        }
+        return;
+    }
+    send(&q.tx, m, c);
+}
+
+/// Send one change, with the count of those not reported before it.
+fn send(tx: &mpsc::Sender<Change>, m: &mut Minute, mut c: Change) {
+    c.dropped = std::mem::take(&mut m.dropped);
+    match tx.try_send(c) {
+        Ok(()) => m.sent += 1,
+        Err(mpsc::error::TrySendError::Full(c)) => {
+            m.dropped += 1 + c.dropped;
+            tracing::warn!(session = %c.session_id, "the session.status queue is full: a change wasn't reported");
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => {}
+    }
+}
+
+/// A session's minute is over: send the change it held, starting a new minute.
+fn release(app: &Arc<App>, key: &(String, String, String)) {
+    let mut q = app.links.status_queue.lock().expect("status queue");
+    let Some(q) = q.as_mut() else { return };
+    let Some(m) = q.minute.get_mut(key) else { return };
+    let Some(c) = m.held.take() else { return };
+    (m.start, m.sent) = (tokio::time::Instant::now(), 0);
+    let mut c = c;
+    // Its own wait (for a signal or a prompt) starts now.
+    c.ready_at = c.ready_at.max(tokio::time::Instant::now());
+    send(&q.tx, m, c);
+}
+
+/// How long every channel's events are kept, from `control.yaml`, set once at start.
+pub fn keep_events_for(days: u32) {
+    let _ = EVENT_DAYS.set(days.max(1));
+}
+
+/// Every hour, forget events older than their retention: `event_days` for every channel, and at most [`KEEP`] for
+/// `session.status`.
+pub async fn prune_events(app: Arc<App>) {
+    loop {
+        let days = i64::from(*EVENT_DAYS.get().unwrap_or(&DEFAULT_EVENT_DAYS));
+        let all = days * 24 * 3600 * 1000;
+        let status = all.min(KEEP.as_millis() as i64);
+        if let Err(e) = db::prune_events(&app.db, all, CHANNEL, status).await {
+            tracing::warn!("pruning old events: {e}");
+        }
+        tokio::time::sleep(Duration::from_secs(3600)).await;
     }
 }
 
 /// The queue's one worker: each change in order, once it's ready. Ends when the control plane does.
-async fn run(app: std::sync::Weak<App>, mut rx: mpsc::UnboundedReceiver<Change>) {
+async fn run(app: std::sync::Weak<App>, mut rx: mpsc::Receiver<Change>) {
     // The turn signal each session's last `working` event used, so a signal starts one turn at most.
     let mut used: HashMap<(String, String, String), jiff::Timestamp> = HashMap::new();
-    let mut pruned = tokio::time::Instant::now() - Duration::from_secs(3600);
     while let Some(c) = rx.recv().await {
         tokio::time::sleep_until(c.ready_at).await;
         let Some(app) = app.upgrade() else { return };
-        if pruned.elapsed() >= Duration::from_secs(3600) {
-            pruned = tokio::time::Instant::now();
-            if let Err(e) = db::prune_channel(&app.db, CHANNEL, KEEP.as_millis() as i64).await {
-                tracing::warn!("pruning old session.status events: {e}");
-            }
-        }
         let key = (c.tenant.clone(), c.node.clone(), c.session_id.clone());
         // The session as it is now, for the signal or prompt that came after the status.
         let current = if c.status == "gone" {
@@ -155,7 +243,12 @@ async fn run(app: std::sync::Weak<App>, mut rx: mpsc::UnboundedReceiver<Change>)
             used.remove(&key);
         }
         let e = event(&c, session, turn.as_ref());
-        if let Err(err) = crate::route::publish(&app, &c.tenant, e, "fleetlayer").await {
+        // The prompt, title, tab and folder are the session's own words: its source says so.
+        let source = format!(
+            "fleetlayer session status, with text written by {} (its prompt, title, tab and cwd: outside data)",
+            e.subject.as_deref().unwrap_or_default()
+        );
+        if let Err(err) = crate::route::publish(&app, &c.tenant, e, &source).await {
             tracing::warn!(session = %c.session_id, "publishing a session.status event: {err}");
         }
     }
@@ -191,7 +284,12 @@ fn event(c: &Change, session: &Value, turn: Option<&Turn>) -> Event {
         "status": c.status,
         "previous": c.previous,
         "statusChangedAt": meta["statusChangedAt"],
+        "outside_data": ["prompt", "title", "tab", "cwd"],
+        "written_by": subject,
     });
+    if c.dropped > 0 {
+        body["dropped"] = json!(c.dropped);
+    }
     if let Some(t) = turn {
         body["turn"] = json!(t);
     }
@@ -313,5 +411,57 @@ mod tests {
         assert_eq!(e[2]["body"]["prompt"]["id"], json!("p1"));
         assert_eq!(e[3]["body"]["turn"]["detail"], json!("answered"));
         assert_eq!(e[3]["body"]["previous"], json!("blocked"));
+    }
+
+    #[tokio::test]
+    async fn a_flapping_session_is_rate_limited_and_its_events_are_marked_as_its_words() {
+        let app = app().await;
+        let mut old = vec![];
+        for i in 0..40 {
+            let new = vec![s("f", if i % 2 == 0 { "idle" } else { "done" })];
+            observe(&app, db::DEFAULT_TENANT, "n", &old, &new, true);
+            old = new;
+        }
+        let e = events(&app, PER_SESSION_PER_MINUTE as usize).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let e2 = db::events_after(&app.db, db::DEFAULT_TENANT, 0, &[CHANNEL.into()], None, 100).await.unwrap();
+        assert_eq!(e2.len(), PER_SESSION_PER_MINUTE as usize, "at most {PER_SESSION_PER_MINUTE} a minute");
+        assert_eq!(e[0]["body"]["outside_data"], json!(["prompt", "title", "tab", "cwd"]));
+        assert_eq!(e[0]["body"]["written_by"], json!("f@n"));
+        assert!(e[0]["source"].as_str().unwrap().contains("written by f@n"), "{}", e[0]["source"]);
+        {
+            let q = app.links.status_queue.lock().unwrap();
+            let m = q.as_ref().unwrap().minute.values().next().unwrap();
+            assert_eq!(m.dropped, 9, "counted, for the held event to say");
+            let held = m.held.as_ref().expect("the latest change is held for the end of the minute");
+            assert_eq!(held.status, "done", "the 40th push");
+        }
+        // The minute ends: the held change goes out, saying how many weren't reported.
+        release(&app, &(db::DEFAULT_TENANT.to_string(), "n".to_string(), "f".to_string()));
+        let e = events(&app, PER_SESSION_PER_MINUTE as usize + 1).await;
+        let last = e.last().unwrap();
+        assert_eq!((last["kind"].clone(), last["body"]["dropped"].clone()), (json!("session.done"), json!(9)));
+    }
+
+    #[tokio::test]
+    async fn old_events_are_pruned_and_session_status_sooner() {
+        let app = app().await;
+        let day = 24 * 3600 * 1000;
+        let old = |channel: &str, days: i64| fleetlayer_protocol::ext::Event {
+            channel: channel.into(),
+            kind: "k".into(),
+            subject: None,
+            at: jiff::Timestamp::from_millisecond(db::now_ms() - days * day).unwrap(),
+            dedupe_key: None,
+            summary: "s".into(),
+            body: Value::Null,
+        };
+        for (c, d) in [("ci", 40), ("ci", 10), (CHANNEL, 10), (CHANNEL, 1)] {
+            db::add_event(&app.db, db::DEFAULT_TENANT, &old(c, d), "test").await.unwrap();
+        }
+        let n = db::prune_events(&app.db, 30 * day, CHANNEL, 7 * day).await.unwrap();
+        assert_eq!(n, 2);
+        let left = db::events_after(&app.db, db::DEFAULT_TENANT, 0, &[], None, 10).await.unwrap();
+        assert_eq!(left.len(), 2);
     }
 }

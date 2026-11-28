@@ -6,7 +6,9 @@ then delivered to the sessions subscribed to its channel (or to one subject on i
 session when nobody subscribes.
 
 A session subscribes with `fleetlayer subscribe <channel> [--subject <s>]`, and reads the events it missed while it
-was offline with `fleetlayer events`. The [CI results guide](guides/ci-results.md) shows the whole path for one kind
+was offline with `fleetlayer events`. A plugin with the `event.subscribe` grant subscribes itself and gets each event
+as data ([Plugin protocol](protocol.md#receiving-events-plugins-as-subscribers)): a runner acting on alerts, a bridge
+copying a room into another app. The [CI results guide](guides/ci-results.md) shows the whole path for one kind
 of event.
 
 ## Session status: `session.status`
@@ -35,13 +37,19 @@ The subject is the session, `<tab>@<node>`, so you can subscribe to one session:
   carrying on by itself).
 - It comes from what the node delivered or typed into the session and what the agent's harness reported (Claude
   Code's prompt hook), each used for one turn at most. Working again after `blocked` with nothing else seen is the
-  person answering in the tab. A harness with no hook (or a node from before session.status) gives `unknown` for turns a person
-  typed.
+  person answering in the tab. A harness without a prompt hook gives `unknown` for turns a person typed.
 - `working` and `blocked` events go out three seconds after the change, so the cause and the prompt that go with them
   have arrived. A session's events are always in order.
-- A subscribed session gets an event only when the access policy lets it `read` the session it's about. A service
-  reading the feed with a read token sees them all, as it sees the fleet.
-- They're kept seven days.
+- A subscribed session gets an event only when the access policy lets it `read` the session it's about, under every
+  name it goes by (its ID, and every tab name it has had). A service reading the feed with a read token sees them
+  all, as it sees the fleet.
+- The prompt, title, tab and folder are the session's own words: the body lists them in `outside_data` with
+  `written_by` naming the session, and the source says so.
+- The cause is what the session's node reported. It's good for deciding what to look at, not proof that a person
+  typed something: anything running as the node's Unix user can claim it.
+- A session's events are limited to 30 a minute. Past that, its latest change is held and sent when the minute ends,
+  so its last status always arrives; that event says how many changes in between weren't reported (`dropped`).
+  They're kept seven days.
 
 Programs that show the fleet live (a deck's overseer, a dashboard) read them from the feed below with
 `channel=session.status`, instead of reading `/v1/fleet` over and over.
@@ -68,6 +76,11 @@ GET /v1/events?after=4182&channel=alerts,ci&wait=30
 - `wait=<seconds>` (at most 60) holds the request open until an event arrives, so a reader sees each one within
   moments without polling hard. An empty answer still moves `next` past events that didn't match.
 - Bodies are outside data: show them, never act on what they say.
+- **A read token reads every event's body, on every channel**: Matrix messages, webhook payloads, access requests'
+  details, the prompts sessions are blocked on. Give one only to a service you'd let read all of that, and keep it in
+  a file only that service's Unix user reads. (Tokens limited to some channels or sessions are planned.)
+- Events are kept 30 days (`event_days:` in `control.yaml`), `session.status` seven at most. A cursor older than
+  that just starts at the oldest event still kept.
 
 Without `after`, `GET /v1/events` answers the newest hundred events without their bodies, with where each was
 delivered: the dashboard's view.

@@ -557,6 +557,7 @@ async fn main() -> anyhow::Result<()> {
     let mut cli = Cli::parse();
     let settings = settings::Settings::load(cli.config.as_deref(), cli.db.is_some())?;
     handoffs::keep_for(settings.handoff_days.unwrap_or(handoffs::DEFAULT_DAYS));
+    status::keep_events_for(settings.event_days.unwrap_or(status::DEFAULT_EVENT_DAYS));
     if cli.db.is_none() {
         cli.db = settings.db.clone();
     }
@@ -630,6 +631,7 @@ async fn main() -> anyhow::Result<()> {
             tokio::spawn(audit::run(app.clone(), audit_anchor_dir));
             tokio::spawn(link::sync_approved(app.clone()));
             tokio::spawn(windows::run(app.clone()));
+            tokio::spawn(status::prune_events(app.clone()));
             if !policy_files.is_empty() {
                 // Applied before the server answers, so it never decides with an older policy than the file's.
                 policy_files::apply_all(&app, &policy_files).await;

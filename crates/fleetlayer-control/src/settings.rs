@@ -10,6 +10,7 @@
 //! audit_anchor_dir: ~/audit-anchors      # optional
 //! policy_files: [~/fleet/policy.yaml]    # optional, as --policy-file
 //! handoff_days: 30                       # optional: how long handoffs and their notes are kept
+//! event_days: 30                         # optional: how long events are kept (session.status: 7 at most)
 //! ```
 
 use std::net::SocketAddr;
@@ -40,6 +41,7 @@ struct File {
     #[serde(default)]
     policy_files: Vec<String>,
     handoff_days: Option<u32>,
+    event_days: Option<u32>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -53,6 +55,7 @@ pub struct Settings {
     pub policy_files: Vec<policy_files::Source>,
     /// How long handoffs and their notes are kept, in days (30 when absent).
     pub handoff_days: Option<u32>,
+    pub event_days: Option<u32>,
 }
 
 fn home() -> PathBuf {
@@ -103,6 +106,7 @@ impl Settings {
             audit_anchor_dir: f.audit_anchor_dir.as_deref().map(expand),
             policy_files: policy,
             handoff_days: f.handoff_days,
+            event_days: f.event_days,
         })
     }
 }

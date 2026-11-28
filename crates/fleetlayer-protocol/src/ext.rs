@@ -48,6 +48,17 @@ pub mod method {
     pub const TERMINAL_COMMAND: &str = "_fleetlayer.dev/terminal/command";
     pub const MESSAGE_SEND: &str = "_fleetlayer.dev/message/send";
     pub const EVENT_PUBLISH: &str = "_fleetlayer.dev/event/publish";
+    /// Plugin → node: subscribe the plugin itself (`plugin:<name>@<node>`) to a channel, or one subject on it. Needs
+    /// the `event.subscribe` grant. `{channel, subject?}` → `{}`.
+    pub const EVENT_SUBSCRIBE: &str = "_fleetlayer.dev/event/subscribe";
+    /// Plugin → node: undo one. `{channel, subject?}` → `{removed}`.
+    pub const EVENT_UNSUBSCRIBE: &str = "_fleetlayer.dev/event/unsubscribe";
+    /// Plugin → node: the events sent to the plugin that it didn't take (it wasn't running, or failed), since it last
+    /// asked, oldest first, marking them read. `{channel?, all?, peek?, limit?}` → `{events}`.
+    pub const EVENT_MISSED: &str = "_fleetlayer.dev/event/missed";
+    /// Node → plugin: an event on a channel it subscribes to. `EventDelivery` → `{}`; an error (or no answer within 5
+    /// seconds) leaves it missed, for `EVENT_MISSED`.
+    pub const EVENT_DELIVER: &str = "_fleetlayer.dev/event/deliver";
     pub const EVENT_HEARTBEAT: &str = "_fleetlayer.dev/event/heartbeat";
     pub const ACTION_RUN: &str = "_fleetlayer.dev/action/run";
     pub const ACTION_PROGRESS: &str = "_fleetlayer.dev/action/progress";
@@ -363,6 +374,18 @@ pub struct SessionMeta {
     /// plane reads it when the session starts working, for the `session.status` event's cause.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn: Option<Turn>,
+}
+
+/// An event delivered to a plugin that subscribes to its channel: the event as published, never rendered as text.
+/// Its body is outside data.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventDelivery {
+    /// The stored event's ID (the same as in `GET /v1/events`): a plugin that sees one twice can skip it.
+    pub id: i64,
+    pub event: Event,
+    /// Who published it: `github webhook`, `matrix on agents`, `fleetlayer`.
+    pub source: String,
 }
 
 /// What started a turn.

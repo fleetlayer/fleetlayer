@@ -310,7 +310,8 @@ Its token has the `delegate` scope:
 fleetlayer-control token add dashboard --scope delegate
 ```
 
-A delegate token reads the fleet like a read token. To decide a request or close a window, it names the signed-in
+A delegate token reads the fleet like a read token, and like one it reads every event's body on every channel
+(`GET /v1/events`, [Events](events.md)). To decide a request or close a window, it names the signed-in
 person in a `Fleetlayer-Person` header (their person ID, the sign-in's `sub`); that person must be one of the tenant's
 admins, the decision is recorded as `person:sam (via dashboard)`, and opening a window needs that person's own passkey
 step-up, as above. Without the header, or for someone who isn't an admin, it's refused and audited. `GET /v1/token`

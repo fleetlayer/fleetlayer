@@ -51,7 +51,7 @@ pub struct Links {
     /// arrives.
     pub new_events: tokio::sync::watch::Sender<i64>,
     /// The `session.status` queue (`status.rs`), started with its first change.
-    pub status_queue: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<crate::status::Change>>>,
+    pub status_queue: std::sync::Mutex<Option<crate::status::Queue>>,
 }
 
 /// Resolves once `closing` turns true (without holding its value across an await, which isn't `Send`).

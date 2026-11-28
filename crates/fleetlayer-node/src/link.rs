@@ -395,6 +395,11 @@ impl Handler for FromControl {
                 };
                 answer(&crate::deliver::deliver(&self.node, &session, &d).await?)
             }
+            l::method::EVENT_DELIVER => {
+                let r: l::EventDeliverRequest = params(p)?;
+                crate::plugins::deliver_event(&self.node, &r.plugin, &r.delivery).await?;
+                Ok(serde_json::json!({}))
+            }
             _ => Err(RpcError::method_not_found(method)),
         }
     }

@@ -82,7 +82,7 @@ export const pages = [
   { file: "credentials", group: "Reference", label: "Credentials", description: "How Fleetlayer keeps secrets: sealed delivery, per-role grants, using a secret without seeing it, scrubbing, and what none of it covers." },
   { file: "egress", group: "Reference", label: "Network access", description: "Reference for network access per role: the proxy, DNS, modes, presets, approvals and the commands." },
   { file: "access-control", group: "Reference", label: "Access control", description: "Write the access policy: who may message whom, use which tools and receive which secrets, what needs your approval, and how to test and explain each decision." },
-  { file: "events", group: "Reference", label: "Events", description: "Reference for events and channels: CI results, alerts, session status and the rest, how sessions subscribe and catch up." },
+  { file: "events", group: "Reference", label: "Events", description: "Reference for events and channels: CI results, alerts, session status and the rest, how sessions and plugins subscribe and catch up, and how a service reads the event log over HTTP." },
   { file: "changelog", group: "Reference", label: "Changelog", description: "What changed in each release, newest first, and the steps to take when you upgrade from an older one." },
   { file: "releasing", group: "Reference", label: "Releases and updates", description: "How releases and self-updates work, how to check a release, and how to sign your own." },
   { file: "protocol", group: "Reference", label: "Plugin protocol", description: "Write a plugin: the JSON-RPC protocol between a node and its plugins, roles, sealed bundles, readings and status." },

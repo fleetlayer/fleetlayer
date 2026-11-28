@@ -193,7 +193,7 @@ impl Handler for Local {
                     _ => {
                         let s: SubscribeArgs = params(p)?;
                         let target = match s.target {
-                            Some(t) => t,
+                            Some(t) => not_a_plugin(t)?,
                             None => {
                                 let c = self.caller(s.caller.as_ref()).await.ok_or_else(|| {
                                     RpcError::refused("run this from a session, or say which one with --target")
@@ -213,7 +213,7 @@ impl Handler for Local {
                         RpcError::not_here(format!("{} isn't linked to a control plane now", node.name))
                     })?;
                 let target = match p.get("target").and_then(Value::as_str) {
-                    Some(t) => t.to_string(),
+                    Some(t) => not_a_plugin(t.to_string())?,
                     None => {
                         let c = self
                             .caller(p.get("caller").and_then(|c| serde_json::from_value(c.clone()).ok()).as_ref())
@@ -400,4 +400,15 @@ impl Handler for Local {
             _ => Err(RpcError::method_not_found(method)),
         }
     }
+}
+
+/// A `--target` that isn't a plugin: a plugin subscribes and reads what it missed itself, through its own connection
+/// (`_fleetlayer.dev/event/*`), never through a session's command.
+fn not_a_plugin(target: String) -> Result<String, RpcError> {
+    if target.starts_with("plugin:") {
+        return Err(RpcError::refused(format!(
+            "{target} is a plugin: a plugin subscribes to channels and reads the events it missed itself"
+        )));
+    }
+    Ok(target)
 }
