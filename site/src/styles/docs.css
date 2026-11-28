@@ -78,3 +78,16 @@ h1#_top,
 h1#_top {
   text-wrap: balance;
 }
+
+/* Mermaid diagrams, rendered to SVG at build time: as wide as the text, never wider than their own size. */
+.sl-markdown-content figure.diagram {
+  margin: 1.5rem auto;
+  overflow-x: auto; /* on a phone, scroll sideways rather than shrink the text past reading */
+}
+.sl-markdown-content figure.diagram svg {
+  display: block;
+  width: 100%;
+  min-width: 30rem;
+  height: auto;
+}
+

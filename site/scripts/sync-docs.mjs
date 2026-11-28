@@ -15,6 +15,7 @@ import { dirname, join, relative, resolve, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import { site as SITE, pages as PAGES, repo as REPO, docsBase as BASE } from "../site.config.mjs";
 import { directoryPages } from "./directory-pages.mjs";
+import { renderMermaidSVG } from "beautiful-mermaid";
 
 const siteDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoDir = resolve(siteDir, "..");
@@ -76,6 +77,34 @@ function describe(body) {
 
 // Rewrites relative Markdown links. A link to another published doc goes to its page (or its .md copy); a link to
 // anything else in the repo goes to GitHub. Code fences are left alone.
+// Mermaid diagrams become SVG at build time, so no page loads diagram code. The colours are the site's own CSS
+// variables, so a diagram follows light and dark mode; the font is the site's. The .md copies keep the Mermaid source.
+function renderDiagrams(body, file) {
+  return body.replace(/^```mermaid\n([\s\S]*?)^```$/gm, (_, source) => {
+    let svg;
+    try {
+      svg = renderMermaidSVG(source, {
+        bg: "var(--sl-color-bg)",
+        fg: "var(--sl-color-white)",
+        accent: "var(--sl-color-accent)",
+        line: "var(--sl-color-gray-3)",
+        transparent: true,
+        font: "inherit",
+      });
+    } catch (e) {
+      throw new Error(`${file}: a mermaid diagram didn't render: ${e.message}`);
+    }
+    const width = Math.ceil(Number(svg.match(/^<svg [^>]*?width="([\d.]+)"/)?.[1] ?? 640));
+    svg = svg
+      .replace(/@import url\([^)]*\);?/g, "") // no fonts from other sites: the page's own font applies
+      .replace(/font-family: 'inherit'[^;]*;/g, "font-family: var(--font-body), system-ui, sans-serif;")
+      .replace(/^<svg ([^>]*?)width="[^"]*" height="[^"]*"/, '<svg $1role="img" aria-label="Diagram"')
+      .replace(/\n\s*\n/g, "\n"); // a blank line would end the HTML block in Markdown
+    // Never wider than its natural size, so the text stays the size it was laid out for; narrower on a phone.
+    return `<figure class="diagram" style="max-width: ${width}px">${svg}</figure>`;
+  });
+}
+
 function rewriteLinks(body, file, toUrl) {
   const fromDir = dirname(relative(repoDir, file));
   let inFence = false;
@@ -135,7 +164,7 @@ async function main() {
     const { title, body } = splitTitle(source, relative(repoDir, file));
     const description = page.description ?? describe(body);
 
-    const siteBody = rewriteLinks(body, file, pageUrl);
+    const siteBody = renderDiagrams(rewriteLinks(body, file, pageUrl), relative(repoDir, file));
     const front = [
       "---",
       `title: ${JSON.stringify(page.title ?? title)}`,

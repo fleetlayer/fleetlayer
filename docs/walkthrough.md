@@ -11,23 +11,17 @@ and `server`. The laptop's node is named after its hostname; the server's node t
 
 ## How it fits
 
-```text
-        laptop                                          server
- +-------------------------------+            +-------------------------------+
- |  herdr                        |            |  herdr                        |
- |    tab "docs": Claude Code    |            |    tab "api": Claude Code     |
- |               |               |            |               |               |
- |  fleetlayer-node              |            |  fleetlayer-node              |
- |    plugins: herdr, claude-code|            |    plugins: herdr, claude-code|
- |    tool: shared-folders       |            |                               |
- +---------------|---------------+            +---------------|---------------+
-                 |  one outbound WebSocket per node          |
-                 v                                            v
-          +-------------------------------------------------------+
-          |  fleetlayer-control (here, on the laptop)              |
-          |  sessions, messages, tool calls, access policy,        |
-          |  approvals, audit log; no credentials                  |
-          +-------------------------------------------------------+
+```mermaid
+flowchart TB
+  subgraph laptop
+    LH["herdr tab 'docs': Claude Code"] --- LN["fleetlayer-node<br/>plugins: herdr, claude-code<br/>tool: shared-folders"]
+  end
+  subgraph server
+    SH["herdr tab 'api': Claude Code"] --- SN["fleetlayer-node<br/>plugins: herdr, claude-code"]
+  end
+  CP["fleetlayer-control, on the laptop<br/>sessions, messages, tool calls,<br/>access policy, approvals, audit log<br/>no credentials"]
+  LN -->|outbound WebSocket| CP
+  SN -->|outbound WebSocket| CP
 ```
 
 - **A node** runs on each machine (one per Unix user). It attaches to your session manager through a plugin, sees
