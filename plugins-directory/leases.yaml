@@ -1,5 +1,5 @@
 name: leases
-summary: Leases for agents across a fleet, such as a build server's slots or claims the person approves once, which end by themselves when their holder dies.
+summary: Leases across a fleet, such as build server slots or claims approved once, which end by themselves when their holder dies.
 kind: plugin
 roles: []
 ships_with_fleetlayer: true
