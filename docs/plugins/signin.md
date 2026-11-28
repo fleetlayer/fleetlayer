@@ -8,7 +8,7 @@ away, happens in one place.
 Everything a company needs is built on the same service: single sign-on, teams, separate organisations, audit. How it
 fits together, and why, is in [Sign-in and SSO](../sso.md).
 
-Status: in use. Passkeys, invites, signing in to services, the admin pages, signing in with Google Workspace or
+Status: in use. Passkeys, invites, signing in to services, signing in with Google Workspace or
 another OpenID Connect provider (with its groups as teams), signing out of every service at once, and forward-auth for
 services that can't sign people in themselves all work. SAML providers come later.
 
@@ -67,11 +67,12 @@ services that can't sign people in themselves all work. SAML providers come late
 
 ## Managing people
 
-Admins open `https://signin.example.com/admin`: the people, with their role and a button to remove them, and **Invite
-someone**, which gives a link to send (it works once, for a week). Teams, and the services that sign in here, are
-under **Advanced**.
+People, invites and teams are managed on the [dashboard](../dashboard.md) (**People** and **Teams**): everyone with their
+role, **Invite someone** (a link to send, which works once, for a week), making someone an admin, removing them, and
+the teams. The sign-in service keeps only the pages that must be its own: signing in, accepting an invite, confirming a
+request with a passkey, and "no access". Its signed-in page links admins to the dashboard when `dashboard:` is set.
 
-- Who can manage: the admins (`role: admin`), and anyone the policy gives `admin` on `service:signin`.
+- Who can manage: the admins (`role: admin`), and anyone the policy gives `admin` on `service:dashboard`.
 - Every change is made by the control plane, which checks again that it's that person's to make, and is recorded in
   the audit log as them.
 - Removing someone, changing a role or taking someone off a team asks for the passkey again when it was last used
@@ -135,10 +136,10 @@ upstreams:
       Engineering: engineering
 ```
 
-- **Only mapped groups count**, and only into teams that already exist (make them under **Advanced** on the admin
+- **Only mapped groups count**, and only into teams that already exist (make them on the dashboard's **Teams**
   page): a group that maps to a missing team is skipped and logged. Group names are matched ignoring case.
 - **Teams an admin set are kept.** The provider's own memberships are replaced each time its groups are read. The
-  admin page marks them "(from acme-google)"; taking someone off one lasts until their groups are read again.
+  dashboard's Teams page marks them "from acme-google"; taking someone off one lasts until their groups are read again.
 - **When groups are read:** at every sign-in through the provider. For Google Workspace, also every day for everyone
   linked to it: leaving a group reaches their teams within a day without a sign-in, and an account that's suspended
   or deleted loses its teams and is signed out everywhere. An OpenID Connect provider can only be read at a sign-in,
@@ -178,6 +179,7 @@ For Google, the service account, once:
 | `previous_issuers` | Addresses it had before, still pointed at it while services are repointed (below). |
 | `forward_auth` | `cookie_domain` and `hosts` (`host`, `service`, `tenant`), for services behind a proxy's forward-auth (above). |
 | `stepup_return_origins` | Origins, such as `https://deck.example.com`, that a passkey confirmation may send the browser back to, besides the sign-in service's own and its clients' (below). |
+| `dashboard` | The [dashboard](../dashboard.md)'s address (`https://dashboard.example.com`): the signed-in page sends admins there to manage people, invites and teams. |
 | `heartbeat` | Pushed every five minutes; it fails when `/healthz` would. |
 
 ## For a service

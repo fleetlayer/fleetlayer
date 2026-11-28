@@ -57,6 +57,8 @@ pub struct Settings {
     pub forward: Option<crate::forward::Settings>,
     /// Origins a passkey step-up may send the browser back to, besides the issuer's and the clients' (`/stepup`).
     pub stepup_return_origins: Vec<String>,
+    /// The dashboard's address, where admins manage people, invites and teams.
+    pub dashboard: Option<String>,
 }
 
 struct Code {
@@ -118,8 +120,6 @@ pub struct App {
     pub settings: Settings,
     /// Upstream providers people may sign in with.
     pub(crate) upstreams: Vec<crate::upstream::Upstream>,
-    /// Invites each admin made in the last hour, for the rate limit.
-    pub(crate) invites_made: Mutex<HashMap<String, Vec<i64>>>,
     pub store: Store,
     pub keys: Keys,
     /// Why the last key refresh failed, if it did (a problem until one succeeds).
@@ -160,7 +160,6 @@ impl App {
         Ok(App {
             settings,
             upstreams,
-            invites_made: Mutex::new(HashMap::new()),
             store,
             keys,
             key_error: std::sync::Mutex::new(None),
@@ -377,8 +376,6 @@ pub fn router(app: Arc<App>) -> axum::Router {
         .route("/passkey/register/start", post(register_start))
         .route("/passkey/register/finish", post(register_finish))
         .route("/api/check", post(api_check))
-        .route("/admin", get(crate::admin::index))
-        .route("/admin/{tenant}", get(crate::admin::show).post(crate::admin::change))
         .route("/healthz", get(healthz))
         .route("/upstream/{name}/start", get(crate::upstream::start))
         .route("/upstream/{name}/callback", get(crate::upstream::callback))
@@ -1158,7 +1155,12 @@ async fn home(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
                 }
                 _ => (p, false),
             };
-            let manage = if admin { "<a class=\"btn btn-block\" href=\"/admin\">Manage people</a>" } else { "" };
+            // People, invites and teams are managed on the dashboard, through the control plane's API.
+            let manage = match (&app.settings.dashboard, admin) {
+                (Some(d), true) => format!("<a class=\"btn btn-block\" href=\"{}/people\">Manage people</a>", esc(d)),
+                (None, true) => "<p class=\"hint\">Manage people on the dashboard.</p>".to_string(),
+                _ => String::new(),
+            };
             page_with(
                 StatusCode::OK,
                 Some(Mark::Ok),
@@ -1245,18 +1247,6 @@ pub(crate) fn page_with(status: StatusCode, mark: Option<Mark>, title: &str, bod
         esc(title)
     );
     document(status, title, "login-body", &inner)
-}
-
-/// A wider page with a top bar: the admin pages.
-pub(crate) fn page_wide(status: StatusCode, title: &str, body: &str) -> Response {
-    let inner = format!(
-        "<header class=\"topbar\"><div class=\"wrap topbar-in\"><a class=\"login-brand\" href=\"/\">{MARK}\
-         <span class=\"brand-name\">Fleetlayer</span></a><form method=\"post\" action=\"/logout\">\
-         <button class=\"btn btn-sm\">Sign out</button></form></div></header>\
-         <main class=\"wrap\"><h1>{}</h1>{body}</main>",
-        esc(title)
-    );
-    document(status, title, "", &inner)
 }
 
 /// Fleetlayer's shared look, then what only sign-in shows.

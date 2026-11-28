@@ -34,41 +34,8 @@ async fn control_plane(seen: Arc<Mutex<Seen>>) -> String {
         "tenant": "t_acme", "slug": "acme", "name": "Acme", "handle": "a", "role": "admin",
         "teams": ["engineering"], "groups": ["acme", "acme/engineering", "acme/role:admin"]}]});
     let s1 = seen.clone();
-    let s2 = seen.clone();
     let s3 = seen.clone();
     let router = axum::Router::new()
-        .route(
-            "/v1/signin/admin/view",
-            post(|Json(b): Json<Value>| async move {
-                if b["as"] != "p_a" {
-                    return (StatusCode::FORBIDDEN, Json(json!({})));
-                }
-                (
-                    StatusCode::OK,
-                    Json(json!({"tenant": "t_acme", "slug": "acme", "name": "Acme",
-                    "members": [{"person": "p_a", "display_name": "A", "handle": "a", "role": "admin", "teams": []},
-                                {"person": "p_b", "display_name": "B", "handle": "b", "role": "member", "teams": []}],
-                    "invites": [], "teams": [{"name": "everyone", "parent": null, "members": []}]})),
-                )
-            }),
-        )
-        .route(
-            "/v1/signin/admin/{action}",
-            post(move |axum::extract::Path(action): axum::extract::Path<String>, Json(b): Json<Value>| {
-                let s = s2.clone();
-                async move {
-                    s.lock().unwrap().events.push(format!("admin {action} {}", b["handle"].as_str().unwrap_or("-")));
-                    if action == "member_remove" && b["handle"] == "a" {
-                        return (
-                            StatusCode::BAD_REQUEST,
-                            "a is the tenant's last admin: make someone else an admin first".to_string(),
-                        );
-                    }
-                    let out = if action == "invite" { json!({"code": "new-code"}) } else { json!({}) };
-                    (StatusCode::OK, out.to_string())
-                }
-            }),
-        )
         .route("/healthz", get(|| async { "ok" }))
         .route(
             "/v1/signin/person",
@@ -224,6 +191,7 @@ fn app_with(dir: &std::path::Path, control: &str, backchannel: Option<String>) -
         previous_issuers: vec![],
         forward: None,
         stepup_return_origins: vec![],
+        dashboard: Some("https://dashboard.example.com".into()),
         clients: vec![client("hub"), client("vault")],
     };
     Arc::new(web::App::new(settings, store, keys, crate::control::Control::new(control, "fls_test")).unwrap())
@@ -465,66 +433,18 @@ async fn discovery_names_the_endpoints_and_requires_pkce() {
 }
 
 #[tokio::test]
-async fn admins_invite_and_are_asked_again_before_removing_someone() {
+async fn people_are_managed_on_the_dashboard_and_the_signed_in_page_links_there() {
     let seen = Arc::new(Mutex::new(Seen::default()));
     let control = control_plane(seen.clone()).await;
     let dir = tempfile::tempdir().unwrap();
     let a = app(dir.path(), &control);
     let mut key = SoftPasskey::new(true);
     let cookie = register(&a, &mut key).await;
-    let value = cookie.split_once('=').unwrap().1.to_string();
-    let csrf = crate::store::sha256_hex(&format!("{value}:csrf"));
-
-    // One place to manage: straight to it, with its people.
+    // An admin is pointed at the dashboard's People page; sign-in keeps no admin pages of its own.
+    let r = call(&a, "GET", "/", Some(&cookie), None, "").await;
+    assert!(r.text.contains(r#"href="https://dashboard.example.com/people">Manage people"#), "{}", r.text);
     let r = call(&a, "GET", "/admin", Some(&cookie), None, "").await;
-    assert_eq!(r.location.as_deref(), Some("/admin/acme"));
-    let r = call(&a, "GET", "/admin/acme", Some(&cookie), None, "").await;
-    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
-    assert!(r.text.contains("Invite someone") && r.text.contains("<div class=\"name\">B"), "{}", r.text);
-    assert!(r.text.contains("<details><summary>Advanced</summary>"), "teams sit under Advanced");
-
-    let post = |body: String| {
-        let (a, cookie) = (a.clone(), cookie.clone());
-        async move {
-            call(&a, "POST", "/admin/acme", Some(&cookie), Some(Body::from(body)), "application/x-www-form-urlencoded")
-                .await
-        }
-    };
-    // An invite gives a link to send.
-    let r = post(format!("csrf={csrf}&action=invite&handle=c&role=member")).await;
-    assert!(r.location.as_deref().unwrap().contains("invite=new-code"), "{:?}", r.location);
-    // Without the CSRF token, nothing happens.
-    let r = post("csrf=wrong&action=invite&handle=d&role=member".into()).await;
-    assert_eq!(r.status, StatusCode::FORBIDDEN);
-    // The control plane's refusal is shown with its reason.
-    let r = post(format!("csrf={csrf}&action=member_remove&handle=a")).await;
-    assert!(
-        r.location.as_deref().unwrap().contains("last%20admin")
-            || r.location.as_deref().unwrap().contains("last+admin"),
-        "{:?}",
-        r.location
-    );
-
-    // An hour later on the same session, removing someone asks for the passkey first.
-    {
-        let mut sessions = a.store.sessions.lock().await;
-        for s in sessions.sessions.values_mut() {
-            s.verified_at -= 3_600_000;
-        }
-    }
-    let r = post(format!("csrf={csrf}&action=member_remove&handle=b")).await;
-    assert!(r.location.as_deref().unwrap().starts_with("/login?return="), "{:?}", r.location);
-    // An invite doesn't.
-    let r = post(format!("csrf={csrf}&action=invite&handle=e&role=member")).await;
-    assert!(r.location.as_deref().unwrap().contains("invite="), "{:?}", r.location);
-    // Twenty invites an hour at most.
-    for _ in 0..18 {
-        post(format!("csrf={csrf}&action=invite&handle=f&role=member")).await;
-    }
-    let r = post(format!("csrf={csrf}&action=invite&handle=g&role=member")).await;
-    assert!(r.location.as_deref().unwrap().contains("limit"), "{:?}", r.location);
-    let removes = seen.lock().unwrap().events.iter().filter(|e| e.as_str() == "admin member_remove b").count();
-    assert_eq!(removes, 0, "nothing removed without the fresh passkey");
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -547,6 +467,7 @@ async fn on_plain_http_localhost_the_cookie_isnt_secure_and_everywhere_else_it_i
         previous_issuers: vec![],
         forward: None,
         stepup_return_origins: vec![],
+        dashboard: None,
         clients: vec![],
     };
     let local = Arc::new(web::App::new(settings, store, keys, crate::control::Control::new(&control, "t")).unwrap());
@@ -572,6 +493,7 @@ async fn with_upstream(
         previous_issuers: vec![],
         forward: None,
         stepup_return_origins: vec![],
+        dashboard: None,
         clients: vec![web::Client {
             name: "hub".into(),
             redirect_uris: vec!["https://hub.example.com/cb".into()],

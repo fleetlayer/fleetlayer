@@ -1429,8 +1429,6 @@ async fn serve(
         .route("/v1/signin/stepup", axum::routing::post(signin::post_stepup))
         .route("/v1/signin/join", axum::routing::post(signin::post_join))
         .route("/v1/signin/teams_sync", axum::routing::post(signin::post_teams_sync))
-        .route("/v1/signin/admin/view", axum::routing::post(signin::post_admin_view))
-        .route("/v1/signin/admin/{action}", axum::routing::post(signin::post_admin_action))
         .with_state(app.clone());
     let hooks = hooks::router(app.clone());
     let api_listener = tokio::net::TcpListener::bind(listen).await?;

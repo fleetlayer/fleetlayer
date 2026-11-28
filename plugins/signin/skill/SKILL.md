@@ -97,7 +97,7 @@ Follow "Set it up" in `docs/plugins/signin.md`. In short:
   - The rest: `fleetlayer-control invite list`, `invite revoke <h>`, `member list`, `member role <h> admin`,
     `member remove <h>`, `team add <t>`, `team member <t> <h> [--remove]`. Add `--tenant <slug>` when there's more
     than one place.
-  - Admins can do the same at `https://<sign-in address>/admin`.
+  - Admins can do the same on the dashboard's People and Teams pages.
 - **Taking access away:** removing someone or dropping their rule stops new sign-ins at once. Services that ask
   about every request (pages, forward-auth) stop them within a minute, but other services keep an open session until
   it ends, because removing someone sends no sign-out. To end every session now as well, run this on the sign-in

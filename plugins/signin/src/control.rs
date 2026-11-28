@@ -223,17 +223,4 @@ impl Control {
     pub async fn reachable(&self) -> bool {
         matches!(self.http.get(format!("{}/healthz", self.base)).send().await, Ok(r) if r.status().is_success())
     }
-
-    /// The tenant's members, invites and teams, for an admin (`as`); the control plane checks they may see them.
-    pub async fn admin_view(&self, tenant: &str, actor: &str) -> anyhow::Result<Value> {
-        self.post("/v1/signin/admin/view", json!({"tenant": tenant, "as": actor}))
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("not found"))
-    }
-
-    /// One admin change (`invite`, `member_role`...), made as `actor`.
-    pub async fn admin(&self, action: &str, body: Value) -> anyhow::Result<Value> {
-        anyhow::ensure!(action.chars().all(|c| c.is_ascii_lowercase() || c == '_'), "no admin action {action}");
-        self.post(&format!("/v1/signin/admin/{action}"), body).await?.ok_or_else(|| anyhow::anyhow!("not found"))
-    }
 }

@@ -88,7 +88,7 @@ allow:
     to: [service:grafana]
 ```
 
-Invite people from `https://signin.example.com/admin` (**Invite someone** gives a link that works once, for a week),
+Invite people from the dashboard's **People** page (**Invite someone** gives a link that works once, for a week),
 or have your agent run `fleetlayer-control invite add`. Removing someone there takes their access away: no service
 signs them in again, services that check access on each request (pages) and forward-auth stop them within a minute,
 and a service that only checked at sign-in keeps its own session until its limit (12 hours for pages and the hub).
@@ -258,8 +258,8 @@ And if it takes back-channel logouts itself rather than through a library, it ch
   it's down and the logout is still waiting (`/healthz` says so after an hour).
 - **Behind forward-auth, the service sees nobody signed in** (Caddy): the header strip runs after `forward_auth`. Put
   both in a `route` block, strip first.
-- **Someone left a Google group but still has the team:** it reaches their teams within a day. Remove them from the
-  team on the admin page for now; it lasts until the next read.
+- **Someone left a Google group but still has the team:** it reaches their teams within a day. Take them off the team on
+  the dashboard's Teams page for now; it lasts until the next read.
 - **Passkeys stopped working after a move:** the new address is outside the domain the passkeys were made for. Move
   back under it, or have people make new ones.
 

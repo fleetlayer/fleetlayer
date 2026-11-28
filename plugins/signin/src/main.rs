@@ -20,7 +20,6 @@
 //!
 //! `fleetlayer-signin serve <config.json>` runs the same service on its own (the plugin config as JSON).
 
-mod admin;
 mod control;
 mod domain;
 mod forward;
@@ -181,6 +180,10 @@ struct Config {
     /// addresses: origins such as `https://deck.example.com`.
     #[serde(default)]
     stepup_return_origins: Vec<String>,
+    /// The dashboard's address (`https://dashboard.example.com`): where admins manage people, invites and teams. The
+    /// signed-in page links to it.
+    #[serde(default)]
+    dashboard: Option<String>,
     control_plane: String,
     /// The sign-in token (`fleetlayer-control signin token`).
     token_file: PathBuf,
@@ -336,6 +339,17 @@ fn build(cfg: Config, home: &Path) -> anyhow::Result<(Arc<web::App>, SocketAddr,
         previous_issuers,
         forward,
         stepup_return_origins: stepup::origins(&cfg.stepup_return_origins)?,
+        dashboard: match cfg.dashboard.as_deref().map(|d| d.trim_end_matches('/')) {
+            Some(d)
+                if d.starts_with("https://")
+                    || d.starts_with("http://localhost")
+                    || d.starts_with("http://dashboard.localhost") =>
+            {
+                Some(d.to_string())
+            }
+            Some(d) => anyhow::bail!("dashboard: {d} isn't an https:// address"),
+            None => None,
+        },
     };
     let mut upstreams = vec![];
     for u in cfg.upstreams {

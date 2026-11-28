@@ -107,7 +107,7 @@ Two kinds of information, kept apart:
 - **Who belongs where** (people's IDs, handles, tenant and team memberships and roles, member agents, teams, nodes'
   and things' owners, invites waiting
   to be used): not secret. **It lives on the control plane**, per tenant, next to the policy that uses it and the
-  audit log that records its changes. Admins manage it there (CLI, API, and the admin pages the sign-in service shows).
+  audit log that records its changes. Admins manage it there (CLI, API, and the dashboard's People and Teams pages).
 - **Credentials** (passkey registrations, links to upstream accounts, upstream client secrets, people's sessions, and
   above all the **token-signing key**: whoever holds it can sign in as anyone to every service): **never on the control
   plane**, which holds no credentials and may be hosted by someone else. Emails stay out of it too.
@@ -162,7 +162,7 @@ Why this split:
   allows it) and `allow` are the other values. `deny` rules still win over ownership.
 - **A tenant's admins sign in to its services by default**, and administer them (`sign_in` and `admin` on
   `service:<name>`, never on someone's data under it, `service:<name>/<owner>/…`). So the first admin can use the hub,
-  pages and the sign-in admin pages with no policy written, and members get a service once a rule gives it to them.
+  pages and the dashboard with no policy written, and members get a service once a rule gives it to them.
   A `deny` rule, or `default_people: deny`, takes it away.
 
 ### Verbs
@@ -323,8 +323,9 @@ tenant per request. No dynamic registration.
 - **Passkeys** (WebAuthn, with [webauthn-rs](https://github.com/kanidm/webauthn-rs), MPL-2.0, used unmodified): a
   person can register several; discoverable credentials, so signing in needs no name typed. The relying party ID is
   the sign-in service's host.
-- **The admin pages** (`/t/<tenant>/admin`, need `admin` on `service:signin` in that tenant): members, teams, roles,
-  invites, clients; for the operator, `/operator` (people, sessions, the upstreams and the deployment's own settings).
+- **Managing people** is on the [dashboard](dashboard.md) (People and Teams), through the control plane's API as the
+  signed-in person (`GET /v1/people`, `POST /v1/people/<action>`, for the tenant's admins or `admin` on
+  `service:dashboard`). The sign-in service keeps only signing in, invites, passkey confirmation and "no access".
 - **CLI:** `fleetlayer-control tenant add`, `member add|remove|role`, `team add|remove|member`, `invite`, `node add
   --tenant --owner`, run with the control plane's admin token; `fleetlayer-control signin token` makes the sign-in
   service's token. The first admin of a deployment: `fleetlayer-control --tenant home invite add --handle a --role admin`
@@ -341,11 +342,6 @@ tenant per request. No dynamic registration.
   - `/v1/signin/event {tenant, person, kind, client?, detail?}`: `kind` is `signed_in`, `signed_out`, `refused`,
     `passkey_added`, `passkey_removed` or `upstream_linked`, `detail` one line (how, or why refused, never a
     credential). Recorded in the tenant's audit log as `signin.<kind>`, with the token's name.
-  - `/v1/signin/admin/view {tenant, as}` and `/v1/signin/admin/<action> {tenant, as, …}` (`invite`,
-    `invite_revoke`, `member_role`, `member_remove`, `team_add`, `team_remove`, `team_member`), for the admin pages.
-    The control plane checks `as` may manage the tenant (an admin, or `admin` on `service:signin`) on every request,
-    and records each change as that person (`person:<handle> (signin:<token>)`). The sign-in service adds a passkey
-    step-up (ten minutes) before removals and role changes, a CSRF token, and 20 invites an hour per admin.
   - `fleetlayer-control signin token [--name signin]` makes (or replaces) the token and prints it once; `signin
     tokens` lists them; `signin revoke <name>` stops the service using it at once.
 
@@ -465,7 +461,7 @@ Every component can move (a Mac first, a home server or VPS later), and the sign
   - **On localhost or a machine's own name** (no domain they own), the page says, before the first passkey is made
     and outside any Advanced section: "Passkeys made now stop working if sign-in moves to another address; use a
     domain you own to avoid that." After such a move, people sign in once with an invite link or an upstream provider
-    and register a new passkey; the admin page offers "Invite everyone again" for this.
+    and register a new passkey; the dashboard's People page is where to invite them again.
   Either way, services need the new issuer URL. While the old name still points at the service (a setting,
   `previous_issuers`, for 30 days), it answers discovery with a redirect and keeps serving the JWKS, so tokens already issued verify until they expire; each client's issuer setting is
   changed (the guide lists the hub's and pages' settings). Sessions on the old address end; people sign in again.

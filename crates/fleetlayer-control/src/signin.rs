@@ -13,9 +13,9 @@
 //! - `POST /v1/signin/approval_view {tenant, approval}` → the approval, for the step-up page
 //! - `POST /v1/signin/stepup {tenant, person, approval}` → `{approval, person, expiresAt}`: the person confirmed a
 //!   role-window approval with their passkey (`stepup.rs`)
-//! - `POST /v1/signin/admin/view {tenant, as}` and `/v1/signin/admin/<action> {tenant, as, …}` for the admin pages:
-//!   the control plane checks `as` may administer the tenant (an admin, or `admin` on `service:signin`), and records
-//!   each change as that person
+//!
+//! People, invites and teams are managed on the dashboard (`GET /v1/people`, `POST /v1/people/<action>` in `api.rs`),
+//! as the signed-in person through its delegate token; the sign-in service keeps no admin pages.
 
 use std::sync::Arc;
 
@@ -366,108 +366,6 @@ pub async fn post_teams_sync(
     Ok(Json(json!(done)))
 }
 
-// ---------------------------------------------------------------- admin pages
-
-/// A change an admin makes on the sign-in service's admin pages, for a tenant, as that person.
-#[derive(Deserialize)]
-pub struct AdminRequest {
-    tenant: String,
-    /// The person acting (their ID). The control plane checks they may administer the tenant.
-    #[serde(rename = "as")]
-    actor: String,
-    #[serde(default)]
-    handle: Option<String>,
-    #[serde(default)]
-    role: Option<String>,
-    #[serde(default)]
-    teams: Vec<String>,
-    #[serde(default)]
-    team: Option<String>,
-    #[serde(default)]
-    parent: Option<String>,
-    #[serde(default)]
-    add: Option<bool>,
-    #[serde(default)]
-    maintainer: Option<bool>,
-}
-
-/// Who may use the admin pages for a tenant: its admins, and anyone its policy allows `admin` on `service:signin`.
-/// Returns the tenant's ID and the actor's handle, for the audit log.
-async fn admin_of(app: &App, r: &AdminRequest) -> Result<(String, String), (StatusCode, String)> {
-    let fleet = app.authz.fleet(&app.db).await.map_err(internal)?;
-    let tenant = fleet.tenant(&r.tenant).ok_or_else(|| bad(format!("no tenant {}", r.tenant)))?;
-    let Some(handle) = tenant.handles.get(&r.actor).cloned() else {
-        return Err((StatusCode::FORBIDDEN, format!("{} isn't a member of {}", r.actor, tenant.slug)));
-    };
-    let is_admin = tenant.people.get(&handle).is_some_and(|p| p.role == "admin");
-    if !is_admin {
-        let ask = fleetlayer_protocol::link::AccessCheck {
-            tenant: tenant.id.clone(),
-            who: r.actor.clone(),
-            can: "admin".into(),
-            to: "service:signin".into(),
-            ..Default::default()
-        };
-        let d = crate::authz::check_as(app, &fleet, tenant, &ask).await.map_err(|e| bad(e.message))?;
-        if !d.allowed {
-            return Err((
-                StatusCode::FORBIDDEN,
-                format!("person:{handle} may not manage {}: {}", tenant.slug, d.reason),
-            ));
-        }
-    }
-    Ok((tenant.id.clone(), handle))
-}
-
-/// `POST /v1/signin/admin/view`: the tenant's members, pending invites and teams.
-pub async fn post_admin_view(
-    State(app): State<Arc<App>>,
-    headers: HeaderMap,
-    Json(r): Json<AdminRequest>,
-) -> ApiResult {
-    guard(&app, &headers).await?;
-    let (tenant, _) = admin_of(&app, &r).await?;
-    let slug: (String, String) = sqlx::query_as("SELECT slug, name FROM tenants WHERE id = ?")
-        .bind(&tenant)
-        .fetch_one(&app.db)
-        .await
-        .map_err(internal)?;
-    let members = crate::people::members(&app.db, &tenant).await.map_err(internal)?;
-    let invites = crate::people::invites(&app.db, &tenant).await.map_err(internal)?;
-    let teams = crate::people::teams(&app.db, &tenant).await.map_err(internal)?;
-    Ok(Json(json!({
-        "tenant": tenant, "slug": slug.0, "name": slug.1,
-        "members": members, "invites": invites, "teams": teams,
-    })))
-}
-
-/// `POST /v1/signin/admin/<action>`: one change, made with the same functions as the command line and recorded in
-/// the tenant's audit log as the person who made it.
-pub async fn post_admin_action(
-    State(app): State<Arc<App>>,
-    headers: HeaderMap,
-    axum::extract::Path(action): axum::extract::Path<String>,
-    Json(r): Json<AdminRequest>,
-) -> ApiResult {
-    let token = guard(&app, &headers).await?;
-    let (tenant, handle) = admin_of(&app, &r).await?;
-    let by = format!("person:{handle} (signin:{token})");
-    let change = crate::people::Change {
-        handle: r.handle,
-        role: r.role,
-        teams: r.teams,
-        team: r.team,
-        parent: r.parent,
-        add: r.add,
-        maintainer: r.maintainer,
-    };
-    let out = crate::people::apply(&app.db, &tenant, &action, &change, &by).await.map_err(|e| match e {
-        crate::people::ApplyError::NoSuchAction => (StatusCode::NOT_FOUND, format!("no admin action {action}")),
-        crate::people::ApplyError::Bad(m) => bad(m),
-    })?;
-    Ok(Json(out))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -579,99 +477,6 @@ mod tests {
         token_remove(&app.db, "signin").await.unwrap();
         let gone = post_person(State(app), bearer(&t), Json(PersonQuery { person })).await.unwrap_err();
         assert_eq!(gone.0, StatusCode::UNAUTHORIZED, "a revoked token stops at once");
-    }
-
-    #[tokio::test]
-    async fn admins_manage_their_tenant_from_the_sign_in_pages() {
-        let app = Arc::new(App {
-            db: crate::db::open_memory().await.unwrap(),
-            links: Default::default(),
-            hook_limits: Default::default(),
-            admin_token_hash: None,
-            streams: Default::default(),
-            authz: Default::default(),
-            audit: crate::audit::Audit::new(None),
-        });
-        let t = token_add(&app.db, "signin").await.unwrap();
-        let join = |handle: &'static str, role: &'static str| {
-            let app = app.clone();
-            async move {
-                let i = NewInvite { handle, role, teams: &[], person: None };
-                let code = people::invite(&app.db, "default", i, "admin").await.unwrap();
-                people::invite_redeem(&app.db, &code, Redeemer::New { display_name: handle }).await.unwrap().person
-            }
-        };
-        let a = join("a", "admin").await;
-        let b = join("b", "member").await;
-        let req = |actor: &str, handle: Option<&str>, role: Option<&str>| {
-            Json(AdminRequest {
-                tenant: "default".into(),
-                actor: actor.into(),
-                handle: handle.map(String::from),
-                role: role.map(String::from),
-                teams: vec![],
-                team: None,
-                parent: None,
-                add: None,
-                maintainer: None,
-            })
-        };
-        let action = |name: &str| axum::extract::Path(name.to_string());
-        let view = post_admin_view(State(app.clone()), bearer(&t), req(&a, None, None)).await.unwrap();
-        assert_eq!(view.0["members"].as_array().unwrap().len(), 2);
-        // A member isn't an admin, and the policy gives them nothing more.
-        let no = post_admin_view(State(app.clone()), bearer(&t), req(&b, None, None)).await.unwrap_err();
-        assert_eq!(no.0, StatusCode::FORBIDDEN);
-        // An admin invites; the change is recorded as them.
-        let done = post_admin_action(State(app.clone()), bearer(&t), action("invite"), req(&a, Some("c"), None))
-            .await
-            .unwrap();
-        assert!(done.0["code"].as_str().is_some());
-        let by: String =
-            sqlx::query_scalar("SELECT subject FROM audit_outbox WHERE verb = 'invite.create' ORDER BY id DESC")
-                .fetch_one(&app.db)
-                .await
-                .unwrap();
-        assert_eq!(by, "person:a (signin:signin)");
-        // The last admin can't demote or remove themselves, and is told why.
-        let e = post_admin_action(
-            State(app.clone()),
-            bearer(&t),
-            action("member_role"),
-            req(&a, Some("a"), Some("member")),
-        )
-        .await
-        .unwrap_err();
-        assert!(e.1.contains("last admin"), "{}", e.1);
-        let e = post_admin_action(State(app.clone()), bearer(&t), action("member_remove"), req(&a, Some("a"), None))
-            .await
-            .unwrap_err();
-        assert!(e.1.contains("last admin"), "{}", e.1);
-        // B made an admin can then do it, and the policy's `admin` on service:signin works too.
-        let _ =
-            post_admin_action(State(app.clone()), bearer(&t), action("member_role"), req(&a, Some("b"), Some("admin")))
-                .await
-                .unwrap();
-        let _ = post_admin_action(
-            State(app.clone()),
-            bearer(&t),
-            action("member_role"),
-            req(&b, Some("a"), Some("member")),
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            post_admin_view(State(app.clone()), bearer(&t), req(&a, None, None)).await.unwrap_err().0,
-            StatusCode::FORBIDDEN
-        );
-        crate::authz::store(
-            &app.db,
-            "default",
-            "version: 2\ndefault: allow\nallow:\n  - { who: person:a, can: admin, to: service:signin }\n",
-        )
-        .await
-        .unwrap();
-        assert!(post_admin_view(State(app.clone()), bearer(&t), req(&a, None, None)).await.is_ok());
     }
 
     #[tokio::test]
