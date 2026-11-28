@@ -218,6 +218,45 @@ pub async fn read_transcript(
     })
 }
 
+/// Every transcript on another node searched for a caller on `from_node`. Only hits in sessions the caller may read
+/// without asking come back (the others are counted in `hidden`); the control plane passes them on and keeps none.
+pub async fn search_transcripts(
+    app: &App,
+    tenant: &str,
+    from_node: &str,
+    s: l::TranscriptSearch,
+) -> Result<l::TranscriptHits, RpcError> {
+    let caller = format!("{}@{from_node}", s.caller);
+    let server = app
+        .links
+        .peer(tenant, &s.node)
+        .await
+        .ok_or_else(|| RpcError::not_here(format!("node {} is offline", s.node)))?;
+    let serve = l::TranscriptSearchServe { query: s.query, caller: caller.clone() };
+    let mut found: l::TranscriptHits = server
+        .request_within(l::method::TRANSCRIPT_SEARCH_SERVE, &serve, Duration::from_secs(40))
+        .await
+        .map_err(|e| {
+            if e.code == fleetlayer_protocol::rpc::code::METHOD_NOT_FOUND {
+                RpcError::refused(format!("node {} is too old to search its transcripts: update it", s.node))
+            } else {
+                e
+            }
+        })?;
+    let mut kept = vec![];
+    for h in std::mem::take(&mut found.hits) {
+        let target = format!("{}@{}", h.tab.as_deref().unwrap_or(&h.session_id), s.node);
+        if crate::authz::may_read(app, tenant, &caller, &target).await {
+            kept.push(h);
+        } else {
+            found.hidden += 1;
+        }
+    }
+    found.hits = kept;
+    found.node = s.node;
+    Ok(found)
+}
+
 /// A node gets up to two and a half minutes to start a session; this is a little more.
 const START_TIMEOUT: Duration = Duration::from_secs(160);
 
@@ -477,6 +516,10 @@ mod tests {
                     let done = if p["action"] == "close" { "closed" } else { "answered" };
                     return Ok(json!({"node": "home", "sessionId": "s1", "tab": p["session"], "done": done}));
                 }
+                if method == l::method::TRANSCRIPT_SEARCH_SERVE {
+                    let hit = |tab: &str| json!({"sessionId": format!("id-{tab}"), "tab": tab, "offset": 0, "excerpt": "sc-1"});
+                    return Ok(json!({"node": "home", "hits": [hit("review"), hit("private")], "searched": 2}));
+                }
                 assert_eq!(method, l::method::SESSION_SERVE);
                 Ok(json!({"node": "home", "tab": p["tab"], "address": "w1-1", "sessionId": "s1", "promptError": null}))
             }
@@ -666,6 +709,10 @@ mod tests {
             assert_eq!(by_id("p1")["handoffTo"]["to"], "review@home");
             assert_eq!(by_id("s1")["handoffFrom"]["from"], "planning@laptop");
             assert!(by_id("p1").get("handoffFrom").is_none());
+            let (feed, next) = crate::handoffs::feed(&app.db, "default", "", 10).await.unwrap();
+            assert_eq!((feed.len(), feed[0].id.as_str(), feed[0].note.as_deref()), (1, id, None));
+            let (feed, again) = crate::handoffs::feed(&app.db, "default", &next, 10).await.unwrap();
+            assert_eq!((feed.len(), again), (0, next), "nothing new after the cursor");
 
             // A start that fails keeps no handoff.
             app.links.nodes.lock().await.remove(&("default".into(), "home".into()));
@@ -679,6 +726,24 @@ mod tests {
             .unwrap_err();
             assert!(e.message.contains("offline"), "{}", e.message);
             assert!(crate::handoffs::by_id(&app.db, "default", "h00000000000000bb").await.unwrap().is_none());
+        }
+
+        /// A search on another node passes on only the hits in sessions the caller may read, and counts the rest.
+        #[tokio::test]
+        async fn a_transcript_search_keeps_only_hits_the_caller_may_read() {
+            let (app, home) = fleet().await;
+            let policy = "version: 2\ndefault: allow\nask: []\ndeny:\n  - { who: \"planning@*\", can: read, to: \"private@home\" }\n";
+            crate::authz::store(&app.db, "default", policy).await.unwrap();
+            let s = l::TranscriptSearch {
+                node: "home".into(),
+                query: l::TranscriptQuery { text: "sc-1".into(), ..Default::default() },
+                caller: "planning".into(),
+            };
+            let found = search_transcripts(&app, "default", "laptop", s).await.unwrap();
+            let tabs: Vec<_> = found.hits.iter().map(|h| h.tab.as_deref()).collect();
+            assert_eq!((tabs, found.hidden, found.searched), (vec![Some("review")], 1, 2));
+            assert_eq!(home.served.lock().await[0]["caller"], "planning@laptop");
+            assert_eq!(home.served.lock().await[0]["text"], "sc-1");
         }
 
         #[tokio::test]

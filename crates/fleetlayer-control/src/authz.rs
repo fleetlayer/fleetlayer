@@ -41,6 +41,8 @@ pub const LINK_METHODS: &[(&str, Option<&str>)] = &[
     (m::TERMINAL_OPEN, Some("read")),
     // Checked as `read` on the session, under every name it goes by (`route::read_transcript`).
     (m::TRANSCRIPT_READ, Some("read")),
+    // Hits only in sessions the caller may read without asking (`route::search_transcripts`).
+    (m::TRANSCRIPT_SEARCH, Some("read")),
     (m::SYNC_PUBLISH, Some("sync")),
     (m::READINGS, None),
     (m::READING_SUBSCRIBE, Some("read")),
@@ -1425,6 +1427,7 @@ mod tests {
             m::TOOL_CALL,
             m::TERMINAL_OPEN,
             m::TRANSCRIPT_READ,
+            m::TRANSCRIPT_SEARCH,
             m::SYNC_PUBLISH,
             m::READINGS,
             m::READING_SUBSCRIBE,

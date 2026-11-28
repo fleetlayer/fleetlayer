@@ -1976,6 +1976,7 @@ name = "fleetlayer-node"
 version = "0.3.13"
 dependencies = [
  "age",
+ "aho-corasick",
  "anyhow",
  "async-trait",
  "axum",

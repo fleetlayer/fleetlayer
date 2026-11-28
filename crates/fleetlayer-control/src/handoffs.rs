@@ -137,6 +137,34 @@ pub async fn recent(db: &Db, tenant: &str, limit: i64) -> anyhow::Result<Vec<l::
     Ok(rows.into_iter().map(row).map(|h| l::Handoff { note: None, ..h }).collect())
 }
 
+/// The handoffs written after `cursor` (`<created ms>:<id>`, from an earlier answer's `nextCursor`; empty for the
+/// first), oldest first, without their notes, with the cursor to ask from next.
+pub async fn feed(db: &Db, tenant: &str, cursor: &str, limit: i64) -> anyhow::Result<(Vec<l::Handoff>, String)> {
+    let (ms, id) = match cursor {
+        "" => (i64::MIN, String::new()),
+        c => {
+            let (ms, id) = c.split_once(':').ok_or_else(|| anyhow::anyhow!("a cursor is <ms>:<id>"))?;
+            (ms.parse()?, id.to_string())
+        }
+    };
+    let rows = sqlx::query(
+        "SELECT * FROM handoffs WHERE tenant = ? AND (created_at > ? OR (created_at = ? AND id > ?))
+         ORDER BY created_at, id LIMIT ?",
+    )
+    .bind(tenant)
+    .bind(ms)
+    .bind(ms)
+    .bind(&id)
+    .bind(limit)
+    .fetch_all(db)
+    .await?;
+    let next = rows
+        .last()
+        .map(|r| format!("{}:{}", r.get::<i64, _>("created_at"), r.get::<String, _>("id")))
+        .unwrap_or_else(|| cursor.to_string());
+    Ok((rows.into_iter().map(row).map(|h| l::Handoff { note: None, ..h }).collect(), next))
+}
+
 /// The session ID of `name` (a tab or a session ID) on `node`, as the node last pushed its sessions.
 async fn session_id(db: &Db, tenant: &str, node: &str, name: &str) -> anyhow::Result<Option<String>> {
     Ok(db::sessions(db, tenant).await?.into_iter().find_map(|(n, s)| {

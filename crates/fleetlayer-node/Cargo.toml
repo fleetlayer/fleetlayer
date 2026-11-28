@@ -12,6 +12,7 @@ name = "fleetlayer-node"
 path = "src/main.rs"
 
 [dependencies]
+aho-corasick = "1.1.5"
 base64 = "0.23.1"
 fleetlayer-protocol.workspace = true
 fleetlayer-plugin.workspace = true

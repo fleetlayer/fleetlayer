@@ -20,18 +20,40 @@ use crate::Node;
 
 /// One of this node's sessions' transcripts, the part `range` names.
 pub async fn read_here(node: &Node, name: &str, range: &TranscriptRange) -> Result<TranscriptChunk, RpcError> {
-    let session = crate::deliver::resolve(node, name).await?;
-    let none = || RpcError::refused(format!("{name} on {} has no harness plugin that knows its transcript", node.name));
-    let plugin_name = session.harness_plugin.clone().ok_or_else(none)?;
-    let plugin = node.plugin(&plugin_name).ok_or_else(none)?;
-    let peer = plugin.peer().await.ok_or_else(|| RpcError::refused(format!("plugin {plugin_name} isn't running")))?;
-    let v: Value = peer
-        .request_within(
-            ext::method::HARNESS_TRANSCRIPT,
-            &json!({"sessionId": session.session_id}),
-            Duration::from_secs(10),
-        )
-        .await?;
+    let ask = |id: &str| json!({"sessionId": id, "agentId": range.agent_id});
+    let (session_id, v): (String, Value) = match crate::deliver::resolve(node, name).await {
+        Ok(session) => {
+            let none = || {
+                RpcError::refused(format!("{name} on {} has no harness plugin that knows its transcript", node.name))
+            };
+            let plugin_name = session.harness_plugin.clone().ok_or_else(none)?;
+            let plugin = node.plugin(&plugin_name).ok_or_else(none)?;
+            let peer =
+                plugin.peer().await.ok_or_else(|| RpcError::refused(format!("plugin {plugin_name} isn't running")))?;
+            let id = session.session_id;
+            let v = peer.request_within(ext::method::HARNESS_TRANSCRIPT, &ask(&id), Duration::from_secs(10)).await?;
+            (id, v)
+        }
+        // A session that ended (not listed any more, as a transcript search finds them): its ID, asked of every
+        // harness plugin that knows transcripts.
+        Err(e) => {
+            let mut found = None;
+            for p in &node.plugins {
+                if !p.roles().await.harness.is_some_and(|h| h.transcripts) {
+                    continue;
+                }
+                let Some(peer) = p.peer().await else { continue };
+                if let Ok(v) = peer
+                    .request_within::<_, Value>(ext::method::HARNESS_TRANSCRIPT, &ask(name), Duration::from_secs(10))
+                    .await
+                {
+                    found = Some(v);
+                    break;
+                }
+            }
+            (name.to_string(), found.ok_or(e)?)
+        }
+    };
     let path = v["path"].as_str().ok_or_else(|| RpcError::internal("the harness plugin named no transcript path"))?;
     let format = v["format"].as_str().unwrap_or("jsonl").to_string();
     let (path, range2) = (path.to_string(), range.clone());
@@ -52,7 +74,7 @@ pub async fn read_here(node: &Node, name: &str, range: &TranscriptRange) -> Resu
     node.secrets.report(&hits, &format!("the transcript of {name} on {}", node.name));
     let read = read.map_err(|e| RpcError::refused(format!("reading {name}'s transcript: {e}")))?;
     Ok(TranscriptChunk {
-        session_id: session.session_id,
+        session_id,
         format,
         size: read.size,
         offset: read.offset,
@@ -441,6 +463,11 @@ fn marker(kind: Option<String>, len: u64, head: &[u8], cap: usize) -> Vec<u8> {
 
 /// The value of the top-level `"type"` key in the start of a JSON object, if it's there.
 fn top_level_type(b: &[u8]) -> Option<String> {
+    top_level_str(b, b"type")
+}
+
+/// The string value of a top-level key in the start of a JSON object, if it's there.
+fn top_level_str(b: &[u8], key: &[u8]) -> Option<String> {
     let (mut depth, mut i) = (0i32, 0usize);
     // The end of the string starting at `i` (its opening quote), past escapes.
     let string_end = |i: usize| {
@@ -460,7 +487,7 @@ fn top_level_type(b: &[u8]) -> Option<String> {
             b'}' | b']' => depth -= 1,
             b'"' => {
                 let e = string_end(i)?;
-                if depth == 1 && &b[i + 1..e] == b"type" {
+                if depth == 1 && &b[i + 1..e] == key {
                     let mut j = e + 1;
                     while j < b.len() && b[j].is_ascii_whitespace() {
                         j += 1;
@@ -493,6 +520,194 @@ fn human(n: u64) -> String {
         1_000_000..1_000_000_000 => format!("{:.1} MB", n as f64 / 1e6),
         _ => format!("{:.1} GB", n as f64 / 1e9),
     }
+}
+
+/// The shortest text a search looks for.
+const SEARCH_MIN: usize = 3;
+/// How long one node's search may take before it answers with what it found (`partial`).
+const SEARCH_TIME: std::time::Duration = std::time::Duration::from_secs(25);
+/// How much text an excerpt shows on each side of the hit.
+const EXCERPT_SIDE: usize = 160;
+
+/// Search every transcript the harness plugins here know (their sessions' and their subagents') for `q.text`, newest
+/// first, with each excerpt redacted.
+pub async fn search_here(node: &Node, q: &l::TranscriptQuery) -> Result<l::TranscriptHits, RpcError> {
+    let text = q.text.trim().to_string();
+    if text.len() < SEARCH_MIN {
+        return Err(RpcError::invalid_params(format!("search for at least {SEARCH_MIN} characters")));
+    }
+    let scrubber = node.secrets.scrubber();
+    if scrubber.scrub(&text).0 != text.as_str() {
+        return Err(RpcError::refused(
+            "that text is a secret delivered to this node: transcripts aren't searched for it",
+        ));
+    }
+    let mut files: Vec<ext::TranscriptFile> = vec![];
+    for p in &node.plugins {
+        if !p.roles().await.harness.is_some_and(|h| h.list) {
+            continue;
+        }
+        let Some(peer) = p.peer().await else { continue };
+        match peer
+            .request_within::<_, Value>(ext::method::HARNESS_TRANSCRIPTS, &json!({}), Duration::from_secs(20))
+            .await
+        {
+            Ok(v) => files.extend(
+                serde_json::from_value::<Vec<ext::TranscriptFile>>(v["transcripts"].clone()).unwrap_or_default(),
+            ),
+            Err(e) => tracing::warn!(plugin = %p.name(), "listing transcripts: {}", e.message),
+        }
+    }
+    let tabs: std::collections::HashMap<String, String> = node
+        .registry
+        .all()
+        .await
+        .into_iter()
+        .filter_map(|s| Some((s.session_id.clone(), s.tab()?.to_string())))
+        .collect();
+    let limit = q.limit.unwrap_or(50).clamp(1, 500) as usize;
+    let per = q.per_session.unwrap_or(3).clamp(1, 100) as usize;
+    let deadline = std::time::Instant::now() + SEARCH_TIME;
+    let (mut found, hits) = tokio::task::spawn_blocking(move || {
+        let mut hits = vec![];
+        let found = search_files(files, &text, limit, per, deadline, &mut |window: &str| {
+            let (out, h) = scrubber.scrub(window);
+            hits.extend(h);
+            out.into_owned()
+        });
+        (found, hits)
+    })
+    .await
+    .map_err(|e| RpcError::internal(e.to_string()))?;
+    node.secrets.report(&hits, &format!("a transcript search on {}", node.name));
+    for h in &mut found.hits {
+        h.tab = tabs.get(&h.session_id).cloned();
+    }
+    found.node = node.name.clone();
+    Ok(found)
+}
+
+/// A search here or on another node, for a caller on this node.
+pub async fn search(
+    node: &Node,
+    on: Option<&str>,
+    query: l::TranscriptQuery,
+    caller: String,
+) -> Result<l::TranscriptHits, RpcError> {
+    match on {
+        None => search_here(node, &query).await,
+        Some(n) if n == node.name => search_here(node, &query).await,
+        Some(n) => {
+            let peer = node
+                .link
+                .peer()
+                .await
+                .ok_or_else(|| RpcError::not_here(format!("{} isn't linked to a control plane now", node.name)))?;
+            let req = l::TranscriptSearch { node: n.into(), query, caller };
+            peer.request_within(l::method::TRANSCRIPT_SEARCH, &req, Duration::from_secs(45)).await.map_err(|e| {
+                if e.code == fleetlayer_protocol::rpc::code::METHOD_NOT_FOUND {
+                    RpcError::refused("the control plane is too old to search transcripts on other nodes: update it")
+                } else {
+                    e
+                }
+            })
+        }
+    }
+}
+
+/// Look through `files`, newest first, for `text` whatever its case: at most `per` hits in one file and `limit` in
+/// all, until `deadline`. `clean` redacts the text around a hit before the excerpt is cut from it.
+pub fn search_files(
+    mut files: Vec<ext::TranscriptFile>,
+    text: &str,
+    limit: usize,
+    per: usize,
+    deadline: std::time::Instant,
+    clean: &mut dyn FnMut(&str) -> String,
+) -> l::TranscriptHits {
+    let mut out = l::TranscriptHits::default();
+    let Ok(finder) = aho_corasick::AhoCorasick::builder().ascii_case_insensitive(true).build([text]) else {
+        return out;
+    };
+    let modified = |f: &ext::TranscriptFile| std::fs::metadata(&f.path).and_then(|m| m.modified()).ok();
+    let mut dated: Vec<_> = files.drain(..).map(|f| (modified(&f), f)).collect();
+    dated.sort_by_key(|a| std::cmp::Reverse(a.0));
+    let total = dated.len();
+    for (i, (_, f)) in dated.into_iter().enumerate() {
+        if out.hits.len() >= limit || std::time::Instant::now() >= deadline {
+            out.partial = i < total;
+            break;
+        }
+        out.searched += 1;
+        let Ok(file) = std::fs::File::open(&f.path) else { continue };
+        let mut reader = std::io::BufReader::with_capacity(256 * 1024, file);
+        let (mut pos, mut in_file) = (0u64, 0usize);
+        loop {
+            let at = pos;
+            let line = match read_line(&mut reader, true) {
+                Ok(l) => l,
+                Err(_) => break, // the end (or a line still being written)
+            };
+            pos += line.len + 1;
+            let Some(m) = finder.find(&line.bytes) else {
+                if std::time::Instant::now() >= deadline {
+                    out.partial = true;
+                    break;
+                }
+                continue;
+            };
+            out.hits.push(l::TranscriptHit {
+                session_id: f.session_id.clone(),
+                agent_id: f.agent_id.clone(),
+                tab: None,
+                offset: at,
+                kind: top_level_type(&line.bytes),
+                timestamp: top_level_str(&line.bytes, b"timestamp"),
+                excerpt: excerpt(&line.bytes, m.start(), m.end(), &finder, clean),
+            });
+            in_file += 1;
+            if in_file >= per || out.hits.len() >= limit {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// The text around a hit: a wide window redacted first, then cut to [`EXCERPT_SIDE`] on each side of the text found
+/// again in it (not found: the text itself was redacted, and the window's middle is shown).
+fn excerpt(
+    line: &[u8],
+    start: usize,
+    end: usize,
+    finder: &aho_corasick::AhoCorasick,
+    clean: &mut dyn FnMut(&str) -> String,
+) -> String {
+    const WIDE: usize = 8192;
+    let lo = start.saturating_sub(WIDE);
+    let hi = (end + WIDE).min(line.len());
+    let window = clean(&String::from_utf8_lossy(&line[lo..hi]));
+    let (s, e) = match finder.find(window.as_bytes()) {
+        Some(m) => (m.start(), m.end()),
+        None => (window.len() / 2, window.len() / 2),
+    };
+    let mut a = s.saturating_sub(EXCERPT_SIDE);
+    while !window.is_char_boundary(a) {
+        a -= 1;
+    }
+    let mut b = (e + EXCERPT_SIDE).min(window.len());
+    while !window.is_char_boundary(b) {
+        b += 1;
+    }
+    let mut out = String::new();
+    if a > 0 || lo > 0 {
+        out.push('…');
+    }
+    out.push_str(&window[a..b].replace("\\n", " "));
+    if b < window.len() || hi < line.len() {
+        out.push('…');
+    }
+    out
 }
 
 #[cfg(test)]
@@ -657,6 +872,80 @@ mod tests {
         let range = TranscriptRange { tail: Some(10), before: Some(14), ..Default::default() };
         let l = read(&p, &range);
         assert_eq!((text(&l), l.offset, l.next), ("two\nthree\n", 4, 14));
+    }
+
+    fn tfile(dir: &Path, session: &str, agent: Option<&str>, text: &str) -> ext::TranscriptFile {
+        let p = dir.join(format!("{session}-{}.jsonl", agent.unwrap_or("main")));
+        std::fs::write(&p, text).unwrap();
+        ext::TranscriptFile {
+            session_id: session.into(),
+            agent_id: agent.map(str::to_string),
+            path: p.to_string_lossy().into_owned(),
+            format: "claude-jsonl".into(),
+        }
+    }
+
+    fn later() -> std::time::Instant {
+        std::time::Instant::now() + std::time::Duration::from_secs(30)
+    }
+
+    /// "Who has this ID?": every transcript's lines holding the text, whatever its case, with where each starts, its
+    /// type and time, and the text around it; at most `per` hits in one transcript and `limit` in all.
+    #[test]
+    fn a_search_finds_the_text_in_every_transcript_whatever_its_case() {
+        let dir = tempfile::tempdir().unwrap();
+        let first =
+            r#"{"type":"user","timestamp":"2026-11-28T05:00:00Z","message":{"content":"look at SC-4242 please"}}"#;
+        let a = tfile(
+            dir.path(),
+            "s-a",
+            None,
+            &format!("{}\n{first}\n{}\n", line("assistant", "hi").trim(), line("assistant", "sc-4242 done").trim()),
+        );
+        let b = tfile(dir.path(), "s-b", Some("a1b2"), &line("assistant", "nothing here"));
+        let c = tfile(
+            dir.path(),
+            "s-c",
+            Some("c3d4"),
+            &line("assistant", &format!("{}Sc-4242{}", "x".repeat(1000), "y".repeat(1000))),
+        );
+        let found = search_files(vec![a, b, c], "sc-4242", 50, 3, later(), &mut |w: &str| w.to_string());
+        assert_eq!((found.searched, found.partial), (3, false));
+        assert_eq!(found.hits.len(), 3);
+        let first_hit = found.hits.iter().find(|h| h.session_id == "s-a").unwrap();
+        let hi = line("assistant", "hi");
+        assert_eq!(first_hit.offset as usize, hi.len());
+        assert_eq!(
+            (first_hit.kind.as_deref(), first_hit.timestamp.as_deref()),
+            (Some("user"), Some("2026-11-28T05:00:00Z"))
+        );
+        assert!(first_hit.excerpt.contains("look at SC-4242 please"), "{}", first_hit.excerpt);
+        let sub = found.hits.iter().find(|h| h.session_id == "s-c").unwrap();
+        assert_eq!(sub.agent_id.as_deref(), Some("c3d4"));
+        assert!(
+            sub.excerpt.starts_with('…') && sub.excerpt.ends_with('…') && sub.excerpt.len() < 400,
+            "{}",
+            sub.excerpt
+        );
+        assert!(sub.excerpt.contains("Sc-4242"));
+
+        let a = tfile(dir.path(), "s-a", None, &line("assistant", "sc-4242").repeat(10));
+        let found = search_files(vec![a.clone()], "SC-4242", 50, 3, later(), &mut |w: &str| w.to_string());
+        assert_eq!(found.hits.len(), 3, "at most per_session in one transcript");
+        let found = search_files(vec![a.clone(), a], "SC-4242", 2, 3, later(), &mut |w: &str| w.to_string());
+        assert_eq!((found.hits.len(), found.partial), (2, true), "the limit stops it, with a transcript left");
+    }
+
+    /// The text around a hit is redacted before it's cut, so a secret beside an ID never shows.
+    #[test]
+    fn a_search_excerpt_is_redacted() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = tfile(dir.path(), "s", None, &line("assistant", "deploy key tok_9f8e7d6c for order-77881 today"));
+        let found = search_files(vec![f], "order-77881", 50, 3, later(), &mut |w: &str| {
+            w.replace("tok_9f8e7d6c", "[REDACTED x]")
+        });
+        let e = &found.hits[0].excerpt;
+        assert!(e.contains("[REDACTED x] for order-77881") && !e.contains("9f8e"), "{e}");
     }
 
     #[test]

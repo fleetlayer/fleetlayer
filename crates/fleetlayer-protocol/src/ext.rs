@@ -34,6 +34,9 @@ pub mod method {
     /// Node → summaries plugin: import claude-summarizer's history. `{dir}` → `{records}`.
     pub const SUMMARY_IMPORT: &str = "_fleetlayer.dev/summary/import";
     pub const HARNESS_TRANSCRIPT: &str = "_fleetlayer.dev/harness/transcript";
+    /// Node → harness plugin: every transcript file it knows on this machine, its sessions' and their subagents'.
+    /// `{}` → `{transcripts: [TranscriptFile]}`. Asked only of a plugin whose harness role says `list`.
+    pub const HARNESS_TRANSCRIPTS: &str = "_fleetlayer.dev/harness/transcripts";
     /// Node → harness plugin, before a session of its harness starts in `cwd`: get the folder ready (Claude Code: mark
     /// it trusted). `HarnessPrepare` → `{}`.
     pub const HARNESS_PREPARE: &str = "_fleetlayer.dev/harness/prepare";
@@ -236,6 +239,21 @@ pub struct HarnessRole {
     /// It answers `_fleetlayer.dev/harness/locate`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub locate: bool,
+    /// It answers `_fleetlayer.dev/harness/transcripts`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub list: bool,
+}
+
+/// One transcript file a harness plugin knows: a session's own, or one of its subagents' (`agentId`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptFile {
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    pub path: String,
+    /// `claude-jsonl`, `codex-jsonl`.
+    pub format: String,
 }
 
 /// `_fleetlayer.dev/harness/prepare`

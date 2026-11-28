@@ -271,6 +271,21 @@ goes in as it is.
 
 - `close` and `cancel` on a session that isn't there answer `-32010`.
 
+### Transcript search
+
+`fleetlayer transcript-search <text> [--on <nodes> | --all]` asks its node `node/transcript_search` `{text, limit?,
+perSession?, on?, caller?}` → `{node, hits: [{sessionId, agentId?, tab?, offset, kind?, timestamp?, excerpt}],
+searched, partial?, hidden?}`. The node lists every transcript its harness plugins know
+(`_fleetlayer.dev/harness/transcripts` → `{transcripts: [{sessionId, agentId?, path, format}]}`, from a plugin whose
+harness role says `list`; Claude Code's include each session's subagents) and looks through them newest first for the
+text whatever its case: at most `perSession` hits in one transcript (3), `limit` in all (50, at most 500), for 25
+seconds, then answers with `partial`. Each excerpt is cut from a wide window around the hit after that window is
+redacted; text that is itself a delivered secret is refused. Another node's search goes through the control plane
+(`link/transcript_search` → `link/transcript_search_serve`), which keeps only the hits in sessions the caller may read
+without asking and counts the others in `hidden`. With `--all` the CLI asks each linked node at once and prints each
+answer as it comes. `fleetlayer transcript <session> --agent <agentId>` (`agentId` in a read) reads a subagent's
+transcript, and a session ID the node no longer lists is read from the harness plugins that know it.
+
 ### Handoffs
 
 `fleetlayer session handoff [<from>] --to <node> [--note …]` moves a session's work to a new session: `node/session_handoff`
@@ -286,7 +301,7 @@ keeps the note (64 KB at most) and starts the session as `link/session_start` do
 `node/handoff_get` `{id, why?, caller?}` (`fleetlayer session handoff-note`) → `{id, from, fromSessionId?, to,
 toSessionId?, note?, by, createdAt}`: for the session the work went to, or a caller with `read` on the one it came from.
 `/v1/fleet` marks each session with `handoffFrom` `{id, from, fromSessionId, at}` and `handoffTo` `{id, to,
-toSessionId, at}` (the newest), matched by session ID when known; `/v1/handoffs` lists the newest 200 and
+toSessionId, at}` (the newest), matched by session ID when known; `/v1/handoffs` lists the newest 200 (`?since=<cursor>`: the feed after it, oldest first, with `nextCursor`) and
 `/v1/handoffs/<id>` has one with its note.
 
 ### Terminals
@@ -567,7 +582,7 @@ Numbers, never secrets, flow with readings: account usage and reset times, healt
 | `_fleetlayer.dev/sync/publish` | [Section 8](#8-sync-and-sealed-secrets) |
 | `_fleetlayer.dev/reading/publish`, `/reading/subscribe` | [Section 9](#9-readings) |
 | `_fleetlayer.dev/sessions/query` `{node?, name?, harness?}` | This node's sessions (grant `sessions.query`) |
-| `_fleetlayer.dev/transcript/read` `{to, offset?, tail?, max?, before?, lineMax?, types?, why?}` | `{sessionId, format, size, offset, next, data, cut?, skipped?}`: part of a session's transcript (`data` base64, with every secret delivered to the serving node redacted from the plain text; `next` is where the following read starts, since redaction changes the length), here or on another node, checked as `read` on it. From byte `offset`, or the last `tail` bytes starting at a line (the last whole line when none starts in them; 256 MB at most), ending at byte `before`; at most `max` bytes (1 MiB at most), whole lines only: a forward read the first that fit, a tail the newest. A line longer than `lineMax` (or `max`) comes back cut, never dropped: a JSON line keeps its shape with its longest strings ending `…[cut: 1.4 MB]`, or becomes `{type, _fleetlayerCut: {bytes, head}}`, and carries `_fleetlayerCut: {bytes}`; `types` (`user`, `assistant`, `tool_result`...) keeps only those lines. The answer counts them in `cut` and `skipped`. The session's harness plugin names the file (`_fleetlayer.dev/harness/transcript`); the control plane passes the bytes on and keeps none (grant `transcript.read`) |
+| `_fleetlayer.dev/transcript/read` `{to, offset?, tail?, max?, before?, lineMax?, types?, agentId?, why?}` | `{sessionId, format, size, offset, next, data, cut?, skipped?}`: part of a session's transcript (`data` base64, with every secret delivered to the serving node redacted from the plain text; `next` is where the following read starts, since redaction changes the length), here or on another node, checked as `read` on it. From byte `offset`, or the last `tail` bytes starting at a line (the last whole line when none starts in them; 256 MB at most), ending at byte `before`; at most `max` bytes (1 MiB at most), whole lines only: a forward read the first that fit, a tail the newest. A line longer than `lineMax` (or `max`) comes back cut, never dropped: a JSON line keeps its shape with its longest strings ending `…[cut: 1.4 MB]`, or becomes `{type, _fleetlayerCut: {bytes, head}}`, and carries `_fleetlayerCut: {bytes}`; `types` (`user`, `assistant`, `tool_result`...) keeps only those lines. The answer counts them in `cut` and `skipped`. The session's harness plugin names the file (`_fleetlayer.dev/harness/transcript`); the control plane passes the bytes on and keeps none (grant `transcript.read`) |
 | `_fleetlayer.dev/fleet/query` `{}` | `{nodes, sessions}`: every node and session in the fleet that this node may see, as the control plane has them, without summaries, so it's light enough to poll every few seconds (grant `fleet.query`) |
 | `_fleetlayer.dev/access/check` `{tenant, who, can, to}` | `{allowed, rules, reason}`: may this person (`person:<handle>` or their ID) or agent do this to something the tenant owns (`service:…`, `page:…`, `app:…`)? Grant `access.check`; answered only if the node is a member of that tenant ([`sso.md`](sso.md)) |
 | `_fleetlayer.dev/log` `{level, message}` | A structured log line (stderr works too) |

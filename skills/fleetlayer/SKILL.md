@@ -51,6 +51,18 @@ fleetlayer transcript review@server --tail 200000 --before 81920             # t
 fleetlayer transcript review@server --tail 200000 --json
 ```
 
+To find which sessions dealt with something ("who has this ID?"), search every transcript on a node, running or
+ended, subagents' too (secrets redacted; on another node, only sessions you may read):
+
+```sh
+fleetlayer transcript-search sc-4242                  # this node
+fleetlayer transcript-search "order 77881" --on server,laptop
+fleetlayer transcript-search sc-4242 --all            # every linked node, each as it answers
+```
+
+Each hit prints as `<tab or session ID>@<node> [--agent <id>] --offset <n>`: add those to `fleetlayer transcript` to
+read from there (`--agent` reads a subagent's transcript).
+
 Lines longer than 16 KB come back cut, ending `…[cut: 1.4 MB]` with `"_fleetlayerCut": {"bytes": …}` on the line
 (`--line-max` changes the size; 0 cuts only what doesn't fit in one read). A tail returns the newest lines that fit in
 one read (1 MiB at most) and looks through up to 256 MB, so with `--types` a big `--tail` still brings the latest turns

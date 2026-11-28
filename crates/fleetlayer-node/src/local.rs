@@ -6,6 +6,8 @@
 //! - `node/sessions` → every session the node knows.
 //! - `node/services` → `{services: [{plugin, name, url, health?, hosts}]}`: the HTTP services its plugins announced.
 //! - `node/readings` `{kinds}` → `{readings}`: the newest of each kind from every node this one may read.
+//! - `node/transcript_search` `{text, limit?, perSession?, on?, caller?}` → `TranscriptHits`: every transcript here,
+//!   or on `on` through the control plane, searched for `text`.
 //! - `node/session_handoff` `{from?, to, note?, tab?, cwd?, harness?, prompt?, model?, effort?, why?, caller?}` →
 //!   `HandoffStarted`: a new session on `to` takes over `from`'s work (the caller when absent), through the control
 //!   plane, which keeps the note; `node/handoff_get` `{id, why?, caller?}` → `Handoff`: one, with its note.
@@ -277,6 +279,13 @@ impl Handler for Local {
                 let id = p["id"].as_str().ok_or_else(|| RpcError::invalid_params("say which handoff"))?;
                 let why = p["why"].as_str().map(str::to_string);
                 answer(&crate::handoffs::get(node, id, c.as_ref(), why).await?)
+            }
+            "node/transcript_search" => {
+                let c =
+                    self.caller(p.get("caller").and_then(|c| serde_json::from_value(c.clone()).ok()).as_ref()).await;
+                let caller = c.as_ref().map(|s| s.tab().unwrap_or(&s.session_id).to_string()).unwrap_or("-".into());
+                let query: l::TranscriptQuery = serde_json::from_value(p.clone()).map_err(RpcError::invalid_params)?;
+                answer(&crate::transcripts::search(node, p["on"].as_str(), query, caller).await?)
             }
             "node/transcript_read" => {
                 let c =

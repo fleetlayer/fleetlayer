@@ -198,10 +198,30 @@ pub async fn get_fleet(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiRe
     Ok(Json(fleet(&app, DEFAULT_TENANT).await.map_err(internal)?))
 }
 
-/// `GET /v1/handoffs`: the newest 200 handoffs (without their notes).
-pub async fn get_handoffs(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
+#[derive(serde::Deserialize)]
+pub struct HandoffQuery {
+    since: Option<String>,
+    limit: Option<i64>,
+}
+
+/// `GET /v1/handoffs`: the newest 200 handoffs (without their notes). `?since=<cursor>` is the feed of those written
+/// after it, oldest first, with `nextCursor` (`?since=` with nothing starts from the first).
+pub async fn get_handoffs(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<HandoffQuery>,
+) -> ApiResult {
     guard(&app, &headers).await?;
-    let handoffs = crate::handoffs::recent(&app.db, DEFAULT_TENANT, 200).await.map_err(internal)?;
+    if let Some(since) = &q.since {
+        let limit = q.limit.unwrap_or(500).clamp(1, 5000);
+        let (handoffs, next) = crate::handoffs::feed(&app.db, DEFAULT_TENANT, since, limit)
+            .await
+            .map_err(|e| (StatusCode::BAD_REQUEST, format!("since: {e}")))?;
+        return Ok(Json(json!({"handoffs": handoffs, "nextCursor": next})));
+    }
+    let handoffs = crate::handoffs::recent(&app.db, DEFAULT_TENANT, q.limit.unwrap_or(200).clamp(1, 1000))
+        .await
+        .map_err(internal)?;
     Ok(Json(json!({"handoffs": handoffs})))
 }
 

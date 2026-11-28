@@ -148,6 +148,49 @@ pub async fn send(dir: &Path, reg: &Registration, from_name: &str, text: &str) -
     Ok(())
 }
 
+/// Every transcript under `~/.claude/projects`: each session's `<project>/<session id>.jsonl`, and its subagents'
+/// `<project>/<session id>/subagents/agent-<agent id>.jsonl`.
+pub fn transcripts(claude_dir: &Path) -> Vec<fleetlayer_protocol::ext::TranscriptFile> {
+    let file = |session_id: &str, agent_id: Option<String>, path: &Path| fleetlayer_protocol::ext::TranscriptFile {
+        session_id: session_id.to_string(),
+        agent_id,
+        path: path.to_string_lossy().into_owned(),
+        format: "claude-jsonl".into(),
+    };
+    let mut out = vec![];
+    let Ok(projects) = std::fs::read_dir(claude_dir.join("projects")) else { return out };
+    for project in projects.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.is_dir()) {
+        let Ok(entries) = std::fs::read_dir(&project) else { continue };
+        for path in entries.filter_map(|e| e.ok()).map(|e| e.path()) {
+            let Some(name) = path.file_name().and_then(|n| n.to_str()).map(str::to_string) else { continue };
+            if let Some(id) = name.strip_suffix(".jsonl") {
+                if path.is_file() {
+                    out.push(file(id, None, &path));
+                }
+            } else if path.is_dir()
+                && let Ok(agents) = std::fs::read_dir(path.join("subagents"))
+            {
+                for agent in agents.filter_map(|e| e.ok()).map(|e| e.path()) {
+                    let stem = agent.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_suffix(".jsonl"));
+                    if let Some(stem) = stem {
+                        out.push(file(&name, Some(stem.strip_prefix("agent-").unwrap_or(stem).to_string()), &agent));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A subagent's transcript: `~/.claude/projects/<project>/<session id>/subagents/agent-<agent id>.jsonl`.
+pub fn subagent_transcript(claude_dir: &Path, session_id: &str, agent_id: &str) -> Option<PathBuf> {
+    let projects = std::fs::read_dir(claude_dir.join("projects")).ok()?;
+    projects
+        .filter_map(|e| e.ok())
+        .map(|e| e.path().join(session_id).join("subagents").join(format!("agent-{agent_id}.jsonl")))
+        .find(|p| p.is_file())
+}
+
 /// A session's transcript: `~/.claude/projects/<project>/<session id>.jsonl`.
 pub fn transcript(claude_dir: &Path, session_id: &str) -> Option<PathBuf> {
     let projects = std::fs::read_dir(claude_dir.join("projects")).ok()?;
@@ -157,6 +200,23 @@ pub fn transcript(claude_dir: &Path, session_id: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transcripts_are_listed_with_their_subagents() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("projects").join("-srv-app");
+        std::fs::create_dir_all(project.join("s1").join("subagents")).unwrap();
+        std::fs::write(project.join("s1.jsonl"), "{}\n").unwrap();
+        std::fs::write(project.join("s1").join("subagents").join("agent-a9.jsonl"), "{}\n").unwrap();
+        std::fs::write(project.join("notes.txt"), "").unwrap();
+        let mut list = transcripts(dir.path());
+        list.sort_by(|a, b| a.path.cmp(&b.path));
+        let got: Vec<(&str, Option<&str>)> =
+            list.iter().map(|t| (t.session_id.as_str(), t.agent_id.as_deref())).collect();
+        assert_eq!(got, [("s1", None), ("s1", Some("a9"))]);
+        assert_eq!(subagent_transcript(dir.path(), "s1", "a9"), Some(project.join("s1/subagents/agent-a9.jsonl")));
+        assert_eq!(subagent_transcript(dir.path(), "s1", "zz"), None);
+    }
 
     #[test]
     fn the_envelope_escapes_the_name_and_claims_no_mode() {

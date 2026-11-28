@@ -97,6 +97,11 @@ pub mod method {
     /// (and `read` on the old one, when the caller is someone else). The control plane keeps the note and links old
     /// and new in the fleet. `SessionHandoff` → `HandoffStarted`.
     pub const SESSION_HANDOFF: &str = "link/session_handoff";
+    /// Node → control plane: search every transcript on another node for a text. Only hits in sessions the caller
+    /// may read without asking come back. `TranscriptSearch` → `TranscriptHits`.
+    pub const TRANSCRIPT_SEARCH: &str = "link/transcript_search";
+    /// Control plane → node: search its transcripts for a caller. `TranscriptSearchServe` → `TranscriptHits`.
+    pub const TRANSCRIPT_SEARCH_SERVE: &str = "link/transcript_search_serve";
     /// Node → control plane: one handoff, for the session that took the work over, or a caller with `read` on the
     /// session it came from. `HandoffGet` → `Handoff`.
     pub const HANDOFF_GET: &str = "link/handoff_get";
@@ -485,6 +490,76 @@ pub struct SessionStarted {
     pub prompt_error: Option<String>,
 }
 
+/// `link/transcript_search`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptSearch {
+    pub node: String,
+    #[serde(flatten)]
+    pub query: TranscriptQuery,
+    /// The calling session's name (its tab), or `-` for a shell.
+    pub caller: String,
+}
+
+/// `link/transcript_search_serve`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptSearchServe {
+    #[serde(flatten)]
+    pub query: TranscriptQuery,
+    /// `<name>@<node>` of the caller.
+    pub caller: String,
+}
+
+/// What to look for: `text`, found whatever its case, in every transcript on the node (subagents' too), newest
+/// first. At most `limit` hits (default 50, at most 500), and at most `perSession` in one transcript (default 3).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptQuery {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per_session: Option<u32>,
+}
+
+/// What a node's transcripts hold of a text.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptHits {
+    pub node: String,
+    pub hits: Vec<TranscriptHit>,
+    /// Transcripts looked through.
+    pub searched: u64,
+    /// The search stopped early (the limit, or its time ran out) with transcripts it didn't look through.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub partial: bool,
+    /// Hits left out because the caller may read their sessions only by asking (read one to ask).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub hidden: u64,
+}
+
+/// One line of a transcript that holds the text, with the text around it (secrets delivered to the node redacted).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptHit {
+    pub session_id: String,
+    /// A subagent's transcript, under `sessionId`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    /// The session's tab, when the node knows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab: Option<String>,
+    /// Where the line starts in its transcript (`fleetlayer transcript --offset`).
+    pub offset: u64,
+    /// The line's `type` and `timestamp`, when it has them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,
+    pub excerpt: String,
+}
+
 /// `link/session_handoff`: start `start` as the session taking over `from`'s work. The node has already put the
 /// handoff's instructions (its ID, where the note and the old transcript are) in the first prompt.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -829,6 +904,9 @@ pub struct TranscriptRange {
     pub line_max: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub types: Option<Vec<String>>,
+    /// One of the session's subagents' transcripts instead of its own (Claude Code's `agent-<id>.jsonl`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
 }
 
 /// The most a transcript read returns at once.

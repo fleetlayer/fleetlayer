@@ -100,6 +100,7 @@ impl Handler for Shared {
                             transcripts: true,
                             prepare: true,
                             locate: true,
+                            list: true,
                         }),
                         ..Default::default()
                     },
@@ -172,9 +173,24 @@ impl Handler for Shared {
             ext::method::HARNESS_TRANSCRIPT => {
                 let id =
                     p.get("sessionId").and_then(Value::as_str).ok_or_else(|| RpcError::invalid_params("sessionId"))?;
-                let path = socket::transcript(&plugin.dir().await?, id)
-                    .ok_or_else(|| RpcError::new(code::UNKNOWN_SESSION, format!("no transcript for session {id}")))?;
+                let dir = plugin.dir().await?;
+                // A subagent's, when `agentId` names one.
+                let path = match p.get("agentId").and_then(Value::as_str) {
+                    Some(agent) => socket::subagent_transcript(&dir, id, agent).ok_or_else(|| {
+                        RpcError::new(code::UNKNOWN_SESSION, format!("no transcript for subagent {agent} of {id}"))
+                    })?,
+                    None => socket::transcript(&dir, id).ok_or_else(|| {
+                        RpcError::new(code::UNKNOWN_SESSION, format!("no transcript for session {id}"))
+                    })?,
+                };
                 answer(&json!({"path": path, "format": "claude-jsonl"}))
+            }
+            ext::method::HARNESS_TRANSCRIPTS => {
+                let dir = plugin.dir().await?;
+                let list = tokio::task::spawn_blocking(move || socket::transcripts(&dir))
+                    .await
+                    .map_err(|e| RpcError::internal(e.to_string()))?;
+                answer(&json!({"transcripts": list}))
             }
             ext::method::HARNESS_PREPARE => {
                 let r: ext::HarnessPrepare = params(p)?;

@@ -81,6 +81,25 @@ enum Command {
         #[arg(required = true)]
         kinds: Vec<String>,
     },
+    /// Search every transcript on a node (sessions' and their subagents', running or ended) for a text, whatever its
+    /// case: "who has this ID?". Prints each hit's session, offset and the text around it (secrets redacted), newest
+    /// first. Read more of one with `fleetlayer transcript <tab>@<node> --offset <offset>`.
+    TranscriptSearch {
+        /// The text: an ID, a ticket, an error message (at least 3 characters).
+        text: String,
+        /// The nodes to search (repeat it, or comma-separated). Default: this one.
+        #[arg(long, value_delimiter = ',')]
+        on: Vec<String>,
+        /// Every linked node, each answering as it finishes.
+        #[arg(long, conflicts_with = "on")]
+        all: bool,
+        /// At most this many hits per node (up to 500).
+        #[arg(long, default_value_t = 50)]
+        limit: u32,
+        /// At most this many hits in one transcript.
+        #[arg(long, default_value_t = 3)]
+        per_session: u32,
+    },
     /// Read part of another session's transcript (its harness's JSONL, with delivered secrets redacted), on this node
     /// or another one the access policy lets you read. Prints the text, then the offset to pass as --offset next time.
     Transcript {
@@ -106,6 +125,9 @@ enum Command {
         /// or `tool_result` for tool results. `--types user,assistant` is the conversation without tool output.
         #[arg(long, value_delimiter = ',')]
         types: Vec<String>,
+        /// One of its subagents' transcripts (an `agentId` from `fleetlayer transcript-search`).
+        #[arg(long)]
+        agent: Option<String>,
         /// Why you're reading it, shown if the person is asked.
         #[arg(long)]
         why: Option<String>,
@@ -1004,6 +1026,27 @@ fn absolute(dir: &str, elsewhere: bool) -> String {
     std::path::absolute(dir).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| dir.to_string())
 }
 
+/// One node's transcript search, for people: a line per hit, then what was searched.
+fn print_hits(v: &Value) {
+    let node = v["node"].as_str().unwrap_or("?");
+    for h in v["hits"].as_array().into_iter().flatten() {
+        let who = h["tab"].as_str().or(h["sessionId"].as_str()).unwrap_or("?");
+        let agent = h["agentId"].as_str().map(|a| format!(" --agent {a}")).unwrap_or_default();
+        let when = h["timestamp"].as_str().map(|t| format!(" {t}")).unwrap_or_default();
+        let kind = h["kind"].as_str().map(|k| format!(" {k}")).unwrap_or_default();
+        println!("{who}@{node}{agent} --offset {}{when}{kind}", h["offset"].as_u64().unwrap_or(0));
+        println!("    {}", h["excerpt"].as_str().unwrap_or(""));
+    }
+    let mut notes = vec![format!("{} transcripts searched", v["searched"].as_u64().unwrap_or(0))];
+    if v["partial"].as_bool() == Some(true) {
+        notes.push("stopped early: raise --limit or narrow the text".into());
+    }
+    if let Some(n) = v["hidden"].as_u64().filter(|n| *n > 0) {
+        notes.push(format!("{n} hits in sessions you may read only by asking"));
+    }
+    eprintln!("-- {node}: {} hits ({})", v["hits"].as_array().map_or(0, Vec::len), notes.join("; "));
+}
+
 /// The session this command runs in, from the environment its harness and session manager set.
 fn caller() -> Value {
     let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
@@ -1219,11 +1262,50 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 secrets::print_grants(&v["readings"]);
             }
         }
-        Command::Transcript { to, tail, offset, max, before, line_max, types, why } => {
+        Command::TranscriptSearch { text, on, all, limit, per_session } => {
+            let nodes: Vec<Option<String>> = if all {
+                let v: Value = peer.request("node/fleet", &json!({})).await?;
+                v["nodes"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|n| n["online"].as_bool() == Some(true))
+                    .filter_map(|n| n["name"].as_str().map(|n| Some(n.to_string())))
+                    .collect()
+            } else if on.is_empty() {
+                vec![None]
+            } else {
+                on.into_iter().map(Some).collect()
+            };
+            let mut asks = tokio::task::JoinSet::new();
+            for n in nodes {
+                let (peer, text) = (peer.clone(), text.clone());
+                let req = json!({"text": text, "limit": limit, "perSession": per_session, "on": n, "caller": caller()});
+                asks.spawn(async move {
+                    let r: Result<Value, _> =
+                        peer.request_within("node/transcript_search", &req, std::time::Duration::from_secs(60)).await;
+                    (n, r)
+                });
+            }
+            let mut failed = false;
+            while let Some(done) = asks.join_next().await {
+                let (n, r) = done?;
+                match r {
+                    Ok(v) if cli.json => println!("{v}"),
+                    Ok(v) => print_hits(&v),
+                    Err(e) => {
+                        failed = true;
+                        eprintln!("{}: {}", n.as_deref().unwrap_or("this node"), e.message);
+                    }
+                }
+            }
+            anyhow::ensure!(!failed, "some nodes couldn't be searched");
+        }
+        Command::Transcript { to, tail, offset, max, before, line_max, types, agent, why } => {
             let tail = if offset.is_none() && tail.is_none() { Some(65536) } else { tail };
             let types = (!types.is_empty()).then_some(types);
             let req = json!({"to": to, "tail": tail, "offset": offset, "max": max, "before": before,
-                "lineMax": line_max, "types": types, "why": why, "caller": caller()});
+                "lineMax": line_max, "types": types, "agentId": agent, "why": why, "caller": caller()});
             let v: Value =
                 peer.request_within("node/transcript_read", &req, std::time::Duration::from_secs(60)).await?;
             if cli.json {

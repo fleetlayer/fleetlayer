@@ -342,6 +342,11 @@ impl Handler for FromControl {
                 tracing::info!(session = %r.session, caller = %r.caller, "transcript read");
                 answer(&crate::transcripts::read_here(&self.node, &r.session, &r.range).await?)
             }
+            l::method::TRANSCRIPT_SEARCH_SERVE => {
+                let r: l::TranscriptSearchServe = params(p)?;
+                tracing::info!(caller = %r.caller, "transcript search");
+                answer(&crate::transcripts::search_here(&self.node, &r.query).await?)
+            }
             l::method::CATCHUP => {
                 self.node.ask_observer(ext::method::SUMMARY_CATCHUP, &p, Duration::from_secs(480)).await
             }
