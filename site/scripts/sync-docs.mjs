@@ -102,10 +102,11 @@ function rewriteLinks(body, file, toUrl) {
 
 async function main() {
   await rm(contentRoot, { recursive: true, force: true });
-  // Everything in public/ is generated except these (kept in git, as site/.gitignore lists them), so clear the rest: a
-  // copy left from an older layout (public/guides/, public/rex.md) would otherwise be served and fail the link check.
-  // img/ holds the homepage's screenshots.
-  const kept = new Set(["_headers", "favicon.svg", "img"]);
+  // Everything in public/ is generated except the files kept in git, so clear the rest: a copy left from an older
+  // layout (public/guides/, public/rex.md) would otherwise be served and fail the link check. The kept files are the
+  // `!public/<name>` lines in site/.gitignore, so adding a hand-written file there is all it takes.
+  const ignore = await readFile(join(siteDir, ".gitignore"), "utf8");
+  const kept = new Set([...ignore.matchAll(/^!public\/([^/\s]+)\/?$/gm)].map((m) => m[1]));
   for (const entry of await readdir(publicRoot)) {
     if (!kept.has(entry)) await rm(join(publicRoot, entry), { recursive: true, force: true });
   }
