@@ -81,11 +81,14 @@ team would ask for, an agent sets them up for you, and each one can be switched 
   never stores them.
 - **Untrusted input stays untrusted.** Messages from an agent that reads email or the web arrive marked as outside
   data. That agent runs as its own user and can't borrow a trusted agent's rights.
-- **One sign-in, one sign-out.** One sign-in for your self-hosted services (experimental), and signing out of one
-  signs you out of all of them.
-
-[Coming next](https://fleetlayer.ai/docs/credentials.md): secrets granted by role and scrubbed from everything that leaves a machine; an allowlist of where agents
-may connect, with you approving new hosts; an admin role that stays switched off until you open a time-limited window.
+- **One sign-in, one sign-out.** One sign-in for your self-hosted services, and signing out of one signs you out of
+  all of them.
+- **Secrets per role.** Items from 1Password reach only the roles you grant them to, and are scrubbed from everything
+  that leaves a machine. https://fleetlayer.ai/docs/credentials/
+- **Agents reach only the hosts they need.** Each role gets a list of hosts, and you approve new ones. Linux for now.
+  https://fleetlayer.ai/docs/guides/egress/
+- **An admin role that's off until you open it.** The agent that can change everything stays switched off until you
+  approve a window, and is cleaned up when it ends. https://fleetlayer.ai/docs/guides/admin-window/
 
 ## A foundation for your own agent workflows
 

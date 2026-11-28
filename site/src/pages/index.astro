@@ -319,16 +319,31 @@ const description = site.summary;
           <li>
             <h3>One sign-in, one sign-out</h3>
             <p>
-              One sign-in for your self-hosted services (experimental), and signing out of one signs you out of all of
-              them.
+              One sign-in for your self-hosted services, and signing out of one signs you out of all of them.
+            </p>
+          </li>
+          <li>
+            <h3>Secrets per role</h3>
+            <p>
+              Items from 1Password reach only the roles you grant them to, and are scrubbed from everything that leaves
+              a machine. <a href="/docs/credentials/">How</a>
+            </p>
+          </li>
+          <li>
+            <h3>Agents reach only the hosts they need</h3>
+            <p>
+              Each role gets a list of hosts, and you approve new ones. Linux for now.
+              <a href="/docs/guides/egress/">How</a>
+            </p>
+          </li>
+          <li>
+            <h3>An admin role that's off until you open it</h3>
+            <p>
+              The agent that can change everything stays switched off until you approve a window, and is cleaned up when
+              it ends. <a href="/docs/guides/admin-window/">How</a>
             </p>
           </li>
         </ul>
-        <p class="secure__next">
-          <a href="/docs/credentials/">Coming next</a>: secrets granted by role and scrubbed from everything that leaves a machine; an allowlist of
-          where agents may connect, with you approving new hosts; an admin role that stays switched off until you open
-          a time-limited window.
-        </p>
       </section>
 
       <section class="found" aria-labelledby="found-title">

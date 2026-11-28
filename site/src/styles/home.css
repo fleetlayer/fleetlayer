@@ -590,12 +590,6 @@ main > section {
   margin: var(--space-sm) 0 var(--space-xl);
   max-width: var(--measure);
 }
-.secure__next {
-  margin-top: var(--space-xl);
-  max-width: var(--measure);
-  color: var(--color-muted);
-}
-
 /* Foundation: the primitives, and what's built on them. */
 .found {
   padding-block: var(--space-3xl);
