@@ -21,31 +21,37 @@ Most releases need only the installer or a node's own update. These need more, o
 - **A node installed before 26 November 2026** wrote its versioned path into its service file, so it kept running the
   old binary after updating. Rerun the installer, then `fleetlayer-node install`.
 
-## Unreleased
+## v0.4.2 (29 November 2026)
 
-- **A lock per named thing** in the leases plugin: `per: <field>` counts a kind's slots per value of one payload
-  field, so one session holds `racks/us` while another holds `dns`, and a second asking for `racks/us` waits in that
-  component's own line. It ships in v0.4.2.
-- **GitHub commit statuses and pull requests** keep the fields a subscriber needs in their event's short body: a
-  status's `context` and `state` (CircleCI and others send one per job), a pull request's `number` and whether it
-  `merged`. It ships in v0.4.2.
-- **Built on Fleetlayer**: a page for Quietdeck and Deploy Queue, and the guide [Deploying with
-  agents](guides/deploying-with-agents.md).
-- **tmux** (`fleetlayer-tmux`): puts the Claude Code, Codex and other agents in your tmux panes in the fleet, with
-  their status, messages, blocked prompts, sessions started and closed remotely, and `fleetlayer attach`. It uses only
-  tmux's own command line and never attaches a client, so your layout stays as it is. It ships in v0.4.2.
-- **Presence** (`fleetlayer-presence`): whether the person is at their desk, on their phone, away or asleep, from
-  their laptop's screen lock and idle time, their looks at pages on the phone, what they told any session, planned
-  absences and their night. Agents check `fleetlayer presence` before background work nobody may read, and record it
-  when the person says they're going out. It ships in v0.4.2.
-- **pi, OpenCode, Gemini CLI and Cursor** (`fleetlayer-harness`): a harness plugin for each. pi and OpenCode take
-  messages through their own API, shown in the person's tab, and report permission prompts and questions as they
-  happen; Gemini CLI and Cursor report through their hooks and are typed into. All four get transcripts, folder trust
-  and resume by ID, and `fleetlayer session start --harness pi|omp|opencode|cursor|gemini` starts them with their own
-  flags. `fleetlayer up` adds a plugin for each one installed. What works with each: [Harnesses](harnesses.md). It
-  ships in v0.4.2.
-- A harness plugin that names the pane a session runs in joins that session to the session manager's unnamed entry
-  for the pane, and herdr's pi sessions are listed by their ID instead of their file's path.
+- **Upgrading:** back up the control plane's database (migrations 0031 to 0033 run on start). The first start
+  deletes events older than 30 days (session status older than 7), in batches; set `event_days` in `control.yaml` to
+  keep more.
+- **Upgrading:** only the control plane publishes on the `session.status` and `access` channels now; nodes, plugins
+  and webhooks are refused there. A read token reads every event body through the new events feed, so give one only to
+  a service you'd trust with all of them.
+- **Upgrading:** point liveness probes at the new `GET /livez`, which never touches the database; `/healthz` reports a
+  busy database as degraded and fails only when it stays busy for over a minute. Before moving the Claude hub, upgrade
+  its machine and let it publish once.
+- **Upgrading:** a start's approval covers exactly that start (another folder, model or prompt asks again), and names
+  with control or hidden characters are refused.
+- **More agents** (`fleetlayer-harness`): pi, OpenCode, Gemini CLI and Cursor's CLI are listed, messaged, read and
+  started like Claude Code, with transcripts and resume ([Harnesses](harnesses.md)). **tmux** (`fleetlayer-tmux`):
+  agents in tmux panes are sessions like herdr's and Rex's, and `fleetlayer up` finds tmux by itself.
+- **Presence** (`fleetlayer-presence`): whether you're at your desk, on your phone, away or asleep, so agents can skip
+  background work nobody would read, with who sees it decided by the policy.
+- **Events you can watch and read:** a `session.status` event each time a session starts working, goes idle,
+  finishes, is blocked or goes away; `fleetlayer watch` tells your session once when something happens; and services
+  read `GET /v1/events`. Plugins can subscribe to events (`event.subscribe`) and start sessions (`session.start`),
+  each start decided by the policy, with `starts_per_hour` and `starts_per_day` limits.
+- **A moved Claude hub keeps its identity:** nodes trust the hub's signing key, which moves with it, so `fleetlayer
+  move hub` needs no manual step; `fleetlayer secrets unpin <bundle>` resets a wrong pin.
+- Approval requests in plain words, shown first by the dashboard and `approvals list`. Leases count slots per value of
+  a payload field (`per:`). GitHub events keep a commit status's context and state and a pull request's number.
+- Fixes: sessions start on stock herdr; a link that died silently reconnects after 100 s; `fleetlayer up` on a node
+  joined through a tunnel starts no control plane; reading and typing in Rex sessions through herdr-fleet; `~` in
+  `claude_dir`; Matrix `history` honours its limit; `fleetlayer move` carries Matrix, 1Password, egress and dashboard
+  state; no macOS prompt at every browser connection or cookie read; tmux before 3.3; fewer database writes on a slow
+  disk.
 
 ## v0.4.1 (28 November 2026)
 

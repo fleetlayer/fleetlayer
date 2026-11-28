@@ -3,7 +3,7 @@ summary: pi, OpenCode, Gemini CLI and Cursor's CLI as Fleetlayer harnesses - mes
 kind: plugin
 roles: [harness]
 ships_with_fleetlayer: true
-status: in progress
+status: experimental
 licence: FSL-1.1-ALv2
 maintainer: Fleetlayer
 source: https://github.com/fleetlayer/fleetlayer/tree/main/plugins/harness

@@ -10,7 +10,7 @@ What you need before you install Fleetlayer, what works with it today, and how t
   - [herdr](https://herdr.dev): the one Fleetlayer is built and tested with most, the release from herdr.dev
     included (0.9.5 tested);
   - [Rex](rex.md), Superlogical's terminal and session manager;
-  - tmux, through [the tmux plugin](plugins/tmux.md) (v0.4.2).
+  - tmux, through [the tmux plugin](plugins/tmux.md).
 
   Fleetlayer works with your session manager: it attaches to it and never takes it over, so your own terminals and apps
   keep working beside it.

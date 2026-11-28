@@ -12,11 +12,11 @@ how to run them.
   heartbeat. The `fleetlayer` command line talks to the node on its own machine.
 - **Plugins**, separate programs the node starts and talks to over JSON-RPC on stdin and stdout. They can be written
   in any language. A plugin takes one or more roles: a session manager knows where sessions run (`fleetlayer-herdr`,
-  `fleetlayer-rex` for [Rex](rex.md), and from v0.4.2 `fleetlayer-tmux` for [tmux](plugins/tmux.md)); a harness knows
-  one agent program from the inside (`fleetlayer-claude-code` delivers through Claude Code's own messaging socket);
-  others turn outside events into Fleetlayer events, apply files or secrets sent to the machine, write session
-  summaries, or serve pages. The protocol is the [Agent Client Protocol](https://agentclientprotocol.com) plus
-  Fleetlayer's extensions ([the plugin protocol](protocol.md)).
+  `fleetlayer-rex` for [Rex](rex.md), `fleetlayer-tmux` for [tmux](plugins/tmux.md)); a harness knows one agent
+  program from the inside (`fleetlayer-claude-code` delivers through Claude Code's own messaging socket); others turn
+  outside events into Fleetlayer events, apply files or secrets sent to the machine, write session summaries, or serve
+  pages. The protocol is the [Agent Client Protocol](https://agentclientprotocol.com) plus Fleetlayer's extensions
+  ([the plugin protocol](protocol.md)).
 - **The control plane**, one per fleet. It knows every node and session, relays messages between nodes, routes
   webhooks and events to the sessions subscribed to them, and checks every request against the access policy, writing
   each decision to an audit log. It's a single program with a SQLite database, and you run it yourself: on your laptop
@@ -82,8 +82,8 @@ stops the piece, copies its folder sealed and checked, starts it there and point
 
 ## Rules that shape the design
 
-- **Fleetlayer works with your session manager.** It attaches to herdr, Rex or tmux (tmux comes in v0.4.2), and
-  later T3 Code and others, without taking it over. Your own apps and terminals keep working beside it.
+- **Fleetlayer works with your session manager.** It attaches to herdr, Rex or tmux, and later T3 Code and others,
+  without taking it over. Your own apps and terminals keep working beside it.
 - **Plugins are separate processes.** Nothing is compiled into the node, so a plugin can't crash it, and you can write
   one in any language.
 - **Open protocols.** ACP for plugins, JSON-RPC over a WebSocket for the node's [link](link.md) to the control plane,
@@ -93,5 +93,4 @@ stops the piece, copies its folder sealed and checked, starts it there and point
 
 ## What's being built
 
-Reaching every session from your phone with one pairing, and more [harnesses](harnesses.md): pi, OpenCode, Gemini CLI
-and Cursor's CLI in v0.4.2.
+Reaching every session from your phone with one pairing.

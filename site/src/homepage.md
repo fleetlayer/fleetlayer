@@ -178,7 +178,10 @@ it needs it.
 - An admin role that's off until you start a timed window: https://fleetlayer.ai/docs/guides/admin-window/
 - One passkey sign-in for your services, with single sign-on and teams: https://fleetlayer.ai/docs/guides/sign-in/
 - Your browser's cookies for command-line tools on other machines: https://fleetlayer.ai/docs/plugins/cookies/
-- herdr and Rex as session managers: https://fleetlayer.ai/docs/rex/
+- herdr, Rex and tmux as session managers: https://fleetlayer.ai/docs/requirements/
+- Claude Code, Codex, pi, OpenCode, Gemini CLI and Cursor's CLI as agents: https://fleetlayer.ai/docs/harnesses/
+- Presence: agents know whether you're at your desk, away or asleep: https://fleetlayer.ai/docs/plugins/presence/
+- Watches: your session hears once when something happens: https://fleetlayer.ai/docs/events/
 - Everything on one laptop with fleetlayer up: https://fleetlayer.ai/docs/guides/laptop/
 - Any piece moved to another machine with one command: https://fleetlayer.ai/docs/guides/moving/
 - Signed releases that update every node themselves: https://fleetlayer.ai/docs/releasing/
@@ -187,8 +190,7 @@ it needs it.
 
 Coming soon:
 
-- tmux as a session manager (v0.4.2)
-- More harnesses: pi, OpenCode, Gemini CLI and Cursor's CLI (v0.4.2): https://fleetlayer.ai/docs/harnesses/
+- Every session on your phone with one pairing
 - SAML sign-in providers
 
 Expect breaking changes: what changed in each release is in the changelog, https://fleetlayer.ai/docs/changelog/
