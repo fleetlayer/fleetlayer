@@ -75,7 +75,7 @@ A new fleet asks you before an agent does something sensitive:
 Sessions on the same machine aren't checked. The agent's request is refused with a request ID until you answer:
 
 ```sh
-fleetlayer-control approvals list            # pending requests: id, who, what, to what
+fleetlayer-control approvals list            # pending requests: a line in plain words, then id, who, what, to what
 fleetlayer-control approvals approve <id>    # or: approvals deny <id> (it stands for an hour)
 ```
 

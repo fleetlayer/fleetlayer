@@ -29,9 +29,11 @@ Two parts:
 
 Health: `GET /healthz` on 7600 answers `{"ok":true,"linkedNodes":N,"degraded":[]}` once the database answers, 503
 otherwise. Use it for liveness and readiness. It stays 200 while something is degraded (`ok` false, the reason in
-`degraded`: an audit write failed within the last five minutes, so access decisions are being refused), because a
-restart wouldn't fix that. For an uptime check that alerts on it, use `GET /healthz?strict`, which answers 503 while
-degraded.
+`degraded`: an audit write failed within the last five minutes, so access decisions are being refused; a policy file
+couldn't be applied; or the database was busy, with no connection free within two seconds), because a restart wouldn't
+fix that. For an uptime check that alerts on it, use `GET /healthz?strict`, which answers 503 while degraded. A
+database busy for over a minute is an outage, and every check gets 503. The database runs in WAL mode with
+`synchronous=NORMAL`.
 
 On SIGTERM the control plane stops within a few seconds: it closes node links with "restarting" (1012), so nodes
 reconnect as soon as the new process listens.
