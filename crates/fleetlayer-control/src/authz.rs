@@ -398,8 +398,9 @@ async fn peek(
             if let Ok(crate::approvals::Peek::Approved(_)) =
                 crate::approvals::peek(&app.db, tenant, who, verb, &held).await
             {
-                // Approved: this check is a use, so it renews (it never files: there's an approval).
-                let _ = crate::approvals::check(app, tenant, who, verb, &held, 0, None).await;
+                // Approved: this check is a use, so it renews (it never files: there's an approval). It never spends
+                // an approval `for: once`: looking isn't using, and the request that follows spends it.
+                let _ = crate::approvals::check_spending(app, tenant, who, verb, &held, 0, None, false).await;
             }
             fleetlayer_protocol::link::AccessDecision { allowed: true, rules: vec![], reason: "allowed".into() }
         }
@@ -1111,6 +1112,35 @@ mod tests {
         assert!(last.last().unwrap().starts_with("allowed recipes@laptop use_tool"), "{last:?}");
         crate::windows::deactivate_db(&app.db, "default", "admin", "person").await.unwrap();
         assert!(check(&app, "default", "recipes@laptop", "message", "ops@web").await.is_err(), "off again at once");
+    }
+
+    #[tokio::test]
+    async fn looking_at_a_once_approval_never_spends_it() {
+        let (app, acme) = example().await;
+        store(
+            &app.db,
+            &acme,
+            "version: 2\ndefault: allow\nask:\n  - { who: \"*\", can: connect, to: \"host:*\", for: once }\n",
+        )
+        .await
+        .unwrap();
+        let req = |peek: bool| fleetlayer_protocol::link::AccessCheck {
+            tenant: "acme".into(),
+            who: "-@web".into(),
+            can: "connect".into(),
+            to: "host:example.com".into(),
+            why: Some("the API docs for the billing integration".into()),
+            peek,
+        };
+        assert!(!access_check(&app, "web", &req(false)).await.unwrap().allowed);
+        let id = crate::approvals::list(&app.db, &acme, false).await.unwrap()[0]["id"].as_str().unwrap().to_string();
+        crate::approvals::decide(&app.db, &acme, &id, true, None, "admin").await.unwrap().unwrap();
+        // Looking, however often, leaves the one use for the request itself.
+        for _ in 0..3 {
+            assert!(access_check(&app, "web", &req(true)).await.unwrap().allowed);
+        }
+        assert!(access_check(&app, "web", &req(false)).await.unwrap().allowed, "the request spends it");
+        assert!(!access_check(&app, "web", &req(true)).await.unwrap().allowed, "and then it's gone");
     }
 
     #[tokio::test]
