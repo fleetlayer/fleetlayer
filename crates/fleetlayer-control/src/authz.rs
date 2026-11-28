@@ -226,13 +226,31 @@ pub async fn check_why(
     target: &str,
     why: Option<&str>,
 ) -> Result<(), RpcError> {
-    let fleet = app.authz.fleet(&app.db).await.map_err(RpcError::internal)?;
-    let reply = crate::acl::replying(&app.db, home, who, target).await.map_err(RpcError::internal)?;
-    // A session goes by its tab name and its ID: rules written for either hold whichever it's called by. Every other
-    // name's rules are checked first (a refusal of any refuses); then the request is decided, approved and audited
-    // once, under its canonical name.
     let names = session_names(app, home, target).await;
-    let canonical = names.first().map(String::as_str).unwrap_or(target);
+    let out = check_names(app, home, who, verb, &names, None, why).await?;
+    match out.refusal {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+/// Decide `who` doing `verb` to a session that goes by `names` (its canonical name first, as [`session_names`] answers):
+/// every other name's rules are checked first (a refusal of any refuses, audited), then the request is decided,
+/// approved and audited once, under its canonical name, with `call` binding an approval to what's done and showing it.
+/// Whether it's a reply (the target messaged `who` within the reply window) is looked up under the canonical name too,
+/// so a reply addressed to a session's ID passes when the session wrote under its tab name.
+pub async fn check_names(
+    app: &App,
+    home: &str,
+    who: &str,
+    verb: &str,
+    names: &[String],
+    call: Option<CallContext<'_>>,
+    why: Option<&str>,
+) -> Result<Outcome, RpcError> {
+    let fleet = app.authz.fleet(&app.db).await.map_err(RpcError::internal)?;
+    let canonical = names.first().map(String::as_str).unwrap_or_default();
+    let reply = crate::acl::replying(&app.db, home, who, canonical).await.map_err(RpcError::internal)?;
     // Membership is recorded under a session's tab name, so its other names are decided in the canonical name's
     // tenants as well as their own.
     let mut alias_deciders: Vec<String> = fleet.deciders(who, canonical).iter().map(|t| t.id.clone()).collect();
@@ -268,11 +286,7 @@ pub async fn check_why(
         }
     }
     let deciders: Vec<String> = fleet.deciders(who, canonical).iter().map(|t| t.id.clone()).collect();
-    let out = decide_in(app, &fleet, &deciders, Some(home), (who, verb, canonical), why, reply, None).await?;
-    match out.refusal {
-        Some(e) => Err(e),
-        None => Ok(()),
-    }
+    decide_in(app, &fleet, &deciders, Some(home), (who, verb, canonical), why, reply, call).await
 }
 
 /// Every name the session `target` (`<name>@<node>`) goes by, its canonical one first: `<tab>@<node>` when it has a
@@ -611,8 +625,11 @@ async fn decide_in(
                 continue;
             }
             let mut held = crate::policy::approval_target(target);
-            // `for: once` on a tool call: approved for exactly these arguments.
-            if let (crate::policy::ONCE, Some(c)) = (hold, call) {
+            // `for: once` on a tool call: approved for exactly these arguments. A start is always approved for exactly
+            // what it starts (its folder, model, prompt...), however long the approval holds.
+            if let Some(c) = call
+                && (hold == crate::policy::ONCE || verb == "start")
+            {
                 held = format!("{held}#{}", c.args_hash);
             }
             // What the person sees: the tool call, or the agent's reason. Both are written by the agent.
@@ -901,7 +918,13 @@ const HOUR_MS: i64 = 3600 * 1000;
 const DAY_MS: i64 = 24 * HOUR_MS;
 
 /// Refuse a start past `who`'s limits: published as `access.denied` and written to the audit log.
-async fn start_limit_refusal(app: &App, home: &str, who: &str, target: &str, limits: (Option<u32>, Option<u32>)) -> RpcError {
+async fn start_limit_refusal(
+    app: &App,
+    home: &str,
+    who: &str,
+    target: &str,
+    limits: (Option<u32>, Option<u32>),
+) -> RpcError {
     let (n, window) = match limits {
         (Some(h), Some(d)) => (format!("{h} an hour or {d} a day"), "the last hour or day"),
         (Some(h), None) => (format!("{h}"), "the last hour"),
@@ -1183,6 +1206,34 @@ mod tests {
         let e = check(&app, "default", "recipes@laptop", "message", "a1@laptop").await;
         assert!(e.is_err(), "home's a1@laptop was reached through acme's tab name");
         check(&app, "default", "recipes@laptop", "message", "zzz@laptop").await.unwrap();
+    }
+
+    /// A reply is recognised under the session's canonical name: a session that wrote as its tab can be answered by its
+    /// ID within the reply window, even past an `only:` rule.
+    #[tokio::test]
+    async fn a_reply_addressed_to_a_sessions_id_counts_as_a_reply() {
+        let (app, _) = example().await;
+        let id = "5c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f";
+        crate::db::replace_sessions(
+            &app.db,
+            "default",
+            "laptop",
+            &[serde_json::json!({"sessionId": id, "manager": "herdr", "meta": {"tab": "recipes", "running": true}})],
+        )
+        .await
+        .unwrap();
+        store(
+            &app.db,
+            "default",
+            "version: 2\ndefault: allow\nask: []\nonly:\n  - { who: billing@laptop, can: message, to: [] }\n",
+        )
+        .await
+        .unwrap();
+        let by_id = format!("{id}@laptop");
+        assert!(check(&app, "default", "billing@laptop", "message", &by_id).await.is_err(), "not a reply yet");
+        crate::acl::log_message(&app.db, "default", "recipes@laptop", "billing@laptop").await.unwrap();
+        check(&app, "default", "billing@laptop", "message", &by_id).await.unwrap();
+        check(&app, "default", "billing@laptop", "message", "recipes@laptop").await.unwrap();
     }
 
     /// A rule written for a session's tab name holds when the session is named by its ID, and one written for its ID

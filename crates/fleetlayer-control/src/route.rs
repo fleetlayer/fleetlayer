@@ -241,16 +241,9 @@ async fn check_start(
             }
         }
     }
-    // Rules written for the session's other names refuse it too.
-    for alias in names.iter().skip(1) {
-        if matches!(crate::authz::dry(app, tenant, caller, "start", alias).await, crate::authz::Dry::Denied) {
-            crate::authz::check_why(app, tenant, caller, "start", alias, why).await?;
-        }
-    }
-    let canonical = names.first().map(String::as_str).unwrap_or(target);
     let (hash, detail) = start_spec(t);
     let call = crate::authz::CallContext { args_hash: &hash, detail: Some(&detail), audit: Some(&detail) };
-    let out = crate::authz::check_call(app, tenant, caller, "start", canonical, call, why).await?;
+    let out = crate::authz::check_names(app, tenant, caller, "start", &names, Some(call), why).await?;
     if let Some(e) = out.refusal {
         return Err(e);
     }
@@ -1118,7 +1111,8 @@ mod tests {
         #[tokio::test]
         async fn a_start_past_its_limit_asks_nothing_spends_nothing_and_is_audited() {
             let (app, _home) = fleet().await;
-            let policy = "version: 2\ndefault: allow\nlimits:\n  - { who: \"plugin:runner@laptop\", starts_per_hour: 1 }\n";
+            let policy =
+                "version: 2\ndefault: allow\nlimits:\n  - { who: \"plugin:runner@laptop\", starts_per_hour: 1 }\n";
             crate::authz::store(&app.db, "default", policy).await.unwrap();
             sqlx::query(
                 "INSERT INTO session_starts (tenant, who, target, at) VALUES ('default', 'plugin:runner@laptop', 'x@home', ?)",

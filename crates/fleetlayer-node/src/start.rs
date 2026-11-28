@@ -93,7 +93,8 @@ pub async fn serve(node: &Node, req: SessionServe) -> Result<Value, RpcError> {
     tracing::info!(caller = %req.caller, tab = ?req.spec.tab, resume = ?req.spec.resume, "session start asked");
     let started = tokio::time::timeout(SERVE_TIMEOUT, here(node, req.spec))
         .await
-        .map_err(|_| RpcError::refused("the session didn't start within two and a half minutes"))??;
+        // Not a refusal: its tab may be open already, so the start still counts against the caller's limits.
+        .map_err(|_| RpcError::internal("the session didn't start within two and a half minutes"))??;
     tracing::info!(caller = %req.caller, tab = %started.tab, address = %started.address, "session started");
     serde_json::to_value(started).map_err(|e| RpcError::internal(e.to_string()))
 }
