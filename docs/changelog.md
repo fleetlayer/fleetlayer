@@ -98,7 +98,7 @@ Most releases need only the installer or a node's own update. These need more, o
 - **Secrets per role** (`fleetlayer-1password`) and **network access per role** (`fleetlayer-egress`, Linux), both off
   until you turn them on. A node also scrubs every secret delivered to it from what it sends the rest of the fleet.
 - **The MCP gate** checks every call to a fronted MCP server against the access policy, and **admin windows** give a
-  role no rights until you open a time-limited window with `fleetlayer role activate`. The control plane and the
+  role no rights until you start a timed window with `fleetlayer role activate`. The control plane and the
   gate's machine both need v0.3.13 or later.
 - `fleetlayer move <piece> <machine>` moves any component to another machine and keeps its identities and keys.
 - Every herdr on your phone (`herdr-fleet`), and sign-in is no longer experimental.

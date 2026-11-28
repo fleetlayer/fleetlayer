@@ -287,7 +287,7 @@ The control plane checks every message, tool use, start and sync against the per
 
 ## A role that's off until a window is open (the admin window)
 
-Some roles (an admin role that can change the machine) have no rights until the person opens a window for them. A
+Some roles (an admin role that can change the machine) have no rights until the person starts a timed window for them. A
 refusal that says **"role <role> is off until its window is open"** means that. If your task needs it, ask once, with
 what it's for:
 

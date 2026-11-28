@@ -188,14 +188,14 @@ act as any of its sessions, so Fleetlayer draws the line there too:
   they may call, what needs a person's approval. Every decision is written to a tamper-evident audit log before the
   action happens ([Access control](access-control.md)).
 
-### An admin role that's off until you open it
+### An admin role that's off until you start a timed window
 
 An agent that can change everything sits in a role that's switched off: every request by it or
 to it is refused, and nothing is delivered to it. It asks for a window (`fleetlayer role activate admin --for 1h`),
 you approve, and its rules apply until the time is up. Then its sessions are closed, what was delivered to it is
 removed, a hook takes away its sudo rule, and its node confirms; a window that didn't close cleanly shows as a health
 problem. Every action in the window is audited with the window's ID. The rules are in [the admin
-window](access-control.md#the-admin-window-a-role-thats-off-until-you-open-it), and [the
+window](access-control.md#the-admin-window-a-role-thats-off-until-you-start-a-timed-window), and [the
 guide](guides/admin-window.md) sets one up.
 
 ### Webhooks don't leak their own secret

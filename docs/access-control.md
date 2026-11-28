@@ -209,11 +209,11 @@ allow:
 
 After it, the rule is as if it weren't there. A `justify:` rule can have one too.
 
-## The admin window: a role that's off until you open it
+## The admin window: a role that's off until you start a timed window
 
 Some work needs an agent that can change everything: install packages, edit system files, rotate production keys. Keep
 that agent in a role of its own (a Unix user with its own node) and mark the role `activation: window`. It then has no
-rights at all until the person opens a window for it, for a set time:
+rights at all until the person starts a timed window for it:
 
 ```yaml
 roles:
@@ -270,7 +270,7 @@ allow:                           # what the role may do while its window is open
 Prefer credentials whose lifetime is the window, so the end is real even for a copy the agent kept: AWS STS sessions
 (`aws sts assume-role --duration-seconds 3600`, up to the role's maximum session duration), GitHub App installation
 tokens (an hour), short-lived database users. A static key the role saw could have been copied: rotate the important
-ones on a schedule. The whole setup, sudo rule included: [An admin role that's off until you open it](guides/admin-window.md).
+ones on a schedule. The whole setup, sudo rule included: [An admin role that's off until you start a timed window](guides/admin-window.md).
 
 ### Approving from a deck or an inbox
 
@@ -295,7 +295,7 @@ An approve token grants no longer than each request asked for (a `for: once` req
 deck sends), so a stolen one can't turn a short ask into a standing grant, and every attempt it makes, refused ones
 included, is in the audit log.
 
-**A passkey to open a window.** Approving a role window (a request with verb `activate` on `window:<role>`) with an
+**A passkey to start a window.** Approving a role window (a request with verb `activate` on `window:<role>`) with an
 approve token needs the owner to confirm that one request with their passkey first, at the sign-in service's
 `/stepup?tenant=<slug>&approval=<id>&return=<url>` page ([the sign-in service](plugins/signin.md#confirming-a-request-with-a-passkey), "Confirming a
 request with a passkey"). The sign-in service reports it to the control plane,
@@ -313,10 +313,10 @@ fleetlayer-control token add dashboard --scope delegate
 A delegate token reads the fleet like a read token, and like one it reads every event's body on every channel
 (`GET /v1/events`, [Events](events.md)). To decide a request or close a window, it names the signed-in
 person in a `Fleetlayer-Person` header (their person ID, the sign-in's `sub`); that person must be one of the tenant's
-admins, the decision is recorded as `person:sam (via dashboard)`, and opening a window needs that person's own passkey
+admins, the decision is recorded as `person:sam (via dashboard)`, and starting a window needs that person's own passkey
 step-up, as above. Without the header, or for someone who isn't an admin, it's refused and audited. `GET /v1/token`
 tells a service which scope its token has. A delegate token can act as any of the tenant's admins for everything but
-opening a window, so it lives under the service's own Unix user, like an approve token.
+starting a window, so it lives under the service's own Unix user, like an approve token.
 
 The step-up is reported by the sign-in service with its own token, which the control plane takes at its word: it
 doesn't check the passkey assertion itself. So the sign-in token counts as much as a passkey for every admin of every
@@ -330,7 +330,7 @@ inherits nothing, and so is an approve token's owner.
 - **The request** is an ordinary approval with verb `activate` and target `window:<role>`. `GET /v1/approvals` lists it
   (`{"id": "ap_…", "from": "ops@server-admin", "verb": "activate", "to": "window:admin", "status": "pending", …}`), the
   `access.ask` event announces it, and `POST /v1/approvals/<id>` `{"approve": true, "for": "1h"}` (admin or approve
-  token) opens the window. `for` can shorten it; the window never runs past the role's `longest:`. The reason the agent
+  token) starts the window. `for` can shorten it; the window never runs past the role's `longest:`. The reason the agent
   gave is in the audit log (`asked for admin's window for 1h; why: …`).
 - **`GET /v1/windows`** (read, admin or approve token): `{"roles": [{"role", "state", "endsAt"?, "id"?, "longestMs",
   "member"}], "windows": [{"id", "role", "requestedBy", "openedAt", "endsAt", "closedAt", "closedBy", "unconfirmed",

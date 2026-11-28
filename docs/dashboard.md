@@ -38,7 +38,7 @@ look around, not the only way in. The same dashboard works with a control plane 
 - **Teams**: groups of people the access rules can name (`team:design`), each inside another if you like: making one,
   putting people in it and taking them off. Someone in a team through their sign-in provider's groups is marked so.
 - **Rules**: the access policy in force, as sentences (who may never, may only, may do what to what), the agent roles
-  and which of them are off until a window is opened, and the policy file itself. Rules are changed in that file, kept
+  and which of them are off until someone starts a timed window, and the policy file itself. Rules are changed in that file, kept
   in git where the agents it limits can't change it, and applied with `fleetlayer-control acl apply`.
 
 People, Teams and Rules show to the fleet's admins, and to anyone the policy allows `admin` on `service:dashboard`
@@ -136,7 +136,7 @@ role windows from the dashboard: that needs a person's passkey. Both can be set 
 - Approving, denying and closing a window need `admin` on `service:dashboard`, a form token from the same session,
   and, for a signed-in person, the dashboard's delegate token: the control plane checks them and records every
   decision as theirs (`person:sam (via dashboard)`).
-- **Opening a role window** takes the person's passkey. Approve with passkey goes to the sign-in service's step-up
+- **Starting a role window** takes the person's passkey. Approve with passkey goes to the sign-in service's step-up
   page for that request, which comes back to the dashboard to confirm; the control plane accepts it within five
   minutes, once, and only from that person. The login key's holder can't open windows from the dashboard.
 - When the access check can't be made (the control plane is down), the dashboard shows nothing rather than guessing.

@@ -1,4 +1,4 @@
-# An admin role that's off until you open it
+# An admin role that's off until you start a timed window
 
 Some jobs need an agent that can change everything on a machine: upgrade packages, edit files under `/etc`, restart
 services, rotate a production key. Leaving such an agent on all day means one bad instruction (or one prompt injection
