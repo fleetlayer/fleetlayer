@@ -91,9 +91,10 @@ function rewriteLinks(body, file, toUrl) {
 
 async function main() {
   await rm(contentRoot, { recursive: true, force: true });
-  // Everything in public/ is generated except these, so clear the rest: a copy left from an older layout
-  // (public/guides/, public/rex.md) would otherwise be served and fail the link check.
-  const kept = new Set(["_headers", "favicon.svg"]);
+  // Everything in public/ is generated except these (kept in git, as site/.gitignore lists them), so clear the rest: a
+  // copy left from an older layout (public/guides/, public/rex.md) would otherwise be served and fail the link check.
+  // img/ holds the homepage's screenshots.
+  const kept = new Set(["_headers", "favicon.svg", "img"]);
   for (const entry of await readdir(publicRoot)) {
     if (!kept.has(entry)) await rm(join(publicRoot, entry), { recursive: true, force: true });
   }
