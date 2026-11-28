@@ -60,7 +60,13 @@ export const pages = [
   { file: "guides/make-it-yours", group: "Building software", label: "Make it yours" },
   { file: "directory", group: "Plugins", label: "Plugin directory", generated: true },
   { file: "plugins/rex", group: "Plugins", label: "Rex" },
-  { file: "plugins/tmux", group: "Plugins", label: "tmux" },
+  {
+    file: "plugins/tmux",
+    group: "Plugins",
+    label: "tmux",
+    description:
+      "Put the Claude Code and Codex sessions you run in tmux panes in your fleet: their status, messages and webhooks, prompts answered from anywhere, sessions started and closed remotely, and fleetlayer attach, without attaching a tmux client or changing your layout.",
+  },
   { file: "plugins/summaries", group: "Plugins", label: "Summaries" },
   { file: "plugins/pages", group: "Plugins", label: "Pages" },
   { file: "plugins/apps", group: "Plugins", label: "Apps" },
