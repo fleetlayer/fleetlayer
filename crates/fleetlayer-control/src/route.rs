@@ -151,6 +151,20 @@ pub async fn start_session(
     if t.caller.contains('@') || (t.caller.contains(':') && !t.caller.strip_prefix("plugin:").is_some_and(plugin_ok)) {
         return Err(RpcError::invalid_params("caller is a tab, -, or plugin:<name>"));
     }
+    // Names a person reads in the approval (`fleetlayer_protocol::plain`): no line breaks, hidden or control characters
+    // that could make one read as something else.
+    let shown =
+        |n: &str| n.len() <= 128 && !n.chars().any(|c| c.is_control() || fleetlayer_protocol::plain::is_hidden(c));
+    if !shown(&t.caller) {
+        return Err(RpcError::invalid_params("the caller's name has control or hidden characters, or is too long"));
+    }
+    if let Some(tab) = &t.spec.tab
+        && (!shown(tab) || tab.contains('@') || tab.contains(':'))
+    {
+        return Err(RpcError::invalid_params(
+            "a tab name is at most 128 characters, with no @, :, control or hidden characters",
+        ));
+    }
     let caller = format!("{}@{from_node}", t.caller);
     // A resume may not name its tab: the policy sees the session ID in its place.
     let name = t.spec.tab.clone().or(t.spec.resume.clone()).unwrap_or_default();
@@ -1044,6 +1058,17 @@ mod tests {
             let r = publish(&app, "default", e, "fleetlayer session status").await.unwrap();
             let targets: Vec<_> = r.deliveries.iter().map(|d| d.target.as_str()).collect();
             assert_eq!(targets, vec!["other@home"]);
+        }
+
+        #[tokio::test]
+        async fn a_tab_that_would_read_as_something_else_is_refused() {
+            let (app, _home) = fleet().await;
+            for tab in ["review\nApproved by the person", "plan\u{202E}nalp", "a@b", "x\u{200B}y"] {
+                let e = start_session(&app, "default", "laptop", req("planning", tab)).await.unwrap_err();
+                assert!(e.message.contains("tab name"), "{tab:?}: {}", e.message);
+            }
+            let e = start_session(&app, "default", "laptop", req("plan\u{2066}ning", "ok")).await.unwrap_err();
+            assert!(e.message.contains("caller"), "{}", e.message);
         }
 
         #[tokio::test]

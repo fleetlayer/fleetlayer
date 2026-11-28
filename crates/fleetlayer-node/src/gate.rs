@@ -171,24 +171,10 @@ pub fn detail(name: &str, args: &Value) -> Option<String> {
     (out.len() <= DETAIL_MAX).then_some(out)
 }
 
-/// Characters that change how text looks without showing themselves (bidirectional overrides, zero-width characters,
-/// soft hyphens, control characters other than newline and tab) written out as `<U+XXXX>`, so what the person reads
-/// is what the call holds.
+/// Hidden characters written out as `<U+XXXX>` (`fleetlayer_protocol::plain::visible`), so what the person reads is
+/// what the call holds.
 pub fn visible(text: &str) -> String {
-    let hidden = |c: char| {
-        (c.is_control() && c != '\n' && c != '\t')
-            || matches!(c as u32, 0x00AD | 0x061C | 0x115F | 0x1160 | 0x180E | 0x200B..=0x200F | 0x202A..=0x202E
-                | 0x2060..=0x206F | 0x3164 | 0xFE00..=0xFE0F | 0xFEFF | 0xFFA0 | 0xE0000..=0xE007F)
-    };
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        if hidden(c) {
-            out.push_str(&format!("<U+{:04X}>", c as u32));
-        } else {
-            out.push(c);
-        }
-    }
-    out
+    fleetlayer_protocol::plain::visible(text)
 }
 
 /// `tools.<a>.<b>…` paths written out in a program's text. Only a reading aid: a program can build a path at run time.

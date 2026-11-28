@@ -319,9 +319,13 @@ pub(crate) async fn tool_call(
     }
     let mut targets = Vec::with_capacity(c.targets.len());
     for t in &c.targets {
-        if t.is_empty() || t.len() > TARGET_MAX || t.contains('@') || t.chars().any(char::is_control) {
+        if t.is_empty()
+            || t.len() > TARGET_MAX
+            || t.contains('@')
+            || t.chars().any(|c| c.is_control() || fleetlayer_protocol::plain::is_hidden(c))
+        {
             return Err(RpcError::invalid_params(format!(
-                "a call target is 1 to {TARGET_MAX} characters, with no @ or control characters"
+                "a call target is 1 to {TARGET_MAX} characters, with no @, control or hidden characters"
             )));
         }
         targets.push(format!("tool:{tool}/{t}@{node}"));
