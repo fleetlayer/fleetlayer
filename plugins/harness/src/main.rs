@@ -349,19 +349,21 @@ impl Plugin {
     ///
     /// Only entries this plugin added are ever removed: each is recorded in `trusted.json` in the state folder, so a
     /// failed start and `install: false` take back exactly those and never a folder the person trusted themselves.
-    fn prepare(&self, cwd: &str, undo: bool) -> Result<(), String> {
+    /// True when this call added the folder's trust (the node then asks for the undo only if the open fails).
+    fn prepare(&self, cwd: &str, undo: bool) -> Result<bool, String> {
         let s = self.settings.get().ok_or("initialize first")?;
         if undo {
-            return self.untrust(Some(cwd));
+            return self.untrust(Some(cwd)).map(|()| false);
         }
         if self.kind == Kind::Opencode {
-            return Ok(()); // OpenCode doesn't ask
+            return Ok(false); // OpenCode doesn't ask
         }
         // pi's trust covers every folder below (the nearest trusted folder wins) and Gemini CLI's TRUST_FOLDER its
         // subfolders: trusting `/` or the home folder would trust every project in it, and pi would run their code.
         if matches!(self.kind, Kind::Pi | Kind::Gemini) {
             narrow_enough(cwd, &s.home)?;
         }
+        ours_alone(cwd, &s.home)?;
         let added = match self.kind {
             Kind::Pi => add_key(&s.dir.join("trust.json"), cwd, Value::Bool(true))?,
             Kind::Gemini => add_key(&s.dir.join("trustedFolders.json"), cwd, json!("TRUST_FOLDER"))?,
@@ -386,7 +388,7 @@ impl Plugin {
             }
             files::write_atomic(&s.state.join("trusted.json"), &serde_json::to_vec(&list).map_err(|e| e.to_string())?)?;
         }
-        Ok(())
+        Ok(added)
     }
 
     /// The folders this plugin trusted (`trusted.json`).
@@ -465,6 +467,22 @@ fn narrow_enough(cwd: &str, home: &Path) -> Result<(), String> {
         return Err(format!(
             "won't trust {cwd} for every project below it: start the session in a project's own folder"
         ));
+    }
+    Ok(())
+}
+
+/// A folder this user alone controls: owned by the node's user (the home folder's owner), not writable by everyone,
+/// no sticky bit (`/tmp`, `/var/tmp`, `/dev/shm`, `/Users/Shared`). Trusting a folder other users can write to would
+/// let them put in it what the harness then runs as this user.
+fn ours_alone(cwd: &str, home: &Path) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    let me = std::fs::metadata(home).map_err(|e| format!("reading {}: {e}", home.display()))?.uid();
+    let m = std::fs::metadata(cwd).map_err(|e| format!("reading {cwd}: {e}"))?;
+    if m.uid() != me {
+        return Err(format!("won't trust {cwd}: another user owns it"));
+    }
+    if m.mode() & 0o1002 != 0 {
+        return Err(format!("won't trust {cwd}: other users can write in it (a shared folder such as /tmp)"));
     }
     Ok(())
 }
@@ -910,10 +928,10 @@ impl Handler for Shared {
                 if r.harness != kind.name() {
                     return Ok(json!({}));
                 }
-                plugin.prepare(&r.cwd, r.undo).map_err(RpcError::refused)?;
+                let added = plugin.prepare(&r.cwd, r.undo).map_err(RpcError::refused)?;
                 let what = if r.undo { "took back the folder's trust" } else { "got the folder ready" };
                 tracing::info!(cwd = %r.cwd, "{what} for {}", kind.title());
-                Ok(json!({}))
+                Ok(json!({"added": added}))
             }
             ext::method::HARNESS_LOCATE => {
                 let id =
@@ -1077,19 +1095,43 @@ mod tests {
         let v: Value =
             serde_json::from_slice(&std::fs::read(home.path().join(".gemini/trustedFolders.json")).unwrap()).unwrap();
         assert_eq!(v[project], "TRUST_FOLDER", "the person's own entry stays");
-        plugin(Kind::Gemini, home.path()).prepare("/w/app", false).unwrap();
+        let other = home.path().join("w/other");
+        std::fs::create_dir_all(&other).unwrap();
+        let other = other.to_str().unwrap();
+        assert!(plugin(Kind::Gemini, home.path()).prepare(other, false).unwrap(), "added by this call");
         let v: Value =
             serde_json::from_slice(&std::fs::read(home.path().join(".gemini/trustedFolders.json")).unwrap()).unwrap();
-        assert_eq!(v["/w/app"], "TRUST_FOLDER");
-        plugin(Kind::Pi, home.path()).prepare("/w/app", false).unwrap();
+        assert_eq!(v[other], "TRUST_FOLDER");
+        assert!(!plugin(Kind::Gemini, home.path()).prepare(other, false).unwrap(), "already there: not this call's");
+        plugin(Kind::Pi, home.path()).prepare(other, false).unwrap();
         let v: Value =
             serde_json::from_slice(&std::fs::read(home.path().join(".pi/agent/trust.json")).unwrap()).unwrap();
-        assert_eq!(v["/w/app"], true);
+        assert_eq!(v[other], true);
         let cursor = plugin(Kind::Cursor, home.path());
-        cursor.prepare("/w/app", false).unwrap();
-        assert!(home.path().join(".cursor/projects/w-app/.workspace-trusted").is_file());
+        cursor.prepare(other, false).unwrap();
+        let marker = home.path().join(".cursor/projects").join(cursor_slug(other)).join(".workspace-trusted");
+        assert!(marker.is_file());
         cursor.untrust(None).unwrap();
-        assert!(!home.path().join(".cursor/projects/w-app/.workspace-trusted").exists(), "install: false takes it out");
+        assert!(!marker.exists(), "install: false takes it out");
+    }
+
+    #[test]
+    fn folders_other_users_can_write_to_are_never_trusted() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        for (name, mode) in [("shared", 0o777), ("sticky", 0o1755), ("tmp-like", 0o1777)] {
+            let d = home.path().join(name);
+            std::fs::create_dir(&d).unwrap();
+            std::fs::set_permissions(&d, std::fs::Permissions::from_mode(mode)).unwrap();
+            for kind in [Kind::Pi, Kind::Gemini, Kind::Cursor] {
+                let e = plugin(kind, home.path()).prepare(d.to_str().unwrap(), false).unwrap_err();
+                assert!(e.contains("other users can write"), "{name} {kind:?}: {e}");
+            }
+        }
+        // `/tmp` itself, whatever the machine.
+        if std::fs::metadata("/tmp").is_ok_and(|m| m.permissions().mode() & 0o1000 != 0) {
+            assert!(plugin(Kind::Pi, home.path()).prepare("/tmp", false).is_err());
+        }
     }
 
     #[test]

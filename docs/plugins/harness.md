@@ -64,8 +64,10 @@ comes from `opencode export` (at most once every five seconds). Search covers th
   without asking), Gemini CLI in `~/.gemini/trustedFolders.json` (`"<folder>": "TRUST_FOLDER"`), Cursor a
   `.workspace-trusted` file in `~/.cursor/projects/<folder as a slug>/`. OpenCode doesn't ask. Both pi's and Gemini
   CLI's trust cover every folder below, so for them the plugin refuses `/`, the home folder and any folder above it:
-  start a session in a project's own folder. Each folder it trusts is recorded in `trusted.json` in its state folder;
-  a start that fails takes that folder's entry back, and `install: false` takes back every entry it added. A folder
+  start a session in a project's own folder. Every harness refuses a folder another user owns or can write in (a
+  shared folder such as `/tmp`, anything with the sticky bit), since the harness would run what they put there. Each folder it trusts is recorded in `trusted.json` in its state folder;
+  a start that fails takes that folder's entry back if that start added it (never one a running session relies on),
+  and `install: false` takes back every entry it added. A folder
   you had trusted yourself is never touched. To remove one by hand, delete its line from those files.
 - **Resuming by ID** (`harness/locate`): pi's session file names the folder, OpenCode's export does, Gemini CLI's
   hooks and its `.project_root` file do, Cursor's hooks do.

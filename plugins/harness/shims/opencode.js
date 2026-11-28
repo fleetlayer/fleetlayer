@@ -93,9 +93,14 @@ export const FleetlayerHarness = async ({ client, directory }) => {
           watchers.add(c);
           c.write(state());
         } else if (req.type === "deliver") {
-          // Only into a session this process runs: anything else is for another OpenCode, or for typing in.
-          if (!sessions.has(String(req.sessionId))) {
-            c.end(JSON.stringify({ ok: false, code: "unknown", error: "this OpenCode isn't running that session" }) + "\n");
+          // Only into the session this OpenCode shows now: text never lands in another conversation. No session yet
+          // ("unknown") lets the node type it in; another session ("gone") doesn't.
+          if (!current) {
+            c.end(JSON.stringify({ ok: false, code: "unknown", error: "this OpenCode has no session yet" }) + "\n");
+            return;
+          }
+          if (String(req.sessionId) !== current) {
+            c.end(JSON.stringify({ ok: false, code: "gone", error: "this OpenCode is in another session now" }) + "\n");
             return;
           }
           try {

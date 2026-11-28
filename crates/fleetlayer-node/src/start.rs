@@ -160,7 +160,7 @@ pub async fn here(node: &Node, spec: StartSpec) -> Result<SessionStarted, RpcErr
     let peer = manager.peer().await.ok_or_else(|| RpcError::refused(format!("{} isn't running", manager.name())))?;
     // Trusting the folder comes last before opening (the agent reads it as it starts), and is taken back if the
     // session doesn't open.
-    prepare(node, &plan.harness, &plan.cwd, false).await?;
+    let trusted = prepare(node, &plan.harness, &plan.cwd).await?;
     let open = OpenSession {
         label: plan.tab.clone(),
         cwd: plan.cwd.clone(),
@@ -173,9 +173,7 @@ pub async fn here(node: &Node, spec: StartSpec) -> Result<SessionStarted, RpcErr
     let opened: OpenedSession = match peer.request_within(ext::method::SESSION_OPEN, &open, secs(140)).await {
         Ok(o) => o,
         Err(e) => {
-            if let Err(u) = prepare(node, &plan.harness, &plan.cwd, true).await {
-                tracing::warn!("taking back the folder's trust after a failed start: {}", u.message);
-            }
+            unprepare(node, &trusted, &plan.harness, &plan.cwd).await;
             return Err(if e.code == code::METHOD_NOT_FOUND {
                 RpcError::refused(format!("{} can't open sessions", manager.name()))
             } else {
@@ -382,23 +380,52 @@ fn model_args(harness: &str, model: Option<&str>, effort: Option<&str>) -> Resul
     Ok(a)
 }
 
-/// Ask the harness plugins for this harness to get the folder ready. None for it: nothing to do.
-/// `undo`: take back what the plugins wrote for this folder (the session didn't open).
-async fn prepare(node: &Node, harness: &str, cwd: &str, undo: bool) -> Result<(), RpcError> {
+/// Ask the harness plugins for this harness to get the folder ready. The answer names the plugins that added
+/// something for it (`{"added": true}`), the only ones asked to take it back if the session doesn't open: a folder
+/// already trusted (a session running there, the person's own trust) is never taken back.
+async fn prepare(node: &Node, harness: &str, cwd: &str) -> Result<Vec<String>, RpcError> {
+    let mut added = vec![];
     for p in &node.plugins {
         let Some(role) = p.roles().await.harness else { continue };
         if !role.prepare || !role.harnesses.iter().any(|h| h == harness) {
             continue;
         }
-        let Some(peer) = p.peer().await else {
-            return Err(RpcError::refused(format!("{} isn't running, so the folder can't be got ready", p.name())));
+        let failed = |why: String| RpcError::refused(format!("getting {cwd} ready for {harness}: {why}"));
+        let result = match p.peer().await {
+            None => Err(RpcError::refused(format!("{} isn't running, so the folder can't be got ready", p.name()))),
+            Some(peer) => {
+                let req = HarnessPrepare { harness: harness.into(), cwd: cwd.into(), undo: false };
+                peer.request_within::<_, Value>(ext::method::HARNESS_PREPARE, &req, secs(10))
+                    .await
+                    .map_err(|e| failed(e.message))
+            }
         };
-        let req = HarnessPrepare { harness: harness.into(), cwd: cwd.into(), undo };
-        peer.request_within::<_, Value>(ext::method::HARNESS_PREPARE, &req, secs(10))
-            .await
-            .map_err(|e| RpcError::refused(format!("getting {cwd} ready for {harness}: {}", e.message)))?;
+        match result {
+            Ok(v) if v["added"] == true => added.push(p.name().to_string()),
+            Ok(_) => {}
+            Err(e) => {
+                unprepare(node, &added, harness, cwd).await;
+                return Err(e);
+            }
+        }
     }
-    Ok(())
+    Ok(added)
+}
+
+/// Take back what `prepare` added for the folder, in the plugins that said they added something.
+async fn unprepare(node: &Node, plugins: &[String], harness: &str, cwd: &str) {
+    for name in plugins {
+        let Some(peer) = (match node.plugin(name) {
+            Some(p) => p.peer().await,
+            None => None,
+        }) else {
+            continue;
+        };
+        let req = HarnessPrepare { harness: harness.into(), cwd: cwd.into(), undo: true };
+        if let Err(e) = peer.request_within::<_, Value>(ext::method::HARNESS_PREPARE, &req, secs(10)).await {
+            tracing::warn!("{name} couldn't take back the trust of {cwd} after a failed start: {}", e.message);
+        }
+    }
 }
 
 /// The session manager that opens sessions here.

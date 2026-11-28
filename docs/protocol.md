@@ -468,9 +468,10 @@ node's summaries at the session's transcript (`format`: `claude-jsonl`, `codex-j
 
 Two more help start sessions, each announced in the harness role (`"prepare": true`, `"locate": true`):
 
-- `_fleetlayer.dev/harness/prepare` `{harness, cwd, undo?}` → `{}`: get the folder ready before a session starts there
-  with nobody watching. The node asks right before opening the session, and again with `undo: true` when the open
-  fails, so a plugin takes back what it added for that folder (and only that: never trust the person gave). Claude Code's plugin marks that exact folder trusted (`projects.<path>.hasTrustDialogAccepted` in
+- `_fleetlayer.dev/harness/prepare` `{harness, cwd, undo?}` → `{added?}`: get the folder ready before a session starts
+  there with nobody watching. The node asks right before opening the session; `added: true` says this call added
+  something, and only then does the node ask again with `undo: true` when the open fails, so the plugin takes back what
+  it added (never trust that was there already: the person's own, or a running session's). Claude Code's plugin marks that exact folder trusted (`projects.<path>.hasTrustDialogAccepted` in
   `~/.claude.json`, replaced in one rename with every other key kept), since Claude Code asks about each folder, even
   inside a trusted one. A failure stops the start.
 - `_fleetlayer.dev/harness/locate` `{sessionId}` → `{cwd, harness}`: where a stored session worked, for resuming it
