@@ -108,7 +108,7 @@ tools:
     # (Without cwd: a tool gets an empty directory of its own, ~/.local/state/fleetlayer/tools/<name>.)
     cwd: ~/.local/state/fleetlayer/tools/browser
     env:
-      PLAYWRIGHT_MCP_EXECUTABLE_PATH: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+      PLAYWRIGHT_MCP_EXECUTABLE_PATH: ~/.local/state/fleetlayer/open-chrome   # the node writes it (macOS)
       PATH: /opt/homebrew/bin:/usr/bin:/bin
     env_files: { PLAYWRIGHT_MCP_EXTENSION_TOKEN: ~/.config/browser-mcp/extension-token }   # read at start; keep it 0600
     description: Your Chrome, signed in to your sites   # optional: one line agents see in `fleetlayer me`

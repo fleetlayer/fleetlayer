@@ -59,7 +59,7 @@ tools:
            "--ignore-roots"]
     cwd: ~/.local/state/fleetlayer/tools/browser      # an empty folder: uploads are confined to it
     env:
-      PLAYWRIGHT_MCP_EXECUTABLE_PATH: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+      PLAYWRIGHT_MCP_EXECUTABLE_PATH: ~/.local/state/fleetlayer/open-chrome   # the node writes it (macOS)
       PATH: /opt/homebrew/bin:/usr/bin:/bin
     env_files: { PLAYWRIGHT_MCP_EXTENSION_TOKEN: ~/.config/browser-mcp/extension-token }
     allow: ["*@server"]                 # which sessions may connect: <tab>@<node> patterns
@@ -75,7 +75,13 @@ Restart the node (`fleetlayer-node install` again, or restart its service) and c
 What each line is for:
 
 - **`PLAYWRIGHT_MCP_EXECUTABLE_PATH` and `--profile-dir-name`:** macOS doesn't let a process started by launchd read
-  Chrome's profile folders, so without them the server fails with "Playwright Extension not found".
+  Chrome's profile folders, so without them the server fails with "Playwright Extension not found". Playwright MCP
+  opens its connect page by starting Chrome's binary, and macOS counts that Chrome as the node's: it shows "would like
+  to access data from other apps" at every connection. Pointed at `~/.local/state/fleetlayer/open-chrome` (the node
+  writes it the first time), the page goes to the Chrome that's running through `open -g -b com.google.Chrome`
+  instead, and macOS asks nothing. It drops Chrome's other arguments, so the page opens in the profile you used last.
+  To use another profile, keep Chrome open in it, or set Chrome's own binary
+  (`/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`) and accept the question at each connection.
 - **`{session}`:** replaced by the calling session's name, so each session gets its own tab group in Chrome.
 - **`--ignore-roots` and `cwd`:** Playwright MCP lets file arguments (uploads) reach anything under its working
   directory and the caller's MCP roots. An empty folder, and no roots from the caller, keep your home out of reach.
@@ -180,6 +186,8 @@ If you only ever run one Claude account on one machine, Claude in Chrome is the 
 
 - **"Playwright Extension not found"** on macOS: `PLAYWRIGHT_MCP_EXECUTABLE_PATH` and `--profile-dir-name` are
   missing (see above).
+- **macOS asks "would like to access data from other apps" at every connection:** `PLAYWRIGHT_MCP_EXECUTABLE_PATH`
+  names Chrome's own binary. Point it at `~/.local/state/fleetlayer/open-chrome` (see above).
 - **The connection drops after a few idle minutes:** a proxy in front of the control plane is closing idle WebSockets.
   Fleetlayer pings every 30 seconds, so any proxy idle timeout above that works. Traefik's default (180 seconds) is
   fine.

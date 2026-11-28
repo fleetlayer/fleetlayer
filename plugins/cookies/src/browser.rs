@@ -35,7 +35,10 @@ pub struct Playwright {
     /// The Playwright MCP Bridge extension's token (default `~/.config/browser-mcp/extension-token`).
     #[serde(default)]
     pub token_file: Option<PathBuf>,
-    /// Chrome's executable (default the usual one on macOS).
+    /// Chrome's executable. On macOS the default is Fleetlayer's Chrome opener
+    /// (`~/.local/state/fleetlayer/open-chrome`, written when it's missing), which hands the connect page to the Chrome
+    /// that's running so macOS doesn't ask about access to other apps' data at every read; it opens in the profile last
+    /// used. Name Chrome's own binary here to open a set profile, at the price of that question each time.
     #[serde(default)]
     pub chrome: Option<PathBuf>,
 }
@@ -58,10 +61,11 @@ impl Playwright {
             token_file: Some(
                 self.token_file.as_deref().map(exp).unwrap_or_else(|| home.join(".config/browser-mcp/extension-token")),
             ),
-            chrome: self.chrome.as_deref().map(exp).or_else(|| {
-                cfg!(target_os = "macos")
-                    .then(|| PathBuf::from("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"))
-            }),
+            chrome: self
+                .chrome
+                .as_deref()
+                .map(exp)
+                .or_else(|| cfg!(target_os = "macos").then(|| fleetlayer_protocol::local::open_chrome_path(home))),
         }
     }
 }
@@ -170,6 +174,10 @@ pub async fn read(pw: &Playwright, profile: &str, domains: &[String]) -> Result<
         .stderr(Stdio::null())
         .kill_on_drop(true);
     if let Some(chrome) = &pw.chrome {
+        if chrome.ends_with(".local/state/fleetlayer/open-chrome") {
+            fleetlayer_protocol::local::ensure_open_chrome(chrome)
+                .map_err(|e| format!("writing Fleetlayer's Chrome opener {}: {e}", chrome.display()))?;
+        }
         cmd.env("PLAYWRIGHT_MCP_EXECUTABLE_PATH", chrome);
     }
     let mut child = cmd.spawn().map_err(|e| format!("starting Playwright MCP: {e}"))?;

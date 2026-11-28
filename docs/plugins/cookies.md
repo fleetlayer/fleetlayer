@@ -109,7 +109,7 @@ plugins:
 | `to` | | The nodes to send to |
 | `source` | `browser` on macOS, `file` elsewhere | Where the cookies come from (above) |
 | `refresh_days` | 14 | `browser`: read again after this long unasked (each read approved) |
-| `playwright` | the [browser guide](../guides/browser.md)'s install | `browser`: `{node, cli, token_file, chrome}`, how to start Playwright MCP (0.0.86 or later). Defaults: `/opt/homebrew/bin/node` if it exists, else `node` on the `PATH`; `~/.local/share/browser-mcp/node_modules/@playwright/mcp/cli.js`; `~/.config/browser-mcp/extension-token`; Chrome's usual path on macOS, none elsewhere |
+| `playwright` | the [browser guide](../guides/browser.md)'s install | `browser`: `{node, cli, token_file, chrome}`, how to start Playwright MCP (0.0.86 or later). Defaults: `/opt/homebrew/bin/node` if it exists, else `node` on the `PATH`; `~/.local/share/browser-mcp/node_modules/@playwright/mcp/cli.js`; `~/.config/browser-mcp/extension-token`; on macOS Fleetlayer's Chrome opener (`~/.local/state/fleetlayer/open-chrome`, written when missing: it hands the connect page to the Chrome that's running, so macOS doesn't ask about access to other apps' data at every read; it opens in Chrome's last-used profile, so name Chrome's own binary as `chrome` to read another profile, with that question each time), none elsewhere |
 | `browser` | `chrome` | `file`: `chrome`, `chromium`, `brave` or `edge` (`browser` reads Chrome) |
 | `profile` | `Default` | The browser profile's folder name (`Profile 1`, …), as `chrome://version` shows it |
 | `user_data_dir` | the browser's usual one | The browser's user data folder |

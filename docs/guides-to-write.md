@@ -1018,3 +1018,9 @@ managers, machines that sleep.
   off workspace members (`RUSTC_WORKSPACE_WRAPPER` only adds one), so `scripts/on-dev` now recovers by itself: on
   E0460/E0463 naming a workspace crate it cleans only the workspace's own crates (dependencies stay cached) and runs
   the command once more. Written: `scripts/on-dev`. For the guide on build servers and compile caches.
+- **macOS asks "would like to access data from other apps" at every browser connection.** Playwright MCP's extension
+  mode opens its connect page by starting Chrome's binary; started by a background service (the node, the cookies
+  plugin), that Chrome counts as the service's, and macOS's privacy checks ask the person each time. Solved: Fleetlayer
+  writes a Chrome opener (`~/.local/state/fleetlayer/open-chrome`, `open -g -b com.google.Chrome <address>`) and uses it
+  as `PLAYWRIGHT_MCP_EXECUTABLE_PATH`, the cookies plugin's default on macOS. The page opens in Chrome's last-used
+  profile. Written: `docs/guides/browser.md`, `docs/plugins/cookies.md`, `crates/fleetlayer-protocol/src/local.rs`.

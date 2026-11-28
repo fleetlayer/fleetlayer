@@ -217,6 +217,20 @@ fn expand(node: &Node, p: &std::path::Path) -> std::path::PathBuf {
     }
 }
 
+/// `PLAYWRIGHT_MCP_EXECUTABLE_PATH` with a leading `~/` expanded, and Fleetlayer's Chrome opener written when it
+/// names it (`fleetlayer_protocol::local::OPEN_CHROME_SCRIPT`, the macOS setup in `docs/guides/browser.md`).
+fn open_chrome(home: &std::path::Path, value: &mut String) -> Result<(), String> {
+    if let Some(rest) = value.strip_prefix("~/") {
+        *value = home.join(rest).display().to_string();
+    }
+    let opener = fleetlayer_protocol::local::open_chrome_path(home);
+    if std::path::Path::new(value.as_str()) == opener {
+        fleetlayer_protocol::local::ensure_open_chrome(&opener)
+            .map_err(|e| format!("writing Fleetlayer's Chrome opener {}: {e}", opener.display()))?;
+    }
+    Ok(())
+}
+
 /// A remote tool's address and headers, with the secret ones read from their files now.
 pub fn upstream(node: &Node, tool: &ToolConfig) -> Result<crate::mcp_http::Upstream, String> {
     let url = tool.url.clone().ok_or("no url")?;
@@ -1022,6 +1036,9 @@ pub async fn serve(node: Arc<Node>, req: ToolServe) -> Result<Value, RpcError> {
     }
     let args: Vec<String> = substitute(&tool.args, &name, &req.caller);
     let mut env = tool.env.clone();
+    if let Some(chrome) = env.get_mut("PLAYWRIGHT_MCP_EXECUTABLE_PATH") {
+        open_chrome(&node.home, chrome).map_err(RpcError::refused)?;
+    }
     for (var, file) in &tool.env_files {
         let file = expand(&node, file);
         let value = std::fs::read_to_string(&file)
@@ -1529,5 +1546,20 @@ mod liveness_tests {
         assert!(!transient(&status(403)));
         assert!(transient(&Error::Io(std::io::ErrorKind::ConnectionRefused.into())));
         assert!(!transient(&Error::Io(std::io::ErrorKind::PermissionDenied.into())));
+    }
+
+    #[test]
+    fn a_browser_tool_naming_the_chrome_opener_gets_it_written() {
+        let home = tempfile::tempdir().unwrap();
+        let mut v = "~/.local/state/fleetlayer/open-chrome".to_string();
+        open_chrome(home.path(), &mut v).unwrap();
+        let opener = fleetlayer_protocol::local::open_chrome_path(home.path());
+        assert_eq!(v, opener.display().to_string());
+        assert_eq!(std::fs::read_to_string(&opener).unwrap(), fleetlayer_protocol::local::OPEN_CHROME_SCRIPT);
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&opener).unwrap().permissions().mode() & 0o777, 0o755);
+        let mut chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome".to_string();
+        open_chrome(home.path(), &mut chrome).unwrap();
+        assert!(chrome.starts_with("/Applications"), "another path is left alone");
     }
 }
