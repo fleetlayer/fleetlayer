@@ -110,7 +110,6 @@ body {
   color: var(--color-ink);
   font: 400 var(--text-md) / 1.5 var(--font-sans);
   -webkit-font-smoothing: antialiased;
-  font-feature-settings: "tnum" 1;
 }
 h1, h2, h3, p { margin: 0; }
 h1, h2, h3 { font-family: var(--font-display); font-weight: 600; letter-spacing: -0.015em; text-wrap: balance; }

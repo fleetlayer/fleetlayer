@@ -245,7 +245,7 @@ section { margin-top: 2.5rem; }
 .filters a[aria-current="page"] .count { color: inherit; opacity: 0.7; }
 
 .table-wrap { overflow-x: auto; }
-table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
+table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
 th { text-align: left; font-weight: 550; color: var(--color-ink-3); font-size: var(--text-xs); padding: 0.625rem var(--space-md); border-bottom: 1px solid var(--color-rule); white-space: nowrap; background: var(--color-surface-2); }
 td { padding: 0.75rem var(--space-md); vertical-align: top; }
 tbody tr + tr td { border-top: 1px solid var(--color-rule); }

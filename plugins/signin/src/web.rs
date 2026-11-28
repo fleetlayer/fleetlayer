@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::{Form, Query, State};
+use axum::extract::{Form, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
@@ -381,6 +381,7 @@ pub fn router(app: Arc<App>) -> axum::Router {
         .route("/passkey/register/finish", post(register_finish))
         .route("/api/check", post(api_check))
         .route("/healthz", get(healthz))
+        .route("/_/fonts/{name}", get(font))
         .route("/upstream/{name}/start", get(crate::upstream::start))
         .route("/upstream/{name}/callback", get(crate::upstream::callback))
         .route("/", get(home))
@@ -1144,6 +1145,23 @@ async fn api_check(State(app): State<Arc<App>>, headers: HeaderMap, Json(r): Jso
     }
 }
 
+/// The fonts the pages use, the same files the dashboard serves (web/fonts, under the SIL Open Font License).
+const FONTS: &[(&str, &[u8])] = &[
+    ("inter.woff2", include_bytes!("../../../web/fonts/inter.woff2")),
+    ("space-grotesk.woff2", include_bytes!("../../../web/fonts/space-grotesk.woff2")),
+    ("jetbrains-mono.woff2", include_bytes!("../../../web/fonts/jetbrains-mono.woff2")),
+];
+
+async fn font(Path(name): Path<String>) -> Response {
+    match FONTS.iter().find(|(n, _)| *n == name) {
+        Some((_, bytes)) => {
+            ([(header::CONTENT_TYPE, "font/woff2"), (header::CACHE_CONTROL, "public, max-age=604800")], *bytes)
+                .into_response()
+        }
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
 async fn healthz(State(app): State<Arc<App>>) -> Response {
     let problems = app.problems().await;
     if problems.is_empty() {
@@ -1237,7 +1255,7 @@ fn document(status: StatusCode, title: &str, body_class: &str, inner: &str) -> R
     h.insert("x-frame-options", HeaderValue::from_static("DENY"));
     h.insert(
         "content-security-policy",
-        HeaderValue::from_static("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'"),
+        HeaderValue::from_static("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'"),
     );
     resp
 }

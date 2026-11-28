@@ -3,6 +3,11 @@
  * states: default · hover · focus · active · disabled · loading · error · success
  */
 
+/* Fleetlayer's fonts, served by sign-in itself (web/fonts, SIL Open Font License). */
+@font-face { font-family: "Inter Variable"; font-style: normal; font-display: swap; font-weight: 100 900; src: url("/_/fonts/inter.woff2") format("woff2-variations"), url("/_/fonts/inter.woff2") format("woff2"); }
+@font-face { font-family: "Space Grotesk Variable"; font-style: normal; font-display: swap; font-weight: 300 700; src: url("/_/fonts/space-grotesk.woff2") format("woff2-variations"), url("/_/fonts/space-grotesk.woff2") format("woff2"); }
+@font-face { font-family: "JetBrains Mono Variable"; font-style: normal; font-display: swap; font-weight: 100 800; src: url("/_/fonts/jetbrains-mono.woff2") format("woff2-variations"), url("/_/fonts/jetbrains-mono.woff2") format("woff2"); }
+
 code { font-family: var(--font-mono); font-size: var(--text-sm); overflow-wrap: anywhere; }
 h1, h2, h3 { overflow-wrap: anywhere; }
 
@@ -11,7 +16,7 @@ h1, h2, h3 { overflow-wrap: anywhere; }
 .login { max-width: 24rem; }
 .login-brand { color: var(--color-ink); text-decoration: none; }
 .login-brand svg { width: 2.25rem; height: 2.25rem; flex: none; }
-.brand-name { font-size: var(--text-lg); font-weight: 650; letter-spacing: -0.01em; }
+.brand-name { font-family: var(--font-display); font-size: var(--text-lg); font-weight: 600; letter-spacing: -0.015em; }
 .login-card > h1 { font-size: var(--text-xl); }
 .login-card p { color: var(--color-ink-2); font-size: var(--text-sm); overflow-wrap: anywhere; }
 .login-card p b { color: var(--color-ink); font-weight: 600; }

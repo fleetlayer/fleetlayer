@@ -469,6 +469,26 @@ async fn discovery_names_the_endpoints_and_requires_pkce() {
 }
 
 #[tokio::test]
+async fn the_pages_fonts_are_served_and_allowed() {
+    let control = control_plane(Arc::new(Mutex::new(Seen::default()))).await;
+    let dir = tempfile::tempdir().unwrap();
+    let a = app(dir.path(), &control);
+    let req = Request::builder().uri("/_/fonts/inter.woff2").body(Body::empty()).unwrap();
+    let resp = web::router(a.clone()).oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.headers()[header::CONTENT_TYPE], "font/woff2");
+    assert!(resp.headers()[header::CACHE_CONTROL].to_str().unwrap().contains("max-age"));
+    assert_eq!(call(&a, "GET", "/_/fonts/../signin.key", None, None, "").await.status, StatusCode::NOT_FOUND);
+    assert_eq!(call(&a, "GET", "/_/fonts/other.woff2", None, None, "").await.status, StatusCode::NOT_FOUND);
+    // The sign-in page asks for them, and its policy lets it load them.
+    let req = Request::builder().uri("/login").body(Body::empty()).unwrap();
+    let resp = web::router(a.clone()).oneshot(req).await.unwrap();
+    assert!(resp.headers()["content-security-policy"].to_str().unwrap().contains("font-src 'self'"));
+    let page = call(&a, "GET", "/login", None, None, "").await;
+    assert!(page.text.contains(r#"url("/_/fonts/inter.woff2")"#), "{}", page.text);
+}
+
+#[tokio::test]
 async fn people_are_managed_on_the_dashboard_and_the_signed_in_page_links_there() {
     let seen = Arc::new(Mutex::new(Seen::default()));
     let control = control_plane(seen.clone()).await;
