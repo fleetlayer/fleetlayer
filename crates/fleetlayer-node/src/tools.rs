@@ -616,12 +616,44 @@ pub(crate) async fn connect_stream(
     let control = node.control.as_ref().ok_or_else(|| anyhow::anyhow!("no control plane configured"))?;
     let token = std::fs::read_to_string(&control.token_file)?;
     let url = node.link.url().await.unwrap_or_else(|| control.url.clone());
-    let mut req = stream_url(&url, id, side).into_client_request()?;
-    req.headers_mut().insert("authorization", format!("Bearer {}", token.trim()).parse()?);
-    let (ws, _) = tokio::time::timeout(Duration::from_secs(15), tokio_tungstenite::connect_async(req))
-        .await
-        .map_err(|_| anyhow::anyhow!("the control plane didn't answer within 15s"))??;
-    Ok(ws)
+    let mut attempt = 0;
+    loop {
+        let mut req = stream_url(&url, id, side).into_client_request()?;
+        req.headers_mut().insert("authorization", format!("Bearer {}", token.trim()).parse()?);
+        let e = match tokio::time::timeout(Duration::from_secs(15), tokio_tungstenite::connect_async(req)).await {
+            Err(_) => return Err(anyhow::anyhow!("the control plane didn't answer within 15s")),
+            Ok(Ok((ws, _))) => return Ok(ws),
+            Ok(Err(e)) => e,
+        };
+        // The control plane pairs the two sides for 30 seconds, so a few short retries fit inside that.
+        match STREAM_RETRIES.get(attempt) {
+            Some(wait) if transient(&e) => {
+                tracing::info!(stream = id, side, "connecting the stream: {e}; trying again");
+                tokio::time::sleep(*wait).await;
+                attempt += 1;
+            }
+            _ => return Err(e.into()),
+        }
+    }
+}
+
+/// The waits before each retry of a stream's connection that failed in passing.
+const STREAM_RETRIES: [Duration; 3] = [Duration::from_millis(500), Duration::from_secs(1), Duration::from_secs(2)];
+
+/// A failure worth trying again: the control plane (or the proxy in front of it) restarting or overloaded answers
+/// 502, 503 or 504, or refuses or drops the connection. Anything else (a refusal, a stream that doesn't exist) isn't.
+pub(crate) fn transient(e: &tokio_tungstenite::tungstenite::Error) -> bool {
+    use tokio_tungstenite::tungstenite::Error;
+    match e {
+        Error::Http(r) => matches!(r.status().as_u16(), 502..=504),
+        Error::Io(io) => matches!(
+            io.kind(),
+            std::io::ErrorKind::ConnectionRefused
+                | std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::ConnectionAborted
+        ),
+        _ => false,
+    }
 }
 
 /// How long to wait for the other direction once one has reached its end.
@@ -1485,5 +1517,17 @@ mod liveness_tests {
         let log = f.finish().await;
         assert_eq!(log.matches("fleetlayer-close-").count(), 1, "{log}");
         assert_eq!(conns.readings(&tools)[0]["data"]["open"], 0);
+    }
+
+    #[test]
+    fn a_503_from_the_control_plane_is_tried_again_and_a_404_isnt() {
+        use tokio_tungstenite::tungstenite::{Error, http};
+        let status = |code: u16| Error::Http(Box::new(http::Response::builder().status(code).body(None).unwrap()));
+        assert!(transient(&status(503)));
+        assert!(transient(&status(502)));
+        assert!(!transient(&status(404)), "no such stream");
+        assert!(!transient(&status(403)));
+        assert!(transient(&Error::Io(std::io::ErrorKind::ConnectionRefused.into())));
+        assert!(!transient(&Error::Io(std::io::ErrorKind::PermissionDenied.into())));
     }
 }

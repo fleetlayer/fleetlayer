@@ -261,7 +261,24 @@ async fn open(socket: &Path, target: &(String, String)) -> anyhow::Result<Conn> 
     open_as(socket, target, "fleetlayer lease").await
 }
 
-async fn open_as(socket: &Path, (tool, node): &(String, String), client: &str) -> anyhow::Result<Conn> {
+/// Open the connection, trying again a few times when the way there failed in passing ([`transient`]: the node or the
+/// control plane restarting, or the proxy in front of it answering 502, 503 or 504).
+async fn open_as(socket: &Path, target: &(String, String), client: &str) -> anyhow::Result<Conn> {
+    let waits = [Duration::from_secs(1), Duration::from_secs(2), Duration::from_secs(4)];
+    let mut attempt = 0;
+    loop {
+        match open_once(socket, target, client).await {
+            Err(e) if attempt < waits.len() && transient(&e) => {
+                eprintln!("{e}; trying again");
+                tokio::time::sleep(waits[attempt]).await;
+                attempt += 1;
+            }
+            r => return r,
+        }
+    }
+}
+
+async fn open_once(socket: &Path, (tool, node): &(String, String), client: &str) -> anyhow::Result<Conn> {
     let tools = socket.with_extension("tools.sock");
     let stream = tokio::net::UnixStream::connect(&tools)
         .await
@@ -401,9 +418,20 @@ fn keep_in_background(id: u64, pid: u32, (tool, node): &(String, String)) -> any
 /// The authority couldn't be reached or went away mid-call: worth asking again.
 fn transient(e: &anyhow::Error) -> bool {
     let m = e.to_string();
-    ["went away", "can't reach", "didn't answer", "isn't linked", "closed the tools socket", "stopped waiting"]
-        .iter()
-        .any(|s| m.contains(s))
+    [
+        "went away",
+        "can't reach",
+        "didn't answer",
+        "isn't linked",
+        "closed the tools socket",
+        "stopped waiting",
+        // The control plane, or the proxy in front of it, restarting (a node before 0.4.2 doesn't retry these).
+        "502 Bad Gateway",
+        "503 Service Unavailable",
+        "504 Gateway Timeout",
+    ]
+    .iter()
+    .any(|s| m.contains(s))
 }
 
 pub fn alive(pid: u32) -> bool {
@@ -542,4 +570,19 @@ fn list_text(v: &Value) -> String {
         }
     }
     o
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_503_on_the_way_to_the_authority_is_tried_again() {
+        // What a node before 0.4.2 answered when the control plane's proxy was restarting (28 Nov 2026).
+        let t = |m: &str| transient(&anyhow::anyhow!("{m}"));
+        assert!(t("leases@agents: HTTP error: 503 Service Unavailable"));
+        assert!(t("leases@agents: HTTP error: 502 Bad Gateway"));
+        assert!(!t("leases@agents: refused by the access policy"));
+        assert!(!t("leases@agents: HTTP error: 404 Not Found"));
+    }
 }
