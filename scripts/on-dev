@@ -57,6 +57,8 @@ run() {
   # script's process, so it's released even if this script is killed.
   local slot
   slot=$(slot_helper)
+  # fmt, check and clippy don't link: they take a light slot (more run at once); build and test take a heavy one.
+  case "$cmd" in fmt | format | check | clippy) export FLEETLAYER_DEV_SLOT_CLASS=light ;; *) export FLEETLAYER_DEV_SLOT_CLASS=heavy ;; esac
   if [ -n "$slot" ]; then
     slot_id=$(FLEETLAYER_LEASE_PID=$$ "$slot" acquire "fleetlayer on-dev $cmd ($(basename "$dir"))") || {
       echo "on-dev: couldn't take a build slot; running anyway" >&2

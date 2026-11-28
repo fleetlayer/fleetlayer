@@ -10,6 +10,8 @@
 # $FLEETLAYER_DEV_SLOT_KIND (default build-server), at the authority `fleetlayer lease` finds (or $FLEETLAYER_LEASES).
 set -eu
 kind=${FLEETLAYER_DEV_SLOT_KIND:-build-server}
+# on-dev says whether a command links (heavy) or not (light: fmt, check, clippy); light slots are a kind of their own.
+[ "${FLEETLAYER_DEV_SLOT_CLASS:-heavy}" = light ] && kind="${kind}-light"
 FLEETLAYER_LEASE_PID=${FLEETLAYER_LEASE_PID:-$PPID}
 export FLEETLAYER_LEASE_PID
 case "${1:-}" in

@@ -31,3 +31,11 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 dbg_macro = "deny"
+
+# Builds run on shared build servers with a few slots each: line tables only (backtraces keep file and line) make
+# debug and test builds link in a fraction of the memory and disk of full debuginfo.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
