@@ -219,7 +219,9 @@ pub async fn read_transcript(
 }
 
 /// Every transcript on another node searched for a caller on `from_node`. Only hits in sessions the caller may read
-/// without asking come back (the others are counted in `hidden`); the control plane passes them on and keeps none.
+/// without asking come back, each checked under every name its session goes by (a subagent's under its session's, an
+/// ended session's under the tabs it had); how many were left out isn't said. The node is asked for its most hits and
+/// the caller's limit applies to what's left. The control plane passes them on and keeps none.
 pub async fn search_transcripts(
     app: &App,
     tenant: &str,
@@ -227,12 +229,15 @@ pub async fn search_transcripts(
     s: l::TranscriptSearch,
 ) -> Result<l::TranscriptHits, RpcError> {
     let caller = format!("{}@{from_node}", s.caller);
+    crate::authz::search_rate(app, &caller)?;
     let server = app
         .links
         .peer(tenant, &s.node)
         .await
         .ok_or_else(|| RpcError::not_here(format!("node {} is offline", s.node)))?;
-    let serve = l::TranscriptSearchServe { query: s.query, caller: caller.clone() };
+    let limit = s.query.limit.unwrap_or(50).clamp(1, l::TRANSCRIPT_SEARCH_MAX) as usize;
+    let query = l::TranscriptQuery { limit: Some(l::TRANSCRIPT_SEARCH_MAX), ..s.query };
+    let serve = l::TranscriptSearchServe { query, caller: caller.clone() };
     let mut found: l::TranscriptHits = server
         .request_within(l::method::TRANSCRIPT_SEARCH_SERVE, &serve, Duration::from_secs(40))
         .await
@@ -243,16 +248,38 @@ pub async fn search_transcripts(
                 e
             }
         })?;
+    let mut decided: std::collections::HashMap<(String, Option<String>), bool> = Default::default();
     let mut kept = vec![];
     for h in std::mem::take(&mut found.hits) {
-        let target = format!("{}@{}", h.tab.as_deref().unwrap_or(&h.session_id), s.node);
-        if crate::authz::may_read(app, tenant, &caller, &target).await {
+        let key = (h.session_id.clone(), h.tab.clone());
+        let allowed = match decided.get(&key) {
+            Some(a) => *a,
+            None => {
+                let mut names = crate::authz::session_names(app, &format!("{}@{}", h.session_id, s.node)).await;
+                if let Some(t) = &h.tab {
+                    names.push(format!("{t}@{}", s.node));
+                }
+                let mut all = true;
+                for n in &names {
+                    if !crate::authz::may_read(app, tenant, &caller, n).await {
+                        all = false;
+                        break;
+                    }
+                }
+                decided.insert(key, all);
+                all
+            }
+        };
+        if allowed {
             kept.push(h);
-        } else {
-            found.hidden += 1;
         }
     }
+    if kept.len() > limit {
+        kept.truncate(limit);
+        found.partial = true;
+    }
     found.hits = kept;
+    found.hidden = 0;
     found.node = s.node;
     Ok(found)
 }
@@ -518,7 +545,12 @@ mod tests {
                 }
                 if method == l::method::TRANSCRIPT_SEARCH_SERVE {
                     let hit = |tab: &str| json!({"sessionId": format!("id-{tab}"), "tab": tab, "offset": 0, "excerpt": "sc-1"});
-                    return Ok(json!({"node": "home", "hits": [hit("review"), hit("private")], "searched": 2}));
+                    // An ended session's hit and a subagent's carry no tab: only the session ID.
+                    let ended = json!({"sessionId": "id-billing", "offset": 5, "excerpt": "sc-1"});
+                    let sub = json!({"sessionId": "id-billing", "agentId": "a9", "offset": 7, "excerpt": "sc-1"});
+                    return Ok(
+                        json!({"node": "home", "hits": [hit("private"), ended, sub, hit("review")], "searched": 3}),
+                    );
                 }
                 assert_eq!(method, l::method::SESSION_SERVE);
                 Ok(json!({"node": "home", "tab": p["tab"], "address": "w1-1", "sessionId": "s1", "promptError": null}))
@@ -728,22 +760,71 @@ mod tests {
             assert!(crate::handoffs::by_id(&app.db, "default", "h00000000000000bb").await.unwrap().is_none());
         }
 
-        /// A search on another node passes on only the hits in sessions the caller may read, and counts the rest.
+        /// A search on another node passes on only the hits in sessions the caller may read, checked under every name
+        /// the session goes by: an ended session (and its subagents) still under the tab it had. How many were left out
+        /// isn't said, and the caller's limit counts only what it may read.
         #[tokio::test]
-        async fn a_transcript_search_keeps_only_hits_the_caller_may_read() {
+        async fn a_transcript_search_keeps_only_hits_the_caller_may_read_under_any_name() {
             let (app, home) = fleet().await;
-            let policy = "version: 2\ndefault: allow\nask: []\ndeny:\n  - { who: \"planning@*\", can: read, to: \"private@home\" }\n";
+            let policy = "version: 2\ndefault: allow\nask: []\ndeny:\n  - { who: \"planning@*\", can: read, to: [\"private@home\", \"billing@home\"] }\n";
             crate::authz::store(&app.db, "default", policy).await.unwrap();
-            let s = l::TranscriptSearch {
+            // billing ran on home, then ended: home no longer lists it.
+            crate::db::replace_sessions(
+                &app.db,
+                "default",
+                "home",
+                &[json!({"sessionId": "id-billing", "meta": {"tab": "billing"}})],
+            )
+            .await
+            .unwrap();
+            crate::db::replace_sessions(&app.db, "default", "home", &[]).await.unwrap();
+            let names = crate::authz::session_names(&app, "id-billing@home").await;
+            assert!(names.iter().any(|n| n == "billing@home"), "{names:?}");
+
+            let search = |limit| l::TranscriptSearch {
                 node: "home".into(),
-                query: l::TranscriptQuery { text: "sc-1".into(), ..Default::default() },
+                query: l::TranscriptQuery { text: "sc-1".into(), limit: Some(limit), ..Default::default() },
                 caller: "planning".into(),
             };
-            let found = search_transcripts(&app, "default", "laptop", s).await.unwrap();
+            let found = search_transcripts(&app, "default", "laptop", search(1)).await.unwrap();
             let tabs: Vec<_> = found.hits.iter().map(|h| h.tab.as_deref()).collect();
-            assert_eq!((tabs, found.hidden, found.searched), (vec![Some("review")], 1, 2));
+            assert_eq!((tabs, found.hidden, found.searched), (vec![Some("review")], 0, 3));
             assert_eq!(home.served.lock().await[0]["caller"], "planning@laptop");
             assert_eq!(home.served.lock().await[0]["text"], "sc-1");
+            assert_eq!(home.served.lock().await[0]["limit"], 500, "the node is asked for its most, then filtered");
+        }
+
+        /// Each search scans a node's disk: one caller gets ten a minute.
+        #[tokio::test]
+        async fn transcript_searches_are_rate_limited_per_caller() {
+            let (app, _home) = fleet().await;
+            for _ in 0..crate::authz::SEARCHES_PER_MINUTE {
+                crate::authz::search_rate(&app, "planning@laptop").unwrap();
+            }
+            let e = crate::authz::search_rate(&app, "planning@laptop").unwrap_err();
+            assert!(e.message.contains("wait a little"), "{}", e.message);
+            crate::authz::search_rate(&app, "review@laptop").unwrap();
+        }
+
+        /// A tab on one node named like another node's session ID isn't that session: handing it off needs read.
+        #[tokio::test]
+        async fn a_tab_named_like_another_node_s_session_id_can_t_hand_it_off() {
+            let (app, home) = fleet().await;
+            let policy = "version: 2\ndefault: allow\nask: []\ndeny:\n  - { who: \"p1@laptop\", can: read }\n";
+            crate::authz::store(&app.db, "default", policy).await.unwrap();
+            crate::db::replace_sessions(
+                &app.db,
+                "default",
+                "home",
+                &[json!({"sessionId": "p1", "meta": {"tab": "billing"}})],
+            )
+            .await
+            .unwrap();
+            let e = crate::handoffs::start(&app, "default", "laptop", handoff("p1", "p1@home", "h00000000000000c1"))
+                .await
+                .unwrap_err();
+            assert!(e.message.contains("deny[0]"), "{}", e.message);
+            assert!(home.served.lock().await.is_empty());
         }
 
         #[tokio::test]

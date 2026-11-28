@@ -20,6 +20,11 @@ use crate::Node;
 
 /// One of this node's sessions' transcripts, the part `range` names.
 pub async fn read_here(node: &Node, name: &str, range: &TranscriptRange) -> Result<TranscriptChunk, RpcError> {
+    if let Some(a) = &range.agent_id
+        && (!(1..=64).contains(&a.len()) || !a.bytes().all(|b| b.is_ascii_hexdigit()))
+    {
+        return Err(RpcError::invalid_params("an agent ID is hex digits"));
+    }
     let ask = |id: &str| json!({"sessionId": id, "agentId": range.agent_id});
     let (session_id, v): (String, Value) = match crate::deliver::resolve(node, name).await {
         Ok(session) => {
@@ -36,6 +41,7 @@ pub async fn read_here(node: &Node, name: &str, range: &TranscriptRange) -> Resu
         }
         // A session that ended (not listed any more, as a transcript search finds them): its ID, asked of every
         // harness plugin that knows transcripts.
+        Err(e) if !is_session_id(name) => return Err(e),
         Err(e) => {
             let mut found = None;
             for p in &node.plugins {
@@ -83,6 +89,14 @@ pub async fn read_here(node: &Node, name: &str, range: &TranscriptRange) -> Resu
         cut: read.cut,
         skipped: read.skipped,
     })
+}
+
+/// Whether `name` has a session ID's shape (a UUID): only such a name is passed to the harness plugins for a session
+/// this node no longer lists, never a caller's free text.
+pub fn is_session_id(name: &str) -> bool {
+    let parts: Vec<&str> = name.split('-').collect();
+    parts.len() == 5
+        && parts.iter().zip([8, 4, 4, 4, 12]).all(|(p, n)| p.len() == n && p.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
 /// A transcript here or on another node, for a caller on this node (`<name>` for a session, `plugin:<name>`).
@@ -524,10 +538,26 @@ fn human(n: u64) -> String {
 
 /// The shortest text a search looks for.
 const SEARCH_MIN: usize = 3;
+/// A search text sharing this many characters in a row with a delivered secret finds nothing (see
+/// `Scrubber::overlaps`).
+const SECRET_OVERLAP: usize = 6;
 /// How long one node's search may take before it answers with what it found (`partial`).
 const SEARCH_TIME: std::time::Duration = std::time::Duration::from_secs(25);
 /// How much text an excerpt shows on each side of the hit.
 const EXCERPT_SIDE: usize = 160;
+/// How much of a transcript is read at once while searching: lines are never read whole.
+const SEARCH_CHUNK: usize = 1 << 20;
+/// The most excerpt text one answer carries.
+const SEARCH_BYTES: usize = 256 * 1024;
+/// How many searches this node runs in a minute, whoever asks (each reads its transcripts).
+const SEARCHES_PER_MINUTE: usize = 30;
+
+/// One search at a time on this node, and at most [`SEARCHES_PER_MINUTE`].
+fn search_slot() -> &'static tokio::sync::Mutex<std::collections::VecDeque<std::time::Instant>> {
+    static S: std::sync::OnceLock<tokio::sync::Mutex<std::collections::VecDeque<std::time::Instant>>> =
+        std::sync::OnceLock::new();
+    S.get_or_init(Default::default)
+}
 
 /// Search every transcript the harness plugins here know (their sessions' and their subagents') for `q.text`, newest
 /// first, with each excerpt redacted.
@@ -536,12 +566,20 @@ pub async fn search_here(node: &Node, q: &l::TranscriptQuery) -> Result<l::Trans
     if text.len() < SEARCH_MIN {
         return Err(RpcError::invalid_params(format!("search for at least {SEARCH_MIN} characters")));
     }
-    let scrubber = node.secrets.scrubber();
-    if scrubber.scrub(&text).0 != text.as_str() {
-        return Err(RpcError::refused(
-            "that text is a secret delivered to this node: transcripts aren't searched for it",
-        ));
+    let mut recent = tokio::time::timeout(Duration::from_secs(30), search_slot().lock())
+        .await
+        .map_err(|_| RpcError::refused(format!("{} is busy with another transcript search: try again", node.name)))?;
+    let now = std::time::Instant::now();
+    while recent.front().is_some_and(|t| now.duration_since(*t) >= Duration::from_secs(60)) {
+        recent.pop_front();
     }
+    if recent.len() >= SEARCHES_PER_MINUTE {
+        return Err(RpcError::refused(format!(
+            "{} ran {SEARCHES_PER_MINUTE} transcript searches in the last minute: wait a little",
+            node.name
+        )));
+    }
+    recent.push_back(now);
     let mut files: Vec<ext::TranscriptFile> = vec![];
     for p in &node.plugins {
         if !p.roles().await.harness.is_some_and(|h| h.list) {
@@ -558,6 +596,13 @@ pub async fn search_here(node: &Node, q: &l::TranscriptQuery) -> Result<l::Trans
             Err(e) => tracing::warn!(plugin = %p.name(), "listing transcripts: {}", e.message),
         }
     }
+    let scrubber = node.secrets.scrubber();
+    // A text that shares a piece of a delivered secret finds nothing, answered just as a search that found nothing:
+    // hit or miss would say whether that piece is in the transcripts.
+    if scrubber.overlaps(&text, SECRET_OVERLAP) {
+        tracing::warn!("a transcript search for a piece of a delivered secret was answered with nothing");
+        return Ok(l::TranscriptHits { node: node.name.clone(), searched: files.len() as u64, ..Default::default() });
+    }
     let tabs: std::collections::HashMap<String, String> = node
         .registry
         .all()
@@ -565,7 +610,7 @@ pub async fn search_here(node: &Node, q: &l::TranscriptQuery) -> Result<l::Trans
         .into_iter()
         .filter_map(|s| Some((s.session_id.clone(), s.tab()?.to_string())))
         .collect();
-    let limit = q.limit.unwrap_or(50).clamp(1, 500) as usize;
+    let limit = q.limit.unwrap_or(50).clamp(1, l::TRANSCRIPT_SEARCH_MAX) as usize;
     let per = q.per_session.unwrap_or(3).clamp(1, 100) as usize;
     let deadline = std::time::Instant::now() + SEARCH_TIME;
     let (mut found, hits) = tokio::task::spawn_blocking(move || {
@@ -579,6 +624,7 @@ pub async fn search_here(node: &Node, q: &l::TranscriptQuery) -> Result<l::Trans
     })
     .await
     .map_err(|e| RpcError::internal(e.to_string()))?;
+    drop(recent);
     node.secrets.report(&hits, &format!("a transcript search on {}", node.name));
     for h in &mut found.hits {
         h.tab = tabs.get(&h.session_id).cloned();
@@ -615,14 +661,27 @@ pub async fn search(
     }
 }
 
-/// Look through `files`, newest first, for `text` whatever its case: at most `per` hits in one file and `limit` in
-/// all, until `deadline`. `clean` redacts the text around a hit before the excerpt is cut from it.
+/// Look through `files`, newest first, for `text` whatever its case: at most one hit a line, `per` in one file and
+/// `limit` in all, until `deadline` or [`SEARCH_BYTES`] of excerpts. `clean` redacts the text around a hit before the
+/// excerpt is cut from it.
 pub fn search_files(
+    files: Vec<ext::TranscriptFile>,
+    text: &str,
+    limit: usize,
+    per: usize,
+    deadline: std::time::Instant,
+    clean: &mut dyn FnMut(&str) -> String,
+) -> l::TranscriptHits {
+    search_files_in(files, text, limit, per, deadline, SEARCH_CHUNK, clean)
+}
+
+fn search_files_in(
     mut files: Vec<ext::TranscriptFile>,
     text: &str,
     limit: usize,
     per: usize,
     deadline: std::time::Instant,
+    chunk: usize,
     clean: &mut dyn FnMut(&str) -> String,
 ) -> l::TranscriptHits {
     let mut out = l::TranscriptHits::default();
@@ -633,40 +692,25 @@ pub fn search_files(
     let mut dated: Vec<_> = files.drain(..).map(|f| (modified(&f), f)).collect();
     dated.sort_by_key(|a| std::cmp::Reverse(a.0));
     let total = dated.len();
+    let mut bytes = 0usize;
     for (i, (_, f)) in dated.into_iter().enumerate() {
-        if out.hits.len() >= limit || std::time::Instant::now() >= deadline {
+        if out.hits.len() >= limit || bytes >= SEARCH_BYTES || std::time::Instant::now() >= deadline {
             out.partial = i < total;
             break;
         }
         out.searched += 1;
-        let Ok(file) = std::fs::File::open(&f.path) else { continue };
-        let mut reader = std::io::BufReader::with_capacity(256 * 1024, file);
-        let (mut pos, mut in_file) = (0u64, 0usize);
-        loop {
-            let at = pos;
-            let line = match read_line(&mut reader, true) {
-                Ok(l) => l,
-                Err(_) => break, // the end (or a line still being written)
-            };
-            pos += line.len + 1;
-            let Some(m) = finder.find(&line.bytes) else {
-                if std::time::Instant::now() >= deadline {
-                    out.partial = true;
-                    break;
-                }
-                continue;
-            };
-            out.hits.push(l::TranscriptHit {
-                session_id: f.session_id.clone(),
-                agent_id: f.agent_id.clone(),
-                tab: None,
-                offset: at,
-                kind: top_level_type(&line.bytes),
-                timestamp: top_level_str(&line.bytes, b"timestamp"),
-                excerpt: excerpt(&line.bytes, m.start(), m.end(), &finder, clean),
-            });
-            in_file += 1;
-            if in_file >= per || out.hits.len() >= limit {
+        let Ok(found) = search_file(&f, &finder, text.len(), per.min(limit - out.hits.len()), deadline, chunk) else {
+            continue;
+        };
+        if found.1 {
+            out.partial = true;
+        }
+        for (offset, at) in found.0 {
+            let Some(hit) = hit_at(&f, offset, at, text.len(), &finder, clean) else { continue };
+            bytes += hit.excerpt.len();
+            out.hits.push(hit);
+            if bytes >= SEARCH_BYTES {
+                out.partial = true;
                 break;
             }
         }
@@ -674,37 +718,129 @@ pub fn search_files(
     out
 }
 
-/// The text around a hit: a wide window redacted first, then cut to [`EXCERPT_SIDE`] on each side of the text found
-/// again in it (not found: the text itself was redacted, and the window's middle is shown).
+/// One file read `chunk` bytes at a time: each hit as (where its line starts, where the text starts), at most one a
+/// line and `per` in all, and whether the deadline stopped it.
+fn search_file(
+    f: &ext::TranscriptFile,
+    finder: &aho_corasick::AhoCorasick,
+    len: usize,
+    per: usize,
+    deadline: std::time::Instant,
+    chunk: usize,
+) -> std::io::Result<(Vec<(u64, u64)>, bool)> {
+    let mut file = std::fs::File::open(&f.path)?;
+    let carry_max = len.saturating_sub(1);
+    let mut buf: Vec<u8> = Vec::with_capacity(chunk + carry_max);
+    // `buf` starts this far into the file; the line being read started at `line`; after a hit, the rest of its line is
+    // passed over.
+    let (mut base, mut line, mut skipping) = (0u64, 0u64, false);
+    let mut hits = vec![];
+    let mut piece = vec![0u8; chunk];
+    loop {
+        if std::time::Instant::now() >= deadline {
+            return Ok((hits, true));
+        }
+        let n = file.read(&mut piece)?;
+        if n == 0 {
+            return Ok((hits, false));
+        }
+        let carried = buf.len();
+        buf.extend_from_slice(&piece[..n]);
+        // The new hits (one may begin in the carried bytes) and the new newlines, in order. A hit has no newline in
+        // it, so one that began in the carried bytes is on the line the last piece ended in.
+        let mut events: Vec<(usize, bool)> = finder
+            .find_iter(&buf[..])
+            .filter(|m| m.end() > carried)
+            .map(|m| (m.start(), true))
+            .chain(buf[carried..].iter().enumerate().filter(|(_, b)| **b == b'\n').map(|(i, _)| (carried + i, false)))
+            .collect();
+        events.sort_unstable();
+        for (pos, is_hit) in events {
+            if !is_hit {
+                line = base + pos as u64 + 1;
+                skipping = false;
+            } else if !skipping {
+                hits.push((line, base + pos as u64));
+                skipping = true;
+                if hits.len() >= per {
+                    return Ok((hits, false));
+                }
+            }
+        }
+        // Keep the last few bytes, so a text across two pieces is found.
+        let keep = carry_max.min(buf.len());
+        base += (buf.len() - keep) as u64;
+        buf.drain(..buf.len() - keep);
+    }
+}
+
+/// The hit at `at` (its line starting at `line`): the line's type and time from its start, and an excerpt cut from a
+/// window around it, redacted first.
+fn hit_at(
+    f: &ext::TranscriptFile,
+    line: u64,
+    at: u64,
+    len: usize,
+    finder: &aho_corasick::AhoCorasick,
+    clean: &mut dyn FnMut(&str) -> String,
+) -> Option<l::TranscriptHit> {
+    const WIDE: u64 = 8192;
+    let mut file = std::fs::File::open(&f.path).ok()?;
+    let read_at = |file: &mut std::fs::File, from: u64, n: usize| -> Option<Vec<u8>> {
+        file.seek(SeekFrom::Start(from)).ok()?;
+        let mut b = Vec::with_capacity(n);
+        file.take(n as u64).read_to_end(&mut b).ok()?;
+        Some(b)
+    };
+    let head = read_at(&mut file, line, HEAD_KEEP)?;
+    let head = &head[..head.iter().position(|b| *b == b'\n').unwrap_or(head.len())];
+    let lo = at.saturating_sub(WIDE).max(line);
+    let mut window = read_at(&mut file, lo, (at - lo + len as u64 + WIDE) as usize)?;
+    // Only this line: up to its newline after the hit.
+    let hit_in = (at - lo) as usize;
+    if let Some(i) = window[hit_in..].iter().position(|b| *b == b'\n') {
+        window.truncate(hit_in + i);
+    }
+    Some(l::TranscriptHit {
+        session_id: f.session_id.clone(),
+        agent_id: f.agent_id.clone(),
+        tab: None,
+        offset: line,
+        kind: top_level_type(head),
+        timestamp: top_level_str(head, b"timestamp"),
+        excerpt: excerpt(&window, hit_in, lo > line, finder, clean),
+    })
+}
+
+/// The text around a hit in `window`: all of it redacted first, then cut to [`EXCERPT_SIDE`] on each side of the text
+/// found again in it (not found: the text itself was redacted, and the window's middle is shown).
 fn excerpt(
-    line: &[u8],
+    window: &[u8],
     start: usize,
-    end: usize,
+    more_before: bool,
     finder: &aho_corasick::AhoCorasick,
     clean: &mut dyn FnMut(&str) -> String,
 ) -> String {
-    const WIDE: usize = 8192;
-    let lo = start.saturating_sub(WIDE);
-    let hi = (end + WIDE).min(line.len());
-    let window = clean(&String::from_utf8_lossy(&line[lo..hi]));
-    let (s, e) = match finder.find(window.as_bytes()) {
+    let text = clean(&String::from_utf8_lossy(window));
+    let near = start.min(text.len());
+    let (s, e) = match finder.find_iter(text.as_bytes()).min_by_key(|m| m.start().abs_diff(near)) {
         Some(m) => (m.start(), m.end()),
-        None => (window.len() / 2, window.len() / 2),
+        None => (near, near),
     };
     let mut a = s.saturating_sub(EXCERPT_SIDE);
-    while !window.is_char_boundary(a) {
+    while !text.is_char_boundary(a) {
         a -= 1;
     }
-    let mut b = (e + EXCERPT_SIDE).min(window.len());
-    while !window.is_char_boundary(b) {
+    let mut b = (e + EXCERPT_SIDE).min(text.len());
+    while !text.is_char_boundary(b) {
         b += 1;
     }
     let mut out = String::new();
-    if a > 0 || lo > 0 {
+    if a > 0 || more_before {
         out.push('…');
     }
-    out.push_str(&window[a..b].replace("\\n", " "));
-    if b < window.len() || hi < line.len() {
+    out.push_str(&text[a..b].replace("\\n", " "));
+    if b < text.len() {
         out.push('…');
     }
     out
@@ -934,6 +1070,35 @@ mod tests {
         assert_eq!(found.hits.len(), 3, "at most per_session in one transcript");
         let found = search_files(vec![a.clone(), a], "SC-4242", 2, 3, later(), &mut |w: &str| w.to_string());
         assert_eq!((found.hits.len(), found.partial), (2, true), "the limit stops it, with a transcript left");
+    }
+
+    /// Files are read a piece at a time, never a line whole: a text split across two pieces is still found, once a
+    /// line, with the line's own start, even deep inside a line far longer than a piece.
+    #[test]
+    fn a_search_reads_pieces_and_finds_text_across_them_once_a_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let long = line("tool_result", &format!("{}ORDER-77881 and order-77881 again", "z".repeat(5000)));
+        let short = line("assistant", "see order-77881");
+        let f = tfile(dir.path(), "s", None, &format!("{long}{short}"));
+        for chunk in [7, 16, 1000, 1 << 20] {
+            let found =
+                search_files_in(vec![f.clone()], "order-77881", 50, 10, later(), chunk, &mut |w: &str| w.to_string());
+            let offsets: Vec<u64> = found.hits.iter().map(|h| h.offset).collect();
+            assert_eq!(offsets, [0, long.len() as u64], "chunk {chunk}: one hit a line, at the line's start");
+            assert_eq!(found.hits[0].kind.as_deref(), Some("user"));
+            assert!(found.hits[0].excerpt.contains("ORDER-77881"), "{}", found.hits[0].excerpt);
+            assert!(found.hits[0].excerpt.len() < 400);
+        }
+    }
+
+    /// A text that shares six characters with a delivered secret finds nothing, answered as a search that found
+    /// nothing, so hit or miss can't recover the secret a character at a time.
+    #[test]
+    fn a_search_for_a_piece_of_a_secret_finds_nothing() {
+        let s = fleetlayer_secrets::Secret { reference: "op://v/i/f".into(), value: "tok_9f8e7d6c5b4a".into() };
+        let scrubber = fleetlayer_secrets::scrub::Scrubber::new(std::slice::from_ref(&s));
+        assert!(scrubber.overlaps("tok_9f", SECRET_OVERLAP));
+        assert!(!scrubber.overlaps("order-77881", SECRET_OVERLAP));
     }
 
     /// The text around a hit is redacted before it's cut, so a secret beside an ID never shows.

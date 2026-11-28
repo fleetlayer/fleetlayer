@@ -79,6 +79,8 @@ pub struct Authz {
     fleet: RwLock<Option<(i64, Arc<Fleet>)>>,
     /// Recent messages per sender, for rate limits: (when, recipient).
     sent: Mutex<HashMap<String, VecDeque<(Instant, String)>>>,
+    /// Recent transcript searches per caller, for their rate limit.
+    searches: std::sync::Mutex<HashMap<String, VecDeque<Instant>>>,
     /// Policy files (`serve --policy-file`) that couldn't be applied, by path: why. Shown in `/healthz`.
     pub file_errors: std::sync::Mutex<std::collections::BTreeMap<String, String>>,
 }
@@ -289,6 +291,17 @@ pub async fn session_names(app: &App, target: &str) -> Vec<String> {
             }
             if !id.is_empty() && !ids.iter().any(|x| x == id) {
                 ids.push(id.to_string());
+            }
+        }
+    }
+    // An ended session, or one that has had other tabs: every tab name it went by is recorded.
+    for id in ids.clone().iter().chain(std::iter::once(&name.to_string())) {
+        for t in crate::db::recorded_tabs(&app.db, node, id).await.unwrap_or_default() {
+            if !tabs.contains(&t) {
+                tabs.push(t);
+            }
+            if !ids.contains(id) && id == name {
+                ids.push(id.clone());
             }
         }
     }
@@ -870,6 +883,27 @@ pub async fn untrusted(app: &App, _home: &str, who: &str) -> bool {
         // Not knowing is treated as untrusted: the message still arrives, marked as outside data.
         Err(_) => true,
     }
+}
+
+/// How many transcript searches one caller may ask of other nodes in a minute (each scans a node's disk).
+pub const SEARCHES_PER_MINUTE: usize = 10;
+
+/// Count a transcript search by `caller`, refusing one past [`SEARCHES_PER_MINUTE`].
+pub fn search_rate(app: &App, caller: &str) -> Result<(), RpcError> {
+    let now = Instant::now();
+    let mut all = app.authz.searches.lock().unwrap_or_else(|e| e.into_inner());
+    all.retain(|_, q| q.back().is_some_and(|t| now.duration_since(*t) < Duration::from_secs(60)));
+    let q = all.entry(caller.to_string()).or_default();
+    while q.front().is_some_and(|t| now.duration_since(*t) >= Duration::from_secs(60)) {
+        q.pop_front();
+    }
+    if q.len() >= SEARCHES_PER_MINUTE {
+        return Err(RpcError::refused(format!(
+            "{caller} searched transcripts {SEARCHES_PER_MINUTE} times in the last minute: wait a little"
+        )));
+    }
+    q.push_back(now);
+    Ok(())
 }
 
 /// Whether `who` sees session `target` in the fleet's list: version 2 tenants' `read` rules, and in a tenant without

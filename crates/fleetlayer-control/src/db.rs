@@ -340,13 +340,52 @@ pub async fn replace_sessions(db: &Db, tenant: &str, node: &str, sessions: &[ser
         .bind(now_ms())
         .execute(&mut *tx)
         .await?;
+        remember_name(&mut *tx, tenant, node, id, s).await?;
     }
     tx.commit().await?;
+    // A name not seen for a year is forgotten.
+    sqlx::query("DELETE FROM session_names WHERE seen_at < ?")
+        .bind(now_ms() - 365 * 24 * 3600 * 1000)
+        .execute(db)
+        .await?;
     Ok(())
+}
+
+/// Keep the tab name a session goes by, so it's still known once the session ends.
+async fn remember_name<'e>(
+    exec: impl sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    tenant: &str,
+    node: &str,
+    id: &str,
+    s: &serde_json::Value,
+) -> anyhow::Result<()> {
+    let Some(tab) = s["meta"]["tab"].as_str().filter(|t| !t.is_empty()) else { return Ok(()) };
+    sqlx::query(
+        "INSERT INTO session_names (tenant, node, session_id, tab, seen_at) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT (tenant, node, session_id, tab) DO UPDATE SET seen_at = excluded.seen_at",
+    )
+    .bind(tenant)
+    .bind(node)
+    .bind(id)
+    .bind(tab)
+    .bind(now_ms())
+    .execute(exec)
+    .await?;
+    Ok(())
+}
+
+/// Every tab name session `id` on `node` has gone by, ended or not.
+pub async fn recorded_tabs(db: &Db, node: &str, id: &str) -> anyhow::Result<Vec<String>> {
+    Ok(sqlx::query_scalar("SELECT tab FROM session_names WHERE node = ? AND session_id = ? ORDER BY seen_at DESC")
+        .bind(node)
+        .bind(id)
+        .fetch_all(db)
+        .await?)
 }
 
 pub async fn upsert_session(db: &Db, tenant: &str, node: &str, s: &serde_json::Value) -> anyhow::Result<()> {
     let Some(id) = s.get("sessionId").and_then(|v| v.as_str()) else { return Ok(()) };
+    remember_name(db, tenant, node, id, s).await?;
     sqlx::query("INSERT OR REPLACE INTO sessions (tenant, node, session_id, data, updated_at) VALUES (?, ?, ?, ?, ?)")
         .bind(tenant)
         .bind(node)

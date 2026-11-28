@@ -164,16 +164,17 @@ pub fn transcripts(claude_dir: &Path) -> Vec<fleetlayer_protocol::ext::Transcrip
         for path in entries.filter_map(|e| e.ok()).map(|e| e.path()) {
             let Some(name) = path.file_name().and_then(|n| n.to_str()).map(str::to_string) else { continue };
             if let Some(id) = name.strip_suffix(".jsonl") {
-                if path.is_file() {
+                if path.is_file() && is_session_id(id) {
                     out.push(file(id, None, &path));
                 }
             } else if path.is_dir()
+                && is_session_id(&name)
                 && let Ok(agents) = std::fs::read_dir(path.join("subagents"))
             {
                 for agent in agents.filter_map(|e| e.ok()).map(|e| e.path()) {
                     let stem = agent.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_suffix(".jsonl"));
-                    if let Some(stem) = stem {
-                        out.push(file(&name, Some(stem.strip_prefix("agent-").unwrap_or(stem).to_string()), &agent));
+                    if let Some(agent_id) = stem.and_then(|s| s.strip_prefix("agent-")).filter(|a| is_agent_id(a)) {
+                        out.push(file(&name, Some(agent_id.to_string()), &agent));
                     }
                 }
             }
@@ -182,8 +183,23 @@ pub fn transcripts(claude_dir: &Path) -> Vec<fleetlayer_protocol::ext::Transcrip
     out
 }
 
+/// Whether `id` is a Claude Code session ID: a UUID (8-4-4-4-12 hex digits). Only such an ID is ever made into a path.
+pub fn is_session_id(id: &str) -> bool {
+    let parts: Vec<&str> = id.split('-').collect();
+    parts.len() == 5
+        && parts.iter().zip([8, 4, 4, 4, 12]).all(|(p, n)| p.len() == n && p.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// Whether `id` is a subagent's ID: hex digits, as in `agent-<id>.jsonl`.
+pub fn is_agent_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// A subagent's transcript: `~/.claude/projects/<project>/<session id>/subagents/agent-<agent id>.jsonl`.
 pub fn subagent_transcript(claude_dir: &Path, session_id: &str, agent_id: &str) -> Option<PathBuf> {
+    if !is_session_id(session_id) || !is_agent_id(agent_id) {
+        return None;
+    }
     let projects = std::fs::read_dir(claude_dir.join("projects")).ok()?;
     projects
         .filter_map(|e| e.ok())
@@ -193,6 +209,9 @@ pub fn subagent_transcript(claude_dir: &Path, session_id: &str, agent_id: &str) 
 
 /// A session's transcript: `~/.claude/projects/<project>/<session id>.jsonl`.
 pub fn transcript(claude_dir: &Path, session_id: &str) -> Option<PathBuf> {
+    if !is_session_id(session_id) {
+        return None;
+    }
     let projects = std::fs::read_dir(claude_dir.join("projects")).ok()?;
     projects.filter_map(|e| e.ok()).map(|e| e.path().join(format!("{session_id}.jsonl"))).find(|p| p.is_file())
 }
@@ -201,21 +220,40 @@ pub fn transcript(claude_dir: &Path, session_id: &str) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    /// A name from a caller is never made into a path: only a session ID (a UUID) and an agent ID (hex) are looked
+    /// up, so `../` can't reach another project's transcript or any other file.
+    #[test]
+    fn a_transcript_is_found_only_by_a_real_session_or_agent_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("projects").join("-srv-app");
+        std::fs::create_dir_all(project.join("0b1c2d3e-0000-4000-8000-000000000001").join("subagents")).unwrap();
+        std::fs::write(dir.path().join("projects").join("other.jsonl"), "{}\n").unwrap();
+        std::fs::write(dir.path().join("secret.jsonl"), "{}\n").unwrap();
+        assert_eq!(transcript(dir.path(), "../other"), None);
+        assert_eq!(transcript(dir.path(), "../../secret"), None);
+        let id = "0b1c2d3e-0000-4000-8000-000000000001";
+        std::fs::write(project.join(format!("{id}.jsonl")), "{}\n").unwrap();
+        assert!(transcript(dir.path(), id).is_some());
+        assert_eq!(subagent_transcript(dir.path(), id, "../../../../secret"), None);
+        assert_eq!(subagent_transcript(dir.path(), "../-srv-app", "a9"), None);
+    }
+
     #[test]
     fn transcripts_are_listed_with_their_subagents() {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().join("projects").join("-srv-app");
-        std::fs::create_dir_all(project.join("s1").join("subagents")).unwrap();
-        std::fs::write(project.join("s1.jsonl"), "{}\n").unwrap();
-        std::fs::write(project.join("s1").join("subagents").join("agent-a9.jsonl"), "{}\n").unwrap();
+        let s1 = "0b1c2d3e-0000-4000-8000-0000000000aa";
+        std::fs::create_dir_all(project.join(s1).join("subagents")).unwrap();
+        std::fs::write(project.join(format!("{s1}.jsonl")), "{}\n").unwrap();
+        std::fs::write(project.join(s1).join("subagents").join("agent-a9.jsonl"), "{}\n").unwrap();
         std::fs::write(project.join("notes.txt"), "").unwrap();
         let mut list = transcripts(dir.path());
         list.sort_by(|a, b| a.path.cmp(&b.path));
         let got: Vec<(&str, Option<&str>)> =
             list.iter().map(|t| (t.session_id.as_str(), t.agent_id.as_deref())).collect();
-        assert_eq!(got, [("s1", None), ("s1", Some("a9"))]);
-        assert_eq!(subagent_transcript(dir.path(), "s1", "a9"), Some(project.join("s1/subagents/agent-a9.jsonl")));
-        assert_eq!(subagent_transcript(dir.path(), "s1", "zz"), None);
+        assert_eq!(got, [(s1, None), (s1, Some("a9"))]);
+        assert_eq!(subagent_transcript(dir.path(), s1, "a9"), Some(project.join(s1).join("subagents/agent-a9.jsonl")));
+        assert_eq!(subagent_transcript(dir.path(), s1, "zz"), None);
     }
 
     #[test]

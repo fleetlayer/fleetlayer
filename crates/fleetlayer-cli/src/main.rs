@@ -1107,9 +1107,6 @@ fn print_hits(v: &Value) {
     if v["partial"].as_bool() == Some(true) {
         notes.push("stopped early: raise --limit or narrow the text".into());
     }
-    if let Some(n) = v["hidden"].as_u64().filter(|n| *n > 0) {
-        notes.push(format!("{n} hits in sessions you may read only by asking"));
-    }
     eprintln!("-- {node}: {} hits ({})", v["hits"].as_array().map_or(0, Vec::len), notes.join("; "));
 }
 

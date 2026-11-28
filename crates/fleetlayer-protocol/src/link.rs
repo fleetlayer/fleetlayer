@@ -606,7 +606,8 @@ pub struct TranscriptSearchServe {
 }
 
 /// What to look for: `text`, found whatever its case, in every transcript on the node (subagents' too), newest
-/// first. At most `limit` hits (default 50, at most 500), and at most `perSession` in one transcript (default 3).
+/// first. At most `limit` hits (default 50, at most [`TRANSCRIPT_SEARCH_MAX`]), and at most `perSession` in one
+/// transcript (default 3).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptQuery {
@@ -616,6 +617,9 @@ pub struct TranscriptQuery {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub per_session: Option<u32>,
 }
+
+/// The most hits a transcript search returns.
+pub const TRANSCRIPT_SEARCH_MAX: u32 = 500;
 
 /// What a node's transcripts hold of a text.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -628,7 +632,8 @@ pub struct TranscriptHits {
     /// The search stopped early (the limit, or its time ran out) with transcripts it didn't look through.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub partial: bool,
-    /// Hits left out because the caller may read their sessions only by asking (read one to ask).
+    /// Always 0: hits in sessions the caller may not read are left out without saying how many (a count would tell
+    /// which sessions hold the text). Kept for older readers.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub hidden: u64,
 }

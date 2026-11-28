@@ -8,6 +8,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+regex = "1.13.2"
 fleetlayer-protocol.workspace = true
 fleetlayer-plugin.workspace = true
 serde.workspace = true

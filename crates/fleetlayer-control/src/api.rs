@@ -225,15 +225,18 @@ pub async fn get_handoffs(
     Ok(Json(json!({"handoffs": handoffs})))
 }
 
-/// `GET /v1/handoffs/<id>`: one handoff, with its note.
+/// `GET /v1/handoffs/<id>`: one handoff. Its note (the old session's own words) comes only with the admin token: a
+/// read or delegate token can't be checked for `read` on the session it came from, so it gets the handoff without it.
 pub async fn get_handoff(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> ApiResult {
     guard(&app, &headers).await?;
+    let admin = matches!(scope_of(&app, &headers).await, Some(Scope::Admin));
     match crate::handoffs::by_id(&app.db, DEFAULT_TENANT, &id).await.map_err(internal)? {
-        Some(h) => Ok(Json(json!(h))),
+        Some(h) if admin => Ok(Json(json!(h))),
+        Some(h) => Ok(Json(json!(fleetlayer_protocol::link::Handoff { note: None, ..h }))),
         None => Err((StatusCode::NOT_FOUND, format!("there's no handoff {id}"))),
     }
 }
@@ -816,6 +819,31 @@ mod tests {
             (tools["tools"][0]["node"].clone(), tools["tools"][0]["online"].clone()),
             (json!("laptop"), json!(false))
         );
+    }
+
+    /// A handoff's note is the old session's own words: over the API only the admin token reads it; a read or
+    /// delegate token gets the handoff without it.
+    #[tokio::test]
+    async fn a_handoff_note_is_only_for_the_admin_token() {
+        let app = app().await;
+        sqlx::query(
+            "INSERT INTO handoffs (tenant, id, from_address, to_address, note, by_address, created_at)
+             VALUES ('default', 'h00000000000000aa', 'billing@laptop', 'billing@home', 'the key is in vault x', 'billing@laptop', ?)",
+        )
+        .bind(db::now_ms())
+        .execute(&app.db)
+        .await
+        .unwrap();
+        let id = || axum::extract::Path("h00000000000000aa".to_string());
+        let read = db::add_token(&app.db, DEFAULT_TENANT, "dashboard", "read").await.unwrap();
+        let mut h = HeaderMap::new();
+        h.insert("authorization", format!("Bearer {read}").parse().unwrap());
+        let Json(v) = get_handoff(State(app.clone()), h, id()).await.unwrap();
+        assert_eq!((v["from"].as_str(), v.get("note")), (Some("billing@laptop"), None), "{v}");
+        let mut h = HeaderMap::new();
+        h.insert("authorization", "Bearer admin-token".parse().unwrap());
+        let Json(v) = get_handoff(State(app.clone()), h, id()).await.unwrap();
+        assert_eq!(v["note"], "the key is in vault x");
     }
 
     #[tokio::test]

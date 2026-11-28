@@ -275,16 +275,24 @@ goes in as it is.
 
 `fleetlayer transcript-search <text> [--on <nodes> | --all]` asks its node `node/transcript_search` `{text, limit?,
 perSession?, on?, caller?}` → `{node, hits: [{sessionId, agentId?, tab?, offset, kind?, timestamp?, excerpt}],
-searched, partial?, hidden?}`. The node lists every transcript its harness plugins know
-(`_fleetlayer.dev/harness/transcripts` → `{transcripts: [{sessionId, agentId?, path, format}]}`, from a plugin whose
-harness role says `list`; Claude Code's include each session's subagents) and looks through them newest first for the
-text whatever its case: at most `perSession` hits in one transcript (3), `limit` in all (50, at most 500), for 25
-seconds, then answers with `partial`. Each excerpt is cut from a wide window around the hit after that window is
-redacted; text that is itself a delivered secret is refused. Another node's search goes through the control plane
-(`link/transcript_search` → `link/transcript_search_serve`), which keeps only the hits in sessions the caller may read
-without asking and counts the others in `hidden`. With `--all` the CLI asks each linked node at once and prints each
-answer as it comes. `fleetlayer transcript <session> --agent <agentId>` (`agentId` in a read) reads a subagent's
-transcript, and a session ID the node no longer lists is read from the harness plugins that know it.
+searched, partial?}`. The node lists every transcript its harness plugins know (`_fleetlayer.dev/harness/transcripts`
+→ `{transcripts: [{sessionId, agentId?, path, format}]}`, from a plugin whose harness role says `list`; Claude Code's
+include each session's subagents) and reads them newest first, a megabyte at a time (never a line whole), for the text
+whatever its case: one hit a line, at most `perSession` in one transcript (3), `limit` in all (50, at most 500), 256 KB
+of excerpts, for 25 seconds, then answers with `partial`. Each excerpt is cut from a window around the hit after that
+window is redacted. A text sharing six characters in a row with a delivered secret (any case, or JSON-escaped) finds
+nothing, answered exactly as a search that found nothing, so hits can't recover a secret a character at a time. A node
+runs one search at a time and 30 a minute.
+
+Another node's search goes through the control plane (`link/transcript_search` → `link/transcript_search_serve`), 10 a
+minute per caller. It asks the node for its most hits, keeps only those in sessions the caller may read without asking,
+each checked under every name the session goes by (a subagent's under its session's; an ended session's under every tab
+it had, which the control plane records), then applies the caller's limit. How many were left out isn't said (`hidden`
+is always 0). With `--all` the CLI asks each linked node at once and prints each answer as it comes.
+
+`fleetlayer transcript <session> --agent <agentId>` (`agentId` in a read, hex digits) reads a subagent's transcript,
+and a session ID the node no longer lists (a UUID; never other text) is read from the harness plugins that know it,
+checked under the tabs it had.
 
 ### Handoffs
 
@@ -296,13 +304,17 @@ session's first prompt: who it takes over from, the note (or, past 2,000 charact
 <id>` to read it) and how to read the old transcript (`fleetlayer transcript <from> --tail … --types user,assistant`),
 rendered as a message from the caller. It goes through the control plane even to the same node (`link/session_handoff`,
 [link.md](link.md)), which checks `start` on the new session and `read` on the old one when someone else hands it off,
-keeps the note (64 KB at most) and starts the session as `link/session_start` does. The old session keeps running.
+keeps the note (64 KB at most, with well-known secret formats redacted: GitHub, AWS, Slack, Stripe, OpenAI, Anthropic
+and Google keys, private keys, JSON web tokens…) for 30 days (`handoff_days:` in `control.yaml`), and starts the
+session as `link/session_start` does. Only the old session itself, on its own node, hands off without `read` on it. The
+old session keeps running.
 
 `node/handoff_get` `{id, why?, caller?}` (`fleetlayer session handoff-note`) → `{id, from, fromSessionId?, to,
 toSessionId?, note?, by, createdAt}`: for the session the work went to, or a caller with `read` on the one it came from.
 `/v1/fleet` marks each session with `handoffFrom` `{id, from, fromSessionId, at}` and `handoffTo` `{id, to,
 toSessionId, at}` (the newest), matched by session ID when known; `/v1/handoffs` lists the newest 200 (`?since=<cursor>`: the feed after it, oldest first, with `nextCursor`) and
-`/v1/handoffs/<id>` has one with its note.
+`/v1/handoffs/<id>` has one, with its note only for the admin token (a read or delegate token can't be checked for
+`read` on the session it came from).
 
 ### Terminals
 

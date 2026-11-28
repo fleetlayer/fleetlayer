@@ -555,6 +555,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
     let mut cli = Cli::parse();
     let settings = settings::Settings::load(cli.config.as_deref(), cli.db.is_some())?;
+    handoffs::keep_for(settings.handoff_days.unwrap_or(handoffs::DEFAULT_DAYS));
     if cli.db.is_none() {
         cli.db = settings.db.clone();
     }

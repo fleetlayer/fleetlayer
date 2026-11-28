@@ -178,6 +178,21 @@ impl Scrubber {
     }
 
     /// `text` with every secret replaced by `[REDACTED <reference>]`, and what was found (each reference and form once).
+    /// Whether `text` shares `min` or more characters in a row with a secret's value, in any case, as it is or
+    /// JSON-escaped. A search for such a text would tell, by finding something or not, whether that piece of the
+    /// secret is there, and so recover it a character at a time; searches refuse it.
+    pub fn overlaps(&self, text: &str, min: usize) -> bool {
+        let t = text.to_ascii_lowercase();
+        if min == 0 || t.len() < min {
+            return false;
+        }
+        self.values.iter().any(|v| {
+            [v.to_ascii_lowercase(), json_inner(v).to_ascii_lowercase()]
+                .iter()
+                .any(|v| v.len() >= min && t.as_bytes().windows(min).any(|w| v.as_bytes().windows(min).any(|x| x == w)))
+        })
+    }
+
     pub fn scrub<'a>(&self, text: &'a str) -> (Cow<'a, str>, Vec<Hit>) {
         let Some(m) = &self.matcher else { return (Cow::Borrowed(text), vec![]) };
         let mut out = String::new();
@@ -225,6 +240,17 @@ impl Scrubber {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_text_sharing_six_characters_with_a_secret_overlaps_it() {
+        let s = Scrubber::new(&[Secret { reference: "op://v/i/f".into(), value: "tok_\"9f8e7d6c5b4a".into() }]);
+        assert!(s.overlaps("TOK_\"9", 6), "a prefix, in another case");
+        assert!(s.overlaps("x 8e7d6c y", 6), "a piece in the middle");
+        assert!(s.overlaps("tok_\\\"9f", 6), "JSON-escaped, as transcripts hold it");
+        assert!(s.overlaps("token tok_\"9f8e7d6c5b4a!", 6), "the whole secret inside");
+        assert!(!s.overlaps("tok_\"", 6), "five characters say little");
+        assert!(!s.overlaps("order-77881", 6));
+    }
 
     fn s(r: &str, v: &str) -> Secret {
         Secret { reference: r.into(), value: v.into() }
