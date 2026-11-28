@@ -1090,18 +1090,19 @@ async fn main() -> anyhow::Result<()> {
         },
         Command::Token { command } => match command {
             TokenCommand::Add { name, scope, owner } => {
+                let owner_handle = owner.as_deref().map(|o| o.trim_start_matches("person:").to_string());
                 let owner = match owner {
                     Some(o) => {
                         let fleet = directory::Fleet::load(&db).await?;
-                        let person = stepup::owner_may_approve(&fleet, t, Some(&o))
-                            .map_err(|e| anyhow::anyhow!("{}", e.replace("this approve token's owner", "the owner")))?;
-                        Some(person)
+                        let id = stepup::admin_by_handle(&fleet, t, &o)
+                            .map_err(|e| anyhow::anyhow!("an approve token's owner must be one of its admins: {e}"))?;
+                        Some(id)
                     }
                     None => None,
                 };
                 let token = db::add_owned_token(&db, t, &name, &scope, owner.as_deref()).await?;
                 let what = match &owner {
-                    Some(o) => format!("scope {scope}, owner {o}"),
+                    Some(o) => format!("scope {scope}, owner {o} (person:{})", owner_handle.as_deref().unwrap_or("?")),
                     None => format!("scope {scope}"),
                 };
                 people::log(&db, t, &cli.actor, "token.add", &format!("token:{name}"), &what).await?;

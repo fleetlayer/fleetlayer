@@ -70,15 +70,34 @@ async fn guard_approvals(app: &App, headers: &HeaderMap) -> Result<(), (StatusCo
     }
 }
 
-/// Who decides with the request's token: the admin token (`admin token`), or an approve token's owner, checked to be
-/// one of the tenant's admins now (`person:<handle> (token <name>)`, and the owner alone). Anything else is refused.
-async fn approver(
-    app: &App,
-    headers: &HeaderMap,
-    what: &str,
-) -> Result<(String, Option<String>), (StatusCode, String)> {
+/// Who decides with the request's token.
+struct Approver {
+    /// As recorded: `admin token`, or `person:<handle> (token <name>)`.
+    by: String,
+    /// An approve token's owner (a person ID); None for the admin token.
+    person: Option<String>,
+}
+
+/// Write a refused deck decision to the audit log (an approve token refused by its owner's standing or a missing
+/// passkey), so attempts with a stolen token show.
+async fn audit_refusal(app: &App, subject: &str, target: &str, reason: String) {
+    let entry = crate::audit::Entry {
+        decision: "denied".into(),
+        subject: subject.into(),
+        verb: "approve".into(),
+        target: target.into(),
+        reason,
+    };
+    if let Err(e) = app.audit.record(&app.db, DEFAULT_TENANT, entry).await {
+        tracing::error!(target, "a refused approval's audit entry couldn't be written: {e}");
+    }
+}
+
+/// Who decides with the request's token: the admin token, or an approve token's owner, checked to be one of the
+/// tenant's admins now. Anything else is refused; an approve token refused for its owner is audited, as about `target`.
+async fn approver(app: &App, headers: &HeaderMap, what: &str, target: &str) -> Result<Approver, (StatusCode, String)> {
     match scope_of(app, headers).await {
-        Some(Scope::Admin) => Ok(("admin token".into(), None)),
+        Some(Scope::Admin) => Ok(Approver { by: "admin token".into(), person: None }),
         Some(Scope::Approve) => {
             let token = headers
                 .get("authorization")
@@ -90,9 +109,13 @@ async fn approver(
                 .map_err(internal)?
                 .ok_or((StatusCode::UNAUTHORIZED, "unknown token".to_string()))?;
             let fleet = app.authz.fleet(&app.db).await.map_err(internal)?;
-            let person = crate::stepup::owner_may_approve(&fleet, DEFAULT_TENANT, owner.as_deref())
-                .map_err(|e| (StatusCode::FORBIDDEN, e))?;
-            Ok((format!("{person} (token {name})"), Some(person)))
+            match crate::stepup::owner_may_approve(&fleet, DEFAULT_TENANT, owner.as_deref()) {
+                Ok((id, handle)) => Ok(Approver { by: format!("{handle} (token {name})"), person: Some(id) }),
+                Err(e) => {
+                    audit_refusal(app, &format!("token {name}"), target, e.clone()).await;
+                    Err((StatusCode::FORBIDDEN, e))
+                }
+            }
         }
         Some(_) => Err((StatusCode::FORBIDDEN, format!("{what} needs an admin or approve token"))),
         None => Err((StatusCode::UNAUTHORIZED, format!("{what} needs an admin or approve token"))),
@@ -234,16 +257,16 @@ pub struct ApprovalBody {
     hold: Option<String>,
 }
 
-/// `POST /v1/approvals/<id>` `{approve, for?}`: decide a pending request. Admin tokens only: approving widens what an
-/// agent may do.
+/// `POST /v1/approvals/<id>` `{approve, for?}`: decide a pending request, with the admin token or an approve token
+/// (`stepup.rs`): approving widens what an agent may do.
 pub async fn post_approval(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     axum::extract::Path(id): axum::extract::Path<String>,
     Json(body): Json<ApprovalBody>,
 ) -> ApiResult {
-    let (by, person) = approver(&app, &headers, "deciding a request").await?;
-    let hold = body
+    let Approver { by, person } = approver(&app, &headers, "deciding a request", &id).await?;
+    let asked = body
         .hold
         .as_deref()
         .map(crate::policy::parse_duration_ms)
@@ -254,20 +277,29 @@ pub async fn post_approval(
         .map_err(internal)?
         .filter(|v| v["status"] == "pending")
         .ok_or_else(|| (StatusCode::NOT_FOUND, format!("no pending request {id}")))?;
-    // Opening a role window from a deck needs its owner's passkey for this very request (`stepup.rs`).
+    // An approve token grants no longer than the request asked for (`stepup::capped_hold`); the admin token may.
+    let request_hold = view["holdMs"].as_i64().unwrap_or(0);
+    let hold = match person {
+        Some(_) => Some(crate::stepup::capped_hold(asked, request_hold)),
+        None => asked,
+    };
+    // Opening a role window from a deck needs its owner's passkey for this very request, covering the window it opens
+    // (`stepup.rs`).
     let window = crate::stepup::needs_stepup(view["verb"].as_str().unwrap_or(""), view["to"].as_str().unwrap_or(""));
     if body.approve
         && window
         && let Some(p) = &person
-        && !crate::stepup::consume(&app.db, DEFAULT_TENANT, &id, p).await.map_err(internal)?
+        && !crate::stepup::consume(&app.db, DEFAULT_TENANT, &id, p, hold.unwrap_or(request_hold))
+            .await
+            .map_err(internal)?
     {
-        return Err((
-            StatusCode::FORBIDDEN,
-            format!(
-                "opening a role window needs {p} to confirm request {id} with their passkey first, at the sign-in \
-                 service's /stepup page; then approve within 5 minutes"
-            ),
-        ));
+        let why = format!(
+            "opening a role window needs {} to confirm request {id} with their passkey first, at the sign-in \
+             service's /stepup page; then approve within 5 minutes, for no longer than the page showed",
+            by.split(' ').next().unwrap_or("its owner")
+        );
+        audit_refusal(&app, &by, &id, why.clone()).await;
+        return Err((StatusCode::FORBIDDEN, why));
     }
     // Fail closed, like every decision: nothing is approved without its entry in the audit log.
     let entry = crate::audit::Entry {
@@ -290,6 +322,14 @@ pub async fn post_approval(
     let done =
         crate::approvals::decide(&app.db, DEFAULT_TENANT, &id, body.approve, hold, &by).await.map_err(internal)?;
     let Some(d) = done else {
+        // Decided by someone else between the check and now: the entry above didn't take effect, and says so here.
+        audit_refusal(
+            &app,
+            &by,
+            &id,
+            format!("request {id} was decided by someone else first; this decision didn't count"),
+        )
+        .await;
         return Err((StatusCode::NOT_FOUND, format!("no pending request {id}")));
     };
     // A window opens at once, rather than at the loop's next pass.
@@ -312,13 +352,13 @@ pub async fn get_windows(State(app): State<Arc<App>>, headers: HeaderMap) -> Api
     Ok(Json(json!({"roles": roles, "windows": recent})))
 }
 
-/// `DELETE /v1/windows/<role>` (admin token): close a role's window now. `{closed}`.
+/// `DELETE /v1/windows/<role>` (admin or approve token): close a role's window now. `{closed}`.
 pub async fn delete_window(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     axum::extract::Path(role): axum::extract::Path<String>,
 ) -> ApiResult {
-    let (by, _) = approver(&app, &headers, "closing a window").await?;
+    let Approver { by, .. } = approver(&app, &headers, "closing a window", &format!("window:{role}")).await?;
     let closed = crate::windows::deactivate(&app, DEFAULT_TENANT, &role, &by).await.map_err(internal)?;
     Ok(Json(json!({"role": role, "closed": closed})))
 }
@@ -532,8 +572,11 @@ mod tests {
         let db = &app.db;
         let i = crate::people::NewInvite { handle: "sam", role: "admin", teams: &[], person: None };
         let code = crate::people::invite(db, DEFAULT_TENANT, i, "admin").await.unwrap();
-        crate::people::invite_redeem(db, &code, crate::people::Redeemer::New { display_name: "Sam" }).await.unwrap();
-        let deck = db::add_owned_token(db, DEFAULT_TENANT, "deck", "approve", Some("person:sam")).await.unwrap();
+        let sam = crate::people::invite_redeem(db, &code, crate::people::Redeemer::New { display_name: "Sam" })
+            .await
+            .unwrap()
+            .person;
+        let deck = db::add_owned_token(db, DEFAULT_TENANT, "deck", "approve", Some(&sam)).await.unwrap();
         let h = bearer(&deck);
         // It reads approvals and windows, and nothing else.
         assert!(get_approvals(State(app.clone()), h.clone()).await.is_ok());
@@ -562,17 +605,24 @@ mod tests {
             .unwrap_err();
         assert_eq!(e.0, StatusCode::FORBIDDEN);
         assert!(e.1.contains("passkey"), "{}", e.1);
-        crate::stepup::record(db, DEFAULT_TENANT, "ap_win", "person:kim", "signin").await.unwrap();
+        crate::stepup::record(db, DEFAULT_TENANT, "ap_win", "p_kim", "signin", 3_600_000).await.unwrap();
         assert!(
             post_approval(State(app.clone()), h.clone(), axum::extract::Path("ap_win".into()), body(true))
                 .await
                 .is_err(),
             "someone else's passkey doesn't count"
         );
-        crate::stepup::record(db, DEFAULT_TENANT, "ap_win", "person:sam", "signin").await.unwrap();
-        let _ = post_approval(State(app.clone()), h.clone(), axum::extract::Path("ap_win".into()), body(true))
-            .await
-            .unwrap();
+        crate::stepup::record(db, DEFAULT_TENANT, "ap_win", &sam, "signin", 3_600_000).await.unwrap();
+        // A longer `for` is capped at the request's own hold, which the step-up page showed, so it's covered.
+        let long = Json(ApprovalBody { approve: true, hold: Some("2h".into()) });
+        let _ = post_approval(State(app.clone()), h.clone(), axum::extract::Path("ap_win".into()), long).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT hold_ms FROM approvals WHERE id = 'ap_win'")
+                .fetch_one(db)
+                .await
+                .unwrap(),
+            3_600_000
+        );
         // The admin token needs no step-up; it's the operator's.
         pending(&app, "ap_win2", "activate", "window:admin").await;
         let _ =
@@ -595,6 +645,15 @@ mod tests {
             .unwrap_err();
         assert_eq!(e.0, StatusCode::FORBIDDEN);
         assert!(e.1.contains("isn't one of the tenant's admins"), "{}", e.1);
+        // Refused attempts are in the audit log.
+        // (repeats of one refusal within a minute are one entry, with a count)
+        let refused: Vec<String> = sqlx::query_scalar(
+            "SELECT DISTINCT target FROM audit_log WHERE verb = 'approve' AND decision = 'denied' ORDER BY target",
+        )
+        .fetch_all(db)
+        .await
+        .unwrap();
+        assert_eq!(refused, ["ap_tool2", "ap_win"], "without a passkey, and by an owner who isn't an admin");
         // A read token decides nothing.
         let read = db::add_token(db, DEFAULT_TENANT, "reader", "read").await.unwrap();
         assert_eq!(
@@ -604,5 +663,59 @@ mod tests {
                 .0,
             StatusCode::FORBIDDEN
         );
+    }
+
+    #[tokio::test]
+    async fn an_approve_token_grants_no_longer_than_asked_and_a_new_person_with_an_old_handle_inherits_nothing() {
+        let app = app().await;
+        let db = &app.db;
+        let join = |handle: &'static str| async move {
+            let i = crate::people::NewInvite { handle, role: "admin", teams: &[], person: None };
+            let code = crate::people::invite(db, DEFAULT_TENANT, i, "admin").await.unwrap();
+            crate::people::invite_redeem(db, &code, crate::people::Redeemer::New { display_name: handle })
+                .await
+                .unwrap()
+                .person
+        };
+        let sam = join("sam").await;
+        join("kim").await;
+        let deck = db::add_owned_token(db, DEFAULT_TENANT, "deck", "approve", Some(&sam)).await.unwrap();
+        let h = bearer(&deck);
+        // A `for: once` ask stays once, and a short one stays short, whatever `for` the deck sends.
+        sqlx::query(
+            "INSERT INTO approvals (tenant, id, subject, verb, target, status, hold_ms, created_at)
+             VALUES ('default', 'ap_once', 'x@laptop', 'use_tool', 'tool:db@server', 'pending', 0, 0),
+                    ('default', 'ap_10m', 'x@laptop', 'start', '-@server', 'pending', 600000, 0)",
+        )
+        .execute(db)
+        .await
+        .unwrap();
+        for id in ["ap_once", "ap_10m"] {
+            let b = Json(ApprovalBody { approve: true, hold: Some("3650d".into()) });
+            let _ = post_approval(State(app.clone()), h.clone(), axum::extract::Path(id.into()), b).await.unwrap();
+        }
+        let holds: Vec<i64> =
+            sqlx::query_scalar("SELECT hold_ms FROM approvals WHERE id IN ('ap_once', 'ap_10m') ORDER BY id")
+                .fetch_all(db)
+                .await
+                .unwrap();
+        assert_eq!(holds, [600_000, crate::policy::ONCE]);
+        // A token is its owner's by person ID: one whose owner has gone is refused even though an admin with the same
+        // handle is there (handles stay reserved after someone leaves, and IDs make sure).
+        crate::people::member_remove(db, DEFAULT_TENANT, "sam", "admin").await.unwrap();
+        let gone = db::add_owned_token(db, DEFAULT_TENANT, "old", "approve", Some(&sam)).await.unwrap();
+        let by_handle = db::add_owned_token(db, DEFAULT_TENANT, "handle", "approve", Some("person:kim")).await.unwrap();
+        pending(&app, "ap_tool", "use_tool", "tool:browser@laptop").await;
+        let e =
+            post_approval(State(app.clone()), bearer(&by_handle), axum::extract::Path("ap_tool".into()), body(true))
+                .await
+                .unwrap_err();
+        assert!(e.1.contains("isn't a member"), "an owner is a person ID, never a handle: {}", e.1);
+        let h = bearer(&gone);
+        let e = post_approval(State(app.clone()), h.clone(), axum::extract::Path("ap_tool".into()), body(true))
+            .await
+            .unwrap_err();
+        assert_eq!(e.0, StatusCode::FORBIDDEN);
+        assert!(e.1.contains("isn't a member"), "{}", e.1);
     }
 }

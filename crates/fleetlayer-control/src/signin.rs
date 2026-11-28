@@ -274,9 +274,9 @@ pub async fn post_stepup(State(app): State<Arc<App>>, headers: HeaderMap, Json(r
     let by = guard(&app, &headers).await?;
     let fleet = app.authz.fleet(&app.db).await.map_err(internal)?;
     let tenant = fleet.tenant(&r.tenant).ok_or((StatusCode::NOT_FOUND, format!("no tenant {}", r.tenant)))?;
-    if crate::stepup::view(&app.db, &tenant.id, &r.approval).await.map_err(internal)?.is_none() {
+    let Some(view) = crate::stepup::view(&app.db, &tenant.id, &r.approval).await.map_err(internal)? else {
         return Err((StatusCode::NOT_FOUND, format!("no request {}", r.approval)));
-    }
+    };
     let (handle, role) = match tenant.handles.get(&r.person).and_then(|h| tenant.people.get(h).map(|p| (h, p))) {
         Some((h, p)) => (h.clone(), p.role.clone()),
         None => return Err((StatusCode::FORBIDDEN, "this person isn't a member of the tenant".into())),
@@ -293,7 +293,10 @@ pub async fn post_stepup(State(app): State<Arc<App>>, headers: HeaderMap, Json(r
         reason: format!("confirmed with a passkey, for 5 minutes (by signin:{by})"),
     };
     app.audit.record(&app.db, &tenant.id, entry).await.map_err(internal)?;
-    let expires = crate::stepup::record(&app.db, &tenant.id, &r.approval, &person, &by).await.map_err(internal)?;
+    // Kept by person ID (a new person given this handle later inherits nothing), and for the window the page showed.
+    let hold = view["holdMs"].as_i64().unwrap_or(0);
+    let expires =
+        crate::stepup::record(&app.db, &tenant.id, &r.approval, &r.person, &by, hold).await.map_err(internal)?;
     Ok(Json(json!({"approval": r.approval, "person": person, "expiresAt": expires})))
 }
 
@@ -759,7 +762,7 @@ mod tests {
         assert_eq!(e.0, StatusCode::FORBIDDEN, "a member isn't an admin: {}", e.1);
         let Json(ok) = post_stepup(State(app.clone()), h.clone(), step(&a)).await.unwrap();
         assert_eq!(ok["person"], "person:a");
-        assert!(crate::stepup::consume(&app.db, "default", "ap_w", "person:a").await.unwrap());
+        assert!(crate::stepup::consume(&app.db, "default", "ap_w", &a, 3_600_000).await.unwrap());
         let logged: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM audit_log WHERE verb = 'signin.stepup' AND target = 'ap_w'")
                 .fetch_one(&app.db)

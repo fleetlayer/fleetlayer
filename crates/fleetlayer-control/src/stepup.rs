@@ -59,11 +59,13 @@ pub async fn refusal(db: &Db, tenant: &str, id: &str, role: &str) -> anyhow::Res
     Ok(None)
 }
 
-/// Record that `person` just confirmed approval `id` with their passkey; returns when it stops holding.
-pub async fn record(db: &Db, tenant: &str, id: &str, person: &str, signin: &str) -> anyhow::Result<i64> {
+/// Record that `person` (a person ID) just confirmed approval `id` with their passkey, for a window of at most
+/// `hold_ms` (what the page showed); returns when it stops holding.
+pub async fn record(db: &Db, tenant: &str, id: &str, person: &str, signin: &str, hold_ms: i64) -> anyhow::Result<i64> {
     let now = now_ms();
     sqlx::query(
-        "INSERT INTO approval_stepups (tenant, approval_id, person, at, expires_at, signin) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO approval_stepups (tenant, approval_id, person, at, expires_at, signin, hold_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(tenant)
     .bind(id)
@@ -71,38 +73,70 @@ pub async fn record(db: &Db, tenant: &str, id: &str, person: &str, signin: &str)
     .bind(now)
     .bind(now + STEPUP_MS)
     .bind(signin)
+    .bind(hold_ms)
     .execute(db)
     .await?;
     Ok(now + STEPUP_MS)
 }
 
-/// Use `person`'s step-up for approval `id`, if there's one that still holds. In one statement, so two approves can't
-/// share one.
-pub async fn consume(db: &Db, tenant: &str, id: &str, person: &str) -> anyhow::Result<bool> {
+/// Use `person`'s step-up for approval `id`, if one still holds and covers a window of `hold_ms`. In one statement, so
+/// two approves can't share one.
+pub async fn consume(db: &Db, tenant: &str, id: &str, person: &str, hold_ms: i64) -> anyhow::Result<bool> {
     let now = now_ms();
     let r = sqlx::query(
         "UPDATE approval_stepups SET used_at = ? WHERE rowid = (SELECT rowid FROM approval_stepups
-         WHERE tenant = ? AND approval_id = ? AND person = ? AND used_at IS NULL AND expires_at > ? ORDER BY at DESC LIMIT 1)",
+         WHERE tenant = ? AND approval_id = ? AND person = ? AND used_at IS NULL AND expires_at > ?
+         AND hold_ms IS NOT NULL AND ? <= hold_ms ORDER BY at DESC LIMIT 1)",
     )
     .bind(now)
     .bind(tenant)
     .bind(id)
     .bind(person)
     .bind(now)
+    .bind(hold_ms)
     .execute(db)
     .await?;
     Ok(r.rows_affected() == 1)
 }
 
-/// An approve token's owner, checked: a person of the tenant who is one of its admins now. Err says why not.
-pub fn owner_may_approve(fleet: &crate::directory::Fleet, tenant: &str, owner: Option<&str>) -> Result<String, String> {
+/// How long an approval made with an approve token holds: what was asked for (`for`), never longer than the request's
+/// own hold, and a `for: once` request stays once. A stolen deck token can't turn a short ask into a long grant.
+pub fn capped_hold(asked: Option<i64>, request: i64) -> i64 {
+    if request == crate::policy::ONCE {
+        return crate::policy::ONCE;
+    }
+    asked.map_or(request, |a| a.min(request))
+}
+
+/// An approve token's owner (a person ID), checked: a person of the tenant who is one of its admins now. Ok is the
+/// person ID and `person:<handle>`; Err says why not.
+pub fn owner_may_approve(
+    fleet: &crate::directory::Fleet,
+    tenant: &str,
+    owner: Option<&str>,
+) -> Result<(String, String), String> {
     let owner = owner.ok_or("this approve token has no owner: mint it again with --owner")?;
-    let handle = owner.strip_prefix("person:").unwrap_or(owner);
+    let t = fleet.tenant(tenant).ok_or("no such tenant")?;
+    let Some(handle) = t.handles.get(owner) else {
+        return Err(format!("this approve token's owner ({owner}) isn't a member of the tenant"));
+    };
+    match t.people.get(handle) {
+        Some(p) if p.id == owner && p.role == "admin" => Ok((owner.to_string(), format!("person:{handle}"))),
+        Some(p) if p.id == owner => {
+            Err(format!("this approve token's owner, person:{handle}, isn't one of the tenant's admins"))
+        }
+        _ => Err(format!("this approve token's owner ({owner}) isn't a member of the tenant")),
+    }
+}
+
+/// The person ID behind `handle` in the tenant, when they're one of its admins (minting an approve token).
+pub fn admin_by_handle(fleet: &crate::directory::Fleet, tenant: &str, handle: &str) -> Result<String, String> {
+    let handle = handle.strip_prefix("person:").unwrap_or(handle);
     let t = fleet.tenant(tenant).ok_or("no such tenant")?;
     match t.people.get(handle) {
-        Some(p) if p.role == "admin" => Ok(format!("person:{handle}")),
-        Some(_) => Err(format!("this approve token's owner, person:{handle}, isn't one of the tenant's admins")),
-        None => Err(format!("this approve token's owner, person:{handle}, isn't a member of the tenant")),
+        Some(p) if p.role == "admin" => Ok(p.id.clone()),
+        Some(_) => Err(format!("person:{handle} isn't one of the tenant's admins")),
+        None => Err(format!("person:{handle} isn't a member of the tenant")),
     }
 }
 
@@ -132,17 +166,34 @@ mod tests {
         assert!(refusal(&db, "default", "ap_2", "admin").await.unwrap().unwrap().contains("no request"));
         assert!(refusal(&db, "default", "ap_1", "admin").await.unwrap().is_none());
         assert!(refusal(&db, "other", "ap_1", "admin").await.unwrap().is_some(), "another tenant's request");
-        assert!(!consume(&db, "default", "ap_1", "person:sam").await.unwrap(), "none yet");
-        record(&db, "default", "ap_1", "person:sam", "signin").await.unwrap();
-        assert!(!consume(&db, "default", "ap_1", "person:kim").await.unwrap(), "someone else's");
-        assert!(consume(&db, "default", "ap_1", "person:sam").await.unwrap());
-        assert!(!consume(&db, "default", "ap_1", "person:sam").await.unwrap(), "used once");
-        record(&db, "default", "ap_1", "person:sam", "signin").await.unwrap();
+        assert!(!consume(&db, "default", "ap_1", "p_sam", 3_600_000).await.unwrap(), "none yet");
+        record(&db, "default", "ap_1", "p_sam", "signin", 3_600_000).await.unwrap();
+        assert!(!consume(&db, "default", "ap_1", "p_kim", 3_600_000).await.unwrap(), "someone else's");
+        assert!(consume(&db, "default", "ap_1", "p_sam", 3_600_000).await.unwrap());
+        assert!(!consume(&db, "default", "ap_1", "p_sam", 3_600_000).await.unwrap(), "used once");
+        record(&db, "default", "ap_1", "p_sam", "signin", 3_600_000).await.unwrap();
         sqlx::query("UPDATE approval_stepups SET expires_at = 1").execute(&db).await.unwrap();
-        assert!(!consume(&db, "default", "ap_1", "person:sam").await.unwrap(), "expired");
+        assert!(!consume(&db, "default", "ap_1", "p_sam", 3_600_000).await.unwrap(), "expired");
         let other = db_with("pending", "use_tool", "tool:browser@laptop").await;
         assert!(refusal(&other, "default", "ap_1", "admin").await.unwrap().unwrap().contains("needs no passkey"));
         let done = db_with("approved", "activate", "window:admin").await;
         assert!(refusal(&done, "default", "ap_1", "admin").await.unwrap().unwrap().contains("isn't waiting"));
+    }
+
+    #[tokio::test]
+    async fn a_stepup_covers_no_longer_a_window_than_its_page_showed() {
+        let db = db_with("pending", "activate", "window:admin").await;
+        record(&db, "default", "ap_1", "p_sam", "signin", 3_600_000).await.unwrap();
+        assert!(!consume(&db, "default", "ap_1", "p_sam", 2 * 3_600_000).await.unwrap(), "longer than shown");
+        assert!(consume(&db, "default", "ap_1", "p_sam", 1_800_000).await.unwrap(), "shorter is fine");
+    }
+
+    #[test]
+    fn an_approve_tokens_hold_never_exceeds_the_requests() {
+        let once = crate::policy::ONCE;
+        assert_eq!(capped_hold(Some(3650 * 86_400_000), once), once, "once stays once");
+        assert_eq!(capped_hold(Some(3650 * 86_400_000), 3_600_000), 3_600_000);
+        assert_eq!(capped_hold(Some(600_000), 3_600_000), 600_000, "shorter is fine");
+        assert_eq!(capped_hold(None, 3_600_000), 3_600_000);
     }
 }

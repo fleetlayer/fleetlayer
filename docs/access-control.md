@@ -278,6 +278,13 @@ fleet view, no events, no policy. It decides as its owner, who must be one of th
 token whose owner left or stopped being an admin is refused), and each decision is recorded as `person:sam (token
 deck)`, with the approval and in the audit log. Making and removing tokens is recorded in the audit log too.
 
+**Where it lives.** The approve token can approve anything an agent asks for, so keep it where no agent can read it:
+under the deck's own Unix user (or its server), never in the agents' user, the triage agent's, or any user whose node
+runs agents (the rule from [Who and what](#who-and-what): every process of a Unix user can read what its agents can).
+An approve token grants no longer than each request asked for (a `for: once` request stays once, whatever `for` the
+deck sends), so a stolen one can't turn a short ask into a standing grant, and every attempt it makes, refused ones
+included, is in the audit log.
+
 **A passkey to open a window.** Approving a role window (a request with verb `activate` on `window:<role>`) with an
 approve token needs the owner to confirm that one request with their passkey first, at the sign-in service's
 `/stepup?tenant=<slug>&approval=<id>&return=<url>` page ([the sign-in service](plugins/signin.md#confirming-a-request-with-a-passkey), "Confirming a
@@ -285,6 +292,13 @@ request with a passkey"). The sign-in service reports it to the control plane,
 which accepts the approval within 5 minutes, once; without it the approval is refused with a 403 that says so. The
 control plane enforces this, not the deck. Refusing a window, closing one and every other approval need no passkey.
 The admin token needs none either: it's the operator's, and stays on the server.
+
+The step-up is reported by the sign-in service with its own token, which the control plane takes at its word: it
+doesn't check the passkey assertion itself. So the sign-in token counts as much as a passkey for every admin of every
+tenant (sign-in tokens aren't bound to one tenant). Run the sign-in service under its own Unix user (or in its own container), with its
+token readable by no agent. A step-up covers one request, for the
+window length its page showed, once, within 5 minutes; it's kept by person ID, so someone given an old handle later
+inherits nothing, and so is an approve token's owner.
 
 **The API:**
 

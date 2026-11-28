@@ -832,8 +832,8 @@ mod tests {
         let send = add_token(&db, DEFAULT_TENANT, "quietdeck", "send").await.unwrap();
         assert!(add_token(&db, DEFAULT_TENANT, "x", "write").await.is_err(), "only read, admin, send and approve");
         assert!(add_token(&db, DEFAULT_TENANT, "x", "approve").await.is_err(), "an approve token needs an owner");
-        let deck = add_owned_token(&db, DEFAULT_TENANT, "deck", "approve", Some("person:sam")).await.unwrap();
-        assert_eq!(token_owner(&db, &deck).await.unwrap().unwrap().3.as_deref(), Some("person:sam"));
+        let deck = add_owned_token(&db, DEFAULT_TENANT, "deck", "approve", Some("p_sam")).await.unwrap();
+        assert_eq!(token_owner(&db, &deck).await.unwrap().unwrap().3.as_deref(), Some("p_sam"));
         assert_eq!(token_info(&db, &send).await.unwrap(), Some(("default".into(), "send".into(), "quietdeck".into())));
         assert_eq!(token_scope(&db, &read).await.unwrap(), Some(("default".into(), "read".into())));
         let before = crate::directory::Fleet::version(&db).await.unwrap();
