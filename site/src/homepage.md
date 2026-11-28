@@ -89,8 +89,8 @@ would ask for, an agent sets them up for you, and each one can be switched off w
   that leaves a machine. https://fleetlayer.ai/docs/credentials/
 - **Agents reach only the hosts they need.** Each role gets a list of hosts, and you approve new ones. Linux for now.
   https://fleetlayer.ai/docs/guides/egress/
-- **An admin role that's off until you open it.** The agent that can change everything stays switched off until you
-  approve a window, and is cleaned up when it ends. https://fleetlayer.ai/docs/guides/admin-window/
+- **An admin role that's off until you start a timed window.** The agent that can change everything has no rights
+  until then, and is cleaned up when the window ends. https://fleetlayer.ai/docs/guides/admin-window/
 
 ## A foundation for your own agent workflows
 
@@ -175,7 +175,7 @@ it needs it.
 - Agents that read strangers' text, kept in a Unix user of their own: https://fleetlayer.ai/docs/guides/untrusted-input/
 - Secrets per role from 1Password, scrubbed from what leaves a machine: https://fleetlayer.ai/docs/credentials/
 - Network access per role, with approvals for new hosts (Linux): https://fleetlayer.ai/docs/guides/egress/
-- An admin role that's off until you open a window: https://fleetlayer.ai/docs/guides/admin-window/
+- An admin role that's off until you start a timed window: https://fleetlayer.ai/docs/guides/admin-window/
 - One passkey sign-in for your services, with single sign-on and teams: https://fleetlayer.ai/docs/guides/sign-in/
 - Your browser's cookies for command-line tools on other machines: https://fleetlayer.ai/docs/plugins/cookies/
 - herdr and Rex as session managers: https://fleetlayer.ai/docs/rex/
