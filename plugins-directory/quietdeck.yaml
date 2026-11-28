@@ -1,5 +1,5 @@
 name: quietdeck
-summary: Email triage on a deck: an agent proposes, you approve. Built on Fleetlayer, with its runner as a plugin.
+summary: "Email triage on a deck: an agent proposes, you approve. Built on Fleetlayer, with its runner as a plugin."
 kind: plugin
 roles: [event_source, action]
 ships_with_fleetlayer: false
