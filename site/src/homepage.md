@@ -188,7 +188,7 @@ it needs it.
 Coming soon:
 
 - tmux as a session manager (v0.4.2)
-- More harnesses: pi, OpenCode, Gemini CLI and Cursor's CLI (v0.4.2), then Aider: https://fleetlayer.ai/docs/harnesses/
+- More harnesses: pi, OpenCode, Gemini CLI and Cursor's CLI (v0.4.2): https://fleetlayer.ai/docs/harnesses/
 - SAML sign-in providers
 
 Expect breaking changes: what changed in each release is in the changelog, https://fleetlayer.ai/docs/changelog/
