@@ -75,6 +75,7 @@ export const pages = [
   { file: "plugins/herdr-fleet", group: "Plugins", label: "Every herdr as one", description: "Point any herdr client (the phone relay, a dashboard) at every herdr in your fleet as if it were one." },
   { file: "plugins/cookies", group: "Plugins", label: "Cookies", description: "Give command-line tools on other machines your browser's cookies for chosen sites, sealed in transit, and know what that exposes." },
   { file: "plugins/1password", group: "Plugins", label: "1Password", description: "Deliver 1Password items to the roles you grant them to, from a service-account token no agent holds." },
+  { file: "claude-code", group: "Comparisons", label: "Beyond Claude Code", description: "What Claude Code's own messaging, Remote Control, cloud sessions, routines and artifacts do, where they stop, and what Fleetlayer adds past them (and when you don't need it)." },
   { file: "openclaw", group: "Comparisons",
     label: "OpenClaw", description: "Compare Fleetlayer with OpenClaw feature by feature, and build your own OpenClaw from Fleetlayer's pieces with Claude Code or Codex." },
   { file: "credentials", group: "Reference", label: "Credentials", description: "How Fleetlayer keeps secrets: sealed delivery, per-role grants, using a secret without seeing it, scrubbing, and what none of it covers." },
