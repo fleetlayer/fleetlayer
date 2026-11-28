@@ -13,6 +13,8 @@ pub const DEFAULT_TENANT: &str = "default";
 
 /// How long a statement waits for another connection's write lock before failing with "database is locked".
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(15);
+/// The pause between batches of a prune, for the writes waiting behind it.
+const PRUNE_PAUSE: Duration = Duration::from_millis(200);
 
 /// Open the database for the server and commands that change it: created if missing, migrated.
 pub async fn open(path: &Path) -> anyhow::Result<Db> {
@@ -24,6 +26,11 @@ pub async fn open(path: &Path) -> anyhow::Result<Db> {
         .create_if_missing(true)
         .journal_mode(SqliteJournalMode::Wal)
         .busy_timeout(BUSY_TIMEOUT)
+        // In WAL mode, NORMAL syncs at checkpoints rather than at every commit: a commit no longer waits for the disk
+        // to flush. On a busy disk each fsync took up to 0.7 s, every write queued behind the one before, and requests
+        // ran into "database is locked". The database stays consistent through a power cut; the last commits before
+        // one may be lost.
+        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
         .foreign_keys(true);
     let db = SqlitePoolOptions::new().max_connections(8).connect_with(opts).await?;
     sqlx::migrate!("./migrations").run(&db).await?;
@@ -909,8 +916,9 @@ pub async fn missed_events(
     Ok(out)
 }
 
-/// Forget events older than `keep_ms`, and those on `short` older than `short_ms`, a few thousand at a time so the
-/// first prune after an upgrade doesn't hold the database for long.
+/// Forget events older than `keep_ms`, and those on `short` older than `short_ms`, a few thousand at a time with a
+/// pause between, so the first prune after an upgrade (a table that was never pruned) doesn't hold the database for
+/// long, nor take the write lock back before others waiting for it get a turn.
 pub async fn prune_events(db: &Db, keep_ms: i64, short: &str, short_ms: i64) -> anyhow::Result<u64> {
     let now = now_ms();
     let mut total = 0;
@@ -927,7 +935,9 @@ pub async fn prune_events(db: &Db, keep_ms: i64, short: &str, short_ms: i64) -> 
         if r.rows_affected() < 5000 {
             return Ok(total);
         }
-        tokio::task::yield_now().await;
+        // SQLite's busy handler polls with growing sleeps: a loop straight back into the next DELETE would win the
+        // lock every time and leave other writers to time out ("database is locked").
+        tokio::time::sleep(PRUNE_PAUSE).await;
     }
 }
 

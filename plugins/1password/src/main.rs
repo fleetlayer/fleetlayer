@@ -743,7 +743,13 @@ impl Handler for Shared {
                 }
                 let pins = plugin.state_dir().join("sources.json");
                 if let Err(e) = signer_of(&a).and_then(|signer| {
-                    fleetlayer_secrets::pin::check(&pins, &a.bundle, a.from.as_deref(), Some(&rc.from), signer.as_deref())
+                    fleetlayer_secrets::pin::check(
+                        &pins,
+                        &a.bundle,
+                        a.from.as_deref(),
+                        Some(&rc.from),
+                        signer.as_deref(),
+                    )
                 }) {
                     tracing::error!("{e}");
                     *plugin.refused.lock().await = Some((e.clone(), Timestamp::now()));
@@ -956,7 +962,6 @@ async fn status_loop(plugin: Arc<Plugin>, peer: Peer) {
         tokio::time::sleep(Duration::from_secs(30)).await;
     }
 }
-
 
 /// The key that signed a delivered bundle, if it's signed (`fleetlayer_secrets::sign`); an error when its signature
 /// doesn't hold.

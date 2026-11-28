@@ -820,15 +820,47 @@ pub async fn get_policy(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiR
 /// `{ok, linkedNodes, degraded: [reason]}`. 200 while the server can answer, so Kubernetes' probes don't restart it
 /// over a problem a restart won't fix; `ok` is false while something is degraded (an audit write failed within the
 /// last five minutes, or a policy file couldn't be applied). `?strict` answers 503 then, for an uptime check that only reads the status.
+/// Since when `/healthz` has found the database busy (milliseconds; 0 while it isn't).
+static DB_BUSY_SINCE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// How long `/healthz` waits for a database connection before it reports the database busy.
+const HEALTH_DB_WAIT: Duration = Duration::from_secs(2);
+
 pub async fn healthz(
     State(app): State<Arc<App>>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<(StatusCode, Json<Value>), StatusCode> {
-    sqlx::query("SELECT 1").execute(&app.db).await.map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    // `SELECT 1` reads no table: it waits only for one of the pool's connections. When every one is held up behind a
+    // long write, that's a moment of contention (degraded), not a server to take out of a proxy's rotation, which
+    // would turn it into 503s for everyone.
+    let mut degraded: Vec<String> = vec![];
+    use std::sync::atomic::Ordering::Relaxed;
+    let db_free = match tokio::time::timeout(HEALTH_DB_WAIT, sqlx::query("SELECT 1").execute(&app.db)).await {
+        Ok(Ok(_)) => {
+            DB_BUSY_SINCE.store(0, Relaxed);
+            true
+        }
+        Ok(Err(e)) if !matches!(e, sqlx::Error::PoolTimedOut) => return Err(StatusCode::SERVICE_UNAVAILABLE),
+        _ => {
+            let now = db::now_ms();
+            let since = match DB_BUSY_SINCE.compare_exchange(0, now, Relaxed, Relaxed) {
+                Ok(_) => now,
+                Err(s) => s,
+            };
+            degraded.push(format!(
+                "the database is busy: no connection free within {} seconds, busy for {} seconds (a long write holds it)",
+                HEALTH_DB_WAIT.as_secs(),
+                (now - since) / 1000 + HEALTH_DB_WAIT.as_secs() as i64
+            ));
+            false
+        }
+    };
     let linked = app.links.nodes.lock().await.len();
-    let mut degraded: Vec<String> = app.audit.degraded().into_iter().collect();
+    degraded.extend(app.audit.degraded());
     degraded.extend(app.authz.file_errors.lock().unwrap_or_else(|e| e.into_inner()).values().cloned());
-    degraded.extend(crate::windows::problems(&app.db).await);
+    if db_free {
+        degraded.extend(crate::windows::problems(&app.db).await);
+    }
     let ok = degraded.is_empty();
     let status = if !ok && q.contains_key("strict") { StatusCode::SERVICE_UNAVAILABLE } else { StatusCode::OK };
     Ok((status, Json(json!({"ok": ok, "linkedNodes": linked, "degraded": degraded}))))
@@ -1019,6 +1051,22 @@ mod tests {
 
     fn query(strict: bool) -> Query<HashMap<String, String>> {
         Query(if strict { [("strict".to_string(), String::new())].into() } else { HashMap::new() })
+    }
+
+    #[tokio::test]
+    async fn healthz_reports_a_busy_database_as_degraded_not_down() {
+        let app = app().await;
+        // The test database has one connection: holding it is every connection held up behind a long write.
+        let held = app.db.acquire().await.unwrap();
+        let (status, Json(v)) = healthz(State(app.clone()), query(false)).await.unwrap();
+        assert_eq!(status, StatusCode::OK, "a proxy keeps the server in rotation");
+        assert_eq!(v["ok"], false);
+        assert!(v["degraded"][0].as_str().unwrap().starts_with("the database is busy"), "{v}");
+        let (status, _) = healthz(State(app.clone()), query(true)).await.unwrap();
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "?strict still tells the uptime check");
+        drop(held);
+        let (_, Json(v)) = healthz(State(app), query(false)).await.unwrap();
+        assert_eq!(v["ok"], true);
     }
 
     #[tokio::test]

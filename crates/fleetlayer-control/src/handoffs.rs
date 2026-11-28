@@ -23,13 +23,28 @@ pub fn keep_for(days: u32) {
     let _ = DAYS.set(days.max(1));
 }
 
-/// Forget the handoffs older than the retention.
-pub async fn prune(db: &Db) -> anyhow::Result<()> {
+/// The oldest a handoff may be: reads leave out anything older whether or not it's been pruned yet.
+fn cutoff() -> i64 {
     let days = i64::from(*DAYS.get().unwrap_or(&DEFAULT_DAYS));
-    sqlx::query("DELETE FROM handoffs WHERE created_at < ?")
-        .bind(db::now_ms() - days * 24 * 3600 * 1000)
-        .execute(db)
-        .await?;
+    db::now_ms() - days * 24 * 3600 * 1000
+}
+
+/// When handoffs were last pruned (milliseconds), so reads don't each write.
+static PRUNED_AT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// Forget the handoffs older than the retention, at most once every ten minutes: it's called on every read, and a
+/// write for every read queued up behind the others on a slow disk.
+pub async fn prune(db: &Db) -> anyhow::Result<()> {
+    let now = db::now_ms();
+    let last = PRUNED_AT.load(std::sync::atomic::Ordering::Relaxed);
+    if now - last < 600_000
+        || PRUNED_AT
+            .compare_exchange(last, now, std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed)
+            .is_err()
+    {
+        return Ok(());
+    }
+    sqlx::query("DELETE FROM handoffs WHERE created_at < ?").bind(cutoff()).execute(db).await?;
     Ok(())
 }
 
@@ -191,9 +206,10 @@ fn row(r: sqlx::sqlite::SqliteRow) -> l::Handoff {
 
 pub async fn by_id(db: &Db, tenant: &str, id: &str) -> anyhow::Result<Option<l::Handoff>> {
     prune(db).await?;
-    let r = sqlx::query("SELECT * FROM handoffs WHERE tenant = ? AND id = ?")
+    let r = sqlx::query("SELECT * FROM handoffs WHERE tenant = ? AND id = ? AND created_at >= ?")
         .bind(tenant)
         .bind(id)
+        .bind(cutoff())
         .fetch_optional(db)
         .await?;
     Ok(r.map(row))
@@ -202,11 +218,14 @@ pub async fn by_id(db: &Db, tenant: &str, id: &str) -> anyhow::Result<Option<l::
 /// The newest handoffs first, without their notes (they can be long; `by_id` has them).
 pub async fn recent(db: &Db, tenant: &str, limit: i64) -> anyhow::Result<Vec<l::Handoff>> {
     prune(db).await?;
-    let rows = sqlx::query("SELECT * FROM handoffs WHERE tenant = ? ORDER BY created_at DESC, id DESC LIMIT ?")
-        .bind(tenant)
-        .bind(limit)
-        .fetch_all(db)
-        .await?;
+    let rows = sqlx::query(
+        "SELECT * FROM handoffs WHERE tenant = ? AND created_at >= ? ORDER BY created_at DESC, id DESC LIMIT ?",
+    )
+    .bind(tenant)
+    .bind(cutoff())
+    .bind(limit)
+    .fetch_all(db)
+    .await?;
     Ok(rows.into_iter().map(row).map(|h| l::Handoff { note: None, ..h }).collect())
 }
 
@@ -222,10 +241,11 @@ pub async fn feed(db: &Db, tenant: &str, cursor: &str, limit: i64) -> anyhow::Re
         }
     };
     let rows = sqlx::query(
-        "SELECT * FROM handoffs WHERE tenant = ? AND (created_at > ? OR (created_at = ? AND id > ?))
+        "SELECT * FROM handoffs WHERE tenant = ? AND created_at >= ? AND (created_at > ? OR (created_at = ? AND id > ?))
          ORDER BY created_at, id LIMIT ?",
     )
     .bind(tenant)
+    .bind(cutoff())
     .bind(ms)
     .bind(ms)
     .bind(&id)

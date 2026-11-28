@@ -116,6 +116,8 @@ mod tests {
         assert!(check(&pin, "fresh", Some("y"), None, Some(k)).is_ok());
         // A node pin and another node's signed bundle: still refused (it isn't the pinned source).
         assert!(check(&pin, "cookies/x", Some("laptop"), None, None).is_ok());
-        assert!(check(&pin, "cookies/x", Some("agents"), None, Some(k)).unwrap_err().contains("first came from laptop"));
+        assert!(
+            check(&pin, "cookies/x", Some("agents"), None, Some(k)).unwrap_err().contains("first came from laptop")
+        );
     }
 }

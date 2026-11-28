@@ -383,7 +383,13 @@ impl Handler for Shared {
                     let pins = home.join(".local/state/fleetlayer/claude-auth-manager/sources.json");
                     let from = self.0.from.lock().await.clone();
                     if let Err(e) = signer_of(&a).and_then(|signer| {
-                        fleetlayer_secrets::pin::check(&pins, &a.bundle, a.from.as_deref(), from.as_deref(), signer.as_deref())
+                        fleetlayer_secrets::pin::check(
+                            &pins,
+                            &a.bundle,
+                            a.from.as_deref(),
+                            from.as_deref(),
+                            signer.as_deref(),
+                        )
                     }) {
                         tracing::error!("{e}");
                         return Ok(json!({"applied": false, "error": e}));
@@ -581,7 +587,6 @@ async fn publish_loop(peer: Peer, file: PathBuf, targets: Vec<String>, key: flee
         tokio::time::sleep(Duration::from_secs(60)).await;
     }
 }
-
 
 /// The key that signed a delivered bundle, if it's signed (`fleetlayer_secrets::sign`); an error when its signature
 /// doesn't hold.

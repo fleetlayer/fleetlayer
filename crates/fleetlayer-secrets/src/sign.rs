@@ -68,11 +68,8 @@ fn key_id(k: &VerifyingKey) -> String {
 
 /// The signed bytes: a fixed header, the bundle's name and version, then every item but the signature, by name.
 fn message(bundle: &str, version: u64, items: &[Part]) -> Vec<u8> {
-    let mut parts: Vec<(&str, &str, Option<u32>, Option<&str>)> = items
-        .iter()
-        .filter(|p| p.name != SIGNATURE_ITEM)
-        .map(|p| (p.name, p.content, p.mode, p.link))
-        .collect();
+    let mut parts: Vec<(&str, &str, Option<u32>, Option<&str>)> =
+        items.iter().filter(|p| p.name != SIGNATURE_ITEM).map(|p| (p.name, p.content, p.mode, p.link)).collect();
     parts.sort();
     // Arrays and strings only: their JSON is the same whatever serde_json's features.
     let body = serde_json::to_string(&(bundle, version, parts)).unwrap_or_default();
@@ -91,7 +88,8 @@ pub fn verify(bundle: &str, version: u64, items: &[Part]) -> Result<Option<Strin
         .and_then(|k| b64.decode(k).ok())
         .and_then(|b| b.try_into().ok())
         .ok_or_else(|| format!("{bundle}'s signature names no Ed25519 key"))?;
-    let vk = VerifyingKey::from_bytes(&raw).map_err(|_| format!("{bundle}'s signature names a key that isn't valid"))?;
+    let vk =
+        VerifyingKey::from_bytes(&raw).map_err(|_| format!("{bundle}'s signature names a key that isn't valid"))?;
     let sig: [u8; 64] = v["sig"]
         .as_str()
         .and_then(|s| b64.decode(s).ok())

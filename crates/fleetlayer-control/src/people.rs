@@ -446,7 +446,9 @@ pub async fn teams_sync(
     teams: &[String],
     by: &str,
 ) -> anyhow::Result<TeamsSynced> {
-    let mut tx = db.begin().await?;
+    // It reads before it writes: a deferred transaction would fail at once with "database is locked" whenever another
+    // write landed between the two (WAL mode doesn't wait there), so it takes the write lock up front.
+    let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
     let member: Option<(String,)> = sqlx::query_as("SELECT handle FROM members WHERE tenant = ? AND person = ?")
         .bind(tenant)
         .bind(person)

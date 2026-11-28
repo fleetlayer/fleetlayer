@@ -24,6 +24,8 @@ use crate::App;
 use crate::db::{self, Subscription};
 
 const PING_EVERY: Duration = Duration::from_secs(30);
+/// How often a linked node's "last seen" is written: whether it's linked now comes from the link itself.
+const LAST_SEEN_EVERY: Duration = Duration::from_secs(300);
 const MISSED_PINGS: u32 = 3;
 
 pub struct NodeConn {
@@ -174,14 +176,19 @@ async fn run(app: Arc<App>, (tenant, name): (String, String), socket: WebSocket)
         let (db, tenant, name) = (app.db.clone(), tenant.clone(), name.clone());
         tokio::spawn(async move {
             let mut missed = 0;
+            let mut recorded = std::time::Instant::now();
             loop {
                 tokio::time::sleep(PING_EVERY).await;
                 match peer.request_within::<_, Value>(ext::method::PING, &json!({}), Duration::from_secs(10)).await {
                     Ok(_) => {
                         missed = 0;
-                        // "Last seen" follows a linked node, not only the moment it linked.
-                        if let Err(e) = db::node_alive(&db, &tenant, &name).await {
-                            tracing::warn!(node = %name, "recording that a node answered: {e}");
+                        // "Last seen" follows a linked node, not only the moment it linked: written every few minutes,
+                        // not at every ping (a write for every node every 30 seconds queued up on a slow disk).
+                        if recorded.elapsed() >= LAST_SEEN_EVERY {
+                            match db::node_alive(&db, &tenant, &name).await {
+                                Ok(()) => recorded = std::time::Instant::now(),
+                                Err(e) => tracing::warn!(node = %name, "recording that a node answered: {e}"),
+                            }
                         }
                     }
                     Err(_) => {
