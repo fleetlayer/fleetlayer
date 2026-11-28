@@ -1,6 +1,8 @@
 # Getting started
 
-Fleetlayer is early. Expect breaking changes.
+Fleetlayer is early. Expect breaking changes. Before you install, check [what you need](requirements.md) (macOS or
+Linux, a session manager such as herdr, Claude Code or Codex), and read [what installing it trusts](trust.md) and how
+to verify a release first.
 
 The docs are written for your agent as much as for you. To have it set Fleetlayer up, ask it to, and point it at
 https://fleetlayer.ai/llms.txt (every page, as Markdown). This page is what it does, step by step. A few steps are

@@ -26,6 +26,8 @@ export const site = {
 export const pages = [
   { file: "getting-started", group: "Start here", description: "Install Fleetlayer on your laptop in a few minutes, link a second machine, and send your first message between agents." },
   { file: "concepts", group: "Start here", label: "How it fits together", description: "How the pieces fit: the control plane, a node on each machine, plugins for session managers and tools, and the access policy over all of it." },
+  { file: "requirements", group: "Start here", label: "Requirements and uninstalling", description: "Check what you need (macOS or Linux, a session manager, Claude Code or Codex), which agents work today, and how to remove Fleetlayer cleanly." },
+  { file: "trust", group: "Start here", label: "Installing and trusting it", description: "What installing Fleetlayer trusts, how to verify a release before you run it, how to control self-updates, and what each plugin can read." },
   { file: "dashboard", group: "Start here", label: "The dashboard", description: "The web page for people: every machine and session, what needs you, events, approvals and the rules in force, live." },
   { file: "rex", group: "Works with", label: "Rex", description: "Use Fleetlayer with Rex, Superlogical's terminal and session manager: Rex keeps your sessions, and Fleetlayer connects the agents in them." },
   { file: "guides/laptop", group: "Set up", label: "Start on your laptop", description: "Run everything on one Mac or Linux laptop with fleetlayer up, then grow from there." },
