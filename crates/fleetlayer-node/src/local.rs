@@ -236,6 +236,15 @@ impl Handler for Local {
                 let caller = self.caller(o.caller.as_ref()).await;
                 answer(&crate::start::open(node, o.spec, o.on.as_deref(), o.why, caller.as_ref()).await?)
             }
+            "node/transcript_read" => {
+                let c =
+                    self.caller(p.get("caller").and_then(|c| serde_json::from_value(c.clone()).ok()).as_ref()).await;
+                let caller = c.as_ref().map(|s| s.tab().unwrap_or(&s.session_id).to_string()).unwrap_or("-".into());
+                let to = p["to"].as_str().ok_or_else(|| RpcError::invalid_params("say which session"))?.to_string();
+                let why = p["why"].as_str().map(str::to_string);
+                let range: l::TranscriptRange = serde_json::from_value(p.clone()).map_err(RpcError::invalid_params)?;
+                answer(&crate::transcripts::read(node, &to, range, caller, why).await?)
+            }
             "node/session_close" | "node/session_answer" => {
                 let a: SessionAct = params(p)?;
                 let caller = self.caller(a.caller.as_ref()).await;
