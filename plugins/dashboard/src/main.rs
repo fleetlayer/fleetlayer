@@ -29,6 +29,7 @@ mod demo;
 mod graph;
 mod icons;
 mod model;
+mod services;
 mod views;
 mod web;
 

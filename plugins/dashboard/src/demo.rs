@@ -315,6 +315,26 @@ impl Demo {
                 plugin("file-sync", "running", None, &[], &["sync_target"])]),
             status("edge", "linux", vec![plugin("signin", "running", None, &["signin"], &[]),
                 plugin("claude-auth-manager", "running", None, &["hub"], &[]), plugin("dashboard", "running", None, &["dashboard"], &[])]),
+            // The web services: each gateway's routes (plugins' and listed ones), and the sign-in service's clients.
+            {"kind": "gateway.services", "key": "edge", "node": "edge", "at": iso(now - 40_000), "data": {
+                "statusPage": "https://fleetlayer.fleet.example.com",
+                "services": [
+                    {"name": "signin", "address": "https://signin.fleet.example.com", "source": "signin", "up": true},
+                    {"name": "hub", "address": "https://hub.fleet.example.com", "source": "claude-auth-manager", "up": true},
+                    {"name": "dashboard", "address": "https://dashboard.fleet.example.com", "source": "dashboard", "up": true},
+                    {"name": "control", "address": "https://control.fleet.example.com", "source": "listed", "up": true},
+                    {"name": "deck", "address": "https://deck.fleet.example.com", "source": "listed", "up": true},
+                    {"name": "executor", "address": "https://executor.fleet.example.com", "source": "listed", "up": true}]}},
+            {"kind": "gateway.services", "key": "workers", "node": "workers", "at": iso(now - 25_000), "data": {
+                "services": [
+                    {"name": "pages", "address": "https://pages.fleet.example.com", "source": "pages", "up": true}]}},
+            {"kind": "signin.clients", "key": "clients", "node": "edge", "at": iso(now - 3 * hour), "data": {
+                "issuer": "https://signin.fleet.example.com",
+                "clients": [{"name": "hub", "address": "https://hub.fleet.example.com"},
+                            {"name": "pages", "address": "https://pages.fleet.example.com"},
+                            {"name": "dashboard", "address": "https://dashboard.fleet.example.com"},
+                            {"name": "deck", "address": "https://deck.fleet.example.com"},
+                            {"name": "grafana", "address": "https://grafana.fleet.example.com"}]}},
             {"kind": "claude.usage", "key": "account-1", "node": "edge", "at": iso(now - 2 * min),
              "data": {"fiveHour": 34, "sevenDay": 58}},
             {"kind": "claude.usage", "key": "account-2", "node": "edge", "at": iso(now - 2 * min),
@@ -325,6 +345,10 @@ impl Demo {
             {"name": "folders", "node": "laptop", "online": true, "description": "Screenshots and Downloads", "allow": ["*@workers", "*@studio"]},
             {"name": "gpu", "node": "build", "online": true, "description": "The build server's GPU runner", "allow": ["*@workers"]},
         ]});
+        let links = json!({"links": [
+            {"name": "handbook", "url": "https://handbook.example.com", "description": "How the team works", "addedBy": "person:alex (via dashboard)"},
+            {"name": "ci", "url": "https://ci.example.com", "description": "Build and test runs", "addedBy": "person:alex (via dashboard)"},
+        ]});
         Snapshot::from_parts(
             Ok(fleet),
             Ok(json!({"events": events})),
@@ -333,6 +357,7 @@ impl Demo {
             Ok(readings),
             Ok(tools),
         )
+        .with_links(Ok(links))
     }
 }
 

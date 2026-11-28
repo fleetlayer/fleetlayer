@@ -1413,6 +1413,8 @@ async fn serve(
         .route("/v1/people", get(api::get_people))
         .route("/v1/people/{action}", axum::routing::post(api::post_people))
         .route("/v1/policy", get(api::get_policy))
+        .route("/v1/links", get(api::get_links).post(api::post_link))
+        .route("/v1/links/{name}", axum::routing::delete(api::delete_link))
         .route("/v1/readings", get(api::get_readings))
         .route("/v1/tools", get(api::get_tools))
         .route("/v1/approvals", get(api::get_approvals))

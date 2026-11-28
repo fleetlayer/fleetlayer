@@ -19,6 +19,15 @@ look around, not the only way in. The same dashboard works with a control plane 
   every machine with its nodes, sessions and plugins, the newest events and the sessions working now.
 - **Machines**: each machine and its nodes (one per Unix user), each node's version, when it was last heard from, its
   plugins and their state, its problems, and the tools it shares and with whom.
+- **Services**: every web service the fleet runs (pages, the Claude hub, sign-in, the dashboard, and everything a
+  gateway routes, such as a deck or Executor) with its link, the machine and plugin that run it, and whether it answers
+  its health check; the services that sign people in with Fleetlayer are marked, and admins add links to services
+  Fleetlayer doesn't run (a wiki, a CI server). Each person sees only the services the access policy lets them use
+  (`sign_in` or `use` on `service:<name>`). Nothing is kept by hand: it comes from each node's gateway (the
+  `gateway.services` reading, every minute), the services node plugins announce (`node.status`), the sign-in
+  service's clients (the `signin.clients` reading, which needs the `reading.publish` grant on the sign-in plugin) and
+  the links (`/v1/links`). Behind a proxy that serves TLS, set `public_scheme: https` in `gateway.yaml` so the links say
+  https.
 - **Sessions**: every running session, grouped by whether it's waiting on you, working, idle or done, with its latest
   one-line summary; filter by node.
 - **Events**: the newest hundred events (webhooks, CI results, schedules) and which sessions each reached.
@@ -151,6 +160,7 @@ Its calls to the control plane, made at most once every three seconds however ma
 | `GET /v1/readings` | Every reading's newest value; `?kind=a,b` for some kinds only. |
 | `GET /v1/tools` | The tools each node shares (names, descriptions, `allow:` patterns, folder names; never paths). |
 | `GET /v1/token` | What its token is (scope) and which tenant it shows. |
+| `GET /v1/links` | Links to services Fleetlayer doesn't run, for Services (`POST /v1/links {name, url, description?}` and `DELETE /v1/links/<name>` for the tenant's admins). |
 
 And for the People, Teams and Rules pages, as the signed-in person (`Fleetlayer-Person`, with the delegate token):
 `GET /v1/people`, `POST /v1/people/<action>` (`invite`, `invite_revoke`, `member_role`, `member_remove`, `team_add`,

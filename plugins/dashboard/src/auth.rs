@@ -221,15 +221,22 @@ impl Auth {
     }
 
     async fn may(&self, viewer: &Viewer, can: &str) -> Access {
+        let target = self.service.clone();
+        self.may_on(viewer, can, &target).await
+    }
+
+    /// May they `can` (`sign_in`, `use`...) on `target` (`service:<name>`)? The login key's holder may everything.
+    /// Remembered for a minute, like every decision here.
+    pub async fn may_on(&self, viewer: &Viewer, can: &str, target: &str) -> Access {
         let Some(person) = &viewer.person else { return Access::Yes };
         let Some(checker) = &self.checker else { return Access::No };
-        let k = (person.sub.clone(), can.to_string());
+        let k = (person.sub.clone(), format!("{can} {target}"));
         if let Some((ok, at)) = self.decisions.lock().await.get(&k)
             && at.elapsed() < DECISION
         {
             return if *ok { Access::Yes } else { Access::No };
         }
-        match checker.check(person, can, &self.service).await {
+        match checker.check(person, can, target).await {
             Ok(ok) => {
                 let mut d = self.decisions.lock().await;
                 d.retain(|_, (_, at)| at.elapsed() < DECISION);

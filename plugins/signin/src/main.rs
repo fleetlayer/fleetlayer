@@ -449,6 +449,26 @@ fn loopback_if_any(a: SocketAddr) -> SocketAddr {
     if a.ip().is_unspecified() { SocketAddr::new(std::net::Ipv4Addr::LOCALHOST.into(), a.port()) } else { a }
 }
 
+/// The `signin.clients` reading: the sign-in service's own address, and each client's name and the origin of its first
+/// redirect URI (where people open it).
+fn clients_reading(settings: &web::Settings) -> serde_json::Value {
+    let clients: Vec<serde_json::Value> = settings
+        .clients
+        .iter()
+        .map(|c| {
+            let address =
+                c.redirect_uris.first().and_then(|u| url::Url::parse(u).ok()).map(|u| u.origin().ascii_serialization());
+            serde_json::json!({"name": c.name, "address": address})
+        })
+        .collect();
+    serde_json::json!({"readings": [{
+        "kind": "signin.clients",
+        "key": "clients",
+        "at": jiff::Timestamp::now(),
+        "data": {"issuer": settings.issuer, "clients": clients},
+    }]})
+}
+
 async fn run(
     app: Arc<web::App>,
     listen: SocketAddr,
@@ -468,6 +488,15 @@ async fn run(
                 hosts: vec![],
             },
         );
+        // The services that sign in here, for the dashboard's Services page (grant `reading.publish`): names and
+        // the addresses people open, never a secret.
+        let reading = clients_reading(&app.settings);
+        tokio::spawn(async move {
+            loop {
+                peer.notify(ext::method::READING_PUBLISH, &reading);
+                tokio::time::sleep(Duration::from_secs(6 * 3600)).await;
+            }
+        });
     }
     let a = app.clone();
     tokio::spawn(async move {

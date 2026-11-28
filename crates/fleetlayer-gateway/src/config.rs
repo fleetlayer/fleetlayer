@@ -26,8 +26,13 @@ pub struct Config {
     pub domain: String,
     #[serde(default = "default_listen")]
     pub listen: SocketAddr,
-    /// The port people type, when it isn't `listen`'s (a gateway behind another proxy). Default: `listen`'s.
+    /// The port people type, when it isn't `listen`'s (a gateway behind another proxy). Default: `listen`'s, or 443
+    /// with `public_scheme: https`.
     pub public_port: Option<u16>,
+    /// `https` when people reach the gateway through a proxy that serves TLS (the links on the status page and the
+    /// dashboard's Services then say https). Default `http`.
+    #[serde(default)]
+    pub public_scheme: Option<String>,
     #[serde(default)]
     pub services: BTreeMap<String, ServiceConfig>,
     #[serde(default)]
@@ -141,6 +146,9 @@ impl Config {
     }
 
     pub fn check(&self) -> anyhow::Result<()> {
+        if let Some(s) = &self.public_scheme {
+            anyhow::ensure!(s == "http" || s == "https", "public_scheme is http or https, not {s:?}");
+        }
         for (name, s) in &self.services {
             crate::registry::check_name(name)?;
             if let Some(u) = &s.url {
@@ -178,16 +186,26 @@ impl Config {
     }
 
     pub fn port(&self) -> u16 {
-        self.public_port.unwrap_or(self.listen.port())
+        match (self.public_port, self.https()) {
+            (Some(p), _) => p,
+            (None, true) => 443,
+            (None, false) => self.listen.port(),
+        }
     }
 
-    /// The address people use for a service: `http://pages.localhost:7680`.
+    fn https(&self) -> bool {
+        self.public_scheme.as_deref() == Some("https")
+    }
+
+    /// The address people use for a service: `http://pages.localhost:7680`, or `https://pages.example.com` behind a
+    /// TLS proxy (`public_scheme: https`).
     pub fn address(&self, name: &str) -> String {
+        let (scheme, default) = if self.https() { ("https", 443) } else { ("http", 80) };
         let port = self.port();
-        if port == 80 {
-            format!("http://{name}.{}", self.domain)
+        if port == default {
+            format!("{scheme}://{name}.{}", self.domain)
         } else {
-            format!("http://{name}.{}:{port}", self.domain)
+            format!("{scheme}://{name}.{}:{port}", self.domain)
         }
     }
 }
@@ -195,6 +213,19 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn addresses_follow_the_public_scheme_and_port() {
+        let c = Config::default();
+        assert_eq!(c.address("pages"), "http://pages.localhost:7680");
+        let c: Config = yaml_serde::from_str("domain: fleet.example.com\npublic_scheme: https\n").unwrap();
+        assert_eq!(c.address("pages"), "https://pages.fleet.example.com");
+        let c: Config =
+            yaml_serde::from_str("domain: fleet.example.com\npublic_scheme: https\npublic_port: 8443\n").unwrap();
+        assert_eq!(c.address("pages"), "https://pages.fleet.example.com:8443");
+        let bad: Config = yaml_serde::from_str("public_scheme: ftp\n").unwrap();
+        assert!(bad.check().is_err());
+    }
 
     #[test]
     fn empty_and_full_configs_load() {

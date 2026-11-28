@@ -117,7 +117,7 @@ pub struct Ctx<'a> {
 // ------------------------------------------------------------------ building blocks
 
 /// One notice per part of the control plane that couldn't be read.
-fn errors(s: &Snapshot) -> String {
+pub fn errors(s: &Snapshot) -> String {
     if s.errors.is_empty() {
         return String::new();
     }
@@ -132,7 +132,7 @@ fn errors(s: &Snapshot) -> String {
     o
 }
 
-fn page_head(title: &str, summary: &str) -> String {
+pub fn page_head(title: &str, summary: &str) -> String {
     format!(r#"<div class="page-head"><h1>{}</h1><p class="summary">{}</p></div>"#, esc(title), summary)
 }
 
@@ -156,7 +156,7 @@ pub fn tile(name: &str, tone: &str) -> String {
 }
 
 /// A list with nothing in it: an icon, a line, and what puts something there.
-fn empty(icon_name: &str, title: &str, body: &str) -> String {
+pub fn empty(icon_name: &str, title: &str, body: &str) -> String {
     format!(
         r#"<div class="empty"><span class="empty-icon">{}</span><h3>{}</h3><p>{}</p></div>"#,
         icon(icon_name),
@@ -166,7 +166,7 @@ fn empty(icon_name: &str, title: &str, body: &str) -> String {
 }
 
 /// A dot that means something: a session's state or a machine's health.
-fn dot(kind: &str, label: &str) -> String {
+pub fn dot(kind: &str, label: &str) -> String {
     format!(r#"<span class="dot {}" role="img" aria-label="{}" title="{}"></span>"#, esc(kind), esc(label), esc(label))
 }
 
@@ -181,7 +181,7 @@ fn session_dot(s: &Session) -> String {
     dot(kind, status_word(st))
 }
 
-fn addr(a: &str) -> String {
+pub fn addr(a: &str) -> String {
     format!(r#"<span class="addr">{}</span>"#, esc(a))
 }
 

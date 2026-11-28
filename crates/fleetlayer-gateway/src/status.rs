@@ -24,7 +24,8 @@ pub async fn api_status(app: &App) -> Response {
             "health": r.health, "hosts": r.hosts, "source": r.source})
         })
         .collect();
-    axum::Json(json!({"services": services, "checks": checks, "queuedAlerts": s.queued.len(), "deliveryError": s.delivery_error})).into_response()
+    let status_page = app.reg.cfg.address(crate::registry::STATUS);
+    axum::Json(json!({"services": services, "statusPage": status_page, "checks": checks, "queuedAlerts": s.queued.len(), "deliveryError": s.delivery_error})).into_response()
 }
 
 pub async fn healthz(app: &App) -> Response {

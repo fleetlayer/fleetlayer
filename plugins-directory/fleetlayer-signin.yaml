@@ -13,11 +13,12 @@ platforms: [linux, macos]
 min_fleetlayer: 0.3.9
 protocol: 1
 needs: [a control plane from the same release (its sign-in token), an always-on node, an HTTPS proxy in front]
-grants: []
+grants: [reading.publish]
 config: |
   plugins:
     - name: signin
       command: fleetlayer-signin
+      grants: [reading.publish]
       config:
         dir: ~/.local/state/fleetlayer/signin
         issuer: https://signin.example.com

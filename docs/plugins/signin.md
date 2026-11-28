@@ -35,6 +35,7 @@ services that can't sign people in themselves all work. SAML providers come late
    plugins:
      - name: signin
        command: fleetlayer-signin
+       grants: [reading.publish]   # the dashboard's Services page lists the services that sign in here
        config:
          dir: ~/.local/state/fleetlayer/signin
          issuer: https://signin.example.com

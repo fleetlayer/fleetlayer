@@ -1528,3 +1528,16 @@ async fn a_control_plane_that_doesnt_answer_stops_the_passkey_before_it_is_made(
     assert_eq!(start.status, StatusCode::BAD_REQUEST);
     assert!(start.body["error"].as_str().unwrap().contains("nothing was saved"), "{}", start.text);
 }
+
+#[tokio::test]
+async fn the_clients_reading_names_each_service_and_where_people_open_it_but_no_secret() {
+    let control = control_plane(Arc::new(Mutex::new(Seen::default()))).await;
+    let dir = tempfile::tempdir().unwrap();
+    let a = app(dir.path(), &control);
+    let r = crate::clients_reading(&a.settings);
+    let reading = &r["readings"][0];
+    assert_eq!(reading["kind"], "signin.clients");
+    assert_eq!(reading["data"]["issuer"], ORIGIN);
+    assert_eq!(reading["data"]["clients"][0], json!({"name": "hub", "address": "https://hub.example.com"}));
+    assert!(!r.to_string().contains("s3cret"), "{r}");
+}

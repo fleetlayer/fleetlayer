@@ -90,6 +90,11 @@ impl Control {
         self.send(Self::as_person(self.http.get(format!("{}{path}", self.base)), person), path).await
     }
 
+    /// `DELETE <path>`, as `person`.
+    pub async fn delete_for(&self, path: &str, person: Option<&str>) -> Result<Value, Failed> {
+        self.send(Self::as_person(self.http.delete(format!("{}{path}", self.base)), person), path).await
+    }
+
     /// `POST <path>` with a JSON body, as `person`.
     pub async fn post_for(&self, path: &str, body: &Value, person: Option<&str>) -> Result<Value, Failed> {
         let req = self.http.post(format!("{}{path}", self.base)).json(body);

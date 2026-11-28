@@ -108,9 +108,68 @@ pub async fn report_status(node: Arc<Node>) {
         if node.link.peer().await.is_some() {
             let r = status_reading(&node, true).await;
             crate::readings::publish(&node, &r).await;
+            if let Some(g) = &node.gateway
+                && let Some(r) = gateway_reading(&node.name, g).await
+            {
+                crate::readings::publish(&node, &r).await;
+            }
         }
         tokio::time::sleep(STATUS_EVERY).await;
     }
+}
+
+/// The `gateway.services` reading, keyed by the node's name: each web service its gateway routes (name, the address
+/// people use, the plugin that announced it or `listed`), whether its health check passes, and the status page's
+/// address, from the gateway's own `/api/status`. For the dashboard's Services page. Never a backend's address.
+async fn gateway_reading(node: &str, base: &str) -> Option<serde_json::Value> {
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(5)).build().ok()?;
+    let url = format!("{}/api/status", base.trim_end_matches('/'));
+    let status: serde_json::Value = match client.get(&url).send().await {
+        Ok(r) if r.status().is_success() => r.json().await.ok()?,
+        Ok(r) => {
+            tracing::debug!("the gateway's {url} answered {}", r.status());
+            return None;
+        }
+        Err(e) => {
+            tracing::debug!("the gateway's {url}: {e}");
+            return None;
+        }
+    };
+    Some(gateway_services(node, &status))
+}
+
+/// The reading from a gateway's `/api/status` answer.
+fn gateway_services(node: &str, status: &serde_json::Value) -> serde_json::Value {
+    let check = |name: &str| {
+        status["checks"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|c| c["kind"] == "service" && c["name"] == name)
+            .map(|c| c["check"].clone())
+    };
+    let services: Vec<serde_json::Value> = status["services"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|s| {
+            let name = s["name"].as_str()?;
+            let c = check(name);
+            Some(serde_json::json!({
+                "name": name,
+                "address": s["address"],
+                "source": s["source"],
+                "up": c.as_ref().map(|c| c["up"].clone()).unwrap_or(serde_json::Value::Null),
+                "error": c.as_ref().map(|c| c["last_error"].clone()).unwrap_or(serde_json::Value::Null),
+            }))
+        })
+        .collect();
+    serde_json::json!({
+        "kind": "gateway.services",
+        "key": node,
+        "at": jiff::Timestamp::now(),
+        "data": {"services": services, "statusPage": status["statusPage"]},
+    })
 }
 
 pub async fn run(node: Arc<Node>, cfg: HeartbeatConfig, has_control: bool) {
@@ -156,6 +215,34 @@ pub async fn run(node: Arc<Node>, cfg: HeartbeatConfig, has_control: bool) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_gateway_reading_names_each_route_its_link_and_health_but_never_a_backend() {
+        let status = serde_json::json!({
+            "services": [
+                {"name": "pages", "address": "https://pages.fleet.example", "backend": "http://127.0.0.1:41000",
+                 "source": "pages", "hosts": []},
+                {"name": "control", "address": "https://control.fleet.example", "backend": "http://10.0.0.5:7600",
+                 "source": "listed"}],
+            "statusPage": "https://fleetlayer.fleet.example",
+            "checks": [{"kind": "service", "name": "control", "check": {"up": false, "last_error": "refused"}},
+                       {"kind": "heartbeat", "name": "pages", "check": {"up": true}}]});
+        let r = super::gateway_services("edge", &status);
+        assert_eq!((r["kind"].as_str(), r["key"].as_str()), (Some("gateway.services"), Some("edge")));
+        let s = &r["data"]["services"];
+        assert_eq!(s[0]["address"], "https://pages.fleet.example");
+        assert_eq!(
+            s[0]["up"],
+            serde_json::Value::Null,
+            "no service check yet (a heartbeat of the same name isn't one)"
+        );
+        assert_eq!(
+            (s[1]["up"].clone(), s[1]["error"].clone()),
+            (serde_json::json!(false), serde_json::json!("refused"))
+        );
+        assert_eq!(r["data"]["statusPage"], "https://fleetlayer.fleet.example");
+        assert!(!r.to_string().contains("127.0.0.1") && !r.to_string().contains("10.0.0.5"), "{r}");
+    }
+
     #[tokio::test]
     async fn the_status_reading_says_how_the_node_is_and_names_no_paths() {
         let dir = tempfile::tempdir().unwrap();

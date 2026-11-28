@@ -242,6 +242,44 @@ pub struct Tool {
     pub not_offered: Option<String>,
 }
 
+/// A link to a web service Fleetlayer doesn't run, added on the Services page.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Link {
+    pub name: String,
+    pub url: String,
+    pub description: Option<String>,
+    pub added_by: String,
+}
+
+/// Whether a service answers its health check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Health {
+    Up,
+    Down(String),
+    /// No check (a link, a sign-in client, a plugin service the gateway doesn't route).
+    Unchecked,
+}
+
+/// One web service the fleet runs or uses, from whatever Fleetlayer knows of it.
+#[derive(Debug, Clone)]
+pub struct Service {
+    /// Its name, as the policy says it (`service:<name>`).
+    pub name: String,
+    /// The address people open, when one is known.
+    pub address: Option<String>,
+    /// The node and machine that run it, and the plugin that announced it, when Fleetlayer runs it.
+    pub node: Option<String>,
+    pub machine: Option<String>,
+    pub plugin: Option<String>,
+    pub health: Health,
+    /// People sign in to it with Fleetlayer's sign-in (it's one of the sign-in service's clients).
+    pub signs_in: bool,
+    /// Added by hand on the Services page: Fleetlayer doesn't run it.
+    pub link: bool,
+    pub description: Option<String>,
+}
+
 /// Everything the pages show, read at one moment.
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
@@ -253,6 +291,8 @@ pub struct Snapshot {
     pub window_history: Vec<WindowRecord>,
     pub readings: Vec<Reading>,
     pub tools: Vec<Tool>,
+    /// Links to services Fleetlayer doesn't run (`/v1/links`).
+    pub links: Vec<Link>,
     /// What couldn't be read, per part (`fleet`, `events`...), in words.
     pub errors: BTreeMap<&'static str, String>,
 }
@@ -306,6 +346,111 @@ impl Snapshot {
             }
         }
         out.into_iter().map(|((n, p), w)| (n, p, w)).collect()
+    }
+
+    /// Every web service, merged by name from what Fleetlayer knows: each gateway's routes (with the address people use
+    /// and its health check), the services node plugins announce, the sign-in service and its clients, and the links
+    /// added by hand. In name order.
+    pub fn services(&self) -> Vec<Service> {
+        let mut out: BTreeMap<String, Service> = BTreeMap::new();
+        let machine_of = |node: &str| self.nodes.iter().find(|n| n.name == node).map(|n| n.machine().to_string());
+        let blank = |name: &str| Service {
+            name: name.to_string(),
+            address: None,
+            node: None,
+            machine: None,
+            plugin: None,
+            health: Health::Unchecked,
+            signs_in: false,
+            link: false,
+            description: None,
+        };
+        // What each gateway routes.
+        for r in self.readings.iter().filter(|r| r.kind == "gateway.services") {
+            for g in r.data["services"].as_array().into_iter().flatten() {
+                let Some(name) = g["name"].as_str() else { continue };
+                let s = out.entry(name.to_string()).or_insert_with(|| blank(name));
+                s.address = g["address"].as_str().map(str::to_string).or(s.address.take());
+                s.node = Some(r.node.clone());
+                s.machine = machine_of(&r.node);
+                if let Some(p) = g["source"].as_str().filter(|p| *p != "listed") {
+                    s.plugin = Some(p.to_string());
+                }
+                s.health = match (g["up"].as_bool(), g["error"].as_str()) {
+                    (Some(true), _) => Health::Up,
+                    (Some(false), e) => Health::Down(e.unwrap_or("its health check fails").to_string()),
+                    (None, _) => Health::Unchecked,
+                };
+            }
+            if let Some(page) = r.data["statusPage"].as_str() {
+                let s = out.entry("fleetlayer".into()).or_insert_with(|| blank("fleetlayer"));
+                s.address = Some(page.to_string());
+                s.node = Some(r.node.clone());
+                s.machine = machine_of(&r.node);
+                s.plugin = Some("gateway".into());
+                s.health = Health::Up;
+                s.description = Some("The gateway's status page: what's running and where alerts go".into());
+            }
+        }
+        // What node plugins announce (even when no gateway routes it).
+        for n in &self.nodes {
+            for p in n.status.iter().flat_map(|s| s.plugins.iter()).filter(|p| p.enabled) {
+                for name in &p.services {
+                    let s = out.entry(name.clone()).or_insert_with(|| blank(name));
+                    if s.node.is_none() {
+                        s.node = Some(n.name.clone());
+                        s.machine = Some(n.machine().to_string());
+                    }
+                    if s.plugin.is_none() {
+                        s.plugin = Some(p.name.clone());
+                    }
+                    if s.health == Health::Unchecked && p.health() == "bad" {
+                        s.health = Health::Down(
+                            p.problem.clone().or_else(|| p.reason.clone()).unwrap_or_else(|| p.state.clone()),
+                        );
+                    }
+                }
+            }
+        }
+        // The sign-in service and the services that sign in through it.
+        for r in self.readings.iter().filter(|r| r.kind == "signin.clients") {
+            if let Some(issuer) = r.data["issuer"].as_str() {
+                let s = out.entry("signin".into()).or_insert_with(|| blank("signin"));
+                s.address.get_or_insert_with(|| issuer.to_string());
+            }
+            for c in r.data["clients"].as_array().into_iter().flatten() {
+                let Some(name) = c["name"].as_str() else { continue };
+                let s = out.entry(name.to_string()).or_insert_with(|| blank(name));
+                s.signs_in = true;
+                if s.address.is_none() {
+                    s.address = c["address"].as_str().map(str::to_string);
+                }
+            }
+        }
+        // Links added by hand.
+        for l in &self.links {
+            let s = out.entry(l.name.clone()).or_insert_with(|| blank(&l.name));
+            if s.address.is_none() && s.node.is_none() {
+                s.link = true;
+                s.address = Some(l.url.clone());
+            }
+            if s.description.is_none() {
+                s.description = l.description.clone();
+            }
+        }
+        out.into_values().collect()
+    }
+
+    /// Add `/v1/links`'s answer (an older control plane without it: no links).
+    pub fn with_links(mut self, links: Result<Value, Failed>) -> Snapshot {
+        match links {
+            Ok(v) => self.links = serde_json::from_value(v["links"].clone()).unwrap_or_default(),
+            Err(Failed::Missing(_)) => {}
+            Err(e) => {
+                self.errors.insert("links", e.to_string());
+            }
+        }
+        self
     }
 
     fn attach_status(&mut self) {
@@ -393,15 +538,16 @@ impl Cache {
 async fn read(source: &Source) -> Snapshot {
     match source {
         Source::Control(c) => {
-            let (fleet, events, approvals, windows, readings, tools) = tokio::join!(
+            let (fleet, events, approvals, windows, readings, tools, links) = tokio::join!(
                 c.get("/v1/fleet"),
                 c.get("/v1/events"),
                 c.get("/v1/approvals"),
                 c.get("/v1/windows"),
                 c.get("/v1/readings"),
                 c.get("/v1/tools"),
+                c.get("/v1/links"),
             );
-            Snapshot::from_parts(fleet, events, approvals, windows, readings, tools)
+            Snapshot::from_parts(fleet, events, approvals, windows, readings, tools).with_links(links)
         }
         Source::Demo(d) => d.snapshot(),
     }
@@ -440,6 +586,50 @@ mod tests {
         assert_eq!(s.sessions[2].prompt_line().as_deref(), Some("asks to run Bash"));
         assert_eq!(s.pending_approvals().len(), 1);
         assert_eq!(s.open_windows().len(), 1);
+    }
+
+    #[test]
+    fn services_merge_the_gateway_s_routes_plugins_sign_in_clients_and_links() {
+        let s = Snapshot::from_parts(
+            Ok(json!({"nodes": [{"name": "edge", "machine": "vps", "online": true}], "sessions": []})),
+            Ok(json!({"events": []})),
+            Ok(json!({"approvals": []})),
+            Ok(json!({"roles": [], "windows": []})),
+            Ok(json!({"readings": [
+                {"kind": "gateway.services", "key": "edge", "node": "edge", "at": "t", "data": {
+                    "statusPage": "https://fleetlayer.fleet.example",
+                    "services": [
+                        {"name": "pages", "address": "https://pages.fleet.example", "source": "pages", "up": true},
+                        {"name": "deck", "address": "https://deck.fleet.example", "source": "listed", "up": false,
+                         "error": "connection refused"}]}},
+                {"kind": "node.status", "key": "edge", "node": "edge", "at": "t", "data": {"healthy": true, "plugins": [
+                    {"name": "claude-auth-manager", "enabled": true, "state": "running", "services": ["hub"]}]}},
+                {"kind": "signin.clients", "key": "clients", "node": "edge", "at": "t", "data": {
+                    "issuer": "https://signin.fleet.example",
+                    "clients": [{"name": "pages", "address": "https://pages.fleet.example"},
+                                {"name": "grafana", "address": "https://grafana.example.com"}]}}]})),
+            Ok(json!({"tools": []})),
+        )
+        .with_links(Ok(
+            json!({"links": [{"name": "wiki", "url": "https://wiki.example.com", "description": "The handbook"}]}),
+        ));
+        let all = s.services();
+        let get = |n: &str| all.iter().find(|x| x.name == n).unwrap_or_else(|| panic!("no {n}: {all:?}"));
+        let pages = get("pages");
+        assert_eq!(
+            (pages.address.as_deref(), pages.plugin.as_deref(), pages.machine.as_deref()),
+            (Some("https://pages.fleet.example"), Some("pages"), Some("vps"))
+        );
+        assert!(pages.signs_in && pages.health == Health::Up);
+        assert_eq!(get("deck").health, Health::Down("connection refused".into()));
+        assert_eq!(get("deck").plugin, None, "listed in gateway.yaml, not a plugin's");
+        assert_eq!((get("hub").plugin.as_deref(), get("hub").address.as_deref()), (Some("claude-auth-manager"), None));
+        assert_eq!(get("signin").address.as_deref(), Some("https://signin.fleet.example"));
+        assert!(get("grafana").signs_in && get("grafana").node.is_none());
+        assert!(get("wiki").link && get("wiki").description.as_deref() == Some("The handbook"));
+        assert_eq!(get("fleetlayer").plugin.as_deref(), Some("gateway"));
+        let names: Vec<&str> = all.iter().map(|x| x.name.as_str()).collect();
+        assert_eq!(names, ["deck", "fleetlayer", "grafana", "hub", "pages", "signin", "wiki"]);
     }
 
     #[test]

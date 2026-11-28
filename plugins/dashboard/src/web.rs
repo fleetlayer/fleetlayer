@@ -127,6 +127,22 @@ impl App {
         self.flashes.lock().await.remove(session).map(|(c, _)| c)
     }
 
+    /// The services this viewer may use: `sign_in` or `use` on `service:<name>` in the access policy (each answer
+    /// remembered for a minute). The login key's holder sees them all; when the check can't be made, a service isn't
+    /// shown.
+    pub async fn services_for(&self, v: &Viewer, all: Vec<crate::model::Service>) -> Vec<crate::model::Service> {
+        let mut out = vec![];
+        for s in all {
+            let target = format!("service:{}", s.name);
+            if self.auth.may_on(v, "sign_in", &target).await == Access::Yes
+                || self.auth.may_on(v, "use", &target).await == Access::Yes
+            {
+                out.push(s);
+            }
+        }
+        out
+    }
+
     /// Whether this viewer may make another invite now, counting it when they may.
     async fn invite_allowed(&self, v: &Viewer) -> bool {
         let who = v.person.as_ref().map(|p| p.sub.clone()).unwrap_or_else(|| "login key".into());
@@ -181,6 +197,9 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/_/windows/{role}/close", post(close_window))
         .route("/", get(page_overview))
         .route("/machines", get(page_machines))
+        .route("/services", get(page_services))
+        .route("/_/links", post(link_add))
+        .route("/_/links/{name}/remove", post(link_remove))
         .route("/sessions", get(page_sessions))
         .route("/events", get(page_events))
         .route("/access", get(page_access))
@@ -267,6 +286,7 @@ async fn healthz(State(app): St) -> Response {
 enum Page {
     Overview,
     Machines,
+    Services,
     Sessions,
     Events,
     Access,
@@ -280,6 +300,7 @@ enum Page {
 const NAV: &[(Page, &str, &str)] = &[
     (Page::Overview, "/", "Overview"),
     (Page::Machines, "/machines", "Machines"),
+    (Page::Services, "/services", "Services"),
     (Page::Sessions, "/sessions", "Sessions"),
     (Page::Events, "/events", "Events"),
     (Page::Access, "/access", "Access"),
@@ -392,6 +413,10 @@ async fn page_overview(s: St, h: HeaderMap, q: Query<PageQuery>) -> Response {
     page(s, h, q, Page::Overview).await
 }
 
+async fn page_services(s: St, h: HeaderMap, q: Query<PageQuery>) -> Response {
+    page(s, h, q, Page::Services).await
+}
+
 async fn page_machines(s: St, h: HeaderMap, q: Query<PageQuery>) -> Response {
     page(s, h, q, Page::Machines).await
 }
@@ -454,6 +479,10 @@ async fn page(State(app): St, headers: HeaderMap, Query(q): Query<PageQuery>, wh
     let mut main = match which {
         Page::Overview => views::overview(&snap, &c),
         Page::Machines => views::machines(&snap, &c),
+        Page::Services => {
+            let mine = app.services_for(&v, snap.services()).await;
+            crate::services::page(&snap, &mine, &crate::services::Ctx { can_manage: powers.act, csrf: &v.csrf })
+        }
         Page::Sessions => views::sessions(&snap, &c, q.node.as_deref()),
         Page::Events => views::events(&snap, &c),
         Page::Access => views::access(&snap, &c),
@@ -487,6 +516,62 @@ async fn not_found(State(app): St, headers: HeaderMap) -> Response {
         return Redirect::to("/_/login").into_response();
     }
     simple(StatusCode::NOT_FOUND, "Not here", r#"<p><a href="/">Back to the overview</a></p>"#)
+}
+
+// ------------------------------------------------------------------ links on the Services page
+
+#[derive(Deserialize)]
+struct LinkForm {
+    csrf: String,
+    name: String,
+    url: String,
+    #[serde(default)]
+    description: Option<String>,
+}
+
+/// `POST /_/links`: add a link to a service Fleetlayer doesn't run, as this person (one of the tenant's admins).
+async fn link_add(State(app): St, headers: HeaderMap, Form(f): Form<LinkForm>) -> Response {
+    let v = match actor(&app, &headers, &f.csrf).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let body = serde_json::json!({"name": f.name.trim(), "url": f.url.trim(),
+        "description": f.description.as_deref().map(str::trim).filter(|d| !d.is_empty())});
+    let done = match &app.source {
+        Source::Demo(_) => Ok(Value::Null),
+        Source::Control(c) => c.post_for("/v1/links", &body, app.acting_as(&v)).await,
+    };
+    app.cache.forget().await;
+    match done {
+        Ok(_) => {
+            tracing::info!(who = %v.label(), name = %f.name, "added a link from the dashboard");
+            back(Some("/services"), &format!("Added {}.", f.name.trim()))
+        }
+        Err(e) => back(Some("/services"), &failed_words(&e)),
+    }
+}
+
+/// `POST /_/links/<name>/remove`.
+async fn link_remove(
+    State(app): St,
+    headers: HeaderMap,
+    UrlPath(name): UrlPath<String>,
+    Form(f): Form<CsrfForm>,
+) -> Response {
+    let v = match actor(&app, &headers, &f.csrf).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let path = format!("/v1/links/{}", form_urlencoded::byte_serialize(name.as_bytes()).collect::<String>());
+    let done = match &app.source {
+        Source::Demo(_) => Ok(Value::Null),
+        Source::Control(c) => c.delete_for(&path, app.acting_as(&v)).await,
+    };
+    app.cache.forget().await;
+    match done {
+        Ok(_) => back(Some("/services"), &format!("Removed {name}.")),
+        Err(e) => back(Some("/services"), &failed_words(&e)),
+    }
 }
 
 // ------------------------------------------------------------------ people, teams and rules
@@ -1408,6 +1493,37 @@ mod tests {
             assert_eq!(status, StatusCode::OK, "{path}");
             assert!(body.contains(want), "{path}: {body}");
         }
+    }
+
+    #[tokio::test]
+    async fn services_show_only_what_the_policy_lets_this_person_use() {
+        let f = fleetlayer_oidc::testing::FakeIssuer::start().await;
+        let oidc = fleetlayer_oidc::Oidc::new(&f.url, "dashboard", "s", "https://d.example").unwrap();
+        // They may sign in to the dashboard and to pages, and use the handbook link; nothing else.
+        let checker = auth::Checker::Fixed(Box::new(|can: &str, to: &str| {
+            Ok(matches!((can, to), ("sign_in", "service:dashboard" | "service:pages") | ("use", "service:handbook")))
+        }));
+        let auth = Auth::new(None, Some(oidc), Some(checker), "dashboard".into()).unwrap();
+        let app =
+            Arc::new(App::new(Source::Demo(crate::demo::Demo::new()), auth, Some("https://d.example".into()), vec![]));
+        let person =
+            fleetlayer_oidc::Person { sub: "p_jun".into(), tenant: "home".into(), handle: None, name: None, sid: None };
+        let sid = app.auth.start(Some(person)).await;
+        let (status, _, body) = get(&app, "/services", Some(&format!("{}={sid}", auth::COOKIE))).await;
+        assert_eq!(status, StatusCode::OK);
+        for shown in
+            ["https://pages.fleet.example.com", "https://dashboard.fleet.example.com", "https://handbook.example.com"]
+        {
+            assert!(body.contains(shown), "{shown} missing: {body}");
+        }
+        for hidden in ["executor", "grafana", "control.fleet", "https://ci.example.com"] {
+            assert!(!body.contains(hidden), "{hidden} shown: {body}");
+        }
+        // The Services tab sits right after Machines.
+        let m = body.find(r#"href="/machines""#).unwrap();
+        let sv = body.find(r#"href="/services""#).unwrap();
+        let se = body.find(r#"href="/sessions""#).unwrap();
+        assert!(m < sv && sv < se);
     }
 
     #[test]

@@ -632,6 +632,115 @@ pub async fn post_people(
     }
 }
 
+/// `GET /v1/links`: links to web services the fleet uses but Fleetlayer doesn't run, for the dashboard's Services page.
+/// `{links: [{name, url, description, addedBy, addedAt}]}`. A read token.
+pub async fn get_links(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
+    guard(&app, &headers).await?;
+    let rows: Vec<(String, String, Option<String>, String, i64)> = sqlx::query_as(
+        "SELECT name, url, description, added_by, added_at FROM service_links WHERE tenant = ? ORDER BY name",
+    )
+    .bind(DEFAULT_TENANT)
+    .fetch_all(&app.db)
+    .await
+    .map_err(|e| internal(e.into()))?;
+    let links: Vec<Value> = rows
+        .into_iter()
+        .map(|(name, url, description, by, at)| {
+            json!({"name": name, "url": url, "description": description, "addedBy": by, "addedAt": at})
+        })
+        .collect();
+    Ok(Json(json!({"links": links})))
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct NewLink {
+    name: String,
+    url: String,
+    #[serde(default)]
+    description: Option<String>,
+}
+
+/// What's wrong with a link, if anything: a name the policy can use (`service:<name>`), an `https://` (or `http://`)
+/// address, a one-line description.
+fn link_problem(l: &NewLink) -> Option<String> {
+    let name_ok = !l.name.is_empty()
+        && l.name.len() <= 63
+        && l.name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && !l.name.starts_with('-');
+    if !name_ok {
+        return Some(
+            "a link's name is lower-case letters, digits and hyphens (the policy calls it service:<name>)".into(),
+        );
+    }
+    let url_ok = (l.url.starts_with("https://") || l.url.starts_with("http://"))
+        && l.url.len() <= 2000
+        && !l.url.chars().any(|c| c.is_whitespace() || c.is_control());
+    if !url_ok {
+        return Some("a link's address starts with https:// (or http://)".into());
+    }
+    if l.description.as_deref().is_some_and(|d| d.chars().count() > 200 || d.contains('\n')) {
+        return Some("a description is one line of at most 200 characters".into());
+    }
+    None
+}
+
+/// `POST /v1/links {name, url, description?}`: add (or replace) a link, as one of the tenant's admins (or the admin
+/// token). Recorded in the audit log.
+pub async fn post_link(State(app): State<Arc<App>>, headers: HeaderMap, Json(l): Json<NewLink>) -> ApiResult {
+    let actor = people_actor(&app, &headers, "links").await?;
+    if !actor.tenant_admin {
+        let why = "only the tenant's admins add links".to_string();
+        audit_refusal(&app, &actor.by, "links", why.clone()).await;
+        return Err((StatusCode::FORBIDDEN, why));
+    }
+    if let Some(why) = link_problem(&l) {
+        return Err((StatusCode::BAD_REQUEST, why));
+    }
+    sqlx::query(
+        "INSERT INTO service_links (tenant, name, url, description, added_by, added_at) VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT (tenant, name) DO UPDATE SET url = excluded.url, description = excluded.description,
+         added_by = excluded.added_by, added_at = excluded.added_at",
+    )
+    .bind(DEFAULT_TENANT)
+    .bind(&l.name)
+    .bind(&l.url)
+    .bind(l.description.as_deref().filter(|d| !d.trim().is_empty()))
+    .bind(&actor.by)
+    .bind(db::now_ms())
+    .execute(&app.db)
+    .await
+    .map_err(|e| internal(e.into()))?;
+    crate::people::log(&app.db, DEFAULT_TENANT, &actor.by, "link.add", &format!("service:{}", l.name), &l.url)
+        .await
+        .map_err(internal)?;
+    Ok(Json(json!({"name": l.name})))
+}
+
+/// `DELETE /v1/links/<name>`: remove a link, as one of the tenant's admins. `{removed}`.
+pub async fn delete_link(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> ApiResult {
+    let actor = people_actor(&app, &headers, "links").await?;
+    if !actor.tenant_admin {
+        return Err((StatusCode::FORBIDDEN, "only the tenant's admins remove links".into()));
+    }
+    let n = sqlx::query("DELETE FROM service_links WHERE tenant = ? AND name = ?")
+        .bind(DEFAULT_TENANT)
+        .bind(&name)
+        .execute(&app.db)
+        .await
+        .map_err(|e| internal(e.into()))?
+        .rows_affected();
+    if n > 0 {
+        crate::people::log(&app.db, DEFAULT_TENANT, &actor.by, "link.remove", &format!("service:{name}"), "removed")
+            .await
+            .map_err(internal)?;
+    }
+    Ok(Json(json!({"removed": n > 0})))
+}
+
 /// `GET /v1/policy` (admin token, or a delegate token for one of the tenant's admins): the access policy in force, as
 /// its file says it and parsed. `{text, builtin, policy}`; `text` null when the tenant has none (the older ACL rules).
 pub async fn get_policy(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
@@ -1057,6 +1166,44 @@ mod tests {
         assert!(get_people(State(app.clone()), bearer("admin-token")).await.is_ok());
         let e = post_people(State(app.clone()), as_(&ids[0]), path("nope"), change("x")).await.unwrap_err();
         assert_eq!(e.0, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn the_tenant_s_admins_add_and_remove_links_and_read_tokens_list_them() {
+        let app = app().await;
+        let db = &app.db;
+        let mut ids = vec![];
+        for (handle, role) in [("sam", "admin"), ("lee", "member")] {
+            let i = crate::people::NewInvite { handle, role, teams: &[], person: None };
+            let code = crate::people::invite(db, DEFAULT_TENANT, i, "admin").await.unwrap();
+            let r = crate::people::invite_redeem(db, &code, crate::people::Redeemer::New { display_name: handle });
+            ids.push(r.await.unwrap().person);
+        }
+        let token = db::add_token(db, DEFAULT_TENANT, "dashboard", "delegate").await.unwrap();
+        let as_ = |person: &str| {
+            let mut h = bearer(&token);
+            h.insert(PERSON_HEADER, person.parse().unwrap());
+            h
+        };
+        let link = |name: &str, url: &str| {
+            Json(NewLink { name: name.into(), url: url.into(), description: Some("The team wiki".into()) })
+        };
+        let _ = post_link(State(app.clone()), as_(&ids[0]), link("wiki", "https://wiki.example.com")).await.unwrap();
+        let e = post_link(State(app.clone()), as_(&ids[1]), link("ci", "https://ci.example.com")).await.unwrap_err();
+        assert_eq!(e.0, StatusCode::FORBIDDEN, "a member doesn't add links");
+        let e = post_link(State(app.clone()), as_(&ids[0]), link("bad", "javascript:alert(1)")).await.unwrap_err();
+        assert_eq!(e.0, StatusCode::BAD_REQUEST);
+        let e = post_link(State(app.clone()), as_(&ids[0]), link("Not A Name", "https://x.example")).await.unwrap_err();
+        assert_eq!(e.0, StatusCode::BAD_REQUEST);
+        let read = db::add_token(db, DEFAULT_TENANT, "reader", "read").await.unwrap();
+        let Json(v) = get_links(State(app.clone()), bearer(&read)).await.unwrap();
+        assert_eq!(v["links"][0]["name"], "wiki");
+        assert_eq!(v["links"][0]["addedBy"], "person:sam (via dashboard)");
+        assert_eq!(v["links"].as_array().unwrap().len(), 1);
+        let Json(v) = delete_link(State(app.clone()), as_(&ids[0]), axum::extract::Path("wiki".into())).await.unwrap();
+        assert_eq!(v["removed"], true);
+        let Json(v) = get_links(State(app.clone()), bearer(&read)).await.unwrap();
+        assert_eq!(v["links"], json!([]));
     }
 
     #[tokio::test]
