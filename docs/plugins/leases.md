@@ -57,6 +57,9 @@ kinds:
     ttl: 2h                     # a lease's limit unless --ttl asks for less (default 2h)
     max_ttl: 6h                 # the most --ttl may ask for (default 24h, or ttl if longer)
     idle: 30m                   # a session holder idle this long loses it (default 30m)
+  build-server-light:
+    description: Checks that don't link (fmt, check, clippy)
+    slots: 3
 
   gmail-filter:
     approval: true              # the access policy decides each new payload, once
@@ -212,7 +215,8 @@ echo scripts/fleetlayer-dev-slot > .dev-slot       # in a checkout
 ln -s "$PWD/scripts/fleetlayer-dev-slot" ~/.local/bin/   # or for every checkout on this machine
 ```
 
-It takes a lease of `build-server` (`$FLEETLAYER_DEV_SLOT_KIND` for another kind), tied to the calling script's
+It takes a lease of `build-server` (`$FLEETLAYER_DEV_SLOT_KIND` for another kind), or of `build-server-light` for
+the commands that don't link (fmt, check, clippy: on-dev sets `FLEETLAYER_DEV_SLOT_CLASS=light`), tied to the calling script's
 process, so a killed `on-dev` releases its slot within seconds. When a machine has a helper and no slot can be taken,
 the scripts don't build (unlimited builds are what the slots prevent): they stop with exit code 75.
 `FLEETLAYER_DEV_SLOT=none` builds without one, on purpose. `build-images` builds in the background on the build

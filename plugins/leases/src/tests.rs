@@ -648,11 +648,19 @@ fn approval_answers_are_read_from_their_fields_and_from_older_wording() {
         not_asked,
     };
     assert_eq!(decided(&d(Some("ap_1"), None, false, "whatever words")), Decided::Pending("ap_1".into()));
-    assert_eq!(decided(&d(None, Some("ap_1"), false, "waiting for the person to approve request ap_1")), Decided::Refused);
+    assert_eq!(
+        decided(&d(None, Some("ap_1"), false, "waiting for the person to approve request ap_1")),
+        Decided::Refused
+    );
     assert_eq!(decided(&d(None, None, true, "")), Decided::NotAsked);
     // An older control plane: words only.
     assert_eq!(
-        decided(&d(None, None, false, "x needs its person's approval to write y: waiting for the person to approve request ap_9. Try again")),
+        decided(&d(
+            None,
+            None,
+            false,
+            "x needs its person's approval to write y: waiting for the person to approve request ap_9. Try again"
+        )),
         Decided::Pending("ap_9".into())
     );
     assert_eq!(decided(&d(None, None, false, "not asked yet: -@x's own node files the request")), Decided::NotAsked);
@@ -674,7 +682,10 @@ async fn a_lease_of_a_kind_removed_since_it_started_still_ends_with_an_event() {
     eventually(|| fake.events.lock().unwrap().len() == 1).await;
     let epoch = a.engine.lock().await.state.epoch.clone();
     assert_eq!(epoch.len(), 8);
-    assert_eq!(fake.events.lock().unwrap()[0].dedupe_key.as_deref(), Some(format!("lease:plugin:leases@server:{epoch}:{id}:started").as_str()));
+    assert_eq!(
+        fake.events.lock().unwrap()[0].dedupe_key.as_deref(),
+        Some(format!("lease:plugin:leases@server:{epoch}:{id}:started").as_str())
+    );
     // The kind goes from the settings; its held lease ends later, and the filter's owner still hears it.
     std::fs::write(dir.path().join("leases.yaml"), "kinds:\n  build-server:\n    slots: 1\n").unwrap();
     a.round().await;

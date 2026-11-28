@@ -422,7 +422,9 @@ impl Authority {
             let changes = engine.asked(
                 id,
                 None,
-                Some(format!("its reason and payload are too long to show the person whole (over {MAX_WHY} characters)")),
+                Some(format!(
+                    "its reason and payload are too long to show the person whole (over {MAX_WHY} characters)"
+                )),
                 Timestamp::now(),
             );
             self.changed(&mut engine, changes).await;
@@ -441,12 +443,9 @@ impl Authority {
                 engine.approved(&settings, id, now)
             }
             Ok(d) => match decided(&d) {
-                Decided::Pending(request) => engine.asked(
-                    id,
-                    Some(format!("waiting for the person to approve request {request}")),
-                    None,
-                    now,
-                ),
+                Decided::Pending(request) => {
+                    engine.asked(id, Some(format!("waiting for the person to approve request {request}")), None, now)
+                }
                 // The request it waited on is gone (it expired unanswered): file a new one next round.
                 Decided::NotAsked => engine.asked(id, Some("asking the access policy again".into()), None, now),
                 Decided::Refused => engine.asked(id, None, Some(d.reason), now),

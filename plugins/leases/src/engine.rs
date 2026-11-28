@@ -264,7 +264,13 @@ impl Engine {
             state.leases.values().filter(|l| l.bound && l.phase == Phase::Waiting).map(|l| l.id).collect();
         for id in orphans {
             if let Some(lease) = state.leases.remove(&id) {
-                state.ended.push_back(Ended { lease, ended_at: now, why: EndReason::Cancelled, detail: Some("the authority restarted while it waited".into()), by: None });
+                state.ended.push_back(Ended {
+                    lease,
+                    ended_at: now,
+                    why: EndReason::Cancelled,
+                    detail: Some("the authority restarted while it waited".into()),
+                    by: None,
+                });
             }
         }
         Engine { state }

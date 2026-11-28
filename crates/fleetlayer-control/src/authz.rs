@@ -424,8 +424,10 @@ pub async fn sync_check(
         return Ok(peek(app, home, &req.who, "sync", &req.to).await);
     }
     Ok(match check_why(app, home, &req.who, "sync", &req.to, req.why.as_deref()).await {
-        Ok(()) => fleetlayer_protocol::link::AccessDecision { allowed: true, rules: vec![], reason: "allowed".into() },
-        Err(e) => fleetlayer_protocol::link::AccessDecision { allowed: false, rules: vec![], reason: e.message },
+        Ok(()) => {
+            fleetlayer_protocol::link::AccessDecision { allowed: true, reason: "allowed".into(), ..Default::default() }
+        }
+        Err(e) => fleetlayer_protocol::link::AccessDecision { reason: e.message, ..Default::default() },
     })
 }
 
