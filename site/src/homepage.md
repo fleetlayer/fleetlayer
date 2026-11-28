@@ -72,9 +72,9 @@ credentials) and `fleetlayer` (the command line).
 
 ## All the security, none of the pain
 
-Most people run Claude Code with every token in their shell and hope nothing goes wrong. That works until an agent
-reads a malicious email, or a stray `rm -rf` runs in the wrong folder. Fleetlayer gives you the protections a security
-team would ask for, an agent sets them up for you, and each one can be switched off when you don't need it.
+Most people run Claude Code with access to everything and hope nothing goes wrong. That works until an agent reads a
+malicious email, or a stray `rm -rf` runs in the wrong folder. Fleetlayer gives you the protections a security team
+would ask for, an agent sets them up for you, and each one can be switched off when you don't need it.
 
 - **Ask before the risky things.** Access rules decide which agent may message, start or take over which session.
   Anything sensitive waits for your approval, and you can leave approvals off for the work you trust.
