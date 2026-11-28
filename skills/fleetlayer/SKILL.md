@@ -147,8 +147,19 @@ fleetlayer session answer review@server --prompt <id> --pick 2 --pick 1,3 --pick
 fleetlayer session close review@server
 ```
 
+To free a session's context, type a slash command into it as the person would (only `/compact` and `/clear` unless
+its node's `session_commands:` allows more; arguments may follow):
+
+```sh
+fleetlayer session command review@server /compact
+fleetlayer session command review@server /compact keep the deploy notes
+```
+
+It's refused while the session is working, waits on a prompt, or someone is typing in it: try again once it's idle,
+don't loop. `/clear` throws the session's context away, so use it only when the person asked.
+
 Answering a permission prompt approves what it asks. A prompt that's no longer showing is refused (`-32015`); look
-again rather than retrying. Both ask the person first on another node by default.
+again rather than retrying. These ask the person first on another node by default.
 
 ## Shared tools
 

@@ -749,9 +749,13 @@ impl Handler for FromNode {
                 let c: l::ToolCall = params(p)?;
                 answer(&command_call(app, tenant, &self.node, c).await?)
             }
-            l::method::SESSION_CLOSE | l::method::SESSION_ANSWER => {
+            l::method::SESSION_CLOSE | l::method::SESSION_ANSWER | l::method::SESSION_COMMAND => {
                 let r: l::SessionActRequest = params(p)?;
-                let expect = if method == l::method::SESSION_CLOSE { "close" } else { "answer" };
+                let expect = match method {
+                    l::method::SESSION_CLOSE => "close",
+                    l::method::SESSION_COMMAND => "command",
+                    _ => "answer",
+                };
                 if r.action.verb() != expect {
                     return Err(RpcError::invalid_params(format!("{method} carries action {expect}")));
                 }

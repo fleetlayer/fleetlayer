@@ -1,10 +1,15 @@
-//! Acting on a running session for a caller: closing it, or answering the prompt it's blocked on
-//! (`fleetlayer session close|answer`, `docs/protocol.md`, "Answering a blocked prompt"). Here, or on another node
-//! through the control plane, checked there as `close` or `answer` on `<session>@<node>`.
+//! Acting on a running session for a caller: closing it, answering the prompt it's blocked on, or typing a slash
+//! command into it (`fleetlayer session close|answer|command`, `docs/protocol.md`, "Answering a blocked prompt" and
+//! "Slash commands"). Here, or on another node through the control plane, checked there as `close`, `answer` or
+//! `command` on `<session>@<node>`.
 //!
 //! An answer is typed into the session's own menu through its session manager (keys, and text for a free answer),
 //! and only after reading the screen shows that same prompt: a prompt that's been answered or replaced is refused
 //! with `-32015`, so a late click never answers the wrong question.
+//!
+//! A slash command is typed only when its node's `session_commands:` allows it, the session is idle (not working,
+//! not blocked on a prompt), and its input line reads empty, so it never lands in the middle of what the person is
+//! typing. Enter goes only once the input line reads back as the command alone.
 
 use std::time::Duration;
 
@@ -16,7 +21,7 @@ use serde_json::{Value, json};
 use crate::Node;
 use crate::sessions::{Change, Session};
 
-/// A local caller's close or answer, here or on another node.
+/// A local caller's close, answer or command, here or on another node.
 pub async fn act(
     node: &Node,
     to: &str,
@@ -24,6 +29,11 @@ pub async fn act(
     why: Option<String>,
     caller: String,
 ) -> Result<SessionActed, RpcError> {
+    if matches!(action, SessionAction::Say { .. }) {
+        return Err(RpcError::refused(
+            "only a signed-in person can say something in a session, through the control plane: nothing on a node can",
+        ));
+    }
     let (name, target) = crate::deliver::parse_address(to);
     match target {
         Some(t) if t != node.name => {
@@ -36,6 +46,8 @@ pub async fn act(
             let method = match action {
                 SessionAction::Close => l::method::SESSION_CLOSE,
                 SessionAction::Answer { .. } => l::method::SESSION_ANSWER,
+                SessionAction::Command { .. } => l::method::SESSION_COMMAND,
+                SessionAction::Say { .. } => unreachable!("refused above"),
             };
             let req = SessionActRequest { node: t.into(), session: name.into(), action, caller, justification: why };
             peer.request_within(method, &req, Duration::from_secs(40)).await.map_err(|e| {
@@ -53,7 +65,7 @@ pub async fn act(
     }
 }
 
-/// Control plane → node: a close or answer for a caller on another node, already allowed there.
+/// Control plane → node: a close, answer or command for a caller on another node, already allowed there.
 pub async fn serve(node: &Node, req: SessionActServe) -> Result<Value, RpcError> {
     let done = here(node, &req.session, req.action, &req.caller).await?;
     serde_json::to_value(done).map_err(|e| RpcError::internal(e.to_string()))
@@ -96,6 +108,29 @@ pub(crate) async fn here(
             );
             "answered"
         }
+        SessionAction::Command { command } => {
+            let command = allowed_command(&command, &node.session_commands)?;
+            if !plugin.roles().await.session_manager.is_some_and(|r| r.keys) {
+                return Err(RpcError::refused(format!("{manager} can't type into its sessions")));
+            }
+            type_in(&peer, &session, &command).await?;
+            tracing::info!(
+                session = %session.session_id, tab = ?session.tab(), %caller, %command, "typed a slash command"
+            );
+            "typed"
+        }
+        // Only from the control plane, for a signed-in person (`act` refuses it from anything on this node).
+        SessionAction::Say { text } => {
+            if text.trim().is_empty() || text.len() > l::SAY_MAX || text.chars().any(|c| c.is_control() && c != '\n') {
+                return Err(RpcError::invalid_params(format!("say 1 to {} bytes of text", l::SAY_MAX)));
+            }
+            if !plugin.roles().await.session_manager.is_some_and(|r| r.keys) {
+                return Err(RpcError::refused(format!("{manager} can't type into its sessions")));
+            }
+            type_in(&peer, &session, text.trim()).await?;
+            tracing::info!(session = %session.session_id, tab = ?session.tab(), %caller, "typed what a person said");
+            "said"
+        }
     };
     Ok(SessionActed {
         node: node.name.clone(),
@@ -103,6 +138,109 @@ pub(crate) async fn here(
         tab: session.tab().map(str::to_string),
         done: done.into(),
     })
+}
+
+/// The command, trimmed, when it's one line starting with a slash command in `allowed` (arguments may follow).
+fn allowed_command(command: &str, allowed: &[String]) -> Result<String, RpcError> {
+    let command = command.trim();
+    if !command.starts_with('/') || command.chars().any(char::is_control) || command.len() > COMMAND_MAX {
+        return Err(RpcError::invalid_params(format!(
+            "a slash command is one line starting with /, at most {COMMAND_MAX} bytes"
+        )));
+    }
+    let name = command.split_whitespace().next().unwrap_or_default();
+    if !allowed.iter().any(|a| a.trim() == name) {
+        let list = if allowed.is_empty() { "none".to_string() } else { allowed.join(", ") };
+        return Err(RpcError::refused(format!(
+            "{name} isn't one of the slash commands this node lets callers type (session_commands: {list})"
+        )));
+    }
+    Ok(command.to_string())
+}
+
+fn busy(message: String) -> RpcError {
+    RpcError::new(code::BUSY, message)
+}
+
+/// The longest slash command, arguments and all, typed into a session.
+const COMMAND_MAX: usize = 1000;
+
+/// Type `text` into an idle session with an empty input line, and press Enter once the line reads back as it.
+async fn type_in(peer: &fleetlayer_plugin::Peer, session: &Session, text: &str) -> Result<(), RpcError> {
+    let name = session.tab().unwrap_or(&session.session_id);
+    match session.meta.status {
+        Some(ext::Status::Idle | ext::Status::Done) => {}
+        Some(ext::Status::Working) => return Err(busy(format!("{name} is working: try when it's idle"))),
+        Some(ext::Status::Blocked) => {
+            return Err(busy(format!("{name} is waiting on a prompt: answer it first")));
+        }
+        _ => return Err(busy(format!("{name}'s state isn't known, so nothing was typed"))),
+    }
+    if session.meta.blocked_prompt().is_some() {
+        return Err(busy(format!("{name} is waiting on a prompt: answer it first")));
+    }
+    match input_line(&screen(peer, &session.session_id).await?) {
+        Some(t) if t.is_empty() => {}
+        Some(_) => {
+            return Err(busy(format!(
+                "someone is typing in {name} (its input line isn't empty), so nothing was typed"
+            )));
+        }
+        None => return Err(busy(format!("{name} isn't showing an empty prompt, so nothing was typed"))),
+    }
+    let keys = |steps| ext::SessionKeys { session_id: session.session_id.clone(), steps };
+    peer.request_within::<_, Value>(
+        ext::method::SESSION_KEYS,
+        &keys(vec![KeyStep::Text(text.to_string())]),
+        Duration::from_secs(10),
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    if !input_line(&screen(peer, &session.session_id).await?).is_some_and(|l| reads_as(&l, text)) {
+        return Err(RpcError::refused(format!(
+            "the text went into {name}'s input line, but the line then read something else (someone may have \
+             started typing there): Enter wasn't pressed, so look at the session"
+        )));
+    }
+    peer.request_within::<_, Value>(
+        ext::method::SESSION_KEYS,
+        &keys(vec![KeyStep::Key("enter".into())]),
+        Duration::from_secs(10),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Whether the input box shows `typed` and nothing else, however it wrapped, or the placeholder Claude Code puts in
+/// place of a long paste (`[Pasted text #1 +3 lines]`) and nothing else: the box was empty just before.
+fn reads_as(input: &str, typed: &str) -> bool {
+    let squash = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    // Only text long enough to be collapsed counts: a short command never shows as a paste.
+    let long = typed.len() >= 200 || typed.lines().count() > 2;
+    squash(input) == squash(typed) || (long && pasted_placeholder(input.trim()))
+}
+
+fn pasted_placeholder(s: &str) -> bool {
+    let Some(rest) = s.strip_prefix("[Pasted text #").and_then(|r| r.strip_suffix(']')) else { return false };
+    let (n, lines) = rest.split_once(' ').unwrap_or((rest, ""));
+    let digits = |d: &str| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit());
+    digits(n)
+        && (lines.is_empty() || lines.strip_prefix('+').and_then(|l| l.strip_suffix(" lines")).is_some_and(digits))
+}
+
+/// What's in the input box at the bottom of a Claude Code screen (the `❯` line between the last two rules, its
+/// lines joined), `""` when it's empty, or None when no such box shows (a menu, another mode, another harness).
+pub fn input_line(screen: &str) -> Option<String> {
+    let lines: Vec<&str> = screen.lines().collect();
+    // A named session shows its name in the top rule (`──── review ─`).
+    let rule = |l: &str| l.trim_start().starts_with("────────");
+    let bottom = lines.iter().rposition(|l| rule(l))?;
+    let top = lines[..bottom].iter().rposition(|l| rule(l))?;
+    let inside = &lines[top + 1..bottom];
+    let first = inside.first()?.trim_start().strip_prefix('❯')?;
+    let mut text: Vec<&str> = vec![first.trim()];
+    text.extend(inside[1..].iter().map(|l| l.trim()));
+    Some(text.into_iter().filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n"))
 }
 
 fn gone() -> RpcError {
@@ -337,6 +475,52 @@ mod tests {
         let multi = "❯ 1. [✔] Small\n         Small size\n  2. [ ] Medium\n";
         assert_eq!(labels(&parse_menu(multi)), ["Small", "Medium"]);
         assert!(parse_menu("❯ \n idle prompt\n").is_empty());
+    }
+
+    #[test]
+    fn the_input_line_is_read_between_the_last_two_rules() {
+        let rule = "────────────────────────────────────────";
+        let screen = |input: &str| {
+            format!(
+                "● Done.\n  ❯ 1. Old menu line\n✻ Brewed for 1s\n{rule} review ─\n{input}\n{rule}\n  ⏵⏵ bypass permissions on\n"
+            )
+        };
+        assert_eq!(input_line(&screen("❯\u{a0}")).as_deref(), Some(""));
+        assert_eq!(input_line(&screen("❯ ")).as_deref(), Some(""));
+        assert_eq!(input_line(&screen("❯ /compact")).as_deref(), Some("/compact"));
+        assert_eq!(
+            input_line(&screen("❯ https://x/settings\n\n  the list is long")).as_deref(),
+            Some("https://x/settings\nthe list is long")
+        );
+        // Bash mode, a menu, or no box at all: not an empty prompt.
+        assert_eq!(input_line(&screen("! ls")), None);
+        assert_eq!(input_line("Do you want to proceed?\n ❯ 1. Yes\n   2. No\n"), None);
+    }
+
+    #[test]
+    fn typed_text_reads_back_however_it_wrapped_or_as_the_paste_placeholder() {
+        assert!(reads_as("From the Work tab: a long\nanswer", "From the Work tab: a long answer"));
+        let long = "a very long answer ".repeat(20);
+        assert!(reads_as("[Pasted text #1]", &long));
+        assert!(reads_as("[Pasted text #12 +3 lines]", "one\ntwo\nthree"));
+        assert!(!reads_as("[Pasted text #1] and more", &long), "someone typed after it");
+        assert!(!reads_as("[Pasted text #1]", "/compact"), "someone else's paste");
+        assert!(!reads_as("h/compact", "/compact"));
+    }
+
+    #[test]
+    fn only_allowlisted_commands_are_typed() {
+        let allowed = crate::config::default_session_commands();
+        assert_eq!(allowed_command(" /compact ", &allowed).unwrap(), "/compact");
+        assert_eq!(allowed_command("/compact keep the API notes", &allowed).unwrap(), "/compact keep the API notes");
+        assert_eq!(allowed_command("/clear", &allowed).unwrap(), "/clear");
+        let e = allowed_command("/model opus", &allowed).unwrap_err();
+        assert_eq!(e.code, code::REFUSED);
+        assert!(e.message.contains("/compact, /clear"), "{}", e.message);
+        assert!(allowed_command("/compactx", &allowed).is_err());
+        assert!(allowed_command("compact", &allowed).is_err());
+        assert!(allowed_command("/compact\nrm -rf /", &allowed).is_err(), "one line only");
+        assert!(allowed_command("/clear", &[]).is_err());
     }
 
     fn question(multi: bool) -> fleetlayer_protocol::ext::PromptQuestion {

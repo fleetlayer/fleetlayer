@@ -248,6 +248,25 @@ with several questions or a multiple choice ends on a review the node submits on
 grant `session.close`; across nodes `link/session_close`, verb `close`, asked by default) asks its session manager for
 `session/close`.
 
+**Slash commands.** `fleetlayer session command <session> /compact` (`node/session_command` `{to, command, why?}`; a
+plugin: `_fleetlayer.dev/session/command`, grant `session.command`; across nodes `link/session_command`, verb `command`,
+asked by default; a service: `POST /v1/sessions/act`, below) types a slash command into the session as the person
+would, and presses Enter. The session's node allows only the commands in its `session_commands:` (default
+`[/compact, /clear]`; arguments may follow, `/compact keep the API notes`; `[]` allows none), and types one only when
+the session is idle: refused with `-32012` while it's working, blocked on a prompt, or someone is typing in it. To
+know that, it reads the screen and finds Claude Code's input box (the `❯` line between the last two rules) empty;
+no box, no typing. Enter goes only once the box reads back as the command alone, so a person who starts typing in
+the same moment keeps their text and nothing is sent. A command that went in is written to the audit log
+(`carried out: typed /compact`).
+
+**Saying something, as the person.** `POST /v1/sessions/say` types text into a session and submits it, as the
+person's own input, with the same idle and empty-input checks as a command. This is the person speaking: an agent
+treats it as an instruction from them (an approval, a decision), which is why only a person can do it. It takes a
+delegate token acting for a signed-in person (`Fleetlayer-Person`, as the dashboard sends), is checked as that
+person's `attach` on the session, and is audited as them with the exact text. No node, plugin, agent or service can
+ask for it in its own name: there's no command, plugin method or link method for it. The text arrives prefixed with
+where it was said (`From the Work tab: …`).
+
 ### Starting sessions
 
 `fleetlayer session start|resume` asks its node on the local socket: `node/session_open` `{tab?, cwd?, harness?,
@@ -603,6 +622,7 @@ Numbers, never secrets, flow with readings: account usage and reset times, healt
 | `_fleetlayer.dev/plugin/status` `{problem, detail}` | A notification: whether this plugin does its job (below) |
 | `_fleetlayer.dev/session/answer` `{to, prompt, answers, why?}` | Answer a session's blocked prompt, here or on another node (grant `session.answer`; [Blocked prompts](#blocked-prompts-what-a-session-waits-for-and-answering-it)) |
 | `_fleetlayer.dev/session/close` `{to, why?}` | Close a session, here or on another node (grant `session.close`) |
+| `_fleetlayer.dev/session/command` `{to, command, why?}` | Type an allowlisted slash command into an idle session, here or on another node (grant `session.command`) |
 
 Each is allowed only if the node's config grants it to that plugin (`grants:` in its plugin section), and the control
 plane's ACLs decide who may message whom. `service/listening`, `pages/spaces` and `plugin/status` need no grant: they

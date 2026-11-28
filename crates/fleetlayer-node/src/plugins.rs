@@ -541,17 +541,26 @@ impl Handler for FromPlugin {
                 })?;
                 peer.request::<_, Value>(fleetlayer_protocol::link::method::FLEET, &json!({"summaries": false})).await
             }
-            ext::method::SESSION_ANSWER | ext::method::SESSION_CLOSE => {
-                let close = method == ext::method::SESSION_CLOSE;
-                self.grant(if close { "session.close" } else { "session.answer" })?;
+            ext::method::SESSION_ANSWER | ext::method::SESSION_CLOSE | ext::method::SESSION_COMMAND => {
+                use fleetlayer_protocol::link::SessionAction;
+                self.grant(match method {
+                    ext::method::SESSION_CLOSE => "session.close",
+                    ext::method::SESSION_COMMAND => "session.command",
+                    _ => "session.answer",
+                })?;
                 let to = p["to"].as_str().ok_or_else(|| RpcError::invalid_params("to"))?.to_string();
                 let why = p["why"].as_str().map(str::to_string);
-                let action = if close {
-                    fleetlayer_protocol::link::SessionAction::Close
-                } else {
-                    let prompt = p["prompt"].as_str().ok_or_else(|| RpcError::invalid_params("prompt"))?.to_string();
-                    let answers = serde_json::from_value(p["answers"].clone()).map_err(RpcError::invalid_params)?;
-                    fleetlayer_protocol::link::SessionAction::Answer { prompt, answers }
+                let action = match method {
+                    ext::method::SESSION_CLOSE => SessionAction::Close,
+                    ext::method::SESSION_COMMAND => SessionAction::Command {
+                        command: p["command"].as_str().ok_or_else(|| RpcError::invalid_params("command"))?.to_string(),
+                    },
+                    _ => {
+                        let prompt =
+                            p["prompt"].as_str().ok_or_else(|| RpcError::invalid_params("prompt"))?.to_string();
+                        let answers = serde_json::from_value(p["answers"].clone()).map_err(RpcError::invalid_params)?;
+                        SessionAction::Answer { prompt, answers }
+                    }
                 };
                 let caller = format!("plugin:{}", self.plugin.name());
                 answer(&crate::act::act(&self.node, &to, action, why, caller).await?)

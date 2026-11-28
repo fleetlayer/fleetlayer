@@ -8,6 +8,7 @@
 //!   token_file: ~/.config/fleetlayer/node-token
 //! harnesses:             # what sessions started here run with (`fleetlayer session start`)
 //!   claude: { args: [--permission-mode, acceptEdits] }
+//! session_commands: [/compact, /clear]   # what `fleetlayer session command` may type (the default)
 //! plugins:
 //!   - name: herdr
 //!     command: fleetlayer-herdr
@@ -42,6 +43,10 @@ pub struct NodeConfig {
     /// started or resumed on this node gets, such as its permission mode. Only this file sets them; a caller can't.
     #[serde(default)]
     pub harnesses: std::collections::BTreeMap<String, HarnessConfig>,
+    /// The slash commands `fleetlayer session command` may type into this node's sessions (each may be followed by
+    /// arguments). Default `[/compact, /clear]`; `[]` allows none.
+    #[serde(default = "default_session_commands")]
+    pub session_commands: Vec<String>,
     /// Report the node's health to a monitor (a Gatus external endpoint, say).
     pub heartbeat: Option<HeartbeatConfig>,
     /// Tools this node shares with sessions on other nodes (`crate::tools`).
@@ -115,6 +120,10 @@ pub struct PluginConfig {
     pub grants: Vec<String>,
     #[serde(default = "yes")]
     pub enabled: bool,
+}
+
+pub fn default_session_commands() -> Vec<String> {
+    vec!["/compact".into(), "/clear".into()]
 }
 
 fn yes() -> bool {

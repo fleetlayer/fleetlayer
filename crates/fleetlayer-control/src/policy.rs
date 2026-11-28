@@ -36,6 +36,7 @@ pub const VERBS: &[&str] = &[
     "attach",
     "answer",
     "close",
+    "command",
     "sign_in",
     "admin",
     "write",
@@ -200,7 +201,7 @@ pub fn default_ask() -> Vec<AskRule> {
         hold: hold.into(),
     };
     vec![
-        rule(&["start", "attach", "answer", "close"], "10m"),
+        rule(&["start", "attach", "answer", "close", "command"], "10m"),
         rule(&["use_tool", "sync", "admin", "write", "connect"], "30d"),
         // Each run of a shared command on another machine, with the program and arguments it will run in front of
         // the person.

@@ -334,6 +334,19 @@ enum SessionCommand {
         #[arg(long, env = "FLEETLAYER_WHY")]
         why: Option<String>,
     },
+    /// Type a slash command into a session as the person would: `fleetlayer session command review@server /compact`.
+    /// Only one its node allows (`session_commands:`, default /compact and /clear), and only while the session is
+    /// idle with an empty input line: refused while it works, waits on a prompt, or someone is typing in it. Asked by
+    /// default from another node.
+    Command {
+        /// `<tab>@<node>`, a tab on this node, or a session ID.
+        to: String,
+        /// The slash command, with any arguments (`/compact keep the API notes`).
+        #[arg(required = true, num_args = 1.., allow_hyphen_values = true)]
+        command: Vec<String>,
+        #[arg(long, env = "FLEETLAYER_WHY")]
+        why: Option<String>,
+    },
     /// Move a session's work to a new session, usually on another node: `fleetlayer session handoff --to server
     /// --note "…"` hands off the session you're in. The new session's first prompt carries the note (or where to read
     /// a long one) and how to read the old transcript; the fleet links old and new. The old session keeps running:
@@ -1079,8 +1092,12 @@ fn print_acted(v: &Value, json: bool) {
         return;
     }
     let tab = v["tab"].as_str().or(v["sessionId"].as_str()).unwrap_or("?");
-    let done = if v["done"] == "closed" { "Closed" } else { "Answered" };
-    println!("{done} {tab}@{}.", v["node"].as_str().unwrap_or("?"));
+    let node = v["node"].as_str().unwrap_or("?");
+    match v["done"].as_str() {
+        Some("closed") => println!("Closed {tab}@{node}."),
+        Some("typed") => println!("Typed the command into {tab}@{node}."),
+        _ => println!("Answered {tab}@{node}."),
+    }
 }
 
 /// A folder on this machine made absolute; one on another node, or one under `~` (that node's home), is passed as it
@@ -1642,6 +1659,12 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 }
             }
         }
+        Command::Session { command: SessionCommand::Command { to, command, why } } => {
+            let req = json!({"to": to, "command": command.join(" "), "why": why, "caller": caller()});
+            let v: Value =
+                peer.request_within("node/session_command", &req, std::time::Duration::from_secs(60)).await?;
+            print_acted(&v, cli.json);
+        }
         Command::Session { command: SessionCommand::Close { to, why } } => {
             let req = json!({"to": to, "why": why, "caller": caller()});
             let v: Value = peer.request_within("node/session_close", &req, std::time::Duration::from_secs(60)).await?;
@@ -1651,6 +1674,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let req = match command {
                 SessionCommand::Answer { .. }
                 | SessionCommand::Close { .. }
+                | SessionCommand::Command { .. }
                 | SessionCommand::Handoff { .. }
                 | SessionCommand::HandoffNote { .. } => unreachable!("handled above"),
                 SessionCommand::Start { tab, cwd, on, harness, prompt, model, effort, why } => json!({

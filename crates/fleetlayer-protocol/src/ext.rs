@@ -65,6 +65,10 @@ pub mod method {
     /// Plugin → node: close a session, here or on another node (grant `session.close`). `{to, why?}` →
     /// `link::SessionActed`.
     pub const SESSION_CLOSE: &str = "_fleetlayer.dev/session/close";
+    /// Plugin → node: type an allowlisted slash command into an idle session, here or on another node (grant
+    /// `session.command`). `{to, command, why?}` →
+    /// `link::SessionActed`.
+    pub const SESSION_COMMAND: &str = "_fleetlayer.dev/session/command";
     /// Node → session manager: press keys in a session, or type literal text (no Enter unless a key says so).
     /// `SessionKeys` → `{}`.
     pub const SESSION_KEYS: &str = "_fleetlayer.dev/session/keys";

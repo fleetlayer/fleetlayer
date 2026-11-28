@@ -775,6 +775,17 @@ managers, machines that sleep.
   so read them off the screen and check the screen again before typing: a late answer must never land on the next
   prompt. herdr can't read scrollback while an agent is blocked; read the visible screen. Where it lives:
   `docs/protocol.md` ("Blocked prompts"), `crates/fleetlayer-node/src/act.rs`, `plugins/claude-code/src/hooks.rs`.
+- **Typing into an agent's terminal without landing in the middle of the person's typing.** Running `/compact` on a
+  session from a deck, or sending the person's answer from a phone, means typing into a terminal someone may be using.
+  Type only when the agent is idle (not working, no prompt showing) and Claude Code's input box reads empty: the `❯`
+  line between the last two horizontal rules. A named session shows its name inside the top rule, so match a rule by
+  its leading dashes, not by being only dashes. Type the text without Enter, read the box again, and press Enter only
+  when it reads back as exactly that text (wrapped lines and all), so a person who started typing in the same moment
+  keeps their text and nothing is sent. A long paste shows as `[Pasted text #1 +3 lines]`, which counts as reading
+  back. Slash commands open a suggestions menu; Enter on an exact name runs it. Keep commands to an allowlist
+  (`/compact`, `/clear`), and let only a person's own token type free text, because the agent takes it as their
+  words. Where it lives: `docs/protocol.md` ("Slash commands", "Saying something, as the person"),
+  `crates/fleetlayer-node/src/act.rs`.
 - **Sending an agent a prompt on a schedule.** The usual way is a cron line that types into the agent's terminal,
   which goes wrong quietly: it types into whatever runs there (a shell, a permission prompt), fires a burst after the
   machine was asleep, and nobody hears when it stops working. The scheduler plugin sends through the node instead, so

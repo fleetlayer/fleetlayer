@@ -148,8 +148,9 @@ pub async fn start_session(
     })
 }
 
-/// Close or answer a session on another node for a caller on `from_node`, after `close` or `answer` on
-/// `<session>@<node>`. An answer, once typed in, is written to the audit log with what was picked.
+/// Close, answer or type a command into a session on another node for a caller on `from_node`, after `close`,
+/// `answer` or `command` on `<session>@<node>`. An answer or a command, once typed in, is written to the audit log
+/// with what was typed.
 pub async fn act_session(
     app: &App,
     tenant: &str,
@@ -157,36 +158,93 @@ pub async fn act_session(
     r: l::SessionActRequest,
 ) -> Result<l::SessionActed, RpcError> {
     let caller = format!("{}@{from_node}", r.caller);
-    let target = format!("{}@{}", r.session, r.node);
-    let verb = r.action.verb();
-    crate::authz::check_why(app, tenant, &caller, verb, &target, r.justification.as_deref()).await?;
-    let server = app
-        .links
-        .peer(tenant, &r.node)
-        .await
-        .ok_or_else(|| RpcError::not_here(format!("node {} is offline", r.node)))?;
-    let serve = l::SessionActServe { session: r.session.clone(), action: r.action.clone(), caller: caller.clone() };
+    act_as(app, tenant, &caller, &r.session, &r.node, r.action, r.justification.as_deref()).await
+}
+
+/// A service closes, answers or types a command into a session, as `service:<name>` (`POST /v1/sessions/act`).
+/// Never `say`: only a person says something.
+pub async fn act_as_service(
+    app: &App,
+    tenant: &str,
+    service: &str,
+    to: &str,
+    action: l::SessionAction,
+    why: Option<&str>,
+) -> Result<l::SessionActed, RpcError> {
+    if matches!(action, l::SessionAction::Say { .. }) {
+        return Err(RpcError::refused(
+            "only a signed-in person can say something in a session (POST /v1/sessions/say)",
+        ));
+    }
+    let (session, node) =
+        split_target(to).ok_or_else(|| RpcError::invalid_params(format!("{to} isn't <tab>@<node>")))?;
+    act_as(app, tenant, &format!("service:{service}"), session, node, action, why).await
+}
+
+/// A signed-in person says `text` in a session (`POST /v1/sessions/say`, with a delegate token naming them): checked
+/// as their `attach` on it, typed in as their own input with `prefix` before it, and audited as them with the text.
+pub async fn say_as_person(
+    app: &App,
+    tenant: &str,
+    person: &str,
+    to: &str,
+    text: &str,
+    prefix: &str,
+) -> Result<l::SessionActed, RpcError> {
+    let text = text.trim();
+    if text.is_empty() || text.len() > l::SAY_MAX {
+        return Err(RpcError::invalid_params(format!("say 1 to {} bytes", l::SAY_MAX)));
+    }
+    let (session, node) =
+        split_target(to).ok_or_else(|| RpcError::invalid_params(format!("{to} isn't <tab>@<node>")))?;
+    let action = l::SessionAction::Say { text: format!("{prefix}{text}") };
+    act_as(app, tenant, person, session, node, action, None).await
+}
+
+async fn act_as(
+    app: &App,
+    tenant: &str,
+    caller: &str,
+    session: &str,
+    node: &str,
+    action: l::SessionAction,
+    why: Option<&str>,
+) -> Result<l::SessionActed, RpcError> {
+    let target = format!("{session}@{node}");
+    let verb = action.verb();
+    crate::authz::check_why(app, tenant, caller, verb, &target, why).await?;
+    let server =
+        app.links.peer(tenant, node).await.ok_or_else(|| RpcError::not_here(format!("node {node} is offline")))?;
+    let serve = l::SessionActServe { session: session.into(), action: action.clone(), caller: caller.into() };
     let done: l::SessionActed =
         server.request_within(l::method::SESSION_ACT_SERVE, &serve, Duration::from_secs(35)).await.map_err(|e| {
             if e.code == fleetlayer_protocol::rpc::code::METHOD_NOT_FOUND {
-                RpcError::refused(format!("node {} is too old to {verb} sessions: update it", r.node))
+                RpcError::refused(format!("node {node} is too old to {verb} sessions: update it"))
             } else {
                 e
             }
         })?;
-    if let l::SessionAction::Answer { prompt, answers } = &r.action {
+    let typed = match &action {
+        l::SessionAction::Close => None,
+        l::SessionAction::Answer { prompt, answers } => Some(format!(
+            "carried out: answered prompt {prompt} with {}",
+            serde_json::to_string(answers).unwrap_or_default()
+        )),
+        l::SessionAction::Command { command } => Some(format!("carried out: typed {command}")),
+        l::SessionAction::Say { text } => {
+            Some(format!("carried out: said {}", serde_json::to_string(text).unwrap_or_default()))
+        }
+    };
+    if let Some(reason) = typed {
         let entry = crate::audit::Entry {
             decision: "allowed".into(),
-            subject: caller,
+            subject: caller.into(),
             verb: verb.into(),
             target,
-            reason: format!(
-                "carried out: answered prompt {prompt} with {}",
-                serde_json::to_string(answers).unwrap_or_default()
-            ),
+            reason,
         };
         if let Err(e) = app.audit.record(&app.db, tenant, entry).await {
-            tracing::error!("recording an answer in the audit log: {e}");
+            tracing::error!("recording what was typed into a session in the audit log: {e}");
         }
     }
     Ok(done)
@@ -540,7 +598,12 @@ mod tests {
             async fn request(&self, _peer: &Peer, method: &str, p: Value) -> Result<Value, RpcError> {
                 self.served.lock().await.push(p.clone());
                 if method == l::method::SESSION_ACT_SERVE {
-                    let done = if p["action"] == "close" { "closed" } else { "answered" };
+                    let done = match p["action"].as_str() {
+                        Some("close") => "closed",
+                        Some("command") => "typed",
+                        Some("say") => "said",
+                        _ => "answered",
+                    };
                     return Ok(json!({"node": "home", "sessionId": "s1", "tab": p["session"], "done": done}));
                 }
                 if method == l::method::TRANSCRIPT_SEARCH_SERVE {
@@ -663,6 +726,98 @@ mod tests {
             let log: Vec<String> =
                 sqlx::query_scalar("SELECT reason FROM audit_log").fetch_all(&app.db).await.unwrap_or_default();
             assert!(log.iter().any(|r| r.contains("answered prompt toolu_1 with [{\"pick\":2}]")), "{log:?}");
+        }
+
+        fn compact() -> l::SessionAction {
+            l::SessionAction::Command { command: "/compact".into() }
+        }
+
+        /// A slash command is asked by default from another node; a policy lets the runner and a service type one,
+        /// and each is audited with the command.
+        #[tokio::test]
+        async fn commands_are_asked_by_default_and_audited_with_the_command() {
+            let (app, home) = fleet().await;
+            let e = act_session(&app, "default", "laptop", act("planning", compact())).await.unwrap_err();
+            assert!(e.message.to_lowercase().contains("approv"), "{}", e.message);
+            let e = act_as_service(&app, "default", "quietdeck", "review@home", compact(), None).await.unwrap_err();
+            assert!(e.message.to_lowercase().contains("approv"), "{}", e.message);
+            assert!(home.served.lock().await.is_empty());
+
+            let policy = "version: 2\ndefault: allow\nask: []\ndeny:\n  - { who: \"*\", except: [\"plugin:runner@*\", \"service:quietdeck\"], can: command }\n";
+            crate::authz::store(&app.db, "default", policy).await.unwrap();
+            let e = act_session(&app, "default", "laptop", act("triage", compact())).await.unwrap_err();
+            assert!(e.message.contains("deny[0]"), "{}", e.message);
+            let done = act_session(&app, "default", "laptop", act("plugin:runner", compact())).await.unwrap();
+            assert_eq!(done.done, "typed");
+            let done = act_as_service(&app, "default", "quietdeck", "review@home", compact(), None).await.unwrap();
+            assert_eq!(done.done, "typed");
+            let served = home.served.lock().await.clone();
+            assert_eq!(
+                (served[0]["action"].as_str(), served[0]["command"].as_str()),
+                (Some("command"), Some("/compact"))
+            );
+            assert_eq!(served[1]["caller"], "service:quietdeck");
+            let log: Vec<(String, String)> =
+                sqlx::query_as("SELECT subject, reason FROM audit_log").fetch_all(&app.db).await.unwrap_or_default();
+            assert!(log.iter().any(|(s, r)| s == "service:quietdeck" && r == "carried out: typed /compact"), "{log:?}");
+        }
+
+        /// Only a person says something: a service can't, and a person's `say` is checked as their `attach`, typed with
+        /// its prefix and audited as them with the exact text.
+        #[tokio::test]
+        async fn only_a_person_says_something_checked_as_their_attach() {
+            let (app, home) = fleet().await;
+            let say = l::SessionAction::Say { text: "yes".into() };
+            let e = act_as_service(&app, "default", "quietdeck", "review@home", say, None).await.unwrap_err();
+            assert!(e.message.contains("only a signed-in person"), "{}", e.message);
+
+            let mut ids = vec![];
+            for handle in ["nathan", "dana"] {
+                let i = crate::people::NewInvite { handle, role: "member", teams: &[], person: None };
+                let code = crate::people::invite(&app.db, "default", i, "admin").await.unwrap();
+                let who = crate::people::Redeemer::New { display_name: handle };
+                ids.push(crate::people::invite_redeem(&app.db, &code, who).await.unwrap().person);
+            }
+            // Nathan owns the session's node; Dana doesn't, and no rule gives her more.
+            let owner = crate::people::Owner::Person(ids[0].clone());
+            crate::people::node_owner(&app.db, "home", Some(&owner), "admin", "default").await.unwrap();
+            crate::authz::store(&app.db, "default", "version: 2\ndefault: allow\nask: []\n").await.unwrap();
+            let e = say_as_person(&app, "default", "person:dana", "review@home", "yes", "From the Work tab: ")
+                .await
+                .unwrap_err();
+            assert!(e.message.contains("person:dana may not attach"), "{}", e.message);
+            assert!(home.served.lock().await.is_empty());
+            let done = say_as_person(
+                &app,
+                "default",
+                "person:nathan",
+                "review@home",
+                " Approved, go ahead ",
+                "From the Work tab: ",
+            )
+            .await
+            .unwrap();
+            assert_eq!(done.done, "said");
+            let served = home.served.lock().await.clone();
+            assert_eq!(
+                (served[0]["action"].as_str(), served[0]["text"].as_str()),
+                (Some("say"), Some("From the Work tab: Approved, go ahead"))
+            );
+            assert_eq!(served[0]["caller"], "person:nathan");
+            let log: Vec<(String, String, String)> = sqlx::query_as("SELECT subject, verb, reason FROM audit_log")
+                .fetch_all(&app.db)
+                .await
+                .unwrap_or_default();
+            assert!(
+                log.iter().any(|(s, v, r)| s == "person:nathan"
+                    && v == "attach"
+                    && r == "carried out: said \"From the Work tab: Approved, go ahead\""),
+                "{log:?}"
+            );
+            let e = say_as_person(&app, "default", "person:nathan", "review@home", "  ", "From the Work tab: ")
+                .await
+                .unwrap_err();
+            assert_eq!(e.code, fleetlayer_protocol::rpc::code::INVALID_PARAMS);
         }
 
         fn handoff(caller: &str, from: &str, id: &str) -> l::SessionHandoff {

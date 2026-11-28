@@ -1409,6 +1409,8 @@ async fn serve(
         .route("/v1/endpoints", get(api::get_endpoints))
         .route("/v1/summaries", get(api::get_summaries))
         .route("/v1/sessions/{id}/catchup", axum::routing::post(api::post_catchup))
+        .route("/v1/sessions/act", axum::routing::post(api::post_session_act))
+        .route("/v1/sessions/say", axum::routing::post(api::post_say))
         .route("/v1/token", get(api::get_token))
         .route("/v1/people", get(api::get_people))
         .route("/v1/people/{action}", axum::routing::post(api::post_people))

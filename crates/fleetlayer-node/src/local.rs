@@ -13,8 +13,9 @@
 //!   plane, which keeps the note; `node/handoff_get` `{id, why?, caller?}` → `Handoff`: one, with its note.
 //! - `node/session_open` `{tab?, cwd?, harness?, prompt?, resume?, model?, effort?, on?, why?, caller?}` → `SessionStarted`: start or
 //!   resume a session here or on node `on` (`crate::start`).
-//! - `node/session_close` `{to, why?, caller?}` and `node/session_answer` `{to, prompt, answers, why?, caller?}` →
-//!   `SessionActed`: close a session, or answer the prompt it's blocked on, here or on another node (`crate::act`).
+//! - `node/session_close` `{to, why?, caller?}`, `node/session_answer` `{to, prompt, answers, why?, caller?}` and
+//!   `node/session_command` `{to, command, why?, caller?}` → `SessionActed`: close a session, answer the prompt it's
+//!   blocked on, or type an allowlisted slash command into it, here or on another node (`crate::act`).
 //! - `node/role_activate` `{role, for, why?, caller?}`, `node/role_deactivate` `{role, caller?}` → `RoleActivated`;
 //!   `node/role_list` `{caller?}` → `RoleWindows`: role windows, through the control plane (`crate::window`).
 //! - `node/host_ask` `{to, why}` → `AccessDecision`: ask the control plane whether this node (`-@<node>`) may connect
@@ -86,6 +87,8 @@ struct SessionAct {
     prompt: Option<String>,
     #[serde(default)]
     answers: Vec<ext::PromptAnswer>,
+    #[serde(default)]
+    command: Option<String>,
     why: Option<String>,
     caller: Option<Caller>,
 }
@@ -296,15 +299,20 @@ impl Handler for Local {
                 let range: l::TranscriptRange = serde_json::from_value(p.clone()).map_err(RpcError::invalid_params)?;
                 answer(&crate::transcripts::read(node, &to, range, caller, why).await?)
             }
-            "node/session_close" | "node/session_answer" => {
+            "node/session_close" | "node/session_answer" | "node/session_command" => {
                 let a: SessionAct = params(p)?;
                 let caller = self.caller(a.caller.as_ref()).await;
                 let name = caller.as_ref().and_then(|c| c.tab().map(str::to_string)).unwrap_or_else(|| "-".into());
-                let action = if method == "node/session_close" {
-                    l::SessionAction::Close
-                } else {
-                    let prompt = a.prompt.ok_or_else(|| RpcError::invalid_params("say which prompt with --prompt"))?;
-                    l::SessionAction::Answer { prompt, answers: a.answers }
+                let action = match method {
+                    "node/session_close" => l::SessionAction::Close,
+                    "node/session_command" => l::SessionAction::Command {
+                        command: a.command.ok_or_else(|| RpcError::invalid_params("say which command"))?,
+                    },
+                    _ => {
+                        let prompt =
+                            a.prompt.ok_or_else(|| RpcError::invalid_params("say which prompt with --prompt"))?;
+                        l::SessionAction::Answer { prompt, answers: a.answers }
+                    }
                 };
                 answer(&crate::act::act(node, &a.to, action, a.why, name).await?)
             }

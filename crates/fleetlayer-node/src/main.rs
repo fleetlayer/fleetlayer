@@ -81,6 +81,8 @@ pub struct Node {
     pub typing_fallback: bool,
     /// Each harness's arguments for sessions started here (`harnesses:` in node.yaml).
     pub harnesses: std::collections::BTreeMap<String, config::HarnessConfig>,
+    /// The slash commands `fleetlayer session command` may type here (`session_commands:` in node.yaml).
+    pub session_commands: Vec<String>,
     pub has_control: bool,
     /// The gateway's address, checked as part of the node's health.
     pub gateway: Option<String>,
@@ -126,6 +128,7 @@ impl Node {
             link: Default::default(),
             typing_fallback: false,
             harnesses: Default::default(),
+            session_commands: config::default_session_commands(),
             has_control: false,
             gateway: None,
             control: None,
@@ -227,6 +230,7 @@ async fn run(cfg: NodeConfig, config_path: PathBuf) -> anyhow::Result<()> {
         link: link::Link::default(),
         typing_fallback: cfg.typing_fallback,
         harnesses: cfg.harnesses.clone(),
+        session_commands: cfg.session_commands.clone(),
         has_control: cfg.control.is_some(),
         gateway: cfg.gateway.clone(),
         control: cfg.control.clone().map(|mut c| {

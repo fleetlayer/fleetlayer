@@ -76,7 +76,16 @@ own, and name that node in the rule.
 A service that isn't on any agent's Unix user (a deck in a container, a bot) sends messages as `service:<name>` with a
 `send` token (`fleetlayer-control token add <name> --scope send`, then `POST /v1/messages`). It's a member of the
 token's tenant, rules name it like anyone else (`who: service:deck`), and its messages are delivered as from that
-service, marked untrusted only if `untrusted:` lists it.
+service, marked untrusted only if `untrusted:` lists it. The same token closes a session, answers its prompt or types
+an allowlisted slash command into it with `POST /v1/sessions/act` `{to, action: "close" | "answer" | "command", …,
+why?}` (`prompt` and `answers` for an answer, `command` for a command), decided as `close`, `answer` or `command` for
+`service:<name>` and answering the node's `{node, sessionId, tab, done}`.
+
+Saying something in a session as the person (`POST /v1/sessions/say` `{to, text, from?}`) is different: an agent
+takes it as the person's own words, approvals included. So it takes a delegate token acting for a signed-in person
+(the `Fleetlayer-Person` header, as the dashboard sends), is decided as that person's `attach` on the session (by
+default, people may on sessions of nodes they own), is audited as them with the exact text, and arrives as
+`From <from>: <text>`. A send token, an agent or a node can't say anything.
 
 For the same reason, a node always sees, messages and drives its own sessions with no policy check: a message to a
 session on the same node is delivered straight to it, and so is `fleetlayer attach`. `message`, `read` and `attach`
@@ -141,8 +150,9 @@ Verbs: `message`, `use_tool`, `call` (one tool call through [the MCP gate](#the-
 [shared command](guides/shared-commands.md), on `command:<name>@<node>`), `sync`, `read` (the fleet view, summaries, catch-ups; a node that may read nothing of
 another, not even `-@<node>`, doesn't see that node in the fleet view at all), `subscribe`, `publish`, and
 `start` (start, resume or interrupt a session on another node), `close` (close one), `answer` (answer the prompt a
-session is blocked on: a question, a plan, or a permission prompt, which approves what it asks), and `attach` (type
-into a session's terminal; watching it is `read`), and `connect` (reach an internet host, `host:<name>[:<port>]`, asked by
+session is blocked on: a question, a plan, or a permission prompt, which approves what it asks), `command` (type an
+allowlisted slash command such as `/compact` into an idle session), and `attach` (type into a session's terminal;
+watching it is `read`; for a person, also saying something in a session through `POST /v1/sessions/say`), and `connect` (reach an internet host, `host:<name>[:<port>]`, asked by
 the [egress plugin](egress.md) for a role's node: `-@<node>`). Give an overseer that answers for the person `answer` by name, never
 through a broad rule: `allow: [{ who: "plugin:runner@<node>", can: answer }]` with `answer` denied to everyone else.
 
@@ -167,7 +177,7 @@ justify:                       # the agent must say why, in one line, and it goe
     can: [use_tool, sync, start]
 ```
 
-Approvals are on by default: a policy that leaves `ask:` out asks before `start`, `attach`, `answer` and `close` (an
+Approvals are on by default: a policy that leaves `ask:` out asks before `start`, `attach`, `answer`, `close` and `command` (an
 approval holds 10 minutes) and
 before each agent's first `use_tool`, `sync`, `admin`, `write` or `connect` to a target (it holds 30 days; one for
 `use_tool`, `sync` or `connect` renews while it's used, so it lapses only after 30 days unused), the safe start for a
@@ -351,7 +361,7 @@ ask: list `ask:` with that role left out, through `except:`.
 ask:
   - who: "*"
     except: ["*@homeserver", "*@ci"]    # these roles get on with it
-    can: [start, attach, answer, close]
+    can: [start, attach, answer, close, command]
     for: 10m
   - who: "*"
     except: ["*@homeserver", "*@ci"]

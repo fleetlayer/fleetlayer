@@ -845,6 +845,98 @@ pub async fn post_message(State(app): State<Arc<App>>, headers: HeaderMap, Json(
     Ok(Json(serde_json::to_value(delivered).unwrap_or_default()))
 }
 
+/// An RPC refusal as an HTTP answer: the status, and the error as JSON.
+fn rpc_status(e: fleetlayer_protocol::rpc::RpcError) -> (StatusCode, String) {
+    use fleetlayer_protocol::rpc::code;
+    let status = match e.code {
+        code::REFUSED => StatusCode::FORBIDDEN,
+        code::NO_SUCH => StatusCode::NOT_FOUND,
+        code::BUSY | code::PROMPT_GONE => StatusCode::CONFLICT,
+        code::NOT_HERE => StatusCode::SERVICE_UNAVAILABLE,
+        _ => StatusCode::BAD_REQUEST,
+    };
+    (status, serde_json::to_string(&e).unwrap_or(e.message))
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct PostSessionAct {
+    /// `<tab>@<node>`.
+    to: String,
+    #[serde(flatten)]
+    action: fleetlayer_protocol::link::SessionAction,
+    #[serde(default)]
+    why: Option<String>,
+}
+
+/// `POST /v1/sessions/act` `{to, action: "close" | "answer" | "command", …, why?}`: a service closes a session,
+/// answers its blocked prompt (`prompt`, `answers`) or types an allowlisted slash command into it (`command`), as
+/// `service:<token name>`. Needs a `send` token; the access policy decides (`close`, `answer`, `command`, asked by
+/// default), and what's typed is audited. Answers the node's `SessionActed`. Never `say`: see `POST /v1/sessions/say`.
+pub async fn post_session_act(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(a): Json<PostSessionAct>,
+) -> ApiResult {
+    let token = bearer(&headers).ok_or((StatusCode::UNAUTHORIZED, "a send token is needed".to_string()))?;
+    let (tenant, scope, name) = db::token_info(&app.db, token)
+        .await
+        .map_err(internal)?
+        .ok_or((StatusCode::UNAUTHORIZED, "a send token is needed".to_string()))?;
+    if scope != "send" {
+        return Err((StatusCode::FORBIDDEN, "only a send token acts on sessions as a service".into()));
+    }
+    let done = crate::route::act_as_service(&app, &tenant, &name, &a.to, a.action, a.why.as_deref())
+        .await
+        .map_err(rpc_status)?;
+    Ok(Json(serde_json::to_value(done).unwrap_or_default()))
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct PostSay {
+    /// `<tab>@<node>`.
+    to: String,
+    text: String,
+    /// Where the person said it, put before the text (`From the Work tab: …`); default: the token's name.
+    #[serde(default)]
+    from: Option<String>,
+}
+
+/// `POST /v1/sessions/say` `{to, text, from?}`: a signed-in person says something in a session, typed in and
+/// submitted as their own input while it's idle at an empty prompt. Only a delegate token naming the person in
+/// `Fleetlayer-Person` (a service people sign in to, acting for them), checked as that person's `attach` on the
+/// session and audited as them with the exact text: no service or agent says anything on its own.
+pub async fn post_say(State(app): State<Arc<App>>, headers: HeaderMap, Json(s): Json<PostSay>) -> ApiResult {
+    let token = bearer(&headers).ok_or((StatusCode::UNAUTHORIZED, "a delegate token is needed".to_string()))?;
+    let (tenant, scope, name) = db::token_info(&app.db, token)
+        .await
+        .map_err(internal)?
+        .ok_or((StatusCode::UNAUTHORIZED, "a delegate token is needed".to_string()))?;
+    if scope != "delegate" || tenant != DEFAULT_TENANT {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "only a person says something in a session: a delegate token acting for them is needed".into(),
+        ));
+    }
+    let Some(person) = headers.get(PERSON_HEADER).and_then(|v| v.to_str().ok()).filter(|p| !p.is_empty()) else {
+        return Err((StatusCode::FORBIDDEN, "a delegate token acts for a person: send Fleetlayer-Person".into()));
+    };
+    let fleet = app.authz.fleet(&app.db).await.map_err(internal)?;
+    let t = fleet.tenant(DEFAULT_TENANT).ok_or((StatusCode::NOT_FOUND, "no tenant".to_string()))?;
+    let Some(handle) = t.handles.get(person).cloned() else {
+        return Err((StatusCode::FORBIDDEN, format!("{person} isn't a member of the tenant")));
+    };
+    let from: String = s.from.unwrap_or_default().chars().filter(|c| !c.is_control()).take(60).collect();
+    let prefix = format!("From {}: ", if from.trim().is_empty() { name.as_str() } else { from.trim() });
+    let done = crate::route::say_as_person(&app, &tenant, &format!("person:{handle}"), &s.to, &s.text, &prefix)
+        .await
+        .map_err(rpc_status)?;
+    Ok(Json(serde_json::to_value(done).unwrap_or_default()))
+}
+
+fn bearer(headers: &HeaderMap) -> Option<&str> {
+    headers.get("authorization")?.to_str().ok()?.strip_prefix("Bearer ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

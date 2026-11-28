@@ -60,6 +60,7 @@ pub const LINK_METHODS: &[(&str, Option<&str>)] = &[
     (m::HANDOFF_GET, Some("read")),
     (m::SESSION_CLOSE, Some("close")),
     (m::SESSION_ANSWER, Some("answer")),
+    (m::SESSION_COMMAND, Some("command")),
     (m::TOOLS, None),
     // About the caller's own session only, decided item by item without asking (`me.rs`).
     (m::ME, None),
@@ -1572,6 +1573,7 @@ mod tests {
             m::HANDOFF_GET,
             m::SESSION_CLOSE,
             m::SESSION_ANSWER,
+            m::SESSION_COMMAND,
             m::TOOLS,
             m::ME,
         ];
