@@ -44,6 +44,8 @@ struct Pending {
     nonce: String,
     next: String,
     at: Instant,
+    /// The `max_age` asked for (seconds): the ID token's `auth_time` must be within it.
+    max_age: Option<u64>,
 }
 
 #[derive(Default)]
@@ -235,7 +237,7 @@ impl Oidc {
             p.retain(|_, v| v.at.elapsed() < PENDING);
             p.insert(
                 state.clone(),
-                Pending { verifier, nonce: nonce.clone(), next: next.to_string(), at: Instant::now() },
+                Pending { verifier, nonce: nonce.clone(), next: next.to_string(), at: Instant::now(), max_age },
             );
         }
         let sep = if meta.authorization_endpoint.contains('?') { '&' } else { '?' };
@@ -299,6 +301,19 @@ impl Oidc {
         }
         let t: TokenResponse = res.json().await?;
         let claims = self.verify(&meta, &t.id_token, &p.nonce).await?;
+        // OpenID Connect: when max_age was asked for, auth_time must be there and recent enough (with the same leeway
+        // as expiry), or the issuer didn't really ask for the passkey again.
+        if let Some(max) = p.max_age {
+            let auth_time = claims
+                .get("auth_time")
+                .and_then(|v| v.as_i64())
+                .ok_or_else(|| anyhow::anyhow!("the ID token has no auth_time, though max_age was asked for"))?;
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64)?;
+            anyhow::ensure!(
+                now - auth_time <= max as i64 + LEEWAY as i64,
+                "the sign-in is older than the {max} seconds asked for"
+            );
+        }
         Ok((claims, p.next))
     }
 
@@ -527,6 +542,28 @@ mod tests {
         *f.token.lock().unwrap() = Some(make(&f, claims));
         let r = o.finish("the-code", &state, Some(&state)).await;
         (f, r)
+    }
+
+    #[tokio::test]
+    async fn with_max_age_the_token_must_say_a_recent_enough_auth_time() {
+        let f = FakeIssuer::start().await;
+        let o = Oidc::new(&f.url, "dashboard", "s3cret", "https://d.example").unwrap();
+        let now = jiff::Timestamp::now().as_second();
+        for (auth_time, ok) in [(None, false), (Some(now - 3600), false), (Some(now - 5), true)] {
+            let (url, state) = o.start_with("/people", Some(0)).await.unwrap();
+            assert_eq!(param(&url, "max_age"), "0");
+            let mut c = f.claims(&param(&url, "nonce"));
+            if let Some(t) = auth_time {
+                c["auth_time"] = json!(t);
+            }
+            *f.token.lock().unwrap() = Some(good(&f, c));
+            let r = o.finish_claims("the-code", &state, Some(&state)).await;
+            assert_eq!(r.is_ok(), ok, "auth_time {auth_time:?}: {r:?}");
+        }
+        // Without max_age, no auth_time is needed.
+        let (url, state) = o.start("/").await.unwrap();
+        *f.token.lock().unwrap() = Some(good(&f, f.claims(&param(&url, "nonce"))));
+        assert!(o.finish_claims("the-code", &state, Some(&state)).await.is_ok());
     }
 
     #[tokio::test]

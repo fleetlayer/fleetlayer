@@ -1425,6 +1425,7 @@ async fn serve(
         .route("/v1/signin/invite_redeem", axum::routing::post(signin::post_invite_redeem))
         .route("/v1/signin/check", axum::routing::post(signin::post_check))
         .route("/v1/signin/event", axum::routing::post(signin::post_event))
+        .route("/v1/signin/passkey", axum::routing::post(signin::post_passkey))
         .route("/v1/signin/approval_view", axum::routing::post(signin::post_approval_view))
         .route("/v1/signin/stepup", axum::routing::post(signin::post_stepup))
         .route("/v1/signin/join", axum::routing::post(signin::post_join))

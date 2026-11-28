@@ -508,12 +508,22 @@ pub async fn delete_window(
     Ok(Json(json!({"role": role, "closed": closed})))
 }
 
-/// Who manages the tenant's people with this request: the admin token, or a delegate token for the signed-in person
-/// it names, when they're one of the tenant's admins or the policy allows them `admin` on `service:dashboard`. Their
-/// ID's tenant and how changes are recorded (`admin token`, `person:<handle> (via <token>)`).
-async fn people_actor(app: &App, headers: &HeaderMap, target: &str) -> Result<String, (StatusCode, String)> {
+/// Who reads or changes the tenant's people with this request.
+struct PeopleActor {
+    /// As changes are recorded: `admin token`, or `person:<handle> (via <token>)`.
+    by: String,
+    /// The person a delegate token acts for (their ID); None for the admin token.
+    person: Option<String>,
+    /// One of the tenant's admins (the admin token counts as one).
+    tenant_admin: bool,
+}
+
+/// Who reads the tenant's people with this request: the admin token, or a delegate token for the signed-in person it
+/// names, when they're one of the tenant's admins or the policy allows them `admin` on `service:dashboard` (which is for
+/// using the dashboard: they see people, but only the tenant's admins change them, see `post_people`).
+async fn people_actor(app: &App, headers: &HeaderMap, target: &str) -> Result<PeopleActor, (StatusCode, String)> {
     match scope_of(app, headers).await {
-        Some(Scope::Admin) => Ok("admin token".into()),
+        Some(Scope::Admin) => Ok(PeopleActor { by: "admin token".into(), person: None, tenant_admin: true }),
         Some(Scope::Delegate) => {
             let token = headers
                 .get("authorization")
@@ -537,8 +547,9 @@ async fn people_actor(app: &App, headers: &HeaderMap, target: &str) -> Result<St
                 return Err((StatusCode::FORBIDDEN, format!("{person} isn't a member of the tenant")));
             };
             let by = format!("person:{handle} (via {name})");
+            let actor = |tenant_admin| PeopleActor { by: by.clone(), person: Some(person.to_string()), tenant_admin };
             if tenant.people.get(&handle).is_some_and(|p| p.role == "admin") {
-                return Ok(by);
+                return Ok(actor(true));
             }
             let ask = fleetlayer_protocol::link::AccessCheck {
                 tenant: tenant.id.clone(),
@@ -551,7 +562,7 @@ async fn people_actor(app: &App, headers: &HeaderMap, target: &str) -> Result<St
                 .await
                 .map_err(|e| (StatusCode::BAD_REQUEST, e.message))?;
             if d.allowed {
-                Ok(by)
+                Ok(actor(false))
             } else {
                 let why = format!("person:{handle} may not manage the tenant's people: {}", d.reason);
                 audit_refusal(app, &by, target, why.clone()).await;
@@ -583,17 +594,39 @@ pub async fn get_people(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiR
 /// `POST /v1/people/<action>` (`invite`, `invite_revoke`, `member_role`, `member_remove`, `team_add`, `team_remove`,
 /// `team_member`) with the change's fields: made with the same functions as the command line and recorded as the
 /// person who made it. An invite answers `{code}`.
+///
+/// Every change grants or takes away rights, so: only the tenant's admins (or the admin token) make them, and through a
+/// delegate token only when that person used their passkey in the last ten minutes, as the sign-in service reports
+/// over its own token (`POST /v1/signin/passkey`): a session left open in a browser can't. Refused and failed attempts
+/// are audited, as well as the changes themselves.
 pub async fn post_people(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     axum::extract::Path(action): axum::extract::Path<String>,
     Json(c): Json<crate::people::Change>,
 ) -> ApiResult {
-    let by = people_actor(&app, &headers, &format!("people/{action}")).await?;
-    crate::people::apply(&app.db, DEFAULT_TENANT, &action, &c, &by).await.map(Json).map_err(|e| match e {
-        crate::people::ApplyError::NoSuchAction => (StatusCode::NOT_FOUND, format!("no action {action}")),
-        crate::people::ApplyError::Bad(m) => (StatusCode::BAD_REQUEST, m),
-    })
+    let target = format!("people/{action}");
+    let actor = people_actor(&app, &headers, &target).await?;
+    if !actor.tenant_admin {
+        let why = "only the tenant's admins change its people".to_string();
+        audit_refusal(&app, &actor.by, &target, why.clone()).await;
+        return Err((StatusCode::FORBIDDEN, why));
+    }
+    if let Some(p) = &actor.person
+        && !crate::people::passkey_fresh(&app.db, p).await.map_err(internal)?
+    {
+        let why = "changing people needs your passkey from the last ten minutes: sign in again".to_string();
+        audit_refusal(&app, &actor.by, &target, why.clone()).await;
+        return Err((StatusCode::FORBIDDEN, why));
+    }
+    match crate::people::apply(&app.db, DEFAULT_TENANT, &action, &c, &actor.by).await {
+        Ok(v) => Ok(Json(v)),
+        Err(crate::people::ApplyError::NoSuchAction) => Err((StatusCode::NOT_FOUND, format!("no action {action}"))),
+        Err(crate::people::ApplyError::Bad(m)) => {
+            audit_refusal(&app, &actor.by, &target, format!("failed: {m}")).await;
+            Err((StatusCode::BAD_REQUEST, m))
+        }
+    }
 }
 
 /// `GET /v1/policy` (admin token, or a delegate token for one of the tenant's admins): the access policy in force, as
@@ -922,15 +955,70 @@ mod tests {
         };
         let change = |handle: &str| Json(crate::people::Change { handle: Some(handle.into()), ..Default::default() });
         let path = |a: &str| axum::extract::Path(a.to_string());
-        // An admin reads and changes them, as themselves.
+        // An admin reads them; changing them needs a passkey they used in the last ten minutes.
         let Json(v) = get_people(State(app.clone()), as_(&ids[0])).await.unwrap();
         assert_eq!(v["members"].as_array().unwrap().len(), 2, "{v}");
+        let e = post_people(State(app.clone()), as_(&ids[0]), path("invite"), change("kim")).await.unwrap_err();
+        assert!(e.0 == StatusCode::FORBIDDEN && e.1.contains("passkey"), "{}", e.1);
+        crate::people::passkey_used(db, &ids[0]).await.unwrap();
         let Json(v) = post_people(State(app.clone()), as_(&ids[0]), path("invite"), change("kim")).await.unwrap();
         assert!(v["code"].as_str().is_some_and(|c| !c.is_empty()), "{v}");
         let by: String =
             sqlx::query_scalar("SELECT created_by FROM invites WHERE handle = 'kim'").fetch_one(db).await.unwrap();
         assert_eq!(by, "person:sam (via dashboard)");
         assert!(get_policy(State(app.clone()), as_(&ids[0])).await.is_ok());
+        // The last admin can't be made a member; the change and the role it had are in the audit log.
+        let demote = Json(crate::people::Change {
+            handle: Some("sam".into()),
+            role: Some("member".into()),
+            ..Default::default()
+        });
+        let e = post_people(State(app.clone()), as_(&ids[0]), path("member_role"), demote).await.unwrap_err();
+        assert!(e.1.contains("last admin"), "{}", e.1);
+        let promote = Json(crate::people::Change {
+            handle: Some("lee".into()),
+            role: Some("admin".into()),
+            ..Default::default()
+        });
+        let _ = post_people(State(app.clone()), as_(&ids[0]), path("member_role"), promote).await.unwrap();
+        let reason: String = sqlx::query_scalar(
+            "SELECT reason FROM audit_outbox WHERE verb = 'member.role' AND target = 'person:lee' ORDER BY rowid DESC LIMIT 1",
+        )
+        .fetch_one(db)
+        .await
+        .unwrap_or_default();
+        assert_eq!(reason, "member -> admin");
+        let back = Json(crate::people::Change {
+            handle: Some("lee".into()),
+            role: Some("member".into()),
+            ..Default::default()
+        });
+        let _ = post_people(State(app.clone()), as_(&ids[0]), path("member_role"), back).await.unwrap();
+        // Someone the policy lets use the dashboard as an admin (admin on service:dashboard) sees people but, not being
+        // one of the tenant's admins, changes nothing, however fresh their passkey.
+        crate::authz::store(
+            db,
+            DEFAULT_TENANT,
+            "version: 2\ndefault: allow\nallow:\n  - { who: person:lee, can: admin, to: service:dashboard }\n",
+        )
+        .await
+        .unwrap();
+        crate::people::passkey_used(db, &ids[1]).await.unwrap();
+        assert!(get_people(State(app.clone()), as_(&ids[1])).await.is_ok());
+        let e = post_people(
+            State(app.clone()),
+            as_(&ids[1]),
+            path("member_role"),
+            Json(crate::people::Change {
+                handle: Some("lee".into()),
+                role: Some("admin".into()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(e.0 == StatusCode::FORBIDDEN && e.1.contains("only the tenant's admins"), "{}", e.1);
+        crate::authz::store(db, DEFAULT_TENANT, "version: 2\ndefault: deny\n").await.unwrap();
         // A member doesn't, nor a delegate token without a person, nor a read token.
         let e = post_people(State(app.clone()), as_(&ids[1]), path("invite"), change("x")).await.unwrap_err();
         assert_eq!(e.0, StatusCode::FORBIDDEN, "{}", e.1);

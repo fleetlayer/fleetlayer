@@ -339,6 +339,9 @@ tenant per request. No dynamic registration.
     (its name) or someone already signed in (their ID).
   - `/v1/signin/check {tenant, who, can, to}` → `{allowed, rules, reason}`, `who` a person's ID or `person:<handle>`:
     decided and audited in that tenant like a node's `link/access_check`.
+  - `/v1/signin/passkey {person}`: the person just used their passkey (signing in, or making one with an invite). The
+    control plane keeps the time: a change to people made through a delegate token (the dashboard) needs one from the
+    last ten minutes.
   - `/v1/signin/event {tenant, person, kind, client?, detail?}`: `kind` is `signed_in`, `signed_out`, `refused`,
     `passkey_added`, `passkey_removed` or `upstream_linked`, `detail` one line (how, or why refused, never a
     credential). Recorded in the tenant's audit log as `signin.<kind>`, with the token's name.

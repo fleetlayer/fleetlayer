@@ -1,8 +1,9 @@
 //! Managing the fleet's people: who's in it and their role, invites, teams, and the access rules in force. Read and
 //! changed only through the control plane's API (`/v1/people`, `/v1/policy`), as the signed-in person: the control
 //! plane checks they may (one of the tenant's admins, or `admin` on `service:dashboard`) and records every change as
-//! theirs. Changes that are hard to undo (removing someone, changing a role, taking someone off a team) ask for their
-//! passkey again when they last used it more than ten minutes ago.
+//! theirs. Every change grants or takes away rights, so each asks for the passkey again when it was last used more
+//! than ten minutes ago; the control plane checks that too (`POST /v1/signin/passkey`), so it holds even for someone
+//! holding the dashboard's token.
 //!
 //! Plain pages, nothing hidden under "Advanced": teams have a page of their own, which says what teams are for when
 //! there are none yet.
@@ -14,18 +15,13 @@ use serde_json::Value;
 use crate::icons::icon;
 use crate::views::{esc, sec_head, tile};
 
-/// How recent a passkey sign-in must be for a change that's hard to undo.
+/// How recent a passkey sign-in must be for any change to people.
 pub const FRESH_SECS: i64 = 10 * 60;
 /// Invites one person may make in an hour.
 pub const INVITES_PER_HOUR: usize = 20;
 
 /// The tenant's own team, which everyone is in: never listed or offered.
 const EVERYONE: &str = "everyone";
-
-/// The changes that need a recent passkey.
-pub fn hard_to_undo(action: &str, add: Option<bool>) -> bool {
-    matches!(action, "member_remove" | "member_role" | "team_remove") || (action == "team_member" && add == Some(false))
-}
 
 /// What the forms on these pages need.
 pub struct Forms<'a> {
@@ -437,12 +433,5 @@ mod tests {
         assert!(o.contains("team:design") && o.contains("service:dashboard"));
         assert!(o.contains(">window<") && o.contains("version: 2"));
         assert!(rules(&json!({"text": null, "policy": null})).contains("No policy file"));
-    }
-
-    #[test]
-    fn what_needs_a_fresh_passkey() {
-        assert!(hard_to_undo("member_remove", None) && hard_to_undo("member_role", None));
-        assert!(hard_to_undo("team_member", Some(false)) && !hard_to_undo("team_member", Some(true)));
-        assert!(!hard_to_undo("invite", None) && !hard_to_undo("team_add", None));
     }
 }

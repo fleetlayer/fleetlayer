@@ -188,6 +188,9 @@ It's a standard OpenID Connect provider. Point the service at `https://signin.ex
 with its client ID (the `name`) and secret.
 
 - The authorization code flow, with PKCE (`S256`) required of every service, including ones with a secret.
+- `max_age` is honoured: someone whose passkey is older than that many seconds (with ten seconds' slack, so `max_age=0`
+  right after signing in doesn't loop) signs in with it again first, and the ID token's `auth_time` is when they last
+  used it. The dashboard asks for it before changing people.
 - Before a service gets a code, the person's access to it is checked (`sign_in` on `service:<name>`). Someone without
   it sees "You don't have access" and the reason, and the service gets nothing.
 - The ID token (RS256, ten minutes) says who: `sub` (the person's ID, never reused), `name`,

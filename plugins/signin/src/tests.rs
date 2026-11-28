@@ -36,6 +36,19 @@ async fn control_plane(seen: Arc<Mutex<Seen>>) -> String {
     let s1 = seen.clone();
     let s3 = seen.clone();
     let router = axum::Router::new()
+        .route(
+            "/v1/signin/passkey",
+            post({
+                let s = seen.clone();
+                move |Json(b): Json<Value>| {
+                    let s = s.clone();
+                    async move {
+                        s.lock().unwrap().events.push(format!("passkey {}", b["person"].as_str().unwrap_or("-")));
+                        Json(json!({}))
+                    }
+                }
+            }),
+        )
         .route("/healthz", get(|| async { "ok" }))
         .route(
             "/v1/signin/person",
@@ -334,12 +347,35 @@ async fn an_invite_a_passkey_and_a_token_for_a_service_the_policy_allows() {
     // auth_time is when they used their passkey; a service that wants a fresher one gets the passkey page first.
     let auth_time = claims["auth_time"].as_i64().unwrap();
     assert!((crate::store::now_ms() / 1000 - auth_time).abs() < 60, "{claims}");
-    std::thread::sleep(std::time::Duration::from_millis(1100));
-    let r = call(&a, "GET", &format!("{}&max_age=0", authorize_uri("hub", &challenge)), Some(&cookie), None, "").await;
+    // Just after the passkey, max_age=0 still gets a code (a few seconds' slack, or it would loop).
+    let fresh = format!("{}&max_age=0", authorize_uri("hub", &challenge));
+    let r = call(&a, "GET", &fresh, Some(&cookie), None, "").await;
+    assert!(r.location.as_deref().is_some_and(|l| l.contains("code=")), "{:?}", r.location);
+    // A minute later it sends them to the passkey first; signing in again gets them a code with a new auth_time.
+    {
+        let mut sessions = a.store.sessions.lock().await;
+        for s in sessions.sessions.values_mut() {
+            s.verified_at -= 60_000;
+        }
+    }
+    let r = call(&a, "GET", &fresh, Some(&cookie), None, "").await;
     assert!(r.location.as_deref().is_some_and(|l| l.starts_with("/login?return=%2Fauthorize")), "{:?}", r.location);
     let r =
         call(&a, "GET", &format!("{}&max_age=600", authorize_uri("hub", &challenge)), Some(&cookie), None, "").await;
     assert!(r.location.as_deref().is_some_and(|l| l.contains("code=")), "{:?}", r.location);
+    let again = sign_in(&a, &mut key).await;
+    let new_cookie = again.cookie.clone().expect("a new session");
+    let r = call(&a, "GET", &fresh, Some(&new_cookie), None, "").await;
+    let code2 = code_of(r.location.as_deref().expect("a code after signing in again"));
+    let t2 = exchange(&a, &code2, &verifier).await;
+    let claims2 = crate::keys::verify(&a.keys.jwks(), t2.body["id_token"].as_str().unwrap()).unwrap();
+    assert!(claims2["auth_time"].as_i64().unwrap() >= auth_time, "{claims2}");
+    // And the control plane heard about each passkey use (for changes to people).
+    assert!(
+        seen.lock().unwrap().events.iter().filter(|e| e.as_str() == "passkey p_a").count() >= 2,
+        "{:?}",
+        seen.lock().unwrap().events
+    );
     // A code works once.
     assert_eq!(exchange(&a, &code, &verifier).await.status, StatusCode::BAD_REQUEST);
     // Userinfo with the access token.

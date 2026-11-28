@@ -35,10 +35,14 @@ look around, not the only way in. The same dashboard works with a control plane 
   and which of them are off until a window is opened, and the policy file itself. Rules are changed in that file, kept
   in git where the agents it limits can't change it, and applied with `fleetlayer-control acl apply`.
 
-People, Teams and Rules are for the fleet's admins (or anyone the policy allows `admin` on `service:dashboard`); the
-control plane checks that on every read and change, and records each change as the person who made it. Removing
-someone, changing a role and taking someone off a team ask for your passkey again when you last used it more than ten
-minutes ago. One person makes at most 20 invites an hour.
+People, Teams and Rules show to the fleet's admins, and to anyone the policy allows `admin` on `service:dashboard`
+(which is for using the dashboard); only the fleet's admins change people. The control plane checks that on every
+read and change, and records each change, with a role's old and new value, as the person who made it; refused and
+failed attempts are recorded too. Every change grants or takes away rights, so each asks for your passkey again when
+you last used it more than ten minutes ago, and the control plane enforces that itself: the sign-in service tells it
+each time someone uses their passkey (over its own token), so neither a session left open in a browser nor the
+dashboard's token can skip it. An invite's link is shown once, on the page, never in an address. One person makes at
+most 20 invites an hour.
 
 ## Try it
 

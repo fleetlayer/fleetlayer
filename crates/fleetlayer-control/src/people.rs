@@ -248,61 +248,52 @@ async fn handle_taken(db: &Db, tenant: &str, handle: &str) -> anyhow::Result<boo
 
 pub async fn member_role(db: &Db, tenant: &str, handle: &str, role: &str, by: &str) -> anyhow::Result<()> {
     ensure_role(role)?;
-    if role != "admin" {
-        let others = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM members WHERE tenant = ? AND role = 'admin' AND removed_at IS NULL AND handle != ?",
-        )
-        .bind(tenant)
-        .bind(handle)
-        .fetch_one(db)
-        .await?;
-        let is_admin = sqlx::query(
-            "SELECT 1 FROM members WHERE tenant = ? AND handle = ? AND role = 'admin' AND removed_at IS NULL",
-        )
-        .bind(tenant)
-        .bind(handle)
-        .fetch_optional(db)
-        .await?
-        .is_some();
-        anyhow::ensure!(
-            !is_admin || others > 0,
-            "{handle} is the tenant's last admin: make someone else an admin first"
-        );
-    }
-    let n = sqlx::query("UPDATE members SET role = ? WHERE tenant = ? AND handle = ? AND removed_at IS NULL")
-        .bind(role)
-        .bind(tenant)
-        .bind(handle)
-        .execute(db)
-        .await?
-        .rows_affected();
-    anyhow::ensure!(n == 1, "no member with the handle {handle} here");
-    log(db, tenant, by, "member.role", &format!("person:{handle}"), role).await
+    let old: Option<String> =
+        sqlx::query_scalar("SELECT role FROM members WHERE tenant = ? AND handle = ? AND removed_at IS NULL")
+            .bind(tenant)
+            .bind(handle)
+            .fetch_optional(db)
+            .await?;
+    let Some(old) = old else { anyhow::bail!("no member with the handle {handle} here") };
+    // One statement, so two admins demoting each other at once can't leave none: the second finds no other admin.
+    let n = sqlx::query(
+        "UPDATE members SET role = ?1 WHERE tenant = ?2 AND handle = ?3 AND removed_at IS NULL
+         AND (?1 = 'admin' OR role != 'admin' OR (SELECT COUNT(*) FROM members WHERE tenant = ?2 AND role = 'admin'
+              AND removed_at IS NULL AND handle != ?3) > 0)",
+    )
+    .bind(role)
+    .bind(tenant)
+    .bind(handle)
+    .execute(db)
+    .await?
+    .rows_affected();
+    anyhow::ensure!(n == 1, "{handle} is the tenant's last admin: make someone else an admin first");
+    log(db, tenant, by, "member.role", &format!("person:{handle}"), &format!("{old} -> {role}")).await
 }
 
 /// Remove a member from a tenant (and its teams). The handle stays reserved.
 pub async fn member_remove(db: &Db, tenant: &str, handle: &str, by: &str) -> anyhow::Result<()> {
     let person = resolve_person(db, tenant, handle).await?;
-    let admins = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM members WHERE tenant = ? AND role = 'admin' AND removed_at IS NULL AND person != ?",
+    let role: Option<String> =
+        sqlx::query_scalar("SELECT role FROM members WHERE tenant = ? AND person = ? AND removed_at IS NULL")
+            .bind(tenant)
+            .bind(&person)
+            .fetch_optional(db)
+            .await?;
+    let Some(role) = role else { anyhow::bail!("no member with the handle {handle} here") };
+    // The last-admin check in the same statement as the removal (see member_role).
+    let n = sqlx::query(
+        "UPDATE members SET removed_at = ?1 WHERE tenant = ?2 AND person = ?3 AND removed_at IS NULL
+         AND (role != 'admin' OR (SELECT COUNT(*) FROM members WHERE tenant = ?2 AND role = 'admin'
+              AND removed_at IS NULL AND person != ?3) > 0)",
     )
+    .bind(now_ms())
     .bind(tenant)
     .bind(&person)
-    .fetch_one(db)
-    .await?;
-    let is_admin = sqlx::query("SELECT 1 FROM members WHERE tenant = ? AND person = ? AND role = 'admin'")
-        .bind(tenant)
-        .bind(&person)
-        .fetch_optional(db)
-        .await?
-        .is_some();
-    anyhow::ensure!(!is_admin || admins > 0, "{handle} is the tenant's last admin: make someone else an admin first");
-    sqlx::query("UPDATE members SET removed_at = ? WHERE tenant = ? AND person = ?")
-        .bind(now_ms())
-        .bind(tenant)
-        .bind(&person)
-        .execute(db)
-        .await?;
+    .execute(db)
+    .await?
+    .rows_affected();
+    anyhow::ensure!(n == 1, "{handle} is the tenant's last admin: make someone else an admin first");
     sqlx::query("DELETE FROM team_members WHERE tenant = ? AND person = ?")
         .bind(tenant)
         .bind(&person)
@@ -323,7 +314,37 @@ pub async fn member_remove(db: &Db, tenant: &str, handle: &str, by: &str) -> any
             .execute(db)
             .await?;
     }
-    log(db, tenant, by, "member.remove", &format!("person:{handle}"), "removed; the handle stays reserved").await
+    log(
+        db,
+        tenant,
+        by,
+        "member.remove",
+        &format!("person:{handle}"),
+        &format!("removed (was {role}); the handle stays reserved"),
+    )
+    .await
+}
+
+/// How recent a passkey use must be for a change to people made through a delegate token (the dashboard).
+pub const PASSKEY_FRESH_MS: i64 = 10 * 60_000;
+
+/// The person just used their passkey at the sign-in service.
+pub async fn passkey_used(db: &Db, person: &str) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO passkey_uses (person, at) VALUES (?, ?) ON CONFLICT (person) DO UPDATE SET at = excluded.at",
+    )
+    .bind(person)
+    .bind(now_ms())
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+/// Whether the person used their passkey within `PASSKEY_FRESH_MS`.
+pub async fn passkey_fresh(db: &Db, person: &str) -> anyhow::Result<bool> {
+    let at: Option<i64> =
+        sqlx::query_scalar("SELECT at FROM passkey_uses WHERE person = ?").bind(person).fetch_optional(db).await?;
+    Ok(at.is_some_and(|at| now_ms() - at <= PASSKEY_FRESH_MS))
 }
 
 // ---------------------------------------------------------------- teams

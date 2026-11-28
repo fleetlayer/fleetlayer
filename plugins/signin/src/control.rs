@@ -186,6 +186,14 @@ impl Control {
         }
     }
 
+    /// The person just used their passkey (signing in, or making one with an invite): the control plane keeps the time,
+    /// for changes to people that need a recent one.
+    pub async fn passkey_used(&self, person: &str) {
+        if let Err(e) = self.post("/v1/signin/passkey", json!({"person": person})).await {
+            tracing::warn!("recording a passkey use for {person}: {e}");
+        }
+    }
+
     /// What an approval asks (`{id, from, verb, to, detail, status, holdMs, createdAt}`); none if there's no such
     /// approval in that tenant.
     pub async fn approval_view(&self, tenant: &str, approval: &str) -> anyhow::Result<Option<Value>> {

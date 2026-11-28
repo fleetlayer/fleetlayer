@@ -28,6 +28,8 @@ pub struct App {
     pub issuer: Option<String>,
     /// What the dashboard's own token is (`GET /v1/token`).
     token: std::sync::RwLock<Option<TokenInfo>>,
+    /// An invite code just made, per session (by its CSRF token), shown once on the People page.
+    flashes: tokio::sync::Mutex<std::collections::HashMap<String, (String, std::time::Instant)>>,
     /// Invites each person made in the last hour (`admin::INVITES_PER_HOUR`).
     invites_made: tokio::sync::Mutex<std::collections::HashMap<String, Vec<std::time::Instant>>>,
 }
@@ -63,6 +65,7 @@ impl App {
             issuer: None,
             token: std::sync::RwLock::new(None),
             invites_made: Default::default(),
+            flashes: Default::default(),
         }
     }
 
@@ -111,6 +114,17 @@ impl App {
             }
             None => Powers { act: scope.as_deref() == Some("admin"), windows: false },
         }
+    }
+
+    async fn set_flash(&self, session: &str, code: &str) {
+        let mut f = self.flashes.lock().await;
+        f.retain(|_, (_, at)| at.elapsed() < std::time::Duration::from_secs(600));
+        f.insert(session.to_string(), (code.to_string(), std::time::Instant::now()));
+    }
+
+    /// The invite code kept for this session, once.
+    async fn take_flash(&self, session: &str) -> Option<String> {
+        self.flashes.lock().await.remove(session).map(|(c, _)| c)
     }
 
     /// Whether this viewer may make another invite now, counting it when they may.
@@ -284,9 +298,6 @@ struct PageQuery {
     node: Option<String>,
     #[serde(default)]
     msg: Option<String>,
-    /// An invite just made (its code), to show its link once.
-    #[serde(default)]
-    invite: Option<String>,
 }
 
 fn shell(page: Page, viewer: &Viewer, app: &App, refresh: &str, main: &str) -> String {
@@ -448,7 +459,12 @@ async fn page(State(app): St, headers: HeaderMap, Query(q): Query<PageQuery>, wh
         Page::Access => views::access(&snap, &c),
         Page::Graph => views::graph(&snap, &c),
         Page::Readings => views::readings(&snap, &c),
-        Page::People | Page::Teams | Page::Rules => admin_page(&app, &v, which, q.invite.as_deref(), path).await,
+        Page::People | Page::Teams | Page::Rules => {
+            // An invite just made: its code, kept for this session, shown once and never put in an address.
+            let invite =
+                if which == Page::People && q.fragment.is_none() { app.take_flash(&v.csrf).await } else { None };
+            admin_page(&app, &v, which, invite.as_deref(), path).await
+        }
     };
     if let Some(m) = q.msg.as_deref().filter(|_| q.fragment.is_none()) {
         main.insert_str(
@@ -555,9 +571,9 @@ async fn people_change(
     };
     let to = f.back.as_deref();
     let add = f.add.as_deref().map(|a| a != "false");
-    // Hard to undo: their passkey again first, unless they used it in the last few minutes. They come back to the
-    // page and press again.
-    if crate::admin::hard_to_undo(&action, add) && !v.fresh(crate::admin::FRESH_SECS) && app.auth.oidc.is_some() {
+    // Every change grants or takes away rights: their passkey again first, unless they used it in the last few
+    // minutes. They come back to the page and press again. (The control plane checks it too.)
+    if !v.fresh(crate::admin::FRESH_SECS) && app.auth.oidc.is_some() {
         let next = format!(
             "{}?msg={}",
             to.and_then(|t| NAV.iter().find(|(_, h, _)| *h == t).map(|(_, h, _)| *h)).unwrap_or("/people"),
@@ -582,9 +598,8 @@ async fn people_change(
     match done {
         Ok(r) if action == "invite" => {
             tracing::info!(who = %v.label(), handle = ?f.handle, "made an invite from the dashboard");
-            let code: String =
-                form_urlencoded::byte_serialize(r["code"].as_str().unwrap_or_default().as_bytes()).collect();
-            Redirect::to(&format!("/people?invite={code}")).into_response()
+            app.set_flash(&v.csrf, r["code"].as_str().unwrap_or_default()).await;
+            Redirect::to("/people").into_response()
         }
         Ok(_) => {
             tracing::info!(who = %v.label(), action, handle = ?f.handle, team = ?f.team, "changed people from the dashboard");
@@ -1357,11 +1372,11 @@ mod tests {
         let to = r.headers()[header::LOCATION].to_str().unwrap().to_string();
         assert!(to.starts_with("/_/login/start?fresh=1&next=%2Fpeople%3Fmsg%3D"), "{to}");
         assert!(seen.lock().unwrap().is_empty());
-        // An invite needs no fresh passkey: made as them, and its link shown once.
-        let r = post_form(&app, "/_/people/invite", &cookie, format!("csrf={csrf}&handle=kim&role=member")).await;
-        assert_eq!(r.headers()[header::LOCATION], "/people?invite=c0de");
-        assert_eq!(*seen.lock().unwrap(), [("people invite".to_string(), Some("p_sam".to_string()))]);
-        // With a fresh passkey, removing goes ahead.
+        // So does an invite: every change grants or takes away rights.
+        let r = post_form(&app, "/_/people/invite", &cookie, format!("csrf={csrf}&handle=kim&role=admin")).await;
+        assert!(r.headers()[header::LOCATION].to_str().unwrap().starts_with("/_/login/start?fresh=1"));
+        assert!(seen.lock().unwrap().is_empty());
+        // With a fresh passkey, changes go ahead as them; an invite's link is shown once, never in an address.
         let person =
             fleetlayer_oidc::Person { sub: "p_sam".into(), tenant: "home".into(), handle: None, name: None, sid: None };
         let sid = app.auth.start_at(Some(person), Some(jiff::Timestamp::now().as_second())).await;
@@ -1372,7 +1387,17 @@ mod tests {
         let r =
             post_form(&app, "/_/people/member_remove", &fresh, format!("csrf={csrf}&handle=lee&back=/people")).await;
         assert_eq!(r.headers()[header::LOCATION], "/people?msg=Done.");
-        assert_eq!(seen.lock().unwrap().len(), 2);
+        let r = post_form(&app, "/_/people/invite", &fresh, format!("csrf={csrf}&handle=kim&role=member")).await;
+        assert_eq!(r.headers()[header::LOCATION], "/people", "no code in the address");
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [
+                ("people member_remove".to_string(), Some("p_sam".to_string())),
+                ("people invite".to_string(), Some("p_sam".to_string()))
+            ]
+        );
+        assert_eq!(app.take_flash(&csrf).await.as_deref(), Some("c0de"));
+        assert_eq!(app.take_flash(&csrf).await, None, "once");
     }
 
     #[tokio::test]

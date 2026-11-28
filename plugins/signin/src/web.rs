@@ -207,8 +207,12 @@ impl App {
         (s.expires_at > now_ms()).then(|| (s.clone(), value.clone()))
     }
 
+    /// A session after a passkey check (signing in, or a passkey made with an invite): the control plane is told, for
+    /// changes to people that need a recent passkey.
     async fn start_session(&self, person: &str) -> anyhow::Result<HeaderValue> {
-        self.start_session_via(person, None).await
+        let cookie = self.start_session_via(person, None).await?;
+        self.control.passkey_used(person).await;
+        Ok(cookie)
     }
 
     /// A new session; `via_tenant` when it came through an upstream provider, which signs in for that tenant only.
@@ -449,6 +453,9 @@ pub struct AuthorizeQuery {
     max_age: Option<i64>,
 }
 
+/// How long after a passkey check `max_age=0` still counts it as just done (the redirect back from signing in).
+const MAX_AGE_SLACK_MS: i64 = 10_000;
+
 /// Back to the client with an error, once its redirect URI is known to be its own.
 fn to_client_error(redirect_uri: &str, error: &str, state: Option<&str>) -> Response {
     let mut u = match Url::parse(redirect_uri) {
@@ -499,9 +506,10 @@ async fn authorize(
         let ret: String = form_urlencoded::byte_serialize(here.as_bytes()).collect();
         return Redirect::to(&format!("/login?return={ret}")).into_response();
     };
-    // Too long since their passkey for what the service asks: sign in again (a new session), then come back here.
+    // Too long since their passkey for what the service asks: sign in again (a new session), then come back here. A
+    // few seconds' slack, or max_age=0 would send someone who just signed in straight back to sign in again.
     if let Some(max) = q.max_age
-        && now_ms() - session.verified_at > max.max(0).saturating_mul(1000)
+        && now_ms() - session.verified_at > max.max(0).saturating_mul(1000) + MAX_AGE_SLACK_MS
     {
         let ret: String = form_urlencoded::byte_serialize(here.as_bytes()).collect();
         return Redirect::to(&format!("/login?return={ret}")).into_response();

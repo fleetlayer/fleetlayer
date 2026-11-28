@@ -227,6 +227,19 @@ pub struct EventRequest {
     detail: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub struct PasskeyRequest {
+    person: String,
+}
+
+/// `POST /v1/signin/passkey {person}`: the person just used their passkey (signing in, or making one with an invite).
+/// Kept as their last use, for changes to people that need a recent one (`people::PASSKEY_FRESH_MS`).
+pub async fn post_passkey(State(app): State<Arc<App>>, headers: HeaderMap, Json(r): Json<PasskeyRequest>) -> ApiResult {
+    guard(&app, &headers).await?;
+    crate::people::passkey_used(&app.db, &r.person).await.map_err(internal)?;
+    Ok(Json(json!({})))
+}
+
 pub async fn post_event(State(app): State<Arc<App>>, headers: HeaderMap, Json(e): Json<EventRequest>) -> ApiResult {
     let by = guard(&app, &headers).await?;
     if !EVENTS.contains(&e.kind.as_str()) {
