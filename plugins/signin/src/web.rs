@@ -1182,10 +1182,10 @@ pub(crate) fn esc(s: &str) -> String {
 }
 
 /// The Fleetlayer mark, inline (the pages' policy loads no images).
-pub(crate) const MARK: &str = "<svg viewBox=\"0 0 32 32\" aria-hidden=\"true\"><rect width=\"32\" height=\"32\" rx=\"8\" \
-     style=\"fill:var(--color-accent)\"/><g style=\"fill:none;stroke:var(--color-accent-ink);stroke-width:2.2;stroke-linecap:round\">\
-     <path d=\"M10 11.5h12M10 16h8M10 20.5h5\"/></g><circle cx=\"22\" cy=\"20.5\" r=\"2.2\" \
-     style=\"fill:var(--color-accent-ink)\"/></svg>";
+pub(crate) const MARK: &str = "<svg viewBox=\"0 0 32 32\" aria-hidden=\"true\" fill=\"none\"><path d=\"M6 21V11M16 21V11M26 21V11M6 21h20\" \
+     stroke=\"#2f5fe0\" stroke-width=\"2.4\" stroke-linecap=\"round\"/><circle cx=\"6\" cy=\"9\" r=\"3.2\" fill=\"#2f5fe0\"/>\
+     <circle cx=\"16\" cy=\"9\" r=\"3.2\" fill=\"#2f5fe0\"/><circle cx=\"26\" cy=\"9\" r=\"3.2\" fill=\"#2f5fe0\"/>\
+     <rect x=\"3\" y=\"20\" width=\"26\" height=\"6\" rx=\"2\" fill=\"#2f5fe0\"/></svg>";
 
 /// A status mark at the top of a card.
 #[derive(Clone, Copy)]
