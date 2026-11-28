@@ -1,9 +1,9 @@
 # How Fleetlayer fits together
 
-Fleetlayer is an open framework for running AI agents securely and at scale. It connects the agent sessions you
-already run, on every machine you use, into one fleet. This page explains the few pieces it's made of, how they talk
-to each other, and the rules that shape them. [Getting started](getting-started.md) and [Start on your
-laptop](guides/laptop.md) show how to run them.
+Fleetlayer runs your AI agents across machines and accounts, securely. It connects the agent sessions you already run,
+on every machine you use, into one fleet. This page explains the few pieces it's made of, how they talk to each other,
+and the rules that shape them. [Getting started](getting-started.md) and [Start on your laptop](guides/laptop.md) show
+how to run them.
 
 ## The pieces
 

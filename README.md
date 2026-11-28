@@ -1,10 +1,10 @@
 # Fleetlayer
 
-An open framework for running AI agents securely and at scale.
+Claude Code is awesome, until you add a second machine or account.
 
-Fleetlayer connects the Claude Code and Codex sessions you already run in [herdr](https://herdr.dev/), on your laptop, a
-home server or a VPS. Any agent can message any other agent, webhooks can be routed to specific agents, and each agent
-gets its own access rules.
+Fleetlayer connects the Claude Code and Codex sessions on your laptop, home server and VPS, under every account you
+use. They message each other, share your signed-in browser and files, and work under rules you set, on machines you
+control. Source-available under FSL-1.1-ALv2.
 
 **Start small, replace any component as you go.** Begin with everything on your laptop, and move a piece to a home
 server or a VPS when you outgrow it, or swap it for the tool you'd rather use.
