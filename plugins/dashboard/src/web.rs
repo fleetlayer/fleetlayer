@@ -165,7 +165,11 @@ async fn security_headers(mut res: Response) -> Response {
 
 const ASSETS: &[(&str, &str, &str)] = &[
     // Fleetlayer's shared look first (the hub's and sign-in's too), then the dashboard's own.
-    ("dashboard.css", "text/css; charset=utf-8", concat!(include_str!("../../../web/fleetlayer.css"), include_str!("../web/dashboard.css"))),
+    (
+        "dashboard.css",
+        "text/css; charset=utf-8",
+        concat!(include_str!("../../../web/fleetlayer.css"), include_str!("../web/dashboard.css")),
+    ),
     ("dashboard.js", "text/javascript; charset=utf-8", include_str!("../web/dashboard.js")),
     ("icon.svg", "image/svg+xml", include_str!("../web/icon.svg")),
 ];
