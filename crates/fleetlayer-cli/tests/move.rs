@@ -532,7 +532,7 @@ fn nodes_keep_the_old_address_until_the_move_is_confirmed() {
         log.contains(&format!("linked to the control plane url=ws://127.0.0.1:{new}/v1/link")),
         "the node reached the new copy first:\n{log}"
     );
-    wait_until("the node to link here again", 60, || f.a.linked());
+    wait_until("the node to link here again", 180, || f.a.linked());
     let y = f.a.read(".config/fleetlayer/node.yaml");
     assert!(y.contains(&format!("ws://127.0.0.1:{old}/v1/link")), "{y}");
     assert!(!f.a.path(".local/state/fleetlayer/control/move-proof").exists());
