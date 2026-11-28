@@ -146,6 +146,13 @@ machine may be asleep, or its node restarting)"), and the next call works as usu
 90 seconds closes. For slow work (a page that takes minutes to load), raise the limit after the target:
 `claude mcp add browser -- fleetlayer mcp browser@laptop --call-timeout 300`.
 
+**When the laptop sleeps or its node restarts**, a session keeps the browser's tools (from v0.4.0): the call in flight
+gets an error at once, later calls get "browser@laptop can't be reached now" until the laptop is back, and the first
+call after that reconnects by itself. Claude Code never restarts an MCP server that exited, so before this a session
+lost the browser until it restarted. `fleetlayer mcp` keeps the tool's list (in `~/.local/state/fleetlayer/mcp/`) so a
+session that starts while the laptop sleeps still loads it. An MCP server you add with `claude mcp add` reaches only
+sessions that start after it: restart the ones already running.
+
 `fleetlayer-control tools` on the control plane lists every connection: who used which tool, and when.
 
 The same mechanism shares other things on the laptop: [your screenshots and downloads](shared-folders.md), for example.

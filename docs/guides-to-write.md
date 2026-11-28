@@ -161,6 +161,15 @@ managers, machines that sleep.
   version never joined the cache. Now each answer is kept under its request (`initialize` per protocol version,
   `server/discover`, `tools/list`). Anyone fronting an MCP server should expect clients to probe before initialize.
   Written: `docs/guides/browser.md` ("Leftover tabs").
+- **Claude Code never restarts a stdio MCP server that exited, and loads MCP servers only at start.** A bridge to a
+  tool on another machine (`fleetlayer mcp browser@laptop`) exited when its stream ended (the laptop asleep, its node
+  restarting for an upgrade), so every session lost the browser until it restarted. Found 29 Nov 2026 when sessions
+  "only loaded the browser after a restart". Fixed in `fleetlayer mcp` (v0.4.0): it stays up, fails the calls in flight,
+  reconnects at the next message and replays the client's `initialize`, and keeps the tool's `initialize`,
+  `server/discover` and `tools/list` answers so a session that starts while the laptop sleeps still loads it. The
+  other half has no fix: a server added with `claude mcp add` reaches only sessions started after it (two sessions
+  running since before the browser was added never had it). Written: `docs/guides/browser.md`, the
+  fleetlayer-browser skill.
 - **A LaunchAgent can't find `claude`.** launchd gives agents a PATH without `~/.local/bin`, where Claude Code's
   installer puts it, so anything a node runs that calls `claude` fails with "No such file or directory". The
   claude-auth-manager plugin looks on PATH and then in the installers' places (`~/.local/bin`, `~/.claude/local`,
