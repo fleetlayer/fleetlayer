@@ -253,6 +253,8 @@ fn channel_icon(channel: &str) -> &'static str {
         "schedule" | "scheduler" | "cron" => "clock",
         "deploy" | "release" => "rocket",
         "uptime" | "monitor" | "alerts" => "activity",
+        "fleet" | "node" | "nodes" => "server",
+        "access" | "policy" => "hand-stop",
         _ => "webhook",
     }
 }
@@ -962,7 +964,7 @@ mod tests {
         let s = crate::demo::Demo::new().snapshot();
         let c = ctx();
         let o = overview(&s, &c);
-        assert!(o.contains("<h1>Fleet</h1>") && o.contains("Needs you") && o.contains("billing-bugfix@agents"), "{o}");
+        assert!(o.contains("<h1>Fleet</h1>") && o.contains("Needs you") && o.contains("billing-bugfix@workers"), "{o}");
         assert!(o.contains(r#"action="/_/approvals/ap_7d21""#));
         assert!(o.contains("old-mini") && o.contains("is offline"));
         for page in [

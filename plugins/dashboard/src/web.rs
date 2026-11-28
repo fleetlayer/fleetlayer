@@ -173,7 +173,7 @@ async fn security_headers(mut res: Response) -> Response {
     set(
         h,
         "content-security-policy",
-        "default-src 'none'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self'; \
+        "default-src 'none'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self'; font-src 'self'; \
         connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
     );
     set(h, "x-frame-options", "DENY");
@@ -196,12 +196,25 @@ const ASSETS: &[(&str, &str, &str)] = &[
     ("icon.svg", "image/svg+xml", include_str!("../web/icon.svg")),
 ];
 
+/// The site's three faces (web/fonts/, SIL Open Font License), which dashboard.css names in its @font-face rules.
+const FONTS: &[(&str, &[u8])] = &[
+    ("inter.woff2", include_bytes!("../../../web/fonts/inter.woff2")),
+    ("space-grotesk.woff2", include_bytes!("../../../web/fonts/space-grotesk.woff2")),
+    ("jetbrains-mono.woff2", include_bytes!("../../../web/fonts/jetbrains-mono.woff2")),
+];
+
 async fn asset(UrlPath(name): UrlPath<String>) -> Response {
     match ASSETS.iter().find(|(n, _, _)| *n == name) {
         Some((_, kind, body)) => {
             ([(header::CONTENT_TYPE, *kind), (header::CACHE_CONTROL, "no-cache")], *body).into_response()
         }
-        None => StatusCode::NOT_FOUND.into_response(),
+        None => match FONTS.iter().find(|(n, _)| *n == name) {
+            Some((_, body)) => {
+                ([(header::CONTENT_TYPE, "font/woff2"), (header::CACHE_CONTROL, "public, max-age=604800")], *body)
+                    .into_response()
+            }
+            None => StatusCode::NOT_FOUND.into_response(),
+        },
     }
 }
 
@@ -279,7 +292,7 @@ fn shell(page: Page, viewer: &Viewer, app: &App, refresh: &str, main: &str) -> S
 </head>
 <body>
 <header class="topbar"><div class="wrap topbar-in">
-<a class="brand" href="/"><img src="/_/assets/icon.svg" alt="" width="24" height="24">Fleetlayer</a>
+<a class="brand" href="/"><img src="/_/assets/icon.svg" alt="" width="26" height="26">Fleetlayer</a>
 <nav class="tabs" aria-label="Dashboard">{nav}</nav>
 <div class="topbar-end"><span class="live" data-state="on" aria-live="polite"><span class="live-dot"></span><span class="live-label">Live</span></span>{who}</div>
 </div></header>
