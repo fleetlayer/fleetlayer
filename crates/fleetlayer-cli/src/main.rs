@@ -95,6 +95,17 @@ enum Command {
         /// At most this many bytes (up to 1 MiB).
         #[arg(long)]
         max: Option<u64>,
+        /// End at this byte offset (an `offset` from an earlier read, with --tail: the lines before it).
+        #[arg(long)]
+        before: Option<u64>,
+        /// Cut each line longer than this many bytes, marking where (`…[cut: 1.4 MB]`); 0 cuts only lines that
+        /// don't fit in --max.
+        #[arg(long, default_value_t = 16384)]
+        line_max: u64,
+        /// Only lines of these kinds, comma-separated: a Claude Code line's `type` (`user`, `assistant`, `system`...),
+        /// or `tool_result` for tool results. `--types user,assistant` is the conversation without tool output.
+        #[arg(long, value_delimiter = ',')]
+        types: Vec<String>,
         /// Why you're reading it, shown if the person is asked.
         #[arg(long)]
         why: Option<String>,
@@ -1165,9 +1176,11 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 secrets::print_grants(&v["readings"]);
             }
         }
-        Command::Transcript { to, tail, offset, max, why } => {
+        Command::Transcript { to, tail, offset, max, before, line_max, types, why } => {
             let tail = if offset.is_none() && tail.is_none() { Some(65536) } else { tail };
-            let req = json!({"to": to, "tail": tail, "offset": offset, "max": max, "why": why, "caller": caller()});
+            let types = (!types.is_empty()).then_some(types);
+            let req = json!({"to": to, "tail": tail, "offset": offset, "max": max, "before": before,
+                "lineMax": line_max, "types": types, "why": why, "caller": caller()});
             let v: Value =
                 peer.request_within("node/transcript_read", &req, std::time::Duration::from_secs(60)).await?;
             if cli.json {
@@ -1182,13 +1195,19 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             if !bytes.ends_with(b"\n") && !bytes.is_empty() {
                 println!();
             }
+            let (offset, next) = (v["offset"].as_u64().unwrap_or(0), v["next"].as_u64().unwrap_or(0));
+            let mut notes = String::new();
+            if let Some(n) = v["cut"].as_u64().filter(|n| *n > 0) {
+                notes.push_str(&format!(", {n} lines cut"));
+            }
+            if let Some(n) = v["skipped"].as_u64().filter(|n| *n > 0) {
+                notes.push_str(&format!(", {n} lines of other types passed over"));
+            }
             eprintln!(
-                "-- {} bytes of {} (offset {}, next {}); continue with --offset {}",
+                "-- {} bytes of {} (offset {offset}, next {next}{notes}); continue with --offset {next}, \
+                 or earlier lines with --tail <bytes> --before {offset}",
                 bytes.len(),
                 v["size"].as_u64().unwrap_or(0),
-                v["offset"].as_u64().unwrap_or(0),
-                v["next"].as_u64().unwrap_or(0),
-                v["next"].as_u64().unwrap_or(0)
             );
         }
         Command::Readings { kinds } => {

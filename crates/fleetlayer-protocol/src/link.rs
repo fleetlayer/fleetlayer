@@ -745,8 +745,13 @@ pub struct SessionActed {
     pub done: String,
 }
 
-/// Which part of a transcript to read: from byte `offset`, or the last `tail` bytes (starting at a line), at most
-/// `max` bytes (capped at [`TRANSCRIPT_CHUNK_MAX`]). Neither: from the start.
+/// Which part of a transcript to read: from byte `offset`, or the last `tail` bytes (starting at a line; when no whole
+/// line starts inside them, the last whole line), ending at byte `before` (the end of the file when absent), at most
+/// `max` bytes (capped at [`TRANSCRIPT_CHUNK_MAX`]). Neither offset nor tail: from the start. A forward read returns
+/// the first lines that fit; a tail returns the newest. Only whole lines come back. A line longer than `line_max` (or
+/// than `max`) comes back cut, with a marker, never dropped: see [`TRANSCRIPT_CUT_KEY`]. With `types`, only lines of
+/// those kinds come back (the line's top-level `type`, or `tool_result` for a user line carrying tool results); the
+/// rest are passed over and `next` moves past them.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptRange {
@@ -756,10 +761,25 @@ pub struct TranscriptRange {
     pub tail: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_max: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub types: Option<Vec<String>>,
 }
 
 /// The most a transcript read returns at once.
 pub const TRANSCRIPT_CHUNK_MAX: u64 = 1 << 20;
+
+/// The most of a transcript one tail read looks through (the newest lines in it that fit come back).
+pub const TRANSCRIPT_TAIL_MAX: u64 = 256 << 20;
+
+/// A line cut to fit carries this top-level key: `{"bytes": <its length in the file>}`. A JSON line keeps its shape,
+/// with its longest strings cut short and ending `…[cut: 1.4 MB]`; a line too big to parse, or that can't be made
+/// small enough that way, becomes `{"type": <its type, when found>, "_fleetlayerCut": {"bytes": …, "head": <its
+/// first bytes as text>}}`.
+pub const TRANSCRIPT_CUT_KEY: &str = "_fleetlayerCut";
 
 /// `link/transcript_read`
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -788,8 +808,8 @@ pub struct TranscriptServe {
 }
 
 /// Part of a transcript: `data` (base64) is the lines from `offset`, with every secret delivered to the serving node
-/// redacted; `next` is where the following read starts (redaction changes the length, so it isn't `offset` plus the
-/// data's); `size` is the whole file's size now.
+/// redacted; `next` is where the following read starts (redaction, cut lines and skipped ones change the length, so it
+/// isn't `offset` plus the data's); `size` is the whole file's size now.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptChunk {
@@ -800,4 +820,14 @@ pub struct TranscriptChunk {
     pub offset: u64,
     pub next: u64,
     pub data: String,
+    /// How many of the lines in `data` were cut to fit.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cut: u64,
+    /// How many lines between `offset` and `next` were passed over by `types`.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub skipped: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
