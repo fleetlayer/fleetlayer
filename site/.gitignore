@@ -7,4 +7,5 @@ src/content/docs/
 public/*
 !public/_headers
 !public/favicon.svg
+!public/robots.txt
 !public/img/
