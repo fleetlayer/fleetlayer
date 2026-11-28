@@ -46,6 +46,21 @@ reads untrusted input, the message is also marked as outside data, so the agent 
 treat the email itself. A session may answer a session that wrote to it in the last 24 hours, even if its rules would
 otherwise limit whom it may message (an explicit deny still holds).
 
+```mermaid
+sequenceDiagram
+  participant A as api@laptop
+  participant L as laptop's node
+  participant C as control plane
+  participant H as home's node
+  participant B as infra@home
+  A->>L: msg send
+  L->>C: over its link
+  C->>C: policy check, audit log
+  C->>H: deliver
+  H->>B: agent's channel, or typed in
+  B-->>A: the reply, the same way
+```
+
 Events work the same way. A webhook (a CI result, say) arrives at the control plane on a channel, and goes to the
 sessions subscribed to that channel or to one subject on it: the agent that wrote the branch hears that its build
 failed. A channel can name a fallback session for events nobody subscribed to.

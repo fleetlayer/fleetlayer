@@ -88,6 +88,7 @@ function renderDiagrams(body, file) {
         fg: "var(--sl-color-white)",
         accent: "var(--sl-color-accent)",
         line: "var(--sl-color-gray-3)",
+        muted: "var(--sl-color-gray-2)",
         transparent: true,
         font: "inherit",
       });

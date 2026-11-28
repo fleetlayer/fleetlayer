@@ -46,6 +46,8 @@ into it.
   code while working on Fleetlayer.
 - MPL-2.0 libraries may be dependencies, used unmodified and listed in `NOTICE` (Nathan, 27 Nov 2026, for
   webauthn-rs). Never copy MPL code into Fleetlayer's own files.
+- EPL-2.0 packages may be unmodified, build-only dependencies of the site (`site/`), listed in `NOTICE` (Nathan, 29
+  Nov 2026, for elkjs). Never copy EPL code into Fleetlayer's own files.
 - Check a project's licence before taking anything from it, and ask Nathan about any other copyleft licence.
 
 ## Builds and tests run on a build server

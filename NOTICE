@@ -103,3 +103,9 @@ web/fonts/ holds the latin subsets of three fonts, unmodified, as packaged by Fo
 which the dashboard serves to its pages: Inter (Copyright 2016 The Inter Project Authors), Space Grotesk (Copyright
 2020 The Space Grotesk Project Authors) and JetBrains Mono (Copyright 2020 The JetBrains Mono Project Authors). They
 are under the SIL Open Font License, Version 1.1, in web/fonts/OFL.txt.
+
+The documentation site (site/) renders Mermaid diagrams to SVG at build time with beautiful-mermaid 1.1.3
+(https://github.com/lukilabs/beautiful-mermaid, MIT License) and its dependencies elkjs 0.11.1
+(https://github.com/kieler/elkjs, Eclipse Public License 2.0) and entities 4.5.0 (https://github.com/fb55/entities,
+BSD 2-Clause License). They're used unmodified, only to build the site; their source is available there. The site
+serves only the diagrams they draw, and no EPL code is copied into Fleetlayer's own files.
