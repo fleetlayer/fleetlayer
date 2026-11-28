@@ -12,9 +12,11 @@ on:
 permissions:
   contents: read
 
+# On main a running CI is never cancelled: a newer push waits (only the newest waiting one runs next), so every run
+# that starts finishes and main gets results even while several sessions push. Elsewhere a new push cancels the old run.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   check:
