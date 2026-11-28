@@ -165,8 +165,8 @@ the source's state folder, so they keep going up when the clock steps back or th
 
 ## Moving it
 
-The source keeps its state in `~/.local/state/fleetlayer/1password/` and its settings in `node.yaml`. To move it:
-stop its node, copy the token file (sealed, or through 1Password itself: it's a service-account token you can also
-make again), the node's config folder (its key) and that state folder, start it on the new machine, and remove the old
-node's token file. `fleetlayer move node <machine>` moves the node's key, token and settings, but not this plugin's
-token file or state folder: copy those two by hand.
+The source keeps its state in `~/.local/state/fleetlayer/1password/` and its settings in `node.yaml`. To move it: stop
+its node, copy the token file (sealed, or through 1Password itself: it's a service-account token you can also make
+again), the node's config folder (its key) and that state folder, start it on the new machine, and remove the old
+node's token file. `fleetlayer move 1password <machine>` (or moving the whole node) carries the plugin's token files
+and state folder with it.

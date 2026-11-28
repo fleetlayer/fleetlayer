@@ -110,6 +110,9 @@ fleetlayer move hub claudehub@server --dry-run   # what it would do
 fleetlayer move hub claudehub@server
 ```
 
+If the hub has already sent tokens to other machines, upgrade the laptop first and let the hub publish once (it does
+when it starts): its nodes then pin the key that moves with the hub, and keep taking its tokens after the move.
+
 It listens on the address SSH reached the server on, port 7660; `--listen` and `--url` change that when the page is
 behind a proxy. The laptop's gateway routes `claude-hub` to its new address.
 
@@ -172,13 +175,11 @@ plugins:
   - name: claude-auth-manager
     command: fleetlayer-claude-auth-manager
     grants: [reading.publish, reading.subscribe]
-    config:
-      from: server-claudehub      # the hub's node: the only one whose tokens it applies
 ```
 
-Each node applies the tokens bundle from one node only: the one `from:` names, or else the first node that sent it,
-remembered in `~/.local/state/fleetlayer/claude-auth-manager/sources.json`. A node that already took tokens from the
-hub on the laptop refuses them from `server-claudehub` until you set `from:` (or remove the entry from that file).
+Each node applies only bundles signed by the hub's own key, the first one it sees (remembered in
+`~/.local/state/fleetlayer/claude-auth-manager/sources.json`). The key lives in the hub's folder and moves with it, so
+a node that took tokens from the hub on the laptop keeps taking them after the move, with nothing to change.
 
 Restart the node. When a bundle arrives, the plugin writes each account's token into its slot, removes slots for
 accounts that left the bundle, and replaces any sign-in someone made by hand in a slot it manages (a hand sign-in
@@ -276,8 +277,9 @@ machines: claude-auth-manager with the fork. The design notes are in
 
 ## Limit who can send tokens
 
-A node that could publish the tokens bundle could put its own tokens in your slots. Each node defends itself with
-`from: server-claudehub` (step 4). Also allow only the hub's node, in your [access policy](../access-control.md):
+A node that could publish the tokens bundle could put its own tokens in your slots. Each node defends itself by
+applying only bundles signed by the hub's key (step 4); `from: <node>` in its plugin's `config:` narrows it further to
+one node. Also allow only the hub's node, in your [access policy](../access-control.md):
 
 ```yaml
 version: 2
@@ -323,8 +325,8 @@ sync:claude-auth-manager/tokens@laptop` shows the decision.
 - **Nothing reaches a node:** look in the hub's node log for a refused sync (your policy) or a target whose key
   changed. The hub's node pins each target's key the first time it seals to it, in
   `~/.local/state/fleetlayer/known-keys.json`, and refuses a changed key until you remove the old pin.
-- **"came from node server-claudehub, but it first came from laptop"** in a node's log: that node took tokens from the
-  hub before it moved. Set `from: server-claudehub` in its plugin's `config:`, or remove the entry from
-  `~/.local/state/fleetlayer/claude-auth-manager/sources.json`, and restart the node.
+- **A node refuses the tokens bundle** ("signed by another key" in its log): it pinned a different hub's key, from a
+  hub you replaced rather than moved. Remove its entry from `~/.local/state/fleetlayer/claude-auth-manager/sources.json`
+  and restart the node, so it pins the new hub's key.
 - **CodexBar shows nothing:** run `fleetlayer-claude-accounts --list --json` in a terminal. It prints the reason
   (`NodeUnreachable`, `NoAccounts` when this node may not read the hub's readings, `HubTooOld`).

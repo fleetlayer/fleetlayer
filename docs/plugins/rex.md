@@ -46,7 +46,8 @@ have no channel of their own (Codex, for instance).
   <agent>`), waits until the agent reports it's at rest (up to a minute), then types the first prompt. Closing a
   session closes its terminal, and the Rex session with it when that was its last terminal. Interrupting presses Esc.
 - **Terminals.** `fleetlayer attach` reads the screen with Rex's `format` method a few times a second and sends what
-  changed; in control mode it types with `write` and asks Rex to resize. Rex streams terminals over a data connection
+  changed; in control mode it types with `write` and asks Rex to resize. In input mode (a watcher typing, as through
+  herdr-fleet) it types keys and pastes without resizing; scrollback reads come from `format` too. Rex streams terminals over a data connection
   whose wire format isn't published, so the plugin reads the screen instead: fine for watching and stepping in, slower
   than a native stream.
 - **Who's watching.** A session shows `humanAttached` when one of Rex's apps (Mac, phone, Windows) is attached to it.

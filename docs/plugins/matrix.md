@@ -185,7 +185,6 @@ by their absence.
 
 ## Moving it
 
-Everything is in the state directory, the password file and the plugin's section of `node.yaml`. `fleetlayer move`
-doesn't carry them, so move them by hand: stop the node, copy the state directory (mode 700) and the password file
-(readable only by its user), start it on the new machine. The device and its keys move with it. Don't run two
-copies with the same directory.
+Everything is in the state directory, the password file and the plugin's section of `node.yaml`, and `fleetlayer move
+matrix <machine>` carries all three ([Moving a piece](../guides/moving.md)). The device and its keys move with it.
+Don't run two copies with the same directory.
