@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::store::{now_ms, sha256_hex};
-use crate::web::{App, esc, page};
+use crate::web::{App, esc, page, page_wide};
 
 /// A passkey this recent lets someone remove a member, change a role or take someone off a team.
 const STEP_UP_MS: i64 = 10 * 60_000;
@@ -84,7 +84,7 @@ pub async fn show(
         }
     };
     let token = csrf(&cookie);
-    let form = |action: &str, fields: &[(&str, &str)], button: &str, confirm: Option<&str>| {
+    let form = |action: &str, fields: &[(&str, &str)], button: &str, class: &str, confirm: Option<&str>| {
         let hidden: String = fields
             .iter()
             .map(|(k, v)| format!("<input type=\"hidden\" name=\"{}\" value=\"{}\">", esc(k), esc(v)))
@@ -92,7 +92,7 @@ pub async fn show(
         let onclick = confirm.map(|c| format!(" onclick=\"return confirm('{}')\"", esc(c))).unwrap_or_default();
         format!(
             "<form method=\"post\"><input type=\"hidden\" name=\"csrf\" value=\"{token}\"><input type=\"hidden\" \
-             name=\"action\" value=\"{action}\">{hidden}<button{onclick}>{button}</button></form>"
+             name=\"action\" value=\"{action}\">{hidden}<button class=\"btn btn-sm {class}\"{onclick}>{button}</button></form>"
         )
     };
     let me = v["members"]
@@ -103,17 +103,18 @@ pub async fn show(
         .to_string();
     let mut body = String::new();
     if let Some(m) = &q.msg {
-        body.push_str(&format!("<p class=\"why\">{}</p>", esc(m)));
+        body.push_str(&format!("<p class=\"notice is-info\" role=\"status\">{}</p>", esc(m)));
     }
     if let Some(code) = &q.invite {
         let link = format!("{}/invite?code={}", app.settings.issuer, enc(code));
         body.push_str(&format!(
-            "<p class=\"ok\">Send this link to them; it works once, for a week:</p><p><code>{}</code></p>",
+            "<div class=\"panel\"><h2>Invite link ready</h2><p>Send this link to them. It works once, for a \
+             week.</p><p><code>{}</code></p></div>",
             esc(&link)
         ));
     }
     // Members.
-    body.push_str("<h2>People</h2><table><tr><th>Name</th><th>Handle</th><th>Role</th><th></th></tr>");
+    body.push_str("<section class=\"section\"><h2>People</h2><div class=\"list\">");
     for m in v["members"].as_array().into_iter().flatten() {
         let (name, handle, role) = (
             m["display_name"].as_str().unwrap_or(""),
@@ -121,41 +122,45 @@ pub async fn show(
             m["role"].as_str().unwrap_or(""),
         );
         let other = if role == "admin" { "member" } else { "admin" };
-        let you = if handle == me { " (you)" } else { "" };
+        let you = if handle == me { " <span class=\"tag\">you</span>" } else { "" };
+        let role_tag = if role == "admin" { "<span class=\"tag is-accent\">admin</span>" } else { "" };
         body.push_str(&format!(
-            "<tr><td>{}{you}</td><td>{}</td><td>{} {}</td><td>{}</td></tr>",
+            "<div class=\"row\"><div class=\"who\"><div class=\"name\">{}{you} {role_tag}</div><div class=\"meta\">{}</div></div>\
+             <div class=\"tools\">{}{}</div></div>",
             esc(name),
             esc(handle),
-            esc(role),
-            form("member_role", &[("handle", handle), ("role", other)], &format!("Make {other}"), None),
-            form("member_remove", &[("handle", handle)], "Remove", Some(&format!("Remove {name}?")))
+            form("member_role", &[("handle", handle), ("role", other)], &format!("Make {other}"), "", None),
+            form("member_remove", &[("handle", handle)], "Remove", "btn-quiet-danger", Some(&format!("Remove {name}?")))
         ));
     }
-    body.push_str("</table>");
+    body.push_str("</div></section>");
     // Invites.
     body.push_str(&format!(
-        "<h2>Invite someone</h2><form method=\"post\"><input type=\"hidden\" name=\"csrf\" value=\"{token}\">\
-         <input type=\"hidden\" name=\"action\" value=\"invite\"><label>Handle (what rules call them) \
-         <input name=\"handle\" required pattern=\"[a-z0-9][a-z0-9._-]{{0,63}}\"></label><label>Role \
-         <select name=\"role\"><option>member</option><option>admin</option></select></label> <button>Make an invite \
-         link</button></form>"
+        "<section class=\"section\"><h2>Invite someone</h2><div class=\"panel\"><form class=\"inline-form\" method=\"post\">\
+         <input type=\"hidden\" name=\"csrf\" value=\"{token}\"><input type=\"hidden\" name=\"action\" value=\"invite\">\
+         <label class=\"label\">Handle (what rules call them)<input name=\"handle\" required \
+         pattern=\"[a-z0-9][a-z0-9._-]{{0,63}}\" placeholder=\"sam\"></label><label class=\"label\">Role \
+         <select name=\"role\"><option>member</option><option>admin</option></select></label>\
+         <button class=\"btn btn-primary\">Make an invite link</button></form></div>"
     ));
     let invites: Vec<&Value> = v["invites"].as_array().into_iter().flatten().collect();
     if !invites.is_empty() {
-        body.push_str("<h3>Waiting to be used</h3><table>");
+        body.push_str("<h3 class=\"hint\">Waiting to be used</h3><div class=\"list\">");
         for i in invites {
             let handle = i["handle"].as_str().unwrap_or("");
             body.push_str(&format!(
-                "<tr><td>{}</td><td>{}</td><td>{}</td></tr>",
+                "<div class=\"row\"><div class=\"who\"><div class=\"name\">{}</div><div class=\"meta\">{}</div></div>\
+                 <div class=\"tools\">{}</div></div>",
                 esc(handle),
                 esc(i["role"].as_str().unwrap_or("")),
-                form("invite_revoke", &[("handle", handle)], "Cancel", None)
+                form("invite_revoke", &[("handle", handle)], "Cancel", "", None)
             ));
         }
-        body.push_str("</table>");
+        body.push_str("</div>");
     }
+    body.push_str("</section>");
     // Advanced: teams and the services that sign in here.
-    body.push_str("<details><summary>Advanced</summary><h2>Teams</h2>");
+    body.push_str("<details><summary>Advanced</summary><section class=\"section\"><h2>Teams</h2>");
     let teams: Vec<&Value> =
         v["teams"].as_array().into_iter().flatten().filter(|t| t["name"] != crate::EVERYONE).collect();
     if teams.is_empty() {
@@ -163,14 +168,19 @@ pub async fn show(
     }
     for t in &teams {
         let name = t["name"].as_str().unwrap_or("");
-        let parent = t["parent"].as_str().map(|p| format!(" (in {})", esc(p))).unwrap_or_default();
-        body.push_str(&format!("<h3>{}{parent}</h3><ul>", esc(name)));
-        for m in t["members"].as_array().into_iter().flatten() {
+        let parent =
+            t["parent"].as_str().map(|p| format!(" <span class=\"hint\">in {}</span>", esc(p))).unwrap_or_default();
+        body.push_str(&format!("<h3>{}{parent}</h3><div class=\"list\">", esc(name)));
+        let members: Vec<&Value> = t["members"].as_array().into_iter().flatten().collect();
+        if members.is_empty() {
+            body.push_str("<div class=\"row empty\">Nobody yet.</div>");
+        }
+        for m in members {
             let handle = m[0].as_str().unwrap_or("");
             // Put there by a provider's group: taking them off lasts until their groups are read again.
             let (from, confirm) = match m[2].as_str() {
                 Some(u) => (
-                    format!(" <span class=\"hint\">(from {})</span>", esc(u)),
+                    format!(" <span class=\"tag\">from {}</span>", esc(u)),
                     Some(format!(
                         "{handle} is in {name} through {u}'s groups: they'll be back in it when those are read again, unless the mapping changes. Take them off anyway?"
                     )),
@@ -178,45 +188,48 @@ pub async fn show(
                 None => (String::new(), None),
             };
             body.push_str(&format!(
-                "<li>{}{from} {}</li>",
+                "<div class=\"row\"><div class=\"who\"><div class=\"name\">{}{from}</div></div><div class=\"tools\">{}</div></div>",
                 esc(handle),
                 form(
                     "team_member",
                     &[("team", name), ("handle", handle), ("add", "false")],
                     "Take off",
+                    "",
                     confirm.as_deref()
                 )
             ));
         }
-        body.push_str("</ul>");
+        body.push_str("</div>");
     }
     let team_options: String =
         teams.iter().filter_map(|t| t["name"].as_str()).map(|n| format!("<option>{}</option>", esc(n))).collect();
     body.push_str(&format!(
-        "<form method=\"post\"><input type=\"hidden\" name=\"csrf\" value=\"{token}\"><input type=\"hidden\" \
-         name=\"action\" value=\"team_add\"><label>New team <input name=\"team\" required></label><label>Inside \
-         <select name=\"parent\"><option value=\"\">(none)</option>{team_options}</select></label> <button>Add \
-         team</button></form>"
+        "<div class=\"panel\"><form class=\"inline-form\" method=\"post\"><input type=\"hidden\" name=\"csrf\" value=\"{token}\">\
+         <input type=\"hidden\" name=\"action\" value=\"team_add\"><label class=\"label\">New team <input name=\"team\" required></label>\
+         <label class=\"label\">Inside <select name=\"parent\"><option value=\"\">(none)</option>{team_options}</select></label>\
+         <button class=\"btn\">Add team</button></form>"
     ));
     if !teams.is_empty() {
         body.push_str(&format!(
-            "<form method=\"post\"><input type=\"hidden\" name=\"csrf\" value=\"{token}\"><input type=\"hidden\" \
-             name=\"action\" value=\"team_member\"><input type=\"hidden\" name=\"add\" value=\"true\"><label>Put \
-             <input name=\"handle\" required></label><label>in <select name=\"team\">{team_options}</select></label> \
-             <button>Add to team</button></form>"
+            "<form class=\"inline-form\" method=\"post\"><input type=\"hidden\" name=\"csrf\" value=\"{token}\"><input type=\"hidden\" \
+             name=\"action\" value=\"team_member\"><input type=\"hidden\" name=\"add\" value=\"true\"><label class=\"label\">Put \
+             <input name=\"handle\" required placeholder=\"handle\"></label><label class=\"label\">in <select name=\"team\">{team_options}</select></label> \
+             <button class=\"btn\">Add to team</button></form>"
         ));
     }
-    body.push_str("<h2>Services that sign in here</h2><ul>");
+    body.push_str("</div></section><section class=\"section\"><h2>Services that sign in here</h2><div class=\"list\">");
     for c in &app.settings.clients {
         body.push_str(&format!(
-            "<li><b>{}</b> <span class=\"hint\">{}</span></li>",
+            "<div class=\"row\"><div class=\"who\"><div class=\"name\">{}</div><div class=\"meta\">{}</div></div></div>",
             esc(&c.name),
             esc(&c.redirect_uris.join(", "))
         ));
     }
-    body.push_str("</ul><p class=\"hint\">Services are set in the sign-in service's settings.</p></details>");
+    body.push_str(
+        "</div><p class=\"hint\">Services are set in the sign-in service's settings.</p></section></details>",
+    );
     let title = v["name"].as_str().unwrap_or("Manage").to_string();
-    page(StatusCode::OK, &title, &body)
+    page_wide(StatusCode::OK, &title, &body)
 }
 
 #[derive(Deserialize)]

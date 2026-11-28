@@ -1407,6 +1407,7 @@ async fn serve(
         .route("/v1/windows", get(api::get_windows))
         .route("/v1/windows/{role}", axum::routing::delete(api::delete_window))
         .route("/v1/signin/person", axum::routing::post(signin::post_person))
+        .route("/v1/signin/invite_check", axum::routing::post(signin::post_invite_check))
         .route("/v1/signin/invite_redeem", axum::routing::post(signin::post_invite_redeem))
         .route("/v1/signin/check", axum::routing::post(signin::post_check))
         .route("/v1/signin/event", axum::routing::post(signin::post_event))

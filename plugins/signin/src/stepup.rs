@@ -17,7 +17,7 @@ use url::Url;
 use webauthn_rs::prelude::*;
 
 use crate::store::now_ms;
-use crate::web::{App, PASSKEY_JS, bad, esc, page, random};
+use crate::web::{App, KEY_ICON, Mark, PASSKEY_JS, bad, esc, page, page_with, random};
 
 const CEREMONY_MS: i64 = 5 * 60_000;
 
@@ -105,7 +105,7 @@ fn describe(v: &Value) -> String {
         .unwrap_or_default();
     let detail = v["detail"].as_str().map(|d| format!("<p class=\"why\">{}</p>", esc(d))).unwrap_or_default();
     format!(
-        "<table><tr><th>From</th><td>{}</td></tr><tr><th>Asks to</th><td>{}</td></tr><tr><th>On</th><td>{}</td></tr>\
+        "<table class=\"kv\"><tr><th>From</th><td>{}</td></tr><tr><th>Asks to</th><td>{}</td></tr><tr><th>On</th><td>{}</td></tr>\
          {hold}</table>{detail}",
         field("from"),
         field("verb"),
@@ -152,12 +152,14 @@ pub async fn page_for(State(app): State<Arc<App>>, headers: HeaderMap, Query(q):
     }
     let ret = q.ret.as_deref().and_then(|r| allowed_return(&app, Some(r))).unwrap_or_default();
     let extra = json!({"tenant": tenant, "approval": approval, "return": ret});
-    page(
+    page_with(
         StatusCode::OK,
+        Some(Mark::Key),
         "Confirm this request",
         &format!(
             "<p>This request needs your passkey, even though you're signed in.</p>{}\
-             <p><button id=\"go\" data-return=\"{}\">Confirm with your passkey</button></p><p id=\"msg\" class=\"why\"></p>\
+             <button id=\"go\" class=\"btn btn-primary btn-block\" data-return=\"{}\">{KEY_ICON}Confirm with your passkey</button>\
+             <p id=\"msg\" role=\"alert\"></p>\
              <p class=\"hint\">Not something you expected? Close this page: nothing happens without your passkey.</p>\
              <script>{PASSKEY_JS}\nsignIn('/stepup/start', '/stepup/finish', {});</script>",
             describe(&view),
@@ -253,5 +255,10 @@ pub async fn finish(State(app): State<Arc<App>>, headers: HeaderMap, Json(f): Js
 }
 
 pub async fn done() -> Response {
-    page(StatusCode::OK, "Confirmed", "<p>Confirmed with your passkey. You can close this tab.</p>")
+    page_with(
+        StatusCode::OK,
+        Some(Mark::Ok),
+        "Confirmed",
+        "<p>Confirmed with your passkey. You can close this tab.</p>",
+    )
 }

@@ -1,0 +1,99 @@
+/* Hallmark · component styles for the sign-in service, on top of web/fleetlayer.css (tokens, controls, the sign-in
+ * card and the app bar, shared with the Claude hub and the dashboard). Only what sign-in alone shows lives here.
+ * states: default · hover · focus · active · disabled · loading · error · success
+ */
+
+code { font-family: var(--font-mono); font-size: var(--text-sm); overflow-wrap: anywhere; }
+h1, h2, h3 { overflow-wrap: anywhere; }
+
+/* ---------------------------------------------------------------- the card */
+
+.login { max-width: 24rem; }
+.login-brand { color: var(--color-ink); text-decoration: none; }
+.login-brand svg { width: 2.25rem; height: 2.25rem; flex: none; }
+.brand-name { font-size: var(--text-lg); font-weight: 650; letter-spacing: -0.01em; }
+.login-card > h1 { font-size: var(--text-xl); }
+.login-card p { color: var(--color-ink-2); font-size: var(--text-sm); overflow-wrap: anywhere; }
+.login-card p b { color: var(--color-ink); font-weight: 600; }
+.login-card form { margin: 0; display: grid; gap: var(--space-sm); }
+.login-card .label { margin: 0; display: grid; gap: var(--space-2xs); }
+/* Buttons the pages write without a class get the control look. */
+.login-card button:not([class]) {
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2xs);
+  height: var(--control-h); padding: 0 var(--space-sm); border: 1px solid var(--color-rule-2); border-radius: var(--radius-sm);
+  background: var(--color-surface); color: var(--color-ink); font-size: var(--text-sm); font-weight: 550; cursor: pointer;
+}
+@media (hover: hover) { .login-card button:not([class]):hover { background: var(--color-surface-2); border-color: var(--color-ink-3); } }
+.login-card .actions { display: grid; gap: var(--space-2xs); }
+.login-card .actions form { display: block; }
+.login-card .actions button, .login-card .actions .btn { width: 100%; }
+/* Signing out everywhere: serious, but not a red slab. */
+.btn-quiet-danger { color: var(--color-bad); }
+@media (hover: hover) { .btn-quiet-danger:hover { background: var(--color-bad-soft); border-color: var(--color-bad); } }
+.or { display: flex; align-items: center; gap: var(--space-xs); color: var(--color-ink-3); font-size: var(--text-xs); }
+.or::before, .or::after { content: ""; flex: 1; border-top: 1px solid var(--color-rule); }
+.hint, .login-card p.hint { font-size: var(--text-sm); color: var(--color-ink-3); }
+
+/* The reason behind a refusal, a warning, a passkey error */
+.login-card p.why, .login-card p.warn, #msg:not(:empty) {
+  padding: var(--space-xs); border-radius: var(--radius-md); font-size: var(--text-sm); line-height: 1.45; overflow-wrap: anywhere;
+}
+.login-card p.why { background: var(--color-surface-2); color: var(--color-ink-2); }
+.login-card p.warn { background: var(--color-warn-soft); color: var(--color-warn-ink); }
+#msg:not(:empty) { background: var(--color-bad-soft); color: var(--color-bad); }
+#msg:empty { display: none; }
+
+/* A status mark at the top of a card: signed in, no access, a passkey */
+.mark { display: grid; place-items: center; width: 2.75rem; height: 2.75rem; border-radius: var(--radius-lg); background: var(--color-accent-soft); color: var(--color-accent); }
+.mark svg.i { width: 1.25rem; height: 1.25rem; stroke-width: 2; }
+.mark.is-ok { background: var(--color-ok-soft); color: var(--color-ok); }
+.mark.is-bad { background: var(--color-bad-soft); color: var(--color-bad); }
+
+/* What's being confirmed */
+.kv { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
+.kv th { width: 6rem; padding: var(--space-2xs) var(--space-xs) var(--space-2xs) 0; text-align: left; font-weight: 500; color: var(--color-ink-3); vertical-align: top; }
+.kv td { padding: var(--space-2xs) 0; color: var(--color-ink); overflow-wrap: anywhere; font-family: var(--font-mono); }
+.kv tr + tr > * { border-top: 1px solid var(--color-rule); }
+
+/* A choice of places */
+.choices { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-2xs); }
+.choices a {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm); border: 1px solid var(--color-rule-2); border-radius: var(--radius-md);
+  color: var(--color-ink); font-weight: 550; text-decoration: none;
+}
+@media (hover: hover) { .choices a:hover { background: var(--color-surface-2); border-color: var(--color-ink-3); } }
+
+/* ---------------------------------------------------------------- admin */
+
+.topbar .login-brand { margin: 0; }
+.topbar .login-brand svg { width: 1.75rem; height: 1.75rem; }
+.topbar .brand-name { font-size: var(--text-md); }
+.topbar form { margin: 0; }
+.wrap { max-width: 52rem; }
+main.wrap { display: grid; gap: var(--space-lg); }
+main.wrap > h1 { font-size: var(--text-xl); }
+.section { display: grid; gap: var(--space-xs); }
+.section > h2 { font-size: var(--text-lg); }
+.panel { display: grid; gap: var(--space-sm); padding: var(--space-md); border: 1px solid var(--color-rule); border-radius: var(--radius-lg); background: var(--color-surface); box-shadow: var(--shadow-card); }
+.panel p { color: var(--color-ink-2); font-size: var(--text-sm); }
+.panel input:not([type="hidden"]), .panel select { width: 100%; min-width: 0; height: var(--control-h); padding: 0 var(--space-xs); border: 1px solid var(--color-rule-2); border-radius: var(--radius-sm); background: var(--color-surface); color: var(--color-ink); font-size: var(--text-md); font-weight: 400; }
+.panel input:focus, .panel select:focus { outline: 2px solid var(--color-focus); outline-offset: 1px; }
+.row { display: flex; align-items: center; gap: var(--space-xs) var(--space-sm); flex-wrap: wrap; padding: var(--space-xs) var(--space-md); }
+.row + .row { border-top: 1px solid var(--color-rule); }
+.row .who { flex: 1 1 12rem; min-width: 0; }
+.row .name { font-weight: 550; overflow-wrap: anywhere; }
+.row .meta { font-size: var(--text-xs); color: var(--color-ink-3); font-family: var(--font-mono); overflow-wrap: anywhere; }
+.row .tools { display: flex; gap: var(--space-2xs); flex-wrap: wrap; }
+.row form { margin: 0; }
+.row.empty { color: var(--color-ink-3); font-size: var(--text-sm); }
+.tag { display: inline-block; padding: 0 var(--space-3xs); border-radius: 4px; background: var(--color-surface-2); border: 1px solid var(--color-rule); color: var(--color-ink-2); font-size: var(--text-xs); font-weight: 550; vertical-align: middle; }
+.tag.is-accent { background: var(--color-accent-soft); border-color: transparent; color: var(--color-accent); }
+.inline-form { display: flex; align-items: end; gap: var(--space-xs); flex-wrap: wrap; margin: 0; }
+.inline-form .label { flex: 1 1 10rem; margin: 0; display: grid; gap: var(--space-2xs); }
+.inline-form button { flex: none; }
+.notice.is-info { background: var(--color-accent-soft); color: var(--color-ink); margin: 0; }
+details > summary { cursor: pointer; color: var(--color-ink-2); font-weight: 550; font-size: var(--text-sm); width: fit-content; }
+details[open] > summary { margin-bottom: var(--space-md); }
+details > .section + .section { margin-top: var(--space-lg); }
+.label input, .label select { font-weight: 400; }

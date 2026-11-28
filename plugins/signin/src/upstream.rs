@@ -53,7 +53,11 @@ fn state_cookie(app: &App, value: &str, max_age: u32) -> HeaderValue {
 /// The buttons for the sign-in page (`return` is where to go after) and the invite page (`invite` is its code).
 pub fn buttons(app: &App, ret: &str, invite: Option<&str>) -> String {
     let enc = |s: &str| form_urlencoded::byte_serialize(s.as_bytes()).collect::<String>();
-    app.upstreams
+    if app.upstreams.is_empty() {
+        return String::new();
+    }
+    let links: String = app
+        .upstreams
         .iter()
         .map(|u| {
             let (verb, extra) = match invite {
@@ -61,13 +65,14 @@ pub fn buttons(app: &App, ret: &str, invite: Option<&str>) -> String {
                 None => ("Continue with", String::new()),
             };
             format!(
-                "<p><a class=\"button\" href=\"/upstream/{}/start?return={}{extra}\">{verb} {}</a></p>",
+                "<a class=\"btn btn-block\" href=\"/upstream/{}/start?return={}{extra}\">{verb} {}</a>",
                 esc(&enc(&u.name)),
                 esc(&enc(ret)),
                 esc(&u.label)
             )
         })
-        .collect()
+        .collect();
+    format!("<div class=\"or\">or</div><div class=\"actions\">{links}</div>")
 }
 
 #[derive(Deserialize)]

@@ -132,19 +132,6 @@ pub struct Person {
     pub email: Option<String>,
 }
 
-pub async fn person_add(db: &Db, display_name: &str) -> anyhow::Result<String> {
-    let name = display_name.trim();
-    anyhow::ensure!(!name.is_empty() && name.chars().count() <= 100, "a display name is 1 to 100 characters");
-    let id = format!("p_{}", random_id(20));
-    sqlx::query("INSERT INTO people (id, display_name, created_at) VALUES (?, ?, ?)")
-        .bind(&id)
-        .bind(name)
-        .bind(now_ms())
-        .execute(db)
-        .await?;
-    Ok(id)
-}
-
 pub async fn people(db: &Db) -> anyhow::Result<Vec<Person>> {
     let rows = sqlx::query(
         "SELECT p.id, p.display_name, (SELECT COUNT(*) FROM members m WHERE m.person = p.id AND m.removed_at IS NULL),
@@ -752,6 +739,38 @@ pub struct Redeemed {
     pub recovery: bool,
 }
 
+/// What an invite is for, if it can still be used: the sign-in page checks before anyone makes a passkey.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct InvitePeek {
+    pub tenant: String,
+    pub tenant_name: String,
+    pub handle: String,
+    pub role: String,
+    /// For an existing person (recovery, or someone with an account already).
+    pub for_person: bool,
+}
+
+pub async fn invite_peek(db: &Db, code: &str) -> anyhow::Result<InvitePeek> {
+    let row = sqlx::query(
+        "SELECT i.tenant, t.name, i.handle, i.role, i.person, i.used_at, i.revoked_at, i.expires_at
+         FROM invites i JOIN tenants t ON t.id = i.tenant WHERE i.code_hash = ?",
+    )
+    .bind(hash(code))
+    .fetch_optional(db)
+    .await?
+    .ok_or_else(|| anyhow::anyhow!("that invite doesn't exist"))?;
+    anyhow::ensure!(row.get::<Option<i64>, _>(5).is_none(), "that invite has been used");
+    anyhow::ensure!(row.get::<Option<i64>, _>(6).is_none(), "that invite was revoked: ask for a new one");
+    anyhow::ensure!(row.get::<i64, _>(7) > now_ms(), "that invite has expired: ask for a new one");
+    Ok(InvitePeek {
+        tenant: row.get(0),
+        tenant_name: row.get(1),
+        handle: row.get(2),
+        role: row.get(3),
+        for_person: row.get::<Option<String>, _>(4).is_some(),
+    })
+}
+
 pub async fn invite_redeem(db: &Db, code: &str, who: Redeemer<'_>) -> anyhow::Result<Redeemed> {
     let row = sqlx::query(
         "SELECT tenant, handle, role, teams, person, used_at, revoked_at, expires_at FROM invites WHERE code_hash = ?",
@@ -776,9 +795,20 @@ pub async fn invite_redeem(db: &Db, code: &str, who: Redeemer<'_>) -> anyhow::Re
             person.to_string()
         }
         (Redeemer::New { .. }, Some(p)) => p.clone(), // recovery: the sign-in attaches a new passkey to them
-        (Redeemer::New { display_name }, None) => person_add(db, display_name).await?,
+        // Made below, in the same transaction as using the invite: a redeem cut off half-way leaves nobody behind.
+        (Redeemer::New { .. }, None) => format!("p_{}", random_id(20)),
     };
     let mut tx = db.begin().await?;
+    if let (Redeemer::New { display_name }, None) = (&who, &for_person) {
+        let name = display_name.trim();
+        anyhow::ensure!(!name.is_empty() && name.chars().count() <= 100, "a display name is 1 to 100 characters");
+        sqlx::query("INSERT INTO people (id, display_name, created_at) VALUES (?, ?, ?)")
+            .bind(&person)
+            .bind(name)
+            .bind(now_ms())
+            .execute(&mut *tx)
+            .await?;
+    }
     let used = sqlx::query("UPDATE invites SET used_at = ?, used_by = ? WHERE code_hash = ? AND used_at IS NULL")
         .bind(now_ms())
         .bind(&person)
@@ -1068,6 +1098,32 @@ mod tests {
         assert_eq!((t.id.as_str(), t.name.as_str()), ("default", "Home"));
         assert!(tenant(&db, "default").await.is_err());
         assert!(tenant_rename(&db, "home", "Bad Slug", None, "admin").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_redeem_that_fails_part_way_leaves_no_person_behind() {
+        let db = open_memory().await.unwrap();
+        let acme = tenant_add(&db, "acme", "Acme", "admin").await.unwrap();
+        let first = invite(&db, &acme.id, NewInvite { handle: "b", role: "member", teams: &[], person: None }, "admin")
+            .await
+            .unwrap();
+        let second =
+            invite(&db, &acme.id, NewInvite { handle: "c", role: "member", teams: &[], person: None }, "admin")
+                .await
+                .unwrap();
+        let peek = invite_peek(&db, &first).await.unwrap();
+        assert_eq!((peek.tenant_name.as_str(), peek.handle.as_str(), peek.for_person), ("Acme", "b", false));
+        invite_redeem(&db, &first, Redeemer::New { display_name: "B" }).await.unwrap();
+        assert!(invite_peek(&db, &first).await.unwrap_err().to_string().contains("used"));
+        assert!(invite_peek(&db, "nope").await.is_err());
+        // Someone takes the handle after the invite was made: the redeem fails inside its transaction.
+        let b: String =
+            sqlx::query_scalar("SELECT person FROM members WHERE handle = 'b'").fetch_one(&db).await.unwrap();
+        sqlx::query("UPDATE members SET handle = 'c' WHERE person = ?").bind(&b).execute(&db).await.unwrap();
+        let before = people(&db).await.unwrap().len();
+        let e = invite_redeem(&db, &second, Redeemer::New { display_name: "B too" }).await.unwrap_err();
+        assert!(e.to_string().contains("taken"), "{e}");
+        assert_eq!(people(&db).await.unwrap().len(), before, "the new person went with the failed redeem");
     }
 
     #[tokio::test]

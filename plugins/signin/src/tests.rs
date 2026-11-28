@@ -91,6 +91,17 @@ async fn control_plane(seen: Arc<Mutex<Seen>>) -> String {
             }),
         )
         .route(
+            "/v1/signin/invite_check",
+            post(|Json(b): Json<Value>| async move {
+                match b["code"].as_str() {
+                    Some("good-invite") => (StatusCode::OK, json!({"tenant": "t_acme", "tenant_name": "Acme",
+                        "handle": "a", "role": "admin", "for_person": false}).to_string()),
+                    Some("revoked-invite") => (StatusCode::BAD_REQUEST, "that invite was revoked: ask for a new one".into()),
+                    _ => (StatusCode::BAD_REQUEST, "that invite doesn't exist".into()),
+                }
+            }),
+        )
+        .route(
             "/v1/signin/invite_redeem",
             post(|Json(b): Json<Value>| async move {
                 if b["code"] == "good-invite" {
@@ -460,7 +471,7 @@ async fn admins_invite_and_are_asked_again_before_removing_someone() {
     assert_eq!(r.location.as_deref(), Some("/admin/acme"));
     let r = call(&a, "GET", "/admin/acme", Some(&cookie), None, "").await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.text);
-    assert!(r.text.contains("Invite someone") && r.text.contains("<td>B</td>"), "{}", r.text);
+    assert!(r.text.contains("Invite someone") && r.text.contains("<div class=\"name\">B"), "{}", r.text);
     assert!(r.text.contains("<details><summary>Advanced</summary>"), "teams sit under Advanced");
 
     let post = |body: String| {
@@ -1499,4 +1510,34 @@ fn step_up_return_origins_are_only_origins() {
     assert_eq!(crate::stepup::origins(&["https://deck.example.com".into()]).unwrap(), ["https://deck.example.com"]);
     assert!(crate::stepup::origins(&["http://deck.example.com".into()]).is_err());
     assert!(crate::stepup::origins(&["https://deck.example.com/approve".into()]).is_err());
+}
+
+#[tokio::test]
+async fn an_invite_that_cant_be_used_is_refused_before_any_passkey_is_made() {
+    let control = control_plane(Arc::new(Mutex::new(Seen::default()))).await;
+    let dir = tempfile::tempdir().unwrap();
+    let a = app(dir.path(), &control);
+    // The page says so at once, with no button to make a passkey.
+    let r = call(&a, "GET", "/invite?code=revoked-invite", None, None, "").await;
+    assert_eq!(r.status, StatusCode::GONE, "{}", r.text);
+    assert!(r.text.contains("revoked") && !r.text.contains("Make my passkey"), "{}", r.text);
+    // A good one names the place and the handle.
+    let r = call(&a, "GET", "/invite?code=good-invite", None, None, "").await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(r.text.contains("Acme") && r.text.contains("Make my passkey"), "{}", r.text);
+    // And the passkey ceremony doesn't start for a bad one.
+    let start = post_json(&a, "/passkey/register/start", json!({"code": "revoked-invite", "display_name": "A"})).await;
+    assert_eq!(start.status, StatusCode::BAD_REQUEST);
+    assert_eq!(start.body["error"], "that invite was revoked: ask for a new one");
+    assert!(start.body.get("options").is_none());
+}
+
+#[tokio::test]
+async fn a_control_plane_that_doesnt_answer_stops_the_passkey_before_it_is_made() {
+    // Nothing listens here.
+    let dir = tempfile::tempdir().unwrap();
+    let a = app(dir.path(), "http://127.0.0.1:9");
+    let start = post_json(&a, "/passkey/register/start", json!({"code": "good-invite", "display_name": "A"})).await;
+    assert_eq!(start.status, StatusCode::BAD_REQUEST);
+    assert!(start.body["error"].as_str().unwrap().contains("nothing was saved"), "{}", start.text);
 }

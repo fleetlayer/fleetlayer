@@ -611,6 +611,14 @@ managers, machines that sleep.
   the person confirms blind; and `return` must be allowlisted, or the page becomes an open redirect. Where it lives:
   `docs/plugins/signin.md` ("Confirming a request with a passkey"), `plugins/signin/src/stepup.rs`. To write: part
   of `docs/guides/admin-window.md`.
+- **A passkey made for a sign-up that then fails.** The browser saves a passkey (to iCloud Keychain, 1Password) as
+  soon as the person approves it, before the server has registered it. If the server then fails (the invite was
+  revoked, a back end didn't answer), the passkey stays in their password manager, registered nowhere, and they won't
+  know which one to delete. Check everything that can fail before asking the browser for a passkey: whether the
+  invite can still be used, whether the back end answers. Make the server's half atomic, so a request cut off half-way
+  leaves no account behind. Retry only requests that never reached the server. Where it lives:
+  `plugins/signin/src/web.rs` (`register_start`), `crates/fleetlayer-control/src/people.rs` (`invite_peek`,
+  `invite_redeem`). To write: a section of `docs/guides/sign-in.md`.
 - **Groups from an identity provider as permissions.** Mapping a provider's groups (Google Workspace, Okta) to an
   app's teams has three traps. Groups are only seen when someone signs in, so a person removed from a group, or
   suspended, keeps the access until they next sign in, which may be never: read the directory again on a schedule

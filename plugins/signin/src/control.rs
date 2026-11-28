@@ -29,6 +29,12 @@ pub struct Person {
     pub tenants: Vec<Membership>,
 }
 
+/// A request that didn't get an answer, in words for the person: nothing happened, so they can try again.
+fn unreachable(e: &reqwest::Error) -> String {
+    tracing::warn!("the control plane didn't answer: {e}");
+    "sign-in can't reach the rest of Fleetlayer right now, so nothing was saved. Try again in a minute.".into()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Redeemed {
     pub tenant: String,
@@ -89,8 +95,60 @@ impl Control {
             (_, Some(p)) => json!({"code": code, "person": p}),
             (n, None) => json!({"code": code, "display_name": n.unwrap_or("")}),
         };
-        let v = self.post("/v1/signin/invite_redeem", body).await?.ok_or_else(|| anyhow::anyhow!("not found"))?;
-        Ok(serde_json::from_value(v)?)
+        // Tried again only when the request never reached the control plane (it couldn't connect): once it has,
+        // the invite may be spent, and a second try would fail or, worse, do it twice.
+        let mut wait = Duration::from_millis(500);
+        let mut tries = 0;
+        let resp = loop {
+            tries += 1;
+            match self
+                .http
+                .post(format!("{}/v1/signin/invite_redeem", self.base))
+                .bearer_auth(&self.token)
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(r) => break r,
+                Err(e) if e.is_connect() && tries < 4 => {
+                    tracing::warn!("redeeming an invite: can't connect to the control plane (try {tries}): {e}");
+                    tokio::time::sleep(wait).await;
+                    wait *= 3;
+                }
+                Err(e) => anyhow::bail!("{}", unreachable(&e)),
+            }
+        };
+        let status = resp.status();
+        let text = resp.text().await?;
+        anyhow::ensure!(status.is_success(), "{}", text.trim());
+        Ok(serde_json::from_str(&text)?)
+    }
+
+    /// Whether an invite can still be used (`{tenant, tenant_name, handle, role, for_person}`), before anyone makes a
+    /// passkey for it. `Err` is the reason, in words for the person.
+    pub async fn invite_check(&self, code: &str) -> Result<Value, String> {
+        let r = self
+            .http
+            .post(format!("{}/v1/signin/invite_check", self.base))
+            .bearer_auth(&self.token)
+            .json(&json!({"code": code}))
+            .send()
+            .await
+            .map_err(|e| unreachable(&e))?;
+        let status = r.status();
+        let text = r.text().await.unwrap_or_default();
+        if status.is_success() {
+            return serde_json::from_str(&text).map_err(|e| format!("the control plane's answer: {e}"));
+        }
+        if status == reqwest::StatusCode::NOT_FOUND {
+            // A control plane from before invite_check: let the redeem decide.
+            return Ok(json!({}));
+        }
+        Err(if text.trim().is_empty() {
+            format!("the control plane answered {status}")
+        } else {
+            text.trim().to_string()
+        })
     }
 
     /// Someone an upstream provider vouches for joins its tenant as a member.

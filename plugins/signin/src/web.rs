@@ -325,6 +325,15 @@ impl App {
     }
 }
 
+/// A reason as the start of a sentence: the control plane writes them lower-case, to follow a colon.
+pub(crate) fn sentence(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().chain(c).collect::<String>() + if s.ends_with('.') { "" } else { "." },
+        None => String::new(),
+    }
+}
+
 /// A refusal's reason as a person reads it: without the control plane's line for agents ("report it to your person").
 fn for_people(reason: &str) -> &str {
     reason.split(" If this stops you doing your job").next().unwrap_or(reason).trim_end()
@@ -531,8 +540,9 @@ async fn authorize(
     };
     let Some(m) = membership else {
         if person.tenants.is_empty() || wanted.is_some() {
-            return page(
+            return page_with(
                 StatusCode::FORBIDDEN,
+                Some(Mark::Refused),
                 "No access",
                 &format!(
                     "<p>{} isn't a member here, so it can't sign in to {}.</p>",
@@ -557,7 +567,10 @@ async fn authorize(
         return page(
             StatusCode::OK,
             "Choose",
-            &format!("<p>Sign in to <b>{}</b> for:</p><ul class=\"choices\">{links}</ul>", esc(&client.name)),
+            &format!(
+                "<p>You're in more than one place. Sign in to <b>{}</b> for:</p><ul class=\"choices\">{links}</ul>",
+                esc(&client.name)
+            ),
         );
     };
     // The key rule: no code without `sign_in` on this service, decided by the tenant's policy.
@@ -566,8 +579,9 @@ async fn authorize(
         Ok(d) if d.allowed => {}
         Ok(d) => {
             app.control.event(&m.tenant, &person.id, "refused", Some(&to), &d.reason).await;
-            return page(
+            return page_with(
                 StatusCode::FORBIDDEN,
+                Some(Mark::Refused),
                 "No access",
                 &format!(
                     "<p>You don't have access to <b>{}</b> in {}. If you need it, ask one of its admins.</p>\
@@ -790,7 +804,12 @@ async fn logout(State(app): State<Arc<App>>, headers: HeaderMap, Query(q): Query
             }
             Redirect::to(url.as_str()).into_response()
         }
-        None => page(StatusCode::OK, "Signed out", "<p>You're signed out.</p>"),
+        None => page_with(
+            StatusCode::OK,
+            Some(Mark::Ok),
+            "Signed out",
+            "<p>You're signed out of Fleetlayer on this browser.</p><a class=\"btn btn-block\" href=\"/login\">Sign in again</a>",
+        ),
     };
     resp.headers_mut().append(header::SET_COOKIE, clear);
     if let Some(f) = &app.settings.forward {
@@ -811,8 +830,9 @@ async fn logout_everywhere(State(app): State<Arc<App>>, headers: HeaderMap) -> R
             app.control.event(&m.tenant, &person, "signed_out", None, "everywhere").await;
         }
     }
-    let mut resp = page(
+    let mut resp = page_with(
         StatusCode::OK,
+        Some(Mark::Ok),
         "Signed out everywhere",
         "<p>You're signed out on every browser and device, and of every service.</p>",
     );
@@ -835,9 +855,10 @@ async fn login_page(State(app): State<Arc<App>>, Query(q): Query<ReturnQuery>) -
         StatusCode::OK,
         "Sign in",
         &format!(
-            "<p>Sign in with your passkey.</p>\
-         <button id=\"go\" data-return=\"{}\">Sign in with a passkey</button><p id=\"msg\" class=\"why\"></p>\
-         {}<p class=\"hint\">New here? Open the invite link you were sent.</p><script>{PASSKEY_JS}\nsignIn();</script>",
+            "<p>Use the passkey on this device or in your password manager.</p>\
+         <button id=\"go\" class=\"btn btn-primary btn-block\" data-return=\"{}\">{KEY_ICON}Sign in with a passkey</button>\
+         <p id=\"msg\" role=\"alert\"></p>{}<p class=\"hint\">New here? Open the invite link you were sent.</p>\
+         <script>{PASSKEY_JS}\nsignIn();</script>",
             esc(&ret),
             crate::upstream::buttons(&app, &ret, None)
         ),
@@ -853,6 +874,24 @@ async fn invite_page(State(app): State<Arc<App>>, headers: HeaderMap, Query(q): 
     let Some(code) = q.code else {
         return page(StatusCode::BAD_REQUEST, "No invite", "<p>This link has no invite in it.</p>");
     };
+    // Checked first, so nobody makes a passkey for an invite that won't work.
+    let invite = match app.control.invite_check(&code).await {
+        Ok(v) => v,
+        Err(why) => {
+            return page_with(
+                StatusCode::GONE,
+                Some(Mark::Refused),
+                "This invite can't be used",
+                &format!(
+                    "<p class=\"why\">{}</p><p>Nothing was made, so there's nothing to clean up.</p>",
+                    esc(&sentence(&why))
+                ),
+            );
+        }
+    };
+    let place = invite["tenant_name"].as_str().filter(|n| !n.is_empty());
+    let title = place.map(|p| format!("Join {p}")).unwrap_or_else(|| "You're invited".into());
+    let handle = invite["handle"].as_str().map(|h| format!(" You'll be <b>{}</b> there.", esc(h))).unwrap_or_default();
     let warning = if app.settings.passkeys_fixed {
         "<p class=\"warn\">Passkeys made now stop working if sign-in moves to another address; use a domain you own to avoid that.</p>"
     } else {
@@ -862,7 +901,7 @@ async fn invite_page(State(app): State<Arc<App>>, headers: HeaderMap, Query(q): 
         Some(p) => match app.control.person(&p).await {
             Ok(Some(view)) => format!(
                 "<form method=\"post\" action=\"/invite/join\"><input type=\"hidden\" name=\"code\" value=\"{}\">\
-                 <button>Join as {}</button></form><p class=\"hint\">Or make a separate account:</p>",
+                 <button class=\"btn btn-primary\">Join as {}</button></form><div class=\"or\">or make a separate account</div>",
                 esc(&code),
                 esc(&view.display_name)
             ),
@@ -870,14 +909,17 @@ async fn invite_page(State(app): State<Arc<App>>, headers: HeaderMap, Query(q): 
         },
         None => String::new(),
     };
-    page(
+    page_with(
         StatusCode::OK,
-        "You're invited",
+        Some(Mark::Key),
+        &title,
         &format!(
-            "{join}<p>Choose the name people will see, then make a passkey on this device.</p>{warning}\
-         <label>Your name <input id=\"name\" autocomplete=\"name\" maxlength=\"100\"></label>\
-         <button id=\"go\" data-code=\"{}\">Make my passkey</button><p id=\"msg\" class=\"why\"></p>\
-         {}<script>{PASSKEY_JS}\nregister();</script>",
+            "{join}<p>Choose the name people will see, then make a passkey on this device or in your password \
+             manager.{handle}</p>{warning}\
+             <label class=\"label\">Your name <input id=\"name\" class=\"input\" autocomplete=\"name\" maxlength=\"100\" \
+             placeholder=\"Your full name\"></label>\
+             <button id=\"go\" class=\"btn btn-primary btn-block\" data-code=\"{}\">{KEY_ICON}Make my passkey</button>\
+             <p id=\"msg\" role=\"alert\"></p>{}<script>{PASSKEY_JS}\nregister();</script>",
             esc(&code),
             crate::upstream::buttons(&app, "/", Some(&code))
         ),
@@ -895,7 +937,12 @@ async fn invite_join(State(app): State<Arc<App>>, headers: HeaderMap, Form(f): F
     match app.control.redeem(&f.code, None, Some(&person)).await {
         Ok(r) => {
             app.control.event(&r.tenant, &person, "signed_in", None, "joined with an invite").await;
-            page(StatusCode::OK, "Done", "<p>You've joined. You can close this page.</p>")
+            page_with(
+                StatusCode::OK,
+                Some(Mark::Ok),
+                "You've joined",
+                "<p>You can close this page, or go back to the service you were using.</p>",
+            )
         }
         Err(e) => page(StatusCode::BAD_REQUEST, "That didn't work", &format!("<p>{}</p>", esc(&e.to_string()))),
     }
@@ -972,6 +1019,11 @@ async fn register_start(State(app): State<Arc<App>>, Json(r): Json<RegisterStart
     let name = r.display_name.trim().to_string();
     if name.is_empty() || name.chars().count() > 100 {
         return bad(StatusCode::BAD_REQUEST, "a name is 1 to 100 characters");
+    }
+    // Before the browser makes a passkey: one made for an invite that then fails is left in the person's password
+    // manager, registered nowhere.
+    if let Err(why) = app.control.invite_check(&r.code).await {
+        return bad(StatusCode::BAD_REQUEST, why);
     }
     let user_id = Uuid::new_v4();
     match app.webauthn.start_passkey_registration(user_id, &name, &name, None) {
@@ -1088,18 +1140,24 @@ async fn healthz(State(app): State<Arc<App>>) -> Response {
 async fn home(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     match app.signed_in(&headers).await {
         Some(p) => {
-            let name = match app.control.person(&p).await {
-                Ok(Some(v)) => v.display_name,
-                _ => p,
+            let (name, admin) = match app.control.person(&p).await {
+                Ok(Some(v)) => {
+                    let admin = v.tenants.iter().any(|m| m.role == "admin");
+                    (v.display_name, admin)
+                }
+                _ => (p, false),
             };
-            page(
+            let manage = if admin { "<a class=\"btn btn-block\" href=\"/admin\">Manage people</a>" } else { "" };
+            page_with(
                 StatusCode::OK,
+                Some(Mark::Ok),
                 "Signed in",
                 &format!(
-                    "<p>You're signed in as <b>{}</b>.</p><form method=\"post\" action=\"/logout\"><button>Sign \
-                     out</button></form><form method=\"post\" action=\"/logout/everywhere\"><button>Sign out \
-                     everywhere</button></form><p class=\"hint\">Everywhere: every browser and device signed in as \
-                     you, and every service they signed in to.</p>",
+                    "<p>You're signed in as <b>{}</b>. Services that use Fleetlayer let you straight in.</p>\
+                     <div class=\"actions\">{manage}<form method=\"post\" action=\"/logout\"><button class=\"btn\">Sign out</button></form>\
+                     <form method=\"post\" action=\"/logout/everywhere\"><button class=\"btn btn-quiet-danger\">Sign out everywhere</button>\
+                     </form></div><p class=\"hint\">Everywhere: every browser and device signed in as you, and every service \
+                     they signed in to.</p>",
                     esc(&name)
                 ),
             )
@@ -1112,10 +1170,44 @@ pub(crate) fn esc(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
 }
 
-pub(crate) fn page(status: StatusCode, title: &str, body: &str) -> Response {
+/// The Fleetlayer mark, inline (the pages' policy loads no images).
+pub(crate) const MARK: &str = "<svg viewBox=\"0 0 32 32\" aria-hidden=\"true\"><rect width=\"32\" height=\"32\" rx=\"8\" \
+     style=\"fill:var(--color-accent)\"/><g style=\"fill:none;stroke:var(--color-accent-ink);stroke-width:2.2;stroke-linecap:round\">\
+     <path d=\"M10 11.5h12M10 16h8M10 20.5h5\"/></g><circle cx=\"22\" cy=\"20.5\" r=\"2.2\" \
+     style=\"fill:var(--color-accent-ink)\"/></svg>";
+
+/// A status mark at the top of a card.
+#[derive(Clone, Copy)]
+pub(crate) enum Mark {
+    Ok,
+    Refused,
+    Key,
+}
+
+impl Mark {
+    fn html(self) -> &'static str {
+        match self {
+            Mark::Ok => {
+                "<div class=\"mark is-ok\"><svg class=\"i\" viewBox=\"0 0 24 24\"><path d=\"M5 12.5l4.5 4.5L19 7.5\"/></svg></div>"
+            }
+            Mark::Refused => {
+                "<div class=\"mark is-bad\"><svg class=\"i\" viewBox=\"0 0 24 24\"><rect x=\"5\" y=\"11\" width=\"14\" height=\"9\" rx=\"2\"/><path d=\"M8.5 11V8a3.5 3.5 0 0 1 7 0v3\"/></svg></div>"
+            }
+            Mark::Key => {
+                "<div class=\"mark\"><svg class=\"i\" viewBox=\"0 0 24 24\"><circle cx=\"8\" cy=\"15\" r=\"4\"/><path d=\"M11 12l8-8M16 7l2 2M14 9l2 2\"/></svg></div>"
+            }
+        }
+    }
+}
+
+/// An icon for a passkey button.
+pub(crate) const KEY_ICON: &str = "<svg class=\"i\" viewBox=\"0 0 24 24\"><circle cx=\"8\" cy=\"15\" r=\"4\"/><path d=\"M11 12l8-8M16 7l2 2M14 9l2 2\"/></svg>";
+
+fn document(status: StatusCode, title: &str, body_class: &str, inner: &str) -> Response {
     let html = format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
-         <title>{title} · Fleetlayer</title><style>{CSS}</style></head><body><main><h1>{title}</h1>{body}</main></body></html>",
+         <meta name=\"color-scheme\" content=\"light dark\"><meta name=\"robots\" content=\"noindex\">\
+         <title>{title} · Fleetlayer</title><style>{CSS}</style></head><body class=\"{body_class}\">{inner}</body></html>",
         title = esc(title)
     );
     let mut resp = (status, Html(html)).into_response();
@@ -1129,19 +1221,42 @@ pub(crate) fn page(status: StatusCode, title: &str, body: &str) -> Response {
     resp
 }
 
-const CSS: &str = ":root{--bg:#fafaf9;--fg:#1c1917;--muted:#78716c;--accent:#2563eb;--warn:#b45309}\
-@media (prefers-color-scheme:dark){:root{--bg:#1c1917;--fg:#f5f5f4;--muted:#a8a29e;--accent:#60a5fa;--warn:#fbbf24}}\
-body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,sans-serif}\
-main{max-width:40rem;margin:12vh auto;padding:0 16px}h1{font-size:1.5rem}\
-button{font:inherit;padding:.6rem 1rem;border:0;border-radius:.5rem;background:var(--accent);color:#fff;cursor:pointer}\
-input{font:inherit;display:block;width:100%;box-sizing:border-box;margin:.3rem 0 1rem;padding:.5rem;border-radius:.4rem;border:1px solid var(--muted);background:transparent;color:inherit}\
-.why,.hint{color:var(--muted)}a.button{display:inline-block;padding:.6rem 1rem;border-radius:.5rem;border:1px solid var(--accent);color:var(--accent);text-decoration:none}table{border-collapse:collapse;width:100%}td,th{text-align:left;padding:.3rem .4rem;border-bottom:1px solid var(--muted)}td form{display:inline}select{font:inherit}details{margin-top:2rem}summary{cursor:pointer;color:var(--muted)}.ok{color:var(--accent)}.warn{color:var(--warn)}.choices{list-style:none;padding:0}.choice{display:block;padding:.6rem 0}";
+/// A page with one card: sign-in, invites, refusals, confirmations.
+pub(crate) fn page(status: StatusCode, title: &str, body: &str) -> Response {
+    page_with(status, None, title, body)
+}
+
+pub(crate) fn page_with(status: StatusCode, mark: Option<Mark>, title: &str, body: &str) -> Response {
+    let inner = format!(
+        "<main class=\"login\"><a class=\"login-brand\" href=\"/\">{MARK}<span class=\"brand-name\">Fleetlayer</span></a>\
+         <section class=\"login-card\">{}<h1>{}</h1>{body}</section></main>",
+        mark.map(Mark::html).unwrap_or(""),
+        esc(title)
+    );
+    document(status, title, "login-body", &inner)
+}
+
+/// A wider page with a top bar: the admin pages.
+pub(crate) fn page_wide(status: StatusCode, title: &str, body: &str) -> Response {
+    let inner = format!(
+        "<header class=\"topbar\"><div class=\"wrap topbar-in\"><a class=\"login-brand\" href=\"/\">{MARK}\
+         <span class=\"brand-name\">Fleetlayer</span></a><form method=\"post\" action=\"/logout\">\
+         <button class=\"btn btn-sm\">Sign out</button></form></div></header>\
+         <main class=\"wrap\"><h1>{}</h1>{body}</main>",
+        esc(title)
+    );
+    document(status, title, "", &inner)
+}
+
+/// Fleetlayer's shared look, then what only sign-in shows.
+const CSS: &str = concat!(include_str!("../../../web/fleetlayer.css"), include_str!("../web/signin.css"));
 
 /// The browser half of the passkey ceremonies: options from the server, base64url to bytes and back.
 pub(crate) const PASSKEY_JS: &str = r#"
 const b2u = b => btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 const u2b = s => Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/') + '==='.slice((s.length+3)%4)), c => c.charCodeAt(0));
 const msg = t => { document.getElementById('msg').textContent = t; };
+const busy = (go, on) => { go.classList.toggle('is-loading', on); go.disabled = on; };
 async function post(path, body) {
   const r = await fetch(path, {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body)});
   const j = await r.json(); if (!r.ok) throw new Error(j.error || r.statusText); return j;
@@ -1149,6 +1264,7 @@ async function post(path, body) {
 function signIn(start = '/passkey/login/start', finish = '/passkey/login/finish', extra = {}) {
   const go = document.getElementById('go');
   go.onclick = async () => {
+    msg(''); busy(go, true);
     try {
       const {id, options} = await post(start, extra);
       const pk = options.publicKey; pk.challenge = u2b(pk.challenge);
@@ -1159,14 +1275,16 @@ function signIn(start = '/passkey/login/start', finish = '/passkey/login/finish'
         signature: b2u(c.response.signature), userHandle: c.response.userHandle ? b2u(c.response.userHandle) : null}};
       const done = await post(finish, {...extra, id, credential, return: go.dataset.return});
       location.href = done.redirect;
-    } catch (e) { msg(e.message); }
+    } catch (e) { busy(go, false); msg(e.name === 'NotAllowedError' ? 'The passkey was cancelled or timed out. Try again.' : e.message); }
   };
 }
 function register() {
   const go = document.getElementById('go');
   go.onclick = async () => {
+    const display_name = document.getElementById('name').value.trim();
+    if (!display_name) { msg('Type your name first.'); document.getElementById('name').focus(); return; }
+    msg(''); busy(go, true);
     try {
-      const display_name = document.getElementById('name').value;
       const {id, options} = await post('/passkey/register/start', {code: go.dataset.code, display_name});
       const pk = options.publicKey; pk.challenge = u2b(pk.challenge); pk.user.id = u2b(pk.user.id);
       (pk.excludeCredentials||[]).forEach(c => c.id = u2b(c.id));
@@ -1176,7 +1294,7 @@ function register() {
         transports: c.response.getTransports ? c.response.getTransports() : []}};
       const done = await post('/passkey/register/finish', {id, credential});
       location.href = done.redirect;
-    } catch (e) { msg(e.message); }
+    } catch (e) { busy(go, false); msg(e.name === 'NotAllowedError' ? 'The passkey was cancelled or timed out. Try again.' : e.message); }
   };
 }
 "#;

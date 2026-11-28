@@ -5,6 +5,8 @@
 //! else. No other token reaches them.
 //!
 //! - `POST /v1/signin/person {person}` → the person and their tenants, with what the ID token says in each
+//! - `POST /v1/signin/invite_check {code}` → `{tenant, tenant_name, handle, role, for_person}`, or 400 with why it
+//!   can't be used (checked before anyone makes a passkey)
 //! - `POST /v1/signin/invite_redeem {code, display_name? | person?}` → `{tenant, person, handle, recovery}`
 //! - `POST /v1/signin/check {tenant, who, can, to}` → `{allowed, rules, reason}`
 //! - `POST /v1/signin/event {tenant, person, kind, client?, detail?}` → `{}`, into the tenant's audit log
@@ -162,6 +164,22 @@ pub struct RedeemRequest {
     /// Someone already signed in: their person ID.
     #[serde(default)]
     person: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct InviteCheck {
+    code: String,
+}
+
+/// Whether an invite can still be used, and what for, without using it.
+pub async fn post_invite_check(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(r): Json<InviteCheck>,
+) -> ApiResult {
+    guard(&app, &headers).await?;
+    let peek = crate::people::invite_peek(&app.db, &r.code).await.map_err(bad)?;
+    Ok(Json(serde_json::to_value(peek).map_err(internal)?))
 }
 
 pub async fn post_invite_redeem(
