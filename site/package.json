@@ -1,6 +1,7 @@
 {
   "name": "fleetlayer-site",
   "private": true,
+  "license": "FSL-1.1-ALv2",
   "type": "module",
   "scripts": {
     "sync": "node scripts/sync-docs.mjs",

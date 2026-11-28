@@ -37,6 +37,7 @@ export default defineConfig({
       expressiveCode: { defaultProps: { frame: "code" } },
       components: {
         PageTitle: "./src/components/PageTitle.astro",
+        Footer: "./src/components/Footer.astro",
       },
     }),
   ],

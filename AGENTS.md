@@ -63,8 +63,9 @@ outside Fleetlayer while running his fleet (Claude Code permissions and hooks, a
 guides cover the whole journey. When another agent fixes such a problem, add the entry here even if the fix lives
 elsewhere, without private names or hostnames.
 
-The docs in `docs/` are the source of fleetlayer.ai (`site/`). A new doc starts with a `# Title` line (no
-frontmatter) and gets an entry in `site/site.config.mjs`; links between docs stay relative `.md` paths.
+The docs in `docs/` are the source of fleetlayer.ai (`site/`, published under fleetlayer.ai/docs/). A new doc starts
+with a `# Title` line (no frontmatter) and gets an entry in `site/site.config.mjs` with a `description`: one sentence
+on what the page helps you do (llms.txt shows it). Links between docs stay relative `.md` paths.
 
 ## Skills: what agents are told
 

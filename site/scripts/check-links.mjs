@@ -43,6 +43,10 @@ for (const file of files) {
   } else if (/\.(md|txt)$/.test(file)) {
     const text = await readFile(file, "utf8");
     links = [...text.matchAll(new RegExp(site.url.replace(/\./g, "\\.") + "(/[^\\s)\\]>\"'`]*)", "g"))].map((m) => m[1].replace(/[.,;:]+$/, ""));
+    // Markdown is for agents: a link to an HTML page (ending in /) should point at its .md copy instead.
+    for (const l of new Set(links)) {
+      if (l.split("#")[0].endsWith("/")) broken.push(`${rel} -> ${l} (an HTML page: link its .md copy)`);
+    }
   }
   for (const l of new Set(links)) {
     if (l === "" || l.startsWith("/_astro/") || l.startsWith("/pagefind/")) continue;

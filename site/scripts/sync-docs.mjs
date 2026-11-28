@@ -27,6 +27,17 @@ const publicRoot = join(siteDir, "public");
 const pageUrl = (slug) => `/${BASE}/${slug}/`;
 const mdUrl = (slug) => `${SITE.url}/${BASE}/${slug}.md`;
 
+// In Markdown meant for agents, every link to one of our pages goes to its .md copy, never the HTML page with its
+// navigation: https://fleetlayer.ai/docs/guides/pages/ becomes .../docs/guides/pages.md, /docs/ becomes /docs.md and
+// the homepage becomes /index.md. check-links fails on any that slip through.
+const siteRe = SITE.url.replace(/[.]/g, "\\.");
+function toMarkdownLinks(text) {
+  return text
+    .replace(new RegExp(`${siteRe}/${BASE}/([a-z0-9/_-]+?)/(?=[#)\\s"'>\\]]|$)`, "g"), (_, slug) => mdUrl(slug))
+    .replace(new RegExp(`${siteRe}/${BASE}/(?=[#)\\s"'>\\]]|$)`, "g"), `${SITE.url}/${BASE}.md`)
+    .replace(new RegExp(`${siteRe}/(?=[#)\\s"'>\\]]|$)`, "g"), `${SITE.url}/index.md`);
+}
+
 async function walk(dir) {
   const out = [];
   for (const entry of await readdir(dir, { withFileTypes: true })) {
@@ -104,6 +115,9 @@ async function main() {
   const known = new Set(files.map(slugOf));
   for (const p of PAGES) {
     if (!p.generated && !known.has(p.file)) throw new Error(`site.config.mjs lists docs/${p.file}.md, which doesn't exist`);
+    if (!p.generated && !p.description) {
+      throw new Error(`site.config.mjs: docs/${p.file}.md needs a description: one sentence on what the page helps you do`);
+    }
   }
 
   const unlisted = [...known].filter((s) => !published.has(s) && !SITE.unpublished.includes(s));
@@ -137,7 +151,7 @@ async function main() {
     await writeFile(out, front + siteBody);
 
     const mdBody = rewriteLinks(body, file, mdUrl);
-    const markdown = `# ${page.title ?? title}\n\n${mdBody}`;
+    const markdown = toMarkdownLinks(`# ${page.title ?? title}\n\n${mdBody}`);
     const mdOut = join(publicDir, `${slug}.md`);
     await mkdir(dirname(mdOut), { recursive: true });
     await writeFile(mdOut, markdown);
@@ -163,7 +177,7 @@ async function main() {
     const out = join(contentDir, `${d.slug}.md`);
     await mkdir(dirname(out), { recursive: true });
     await writeFile(out, front + d.site);
-    const markdown = `# ${d.title}\n\n${d.md}`;
+    const markdown = toMarkdownLinks(`# ${d.title}\n\n${d.md}`);
     const mdOut = join(publicDir, `${d.slug}.md`);
     await mkdir(dirname(mdOut), { recursive: true });
     await writeFile(mdOut, markdown);
@@ -181,14 +195,16 @@ async function main() {
     g.docs.push(doc);
   }
   groups.push({ name: "Plugin directory entries", docs: children });
-  const homepage = await readFile(join(siteDir, "src/homepage.md"), "utf8");
+  const homepage = toMarkdownLinks(await readFile(join(siteDir, "src/homepage.md"), "utf8"));
   // An uptime check expects llms.txt to start with "# Fleetlayer": tell the homeserver session before changing it.
   const index = [
     `# ${SITE.title}`,
     "",
     `> ${SITE.summary}`,
     "",
-    `Every page is also served as Markdown: add \`.md\` to its address. All of them in one file: ${SITE.url}/llms-full.txt. Source: ${REPO}.`,
+    `Licence: ${SITE.licence}. Source: ${REPO}.`,
+    "",
+    `Every page is also served as Markdown: add \`.md\` to its address. All of them in one file: ${SITE.url}/llms-full.txt.`,
     "",
     `- [Fleetlayer, in one page](${SITE.url}/index.md): what it is, who it's for and how to start`,
     ...groups.flatMap((g) => [
@@ -216,7 +232,7 @@ async function main() {
   await writeFile(join(publicRoot, `${BASE}.md`), `# Documentation\n\n${docsIndex(mdUrl)}`);
 
   const ordered = [...PAGES.map((p) => docs.find((d) => d.slug === p.file)), ...children];
-  const full = [homepage.trim(), ...ordered.map((d) => `<!-- ${SITE.url}${pageUrl(d.slug)} -->\n\n${d.markdown.trim()}`)].join(
+  const full = [homepage.trim(), ...ordered.map((d) => `<!-- ${mdUrl(d.slug)} -->\n\n${d.markdown.trim()}`)].join(
     "\n\n---\n\n",
   );
   await writeFile(join(publicRoot, "llms-full.txt"), full + "\n");

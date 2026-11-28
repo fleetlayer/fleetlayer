@@ -1,0 +1,19 @@
+---
+// Starlight's footer, with the licence under it.
+import Default from "@astrojs/starlight/components/Footer.astro";
+import { repo } from "../../site.config.mjs";
+---
+
+<Default><slot /></Default>
+<p class="licence">
+  Fleetlayer is source-available under <a href={`${repo}/blob/main/LICENSE`}>FSL-1.1-ALv2</a>: use it for anything except
+  a competing product or service, and each release becomes Apache 2.0 two years after it ships.
+</p>
+
+<style>
+  .licence {
+    margin-top: 1.5rem;
+    font-size: var(--sl-text-xs);
+    color: var(--sl-color-gray-3);
+  }
+</style>
