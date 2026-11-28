@@ -375,12 +375,10 @@ async fn remember_name<'e>(
 }
 
 /// Every tab name session `id` on `node` has gone by, ended or not.
-pub async fn recorded_tabs(db: &Db, tenant: Option<&str>, node: &str, id: &str) -> anyhow::Result<Vec<String>> {
+pub async fn recorded_tabs(db: &Db, tenant: &str, node: &str, id: &str) -> anyhow::Result<Vec<String>> {
     Ok(sqlx::query_scalar(
-        "SELECT tab FROM session_names WHERE (? IS NULL OR tenant = ?) AND node = ? AND session_id = ?
-         ORDER BY seen_at DESC",
+        "SELECT tab FROM session_names WHERE tenant = ? AND node = ? AND session_id = ? ORDER BY seen_at DESC",
     )
-    .bind(tenant)
     .bind(tenant)
     .bind(node)
     .bind(id)
@@ -412,16 +410,13 @@ pub async fn remove_session(db: &Db, tenant: &str, node: &str, id: &str) -> anyh
     Ok(())
 }
 
-/// One node's sessions in `tenant` (node names are unique only within a tenant). With None, every tenant's node of
-/// that name: only for access control's alias check, where more names only means more rules to pass.
-pub async fn node_sessions(db: &Db, tenant: Option<&str>, node: &str) -> anyhow::Result<Vec<serde_json::Value>> {
-    let rows =
-        sqlx::query("SELECT data FROM sessions WHERE (? IS NULL OR tenant = ?) AND node = ? ORDER BY session_id")
-            .bind(tenant)
-            .bind(tenant)
-            .bind(node)
-            .fetch_all(db)
-            .await?;
+/// One node's sessions in `tenant` (node names are unique only within a tenant).
+pub async fn node_sessions(db: &Db, tenant: &str, node: &str) -> anyhow::Result<Vec<serde_json::Value>> {
+    let rows = sqlx::query("SELECT data FROM sessions WHERE tenant = ? AND node = ? ORDER BY session_id")
+        .bind(tenant)
+        .bind(node)
+        .fetch_all(db)
+        .await?;
     Ok(rows.into_iter().filter_map(|r| serde_json::from_str(&r.get::<String, _>(0)).ok()).collect())
 }
 

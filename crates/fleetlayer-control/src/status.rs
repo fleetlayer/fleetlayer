@@ -142,6 +142,12 @@ fn queue(app: &Arc<App>, c: Change) {
     if now.duration_since(m.start) >= Duration::from_secs(60) && m.held.is_none() {
         (m.start, m.sent) = (now, 0);
     }
+    if m.held.is_some() {
+        // A change is held already (over the limit, or the queue was full): this newer one replaces it, never
+        // overtakes it, so subscribers end on the latest status. The held one's timer sends it.
+        hold(app, m, key, c, now);
+        return;
+    }
     if m.sent >= PER_SESSION_PER_MINUTE {
         // Over its limit: hold the latest, and send it once the minute is over.
         let at = m.start + Duration::from_secs(60);
@@ -355,7 +361,7 @@ mod tests {
 
     /// Push `new` as node n's whole list, as a node does.
     async fn push(app: &Arc<App>, new: Vec<Value>) {
-        let old = db::node_sessions(&app.db, Some(db::DEFAULT_TENANT), "n").await.unwrap();
+        let old = db::node_sessions(&app.db, db::DEFAULT_TENANT, "n").await.unwrap();
         db::replace_sessions(&app.db, db::DEFAULT_TENANT, "n", &new).await.unwrap();
         observe(app, db::DEFAULT_TENANT, "n", &old, &new, true);
     }
@@ -448,6 +454,39 @@ mod tests {
         let e = events(&app, PER_SESSION_PER_MINUTE as usize + 1).await;
         let last = e.last().unwrap();
         assert_eq!((last["kind"].clone(), last["body"]["dropped"].clone()), (json!("session.done"), json!(9)));
+    }
+
+    #[tokio::test]
+    async fn a_newer_change_never_overtakes_a_held_one() {
+        let app = app().await;
+        let key = (db::DEFAULT_TENANT.to_string(), "n".to_string(), "h".to_string());
+        // A change held (as when the queue was full), then a newer one: it replaces the held one, not sent first.
+        observe(&app, db::DEFAULT_TENANT, "n", &[], &[s("h", "working")], true);
+        {
+            let mut q = app.links.status_queue.lock().unwrap();
+            let m = q.as_mut().unwrap().minute.get_mut(&key).unwrap();
+            m.held = Some(Change {
+                tenant: key.0.clone(),
+                node: "n".into(),
+                session_id: "h".into(),
+                previous: Some("working".into()),
+                status: "blocked".into(),
+                session: s("h", "blocked"),
+                ready_at: tokio::time::Instant::now(),
+                dropped: 0,
+            });
+        }
+        observe(&app, db::DEFAULT_TENANT, "n", &[s("h", "blocked")], &[s("h", "idle")], true);
+        {
+            let q = app.links.status_queue.lock().unwrap();
+            let m = &q.as_ref().unwrap().minute[&key];
+            assert_eq!(m.held.as_ref().unwrap().status, "idle", "the newest is the one held");
+            assert_eq!((m.sent, m.dropped), (1, 1));
+        }
+        release(&app, &key);
+        let e = events(&app, 2).await;
+        assert_eq!(e.last().unwrap()["kind"], json!("session.idle"));
+        assert_eq!(e.last().unwrap()["body"]["dropped"], json!(1));
     }
 
     #[tokio::test]

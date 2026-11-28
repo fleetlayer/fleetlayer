@@ -231,7 +231,7 @@ pub async fn check_why(
     // A session goes by its tab name and its ID: rules written for either hold whichever it's called by. Every other
     // name's rules are checked first (a refusal of any refuses); then the request is decided, approved and audited
     // once, under its canonical name.
-    let names = session_names(app, target).await;
+    let names = session_names(app, home, target).await;
     let canonical = names.first().map(String::as_str).unwrap_or(target);
     // Membership is recorded under a session's tab name, so its other names are decided in the canonical name's
     // tenants as well as their own.
@@ -278,14 +278,10 @@ pub async fn check_why(
 /// Every name the session `target` (`<name>@<node>`) goes by, its canonical one first: `<tab>@<node>` when it has a
 /// tab, then `<session id>@<node>` (for a tab name, every session that ran under it). Anything that isn't one of a
 /// node's sessions (`-@<node>`, `tool:…`, a service, a person, a session the node hasn't reported) is just itself.
-pub async fn session_names(app: &App, target: &str) -> Vec<String> {
-    session_names_in(app, None, target).await
-}
-
-/// [`session_names`] for a session in `tenant` only. With None, every tenant's node of that name counts (node names
-/// are unique only within a tenant): right for access checks, where an extra name only adds rules to pass, never for
-/// anything that shows a session.
-pub async fn session_names_in(app: &App, tenant: Option<&str>, target: &str) -> Vec<String> {
+///
+/// The node is `tenant`'s (node names are unique only within a tenant, and a target is routed within the tenant of
+/// whoever addresses it), so another tenant's node of the same name never adds a name.
+pub async fn session_names(app: &App, tenant: &str, target: &str) -> Vec<String> {
     let only = || vec![target.to_string()];
     let Some((name, node)) = target.rsplit_once('@') else { return only() };
     if name.is_empty() || name == "-" || name.contains(':') {
@@ -1056,6 +1052,34 @@ mod tests {
         crate::db::enrol(db, "default", "web").await.unwrap();
         people::node_owner(db, "web", Some(&Owner::Tenant(acme.clone())), "admin", &acme).await.unwrap();
         (app, acme)
+    }
+
+    /// Node names are unique only within a tenant: another tenant's node of the same name never lends a session
+    /// another name. Acme's own `laptop` reports session `a1` with the tab `zzz`; home's rule allowing `zzz@laptop`
+    /// mustn't let anyone reach home's `a1@laptop`, and Acme's policy never decides home's requests.
+    #[tokio::test]
+    async fn another_tenants_node_of_the_same_name_lends_no_session_names() {
+        let (app, acme) = example().await;
+        crate::db::enrol(&app.db, &acme, "laptop").await.unwrap();
+        crate::db::replace_sessions(
+            &app.db,
+            &acme,
+            "laptop",
+            &[serde_json::json!({"sessionId": "a1", "manager": "herdr", "meta": {"tab": "zzz", "running": true}})],
+        )
+        .await
+        .unwrap();
+        store(
+            &app.db,
+            "default",
+            "version: 2\ndefault: deny\nask: []\nallow:\n  - { who: recipes@laptop, can: message, to: zzz@laptop }\n",
+        )
+        .await
+        .unwrap();
+        assert_eq!(session_names(&app, "default", "a1@laptop").await, vec!["a1@laptop".to_string()]);
+        let e = check(&app, "default", "recipes@laptop", "message", "a1@laptop").await;
+        assert!(e.is_err(), "home's a1@laptop was reached through acme's tab name");
+        check(&app, "default", "recipes@laptop", "message", "zzz@laptop").await.unwrap();
     }
 
     /// A rule written for a session's tab name holds when the session is named by its ID, and one written for its ID

@@ -969,7 +969,7 @@ impl Handler for FromNode {
         let r = match method {
             l::method::SESSIONS => match serde_json::from_value::<SessionsPush>(p) {
                 Ok(s) => {
-                    let old = db::node_sessions(db, Some(tenant), node).await.unwrap_or_default();
+                    let old = db::node_sessions(db, tenant, node).await.unwrap_or_default();
                     let r = db::replace_sessions(db, tenant, node, &s.sessions).await;
                     if r.is_ok() {
                         crate::status::observe(&self.app, tenant, node, &old, &s.sessions, true);

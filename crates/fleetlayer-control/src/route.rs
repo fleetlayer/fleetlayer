@@ -294,7 +294,7 @@ async fn check_command(
     why: Option<&str>,
 ) -> Result<(), RpcError> {
     // Rules written for the session's other names (its ID, its tab) refuse it too.
-    let names = crate::authz::session_names(app, target).await;
+    let names = crate::authz::session_names(app, tenant, target).await;
     for alias in names.iter().skip(1) {
         if matches!(crate::authz::dry(app, tenant, caller, "command", alias).await, crate::authz::Dry::Denied) {
             crate::authz::check_why(app, tenant, caller, "command", alias, why).await?;
@@ -401,7 +401,7 @@ pub async fn search_transcripts(
         let allowed = match decided.get(&key) {
             Some(a) => *a,
             None => {
-                let mut names = crate::authz::session_names(app, &format!("{}@{}", h.session_id, s.node)).await;
+                let mut names = crate::authz::session_names(app, tenant, &format!("{}@{}", h.session_id, s.node)).await;
                 if let Some(t) = &h.tab {
                     names.push(format!("{t}@{}", s.node));
                 }
@@ -652,7 +652,7 @@ pub async fn may_read_session(
     if let Some(id) = session_id
         && !node.is_empty()
     {
-        names.extend(crate::authz::session_names_in(app, Some(tenant), &format!("{id}@{node}")).await);
+        names.extend(crate::authz::session_names(app, tenant, &format!("{id}@{node}")).await);
     }
     names.sort();
     names.dedup();
@@ -1258,7 +1258,7 @@ mod tests {
             .await
             .unwrap();
             crate::db::replace_sessions(&app.db, "default", "home", &[]).await.unwrap();
-            let names = crate::authz::session_names(&app, "id-billing@home").await;
+            let names = crate::authz::session_names(&app, "default", "id-billing@home").await;
             assert!(names.iter().any(|n| n == "billing@home"), "{names:?}");
 
             let search = |limit| l::TranscriptSearch {

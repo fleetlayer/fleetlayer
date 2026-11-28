@@ -69,7 +69,7 @@ pub async fn add(app: &App, tenant: &str, w: &WatchRequest) -> Result<Value, Rpc
     {
         let (id, node) = match crate::route::split_target(subject) {
             Some((name, node)) => {
-                let sessions = db::node_sessions(&app.db, Some(tenant), node).await.unwrap_or_default();
+                let sessions = db::node_sessions(&app.db, tenant, node).await.unwrap_or_default();
                 let id = sessions
                     .iter()
                     .find(|s| s["meta"]["tab"].as_str() == Some(name) || s["sessionId"].as_str() == Some(name))
@@ -131,7 +131,7 @@ async fn already(app: &App, tenant: &str, w: &WatchRequest) -> Option<Event> {
     }
     let subject = w.subject.as_deref()?;
     let (name, node) = crate::route::split_target(subject)?;
-    let sessions = db::node_sessions(&app.db, Some(tenant), node).await.ok()?;
+    let sessions = db::node_sessions(&app.db, tenant, node).await.ok()?;
     let s =
         sessions.iter().find(|s| s["meta"]["tab"].as_str() == Some(name) || s["sessionId"].as_str() == Some(name))?;
     let status = crate::status::status_of(s);
@@ -456,7 +456,7 @@ mod tests {
         db::replace_sessions(&app.db, "other", "n", &[theirs]).await.unwrap();
         // Our node n pushes its whole list: the other tenant's session on its own n isn't ours, so it isn't "gone".
         let ours = json!({"sessionId": "id-a", "meta": {"tab": "a", "status": "idle", "running": true}, "ended": null});
-        let old = db::node_sessions(&app.db, Some(t), "n").await.unwrap();
+        let old = db::node_sessions(&app.db, t, "n").await.unwrap();
         assert!(old.is_empty());
         let diff = crate::status::diff(&old, &[ours], true);
         assert!(diff.iter().all(|(_, _, s)| s["sessionId"] == json!("id-a")), "{diff:?}");
@@ -464,7 +464,7 @@ mod tests {
         let v = add(&app, t, &watch("session.status", Some("secret@n"), &["session.idle"])).await.unwrap();
         assert!(v["id"].is_string(), "not fired from another tenant's session: {v}");
         assert_eq!(
-            crate::authz::session_names_in(&app, Some(t), "id-b@n").await,
+            crate::authz::session_names(&app, t, "id-b@n").await,
             vec!["id-b@n".to_string()],
             "no names from the other tenant"
         );
