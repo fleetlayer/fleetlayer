@@ -8,6 +8,13 @@
 //!     ttl: 2h                 # a lease's limit unless --ttl says less (default 2h)
 //!     max_ttl: 12h            # the most --ttl may ask for (default 24h)
 //!     idle: 30m               # a session holder idle this long loses it (default 30m)
+//!   terraform:                # a lock per named thing: one holder per component, the rest wait in turn
+//!     slots: 1
+//!     per: component          # slots are counted per value of this payload field
+//!     payload:
+//!       required: [component]
+//!       fields:
+//!         component: '[a-z0-9_/-]{1,64}'
 //!   gmail-filter:             # no slots: any number, each approved once per payload
 //!     approval: true
 //!     ttl: 24h
@@ -53,6 +60,7 @@ struct File {
 #[serde(deny_unknown_fields)]
 struct RawKind {
     slots: Option<u32>,
+    per: Option<String>,
     ttl: Option<String>,
     max_ttl: Option<String>,
     idle: Option<String>,
@@ -92,6 +100,9 @@ pub struct Kind {
     pub description: Option<String>,
     /// At most this many held at once; None: no limit.
     pub slots: Option<u32>,
+    /// Slots are counted per value of this payload field: a lock per named thing (one Terraform component, one
+    /// database). Leases with different values never wait for each other. None: one count for the whole kind.
+    pub per: Option<String>,
     pub ttl: SignedDuration,
     pub max_ttl: SignedDuration,
     pub idle: SignedDuration,
@@ -224,6 +235,14 @@ fn kind(name: &str, raw: RawKind) -> Result<Kind, String> {
             Some(PayloadRule { required: p.required, fields, others: p.others })
         }
     };
+    if let Some(per) = &raw.per {
+        if raw.slots.is_none() {
+            return Err(format!("per: '{per}' counts slots, so it needs slots"));
+        }
+        if !payload.as_ref().is_some_and(|p| p.required.contains(per)) {
+            return Err(format!("per: '{per}' must be one of the payload's required fields"));
+        }
+    }
     if raw.approval && payload.is_none() {
         return Err("approval needs a payload: the person approves each payload once".into());
     }
@@ -231,6 +250,7 @@ fn kind(name: &str, raw: RawKind) -> Result<Kind, String> {
         name: name.to_string(),
         description: raw.description,
         slots: raw.slots,
+        per: raw.per,
         ttl,
         max_ttl,
         idle,
@@ -243,6 +263,12 @@ fn kind(name: &str, raw: RawKind) -> Result<Kind, String> {
 }
 
 impl Kind {
+    /// What a lease's slots are counted against: the value of its `per` field, or None for the whole kind.
+    pub fn group_of(&self, payload: Option<&serde_json::Value>) -> Option<String> {
+        let per = self.per.as_ref()?;
+        payload.and_then(|p| p.get(per)).and_then(|v| v.as_str()).map(str::to_owned)
+    }
+
     /// Check a payload against the kind's rule; the canonical payload (keys sorted) on success.
     pub fn check_payload(&self, payload: Option<&serde_json::Value>) -> Result<Option<serde_json::Value>, String> {
         let Some(rule) = &self.payload else {

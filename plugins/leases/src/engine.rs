@@ -57,6 +57,10 @@ pub struct Lease {
     pub payload: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload_key: Option<String>,
+    /// For a kind that counts slots `per` a payload field: that field's value. Its slots and its queue are this
+    /// group's, not the whole kind's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
     pub reason: String,
     /// `<tab>@<node>`, or `-@<node>` for a script.
     pub holder: String,
@@ -360,6 +364,7 @@ impl Engine {
         let lease = Lease {
             id,
             kind: kind.name.clone(),
+            group: kind.group_of(payload.as_ref()),
             payload,
             payload_key: key,
             reason,
@@ -389,8 +394,9 @@ impl Engine {
         }
         let l = &self.state.leases[&id];
         if l.phase == Phase::Waiting && !req.wait {
-            let holders = self.holders(&kind.name);
-            let waiting = self.waiting(&kind.name).len().saturating_sub(1);
+            let group = l.group.clone();
+            let holders = self.holders_in(&kind.name, group.as_deref());
+            let waiting = self.waiting_in(&kind.name, group.as_deref()).len().saturating_sub(1);
             self.state.leases.remove(&id);
             return Err(Refusal::Busy { holders, waiting });
         }
@@ -399,10 +405,20 @@ impl Engine {
 
     /// `<holder> since <time>: <reason>` for each held lease of a kind.
     pub fn holders(&self, kind: &str) -> Vec<String> {
+        self.holders_in(kind, None)
+    }
+
+    /// The holders a lease waits for: of its whole kind, or of its group (the value of the kind's `per` field).
+    pub fn holders_for(&self, id: u64) -> Vec<String> {
+        let Some(l) = self.state.leases.get(&id) else { return vec![] };
+        self.holders_in(&l.kind, l.group.as_deref())
+    }
+
+    fn holders_in(&self, kind: &str, group: Option<&str>) -> Vec<String> {
         self.state
             .leases
             .values()
-            .filter(|l| l.kind == kind && l.phase == Phase::Held)
+            .filter(|l| l.kind == kind && l.phase == Phase::Held && in_group(l, group))
             .map(|l| {
                 format!(
                     "{} has #{} since {}: {}",
@@ -417,16 +433,24 @@ impl Engine {
 
     /// A kind's waiting leases, first in line first.
     pub fn waiting(&self, kind: &str) -> Vec<&Lease> {
-        self.state.leases.values().filter(|l| l.kind == kind && l.phase == Phase::Waiting).collect()
+        self.waiting_in(kind, None)
     }
 
-    /// Where a waiting lease is in its queue (1: next).
+    fn waiting_in(&self, kind: &str, group: Option<&str>) -> Vec<&Lease> {
+        self.state
+            .leases
+            .values()
+            .filter(|l| l.kind == kind && l.phase == Phase::Waiting && in_group(l, group))
+            .collect()
+    }
+
+    /// Where a waiting lease is in its queue (1: next): its kind's, or its group's when the kind counts `per` a field.
     pub fn position(&self, id: u64) -> Option<usize> {
         let l = self.state.leases.get(&id)?;
         if l.phase != Phase::Waiting {
             return None;
         }
-        self.waiting(&l.kind).iter().position(|w| w.id == id).map(|p| p + 1)
+        self.waiting_in(&l.kind, l.group.as_deref()).iter().position(|w| w.id == id).map(|p| p + 1)
     }
 
     /// The access policy allowed an asking lease: it joins the queue.
@@ -586,12 +610,25 @@ impl Engine {
     fn promote(&mut self, settings: &Settings, now: Timestamp) -> Vec<Change> {
         let mut changes = vec![];
         for kind in settings.kinds.values() {
-            loop {
-                let held = self.state.leases.values().filter(|l| l.kind == kind.name && l.phase == Phase::Held).count();
-                if kind.slots.is_some_and(|s| held >= s as usize) {
-                    break;
+            // First in line first, within each group (the whole kind, unless it counts slots `per` a field): one that
+            // can't start keeps everyone behind it in its group waiting, and other groups go ahead.
+            let waiting: Vec<(u64, Option<String>)> =
+                self.waiting(&kind.name).iter().map(|l| (l.id, l.group.clone())).collect();
+            let mut full: Vec<Option<String>> = vec![];
+            for (id, group) in waiting {
+                if full.contains(&group) {
+                    continue;
                 }
-                let Some(id) = self.waiting(&kind.name).first().map(|l| l.id) else { break };
+                let held = self
+                    .state
+                    .leases
+                    .values()
+                    .filter(|l| l.kind == kind.name && l.phase == Phase::Held && in_group(l, group.as_deref()))
+                    .count();
+                if kind.slots.is_some_and(|s| held >= s as usize) {
+                    full.push(group);
+                    continue;
+                }
                 changes.push(self.start(kind, id, now));
             }
         }
@@ -650,6 +687,11 @@ impl Engine {
 }
 
 /// Eight hex digits from the time and the process: unique enough to tell one state file's leases from another's.
+/// Whether a lease is in a group: any lease when the group is None (a whole kind).
+fn in_group(l: &Lease, group: Option<&str>) -> bool {
+    group.is_none() || l.group.as_deref() == group
+}
+
 fn new_epoch(now: Timestamp) -> String {
     use sha2::Digest;
     let seed = format!("{}:{}:{:?}", now.as_nanosecond(), std::process::id(), std::thread::current().id());

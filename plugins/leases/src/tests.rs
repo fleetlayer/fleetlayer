@@ -152,6 +152,76 @@ fn slots_are_handed_out_first_come_first_served() {
     assert!(e.release(&s, 999, None, t0()).is_err());
 }
 
+const PER: &str = r#"
+kinds:
+  component:
+    slots: 1
+    per: component
+    payload:
+      required: [component]
+      fields:
+        component: '[a-z0-9_/-]{1,64}'
+"#;
+
+fn claim(holder: &str, component: &str, wait: bool) -> Request {
+    Request {
+        kind: "component".into(),
+        reason: "plan and apply".into(),
+        holder: holder.into(),
+        payload: Some(json!({ "component": component })),
+        wait,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn slots_counted_per_field_make_a_lock_per_named_thing() {
+    let s = settings::parse(PER).unwrap();
+    let mut e = Engine::new(State::default(), t0());
+    let (a, ch) = e.acquire(&s, claim("a@laptop", "racks/us", false), t0()).unwrap();
+    assert_eq!(started(&ch), vec![a]);
+    assert_eq!(e.get(a).unwrap().group.as_deref(), Some("racks/us"));
+    // Another component doesn't wait
+    let (b, ch) = e.acquire(&s, claim("b@laptop", "racks/eu", false), t0()).unwrap();
+    assert_eq!(started(&ch), vec![b]);
+    // The same one does, naming only its own holder
+    match e.acquire(&s, claim("c@laptop", "racks/us", false), t0()) {
+        Err(Refusal::Busy { holders, waiting }) => {
+            assert_eq!(holders.len(), 1, "{holders:?}");
+            assert!(holders[0].contains("a@laptop"), "{holders:?}");
+            assert_eq!(waiting, 0);
+        }
+        other => panic!("{other:?}"),
+    }
+    let (c, _) = e.acquire(&s, claim("c@laptop", "racks/us", true), t0()).unwrap();
+    let (d, ch) = e.acquire(&s, claim("d@laptop", "dns", true), t0() + mins(1)).unwrap();
+    // d's component is free: it starts at once, past c who waits on another one
+    assert_eq!(started(&ch), vec![d]);
+    let (f, _) = e.acquire(&s, claim("f@laptop", "racks/eu", true), t0() + mins(2)).unwrap();
+    assert_eq!((e.position(c), e.position(f)), (Some(1), Some(1)), "each component has its own line");
+    assert_eq!(e.holders_for(c).len(), 1);
+    // a releases racks/us: c starts; f still waits for b
+    let ch = e.release(&s, a, Some("a@laptop"), t0() + mins(5)).unwrap();
+    assert_eq!(started(&ch), vec![c]);
+    assert_eq!(e.get(f).unwrap().phase, Phase::Waiting);
+    let ch = e.release(&s, b, Some("b@laptop"), t0() + mins(6)).unwrap();
+    assert_eq!(started(&ch), vec![f]);
+}
+
+#[test]
+fn per_needs_slots_and_a_required_field() {
+    let e = settings::parse(
+        r#"
+kinds:
+  noslots: { per: x, payload: { required: [x], fields: { x: '.*' } } }
+  notrequired: { slots: 1, per: x, payload: { fields: { x: '.*' } } }
+"#,
+    )
+    .unwrap_err();
+    assert!(e.contains("'noslots'") && e.contains("needs slots"), "{e}");
+    assert!(e.contains("'notrequired'") && e.contains("required fields"), "{e}");
+}
+
 #[test]
 fn a_waiting_session_that_stops_waiting_leaves_the_queue() {
     let s = s();

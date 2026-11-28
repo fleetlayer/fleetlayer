@@ -1,6 +1,6 @@
 ---
 name: fleetlayer-leases
-description: Take a lease before heavy or shared work and release it after, with `fleetlayer lease` (Fleetlayer's leases plugin): a slot on a shared build server before a big compile or test run, or a claim the person approves once (a mail filter while you watch CI). Use before any heavy build, test suite, image build or other job that loads a shared machine; when a command waits "in line" for a slot; when the person asks to limit how many builds run at once; when a message says a lease started or ended; or to set up kinds of lease.
+description: Take a lease before heavy or shared work and release it after, with `fleetlayer lease` (Fleetlayer's leases plugin): a slot on a shared build server before a big compile or test run, a lock on one named thing (a Terraform component while you plan and apply it), or a claim the person approves once (a mail filter while you watch CI). Use before any heavy build, test suite, image build or other job that loads a shared machine; when a command waits "in line" for a slot; when the person asks to limit how many builds run at once; when a message says a lease started or ended; or to set up kinds of lease.
 ---
 
 # Leases
@@ -35,6 +35,19 @@ fleetlayer lease release "$id"
   build without a slot (`FLEETLAYER_DEV_SLOT=none`) only if they agree.
 - `fleetlayer lease acquire` fails with "no leases authority found" when the fleet has none set up: carry on without
   one, and don't set one up unless the person asks.
+
+## A lock on one named thing
+
+Some kinds are a lock per named thing (`per:` in their settings): one session at a time per Terraform component, say.
+Name the thing in the payload; others holding different things don't wait for you, and someone holding the same one
+puts you in that thing's line:
+
+```sh
+id=$(fleetlayer lease acquire terraform --reason "move the DNS records" --payload '{"component":"dns"}' --wait)
+```
+
+For several things at once, take one lease each in sorted order (so two sessions after the same two never each hold
+one and wait for the other), and release them all when you're done.
 
 ## Claims the person approves
 

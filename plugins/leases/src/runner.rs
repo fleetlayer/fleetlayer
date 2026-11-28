@@ -714,8 +714,12 @@ impl Authority {
                             ),
                             _ => {
                                 let pos = engine.position(id).unwrap_or(0);
-                                let holders = engine.holders(&l.kind);
-                                format!("waiting: number {pos} in line for {} (held: {})", l.kind, holders.join("; "))
+                                let holders = engine.holders_for(id);
+                                let what = match &l.group {
+                                    Some(g) => format!("{} {g}", l.kind),
+                                    None => l.kind.clone(),
+                                };
+                                format!("waiting: number {pos} in line for {what} (held: {})", holders.join("; "))
                             }
                         };
                         if now != said {

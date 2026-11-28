@@ -61,6 +61,16 @@ kinds:
     description: Checks that don't link (fmt, check, clippy)
     slots: 3
 
+  terraform:
+    description: One session at a time per Terraform component
+    slots: 1
+    per: component              # counted per component: a lock per named thing
+    ttl: 8h
+    payload:
+      required: [component]
+      fields:
+        component: '[a-z0-9_/-]{1,64}'
+
   gmail-filter:
     approval: true              # the access policy decides each new payload, once
     ttl: 24h
@@ -80,6 +90,7 @@ the last good kinds running, and the plugin reports the problem.
 | Field | |
 |---|---|
 | `slots` | At most this many held at once; the others wait, first come first served. Leave it out for no limit. |
+| `per` | Count `slots` per value of this payload field instead of for the whole kind: a lock per named thing. `terraform` above lets one session hold `racks/us` while another holds `dns`, and a second session asking for `racks/us` waits in that component's own line. The field must be one of the payload's `required` fields. |
 | `ttl`, `max_ttl` | The time limit a lease gets, and the most a caller may ask for with `--ttl`. |
 | `idle` | A held lease whose session has been idle (or waiting on the person) this long ends. `--idle` sets it per lease. |
 | `approval` | Each new payload is decided by the access policy (below) before the lease can start. Needs `payload`. |
@@ -108,6 +119,16 @@ fleetlayer lease list          # every kind: who holds, who waits, who's asking,
 fleetlayer lease show 14       # one lease, or how it ended
 fleetlayer lease wait 14       # wait until a lease that asks or waits is held
 fleetlayer lease release 14
+```
+
+A kind with `per` takes one value per lease. To hold several things at once (a change that touches two
+components), take one lease each, always in the same order (sorted), so two sessions after the same two can't each
+hold one and wait for the other:
+
+```sh
+for c in dns racks/us; do      # sorted
+  ids="$ids $(fleetlayer lease acquire terraform --reason "move the DNS records" --payload "{\"component\":\"$c\"}" --wait)"
+done
 ```
 
 Only the holder's node may release a lease (the node is the trust boundary: any process of its user can act for any
