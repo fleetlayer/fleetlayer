@@ -264,7 +264,9 @@ enum SigninCommand {
 enum TokenCommand {
     /// Add a token and print it (shown once). `read`: every GET and catch-ups; `admin`: everything; `send`: only
     /// sends messages; `approve`: reads and decides approvals and closes role windows, as its --owner (one of the
-    /// tenant's admins), with a passkey step-up to open a window. Recorded in the audit log.
+    /// tenant's admins), with a passkey step-up to open a window; `delegate`: reads like `read`, and decides approvals
+    /// and closes windows as the signed-in person a service names (the dashboard), who must be one of the tenant's
+    /// admins, with the same step-up for windows. Recorded in the audit log.
     Add {
         name: String,
         #[arg(long, default_value = "read")]
@@ -1398,6 +1400,7 @@ async fn serve(
         .route("/v1/endpoints", get(api::get_endpoints))
         .route("/v1/summaries", get(api::get_summaries))
         .route("/v1/sessions/{id}/catchup", axum::routing::post(api::post_catchup))
+        .route("/v1/token", get(api::get_token))
         .route("/v1/readings", get(api::get_readings))
         .route("/v1/tools", get(api::get_tools))
         .route("/v1/approvals", get(api::get_approvals))

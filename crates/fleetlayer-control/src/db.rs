@@ -249,7 +249,10 @@ pub async fn add_owned_token(
     owner: Option<&str>,
 ) -> anyhow::Result<String> {
     anyhow::ensure!(valid_name(name), "a token name is letters, digits, - and _");
-    anyhow::ensure!(matches!(scope, "read" | "admin" | "send" | "approve"), "a scope is read, admin, send or approve");
+    anyhow::ensure!(
+        matches!(scope, "read" | "admin" | "send" | "approve" | "delegate"),
+        "a scope is read, admin, send, approve or delegate"
+    );
     anyhow::ensure!(
         (scope == "approve") == owner.is_some(),
         "an approve token needs an owner (--owner <handle>: who it approves as), and only an approve token has one"

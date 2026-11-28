@@ -69,16 +69,30 @@ impl Control {
         self.send(self.http.get(format!("{}{path}", self.base)), path).await
     }
 
-    /// `POST /v1/approvals/<id>` `{approve}`.
-    pub async fn decide(&self, id: &str, approve: bool) -> Result<Value, Failed> {
-        let path = format!("/v1/approvals/{}", enc(id));
-        self.send(self.http.post(format!("{}{path}", self.base)).json(&json!({"approve": approve})), &path).await
+    /// What the dashboard's token is: `admin`, `delegate`, `read`... (`GET /v1/token`).
+    pub async fn scope(&self) -> Result<String, Failed> {
+        Ok(self.get("/v1/token").await?["scope"].as_str().unwrap_or("read").to_string())
     }
 
-    /// `DELETE /v1/windows/<role>`.
-    pub async fn close_window(&self, role: &str) -> Result<Value, Failed> {
+    /// With a delegate token, the control plane acts as this person (their ID) and records it as theirs.
+    fn as_person(req: reqwest::RequestBuilder, person: Option<&str>) -> reqwest::RequestBuilder {
+        match person {
+            Some(p) => req.header("fleetlayer-person", p),
+            None => req,
+        }
+    }
+
+    /// `POST /v1/approvals/<id>` `{approve}`, as `person` when the token is a delegate token.
+    pub async fn decide(&self, id: &str, approve: bool, person: Option<&str>) -> Result<Value, Failed> {
+        let path = format!("/v1/approvals/{}", enc(id));
+        let req = self.http.post(format!("{}{path}", self.base)).json(&json!({"approve": approve}));
+        self.send(Self::as_person(req, person), &path).await
+    }
+
+    /// `DELETE /v1/windows/<role>`, as `person` when the token is a delegate token.
+    pub async fn close_window(&self, role: &str, person: Option<&str>) -> Result<Value, Failed> {
         let path = format!("/v1/windows/{}", enc(role));
-        self.send(self.http.delete(format!("{}{path}", self.base)), &path).await
+        self.send(Self::as_person(self.http.delete(format!("{}{path}", self.base)), person), &path).await
     }
 }
 

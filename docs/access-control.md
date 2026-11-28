@@ -293,6 +293,20 @@ which accepts the approval within 5 minutes, once; without it the approval is re
 control plane enforces this, not the deck. Refusing a window, closing one and every other approval need no passkey.
 The admin token needs none either: it's the operator's, and stays on the server.
 
+**A service people sign in to.** The [dashboard](dashboard.md) decides as whoever is signed in to it, not as one owner.
+Its token has the `delegate` scope:
+
+```sh
+fleetlayer-control token add dashboard --scope delegate
+```
+
+A delegate token reads the fleet like a read token. To decide a request or close a window, it names the signed-in
+person in a `Fleetlayer-Person` header (their person ID, the sign-in's `sub`); that person must be one of the tenant's
+admins, the decision is recorded as `person:sam (via dashboard)`, and opening a window needs that person's own passkey
+step-up, as above. Without the header, or for someone who isn't an admin, it's refused and audited. `GET /v1/token`
+tells a service which scope its token has. A delegate token can act as any of the tenant's admins for everything but
+opening a window, so it lives under the service's own Unix user, like an approve token.
+
 The step-up is reported by the sign-in service with its own token, which the control plane takes at its word: it
 doesn't check the passkey assertion itself. So the sign-in token counts as much as a passkey for every admin of every
 tenant (sign-in tokens aren't bound to one tenant). Run the sign-in service under its own Unix user (or in its own container), with its

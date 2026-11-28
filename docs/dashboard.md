@@ -43,10 +43,11 @@ machine that joins a fleet elsewhere doesn't get one.
 Anywhere else, it's a plugin of a node, like pages: run it on the machine where your gateway and sign-in service run (or anywhere
 that reaches the control plane).
 
-1. **A token for it** on the control plane: `fleetlayer-control token add dashboard --scope read`. With `--scope admin`
-   instead, people the policy allows can approve requests and close windows from the dashboard; with `read`, they see
-   them and decide them elsewhere (`fleetlayer-control approvals approve`, the phone). Save it in a file only the
-   dashboard's Unix user reads.
+1. **A token for it** on the control plane: `fleetlayer-control token add dashboard --scope delegate`. With it, each
+   signed-in person decides requests and closes windows as themselves: the control plane checks they're one of the
+   tenant's admins and records the decision as theirs ([Approving from a deck or an inbox](access-control.md#approving-from-a-deck-or-an-inbox)).
+   With `--scope read`, people see requests and decide them elsewhere. Save it in a file only the dashboard's Unix user
+   reads, and run the dashboard under a Unix user of its own, never one whose node runs agents.
 2. **A sign-in client** in the sign-in service's config (`docs/plugins/signin.md`):
 
    ```yaml
@@ -94,7 +95,8 @@ that reaches the control plane).
    ```
 
 Without the sign-in service, `login_file:` (a file with a random key of at least 32 characters) lets in whoever has the
-key, with everything the token allows. Both can be set while you move from one to the other.
+key. Its holder decides through an admin token (`--scope admin`), as `fleetlayer up` sets up on a laptop, and can't open
+role windows from the dashboard: that needs a person's passkey. Both can be set while you move from one to the other.
 
 | Setting | What it is |
 |---|---|
@@ -111,10 +113,11 @@ key, with everything the token allows. Both can be set while you move from one t
 - Signing in checks `sign_in` on `service:dashboard`, and every page checks it again (remembered for a minute), so
   taking someone's access away works within a minute rather than when their session ends.
 - Approving, denying and closing a window need `admin` on `service:dashboard`, a form token from the same session,
-  and a control plane token that may do it. A request to open a role window isn't approved here: it needs its owner's
-  passkey for that request ("Approving from a deck or an inbox" in `access-control.md`), which the dashboard's own
-  token would skip, so the dashboard shows it and points to the deck. Denying one works here. The control plane records the decision as the dashboard's token's
-  (`admin token`); the dashboard's own log says who clicked.
+  and, for a signed-in person, the dashboard's delegate token: the control plane checks them and records every
+  decision as theirs (`person:sam (via dashboard)`).
+- **Opening a role window** takes the person's passkey. Approve with passkey goes to the sign-in service's step-up
+  page for that request, which comes back to the dashboard to confirm; the control plane accepts it within five
+  minutes, once, and only from that person. The login key's holder can't open windows from the dashboard.
 - When the access check can't be made (the control plane is down), the dashboard shows nothing rather than guessing.
 - A session lasts 12 hours, in memory: restarting the dashboard signs everyone out. Signing out at the sign-in
   service ends it here too (back-channel logout).

@@ -25,7 +25,13 @@ enum Scope {
     Send,
     /// A deck that reads approvals and windows, decides approvals and closes windows (`stepup.rs`).
     Approve,
+    /// A service that people sign in to (the dashboard): reads like `Read`, and acts only for the person it names in
+    /// `Fleetlayer-Person`, as that person.
+    Delegate,
 }
+
+/// The header a delegate token names the signed-in person in (their person ID, the sign-in's `sub`).
+pub const PERSON_HEADER: &str = "fleetlayer-person";
 
 /// The scope the request's bearer token has: the admin token file's, or an API token's.
 async fn scope_of(app: &App, headers: &HeaderMap) -> Option<Scope> {
@@ -40,6 +46,7 @@ async fn scope_of(app: &App, headers: &HeaderMap) -> Option<Scope> {
             "admin" => Scope::Admin,
             "send" => Scope::Send,
             "approve" => Scope::Approve,
+            "delegate" => Scope::Delegate,
             _ => Scope::Read,
         }),
         _ => None,
@@ -51,7 +58,7 @@ type ApiResult = Result<Json<Value>, (StatusCode, String)>;
 /// Every route here needs at least the read scope.
 async fn guard(app: &App, headers: &HeaderMap) -> Result<(), (StatusCode, String)> {
     match scope_of(app, headers).await {
-        Some(Scope::Read | Scope::Admin) => Ok(()),
+        Some(Scope::Read | Scope::Admin | Scope::Delegate) => Ok(()),
         Some(Scope::Send) => {
             Err((StatusCode::FORBIDDEN, "a send token only sends messages (POST /v1/messages)".into()))
         }
@@ -73,9 +80,9 @@ async fn guard_approvals(app: &App, headers: &HeaderMap) -> Result<(), (StatusCo
 
 /// Who decides with the request's token.
 struct Approver {
-    /// As recorded: `admin token`, or `person:<handle> (token <name>)`.
+    /// As recorded: `admin token`, `person:<handle> (token <name>)`, or `person:<handle> (via <name>)`.
     by: String,
-    /// An approve token's owner (a person ID); None for the admin token.
+    /// An approve token's owner, or the person a delegate token acts for (a person ID); None for the admin token.
     person: Option<String>,
 }
 
@@ -118,8 +125,33 @@ async fn approver(app: &App, headers: &HeaderMap, what: &str, target: &str) -> R
                 }
             }
         }
-        Some(_) => Err((StatusCode::FORBIDDEN, format!("{what} needs an admin or approve token"))),
-        None => Err((StatusCode::UNAUTHORIZED, format!("{what} needs an admin or approve token"))),
+        Some(Scope::Delegate) => {
+            let token = headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.strip_prefix("Bearer "))
+                .unwrap_or_default();
+            let (_, _, name) = db::token_info(&app.db, token)
+                .await
+                .map_err(internal)?
+                .ok_or((StatusCode::UNAUTHORIZED, "unknown token".to_string()))?;
+            let Some(person) = headers.get(PERSON_HEADER).and_then(|v| v.to_str().ok()).filter(|p| !p.is_empty())
+            else {
+                let why = format!("a delegate token acts for a person: {what} needs their ID in Fleetlayer-Person");
+                audit_refusal(app, &format!("token {name}"), target, why.clone()).await;
+                return Err((StatusCode::FORBIDDEN, why));
+            };
+            let fleet = app.authz.fleet(&app.db).await.map_err(internal)?;
+            match crate::stepup::person_may_approve(&fleet, DEFAULT_TENANT, person) {
+                Ok((id, handle)) => Ok(Approver { by: format!("{handle} (via {name})"), person: Some(id) }),
+                Err(e) => {
+                    audit_refusal(app, &format!("{person} (via {name})"), target, e.clone()).await;
+                    Err((StatusCode::FORBIDDEN, e))
+                }
+            }
+        }
+        Some(_) => Err((StatusCode::FORBIDDEN, format!("{what} needs an admin, approve or delegate token"))),
+        None => Err((StatusCode::UNAUTHORIZED, format!("{what} needs an admin, approve or delegate token"))),
     }
 }
 
@@ -243,6 +275,28 @@ pub async fn post_catchup(
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, e.message))?;
     Ok(Json(c))
+}
+
+/// `GET /v1/token`: what the request's token is, so a service can show only what it may do. `{scope, name}` (`name`
+/// null for the admin token file's). Any token.
+pub async fn get_token(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
+    let Some(scope) = scope_of(&app, &headers).await else {
+        return Err((StatusCode::UNAUTHORIZED, "a token is needed".into()));
+    };
+    let token = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or_default();
+    let name = db::token_info(&app.db, token).await.map_err(internal)?.map(|(_, _, n)| n);
+    let scope = match scope {
+        Scope::Read => "read",
+        Scope::Admin => "admin",
+        Scope::Send => "send",
+        Scope::Approve => "approve",
+        Scope::Delegate => "delegate",
+    };
+    Ok(Json(json!({"scope": scope, "name": name})))
 }
 
 #[derive(serde::Deserialize)]
@@ -648,6 +702,55 @@ mod tests {
 
     fn body(approve: bool) -> Json<ApprovalBody> {
         Json(ApprovalBody { approve, hold: None })
+    }
+
+    #[tokio::test]
+    async fn a_delegate_token_acts_as_the_person_it_names_and_windows_still_need_their_passkey() {
+        let app = app().await;
+        let db = &app.db;
+        let mut ids = vec![];
+        for (handle, role) in [("sam", "admin"), ("lee", "member")] {
+            let i = crate::people::NewInvite { handle, role, teams: &[], person: None };
+            let code = crate::people::invite(db, DEFAULT_TENANT, i, "admin").await.unwrap();
+            let r = crate::people::invite_redeem(db, &code, crate::people::Redeemer::New { display_name: handle });
+            ids.push(r.await.unwrap().person);
+        }
+        let (sam, lee) = (ids[0].clone(), ids[1].clone());
+        let token = db::add_token(db, DEFAULT_TENANT, "dashboard", "delegate").await.unwrap();
+        let h = bearer(&token);
+        let with = |person: &str| {
+            let mut h = h.clone();
+            h.insert(PERSON_HEADER, person.parse().unwrap());
+            h
+        };
+        // It reads like a read token, and says what it is.
+        assert!(get_fleet(State(app.clone()), h.clone()).await.is_ok());
+        assert!(get_approvals(State(app.clone()), h.clone()).await.is_ok());
+        let Json(t) = get_token(State(app.clone()), h.clone()).await.unwrap();
+        assert_eq!(t, json!({"scope": "delegate", "name": "dashboard"}));
+        // Deciding needs a named person, who is one of the tenant's admins; it's recorded as theirs.
+        pending(&app, "ap_tool", "use_tool", "tool:browser@laptop").await;
+        let path = |id: &str| axum::extract::Path(id.to_string());
+        let e = post_approval(State(app.clone()), h.clone(), path("ap_tool"), body(true)).await.unwrap_err();
+        assert!(e.0 == StatusCode::FORBIDDEN && e.1.contains("Fleetlayer-Person"), "{}", e.1);
+        let e = post_approval(State(app.clone()), with(&lee), path("ap_tool"), body(true)).await.unwrap_err();
+        assert!(e.0 == StatusCode::FORBIDDEN && e.1.contains("isn't one of the tenant's admins"), "{}", e.1);
+        let _ = post_approval(State(app.clone()), with(&sam), path("ap_tool"), body(true)).await.unwrap();
+        let by: String =
+            sqlx::query_scalar("SELECT decided_by FROM approvals WHERE id = 'ap_tool'").fetch_one(db).await.unwrap();
+        assert_eq!(by, "person:sam (via dashboard)");
+        // A window: only after that person's own passkey step-up.
+        pending(&app, "ap_win", "activate", "window:admin").await;
+        let e = post_approval(State(app.clone()), with(&sam), path("ap_win"), body(true)).await.unwrap_err();
+        assert!(e.0 == StatusCode::FORBIDDEN && e.1.contains("passkey"), "{}", e.1);
+        crate::stepup::record(db, DEFAULT_TENANT, "ap_win", &sam, "signin", 3_600_000).await.unwrap();
+        let _ = post_approval(State(app.clone()), with(&sam), path("ap_win"), body(true)).await.unwrap();
+        // Closing a window is theirs too.
+        let e = delete_window(State(app.clone()), with(&lee), path("admin")).await.unwrap_err();
+        assert_eq!(e.0, StatusCode::FORBIDDEN);
+        let refused: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM audit_log WHERE decision = 'denied'").fetch_one(db).await.unwrap();
+        assert!(refused >= 3, "refusals are audited");
     }
 
     #[tokio::test]

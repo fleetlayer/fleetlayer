@@ -72,8 +72,8 @@ struct Config {
 struct ControlConfig {
     /// The control plane's API address (`https://control.example.com`, or `http://127.0.0.1:7600` on one machine).
     url: String,
-    /// A token from `fleetlayer-control token add dashboard --scope read` (or `admin`, to approve requests and close
-    /// windows from the dashboard), in a file only this Unix user reads.
+    /// A token from `fleetlayer-control token add dashboard --scope delegate`, so each signed-in person decides as
+    /// themselves (or `admin` for a login key only, `read` to only look), in a file only this Unix user reads.
     token_file: PathBuf,
 }
 
@@ -148,12 +148,13 @@ fn build(
     };
     let checker = peer.map(|p| auth::Checker::Node(p.clone()));
     let client = cfg.signin.as_ref().map(|s| s.client.clone()).unwrap_or_else(dashboard_client);
-    let app = web::App::new(
+    let mut app = web::App::new(
         source,
         auth::Auth::new(key, oidc, checker, client)?,
         cfg.base_url.map(|b| b.trim_end_matches('/').to_string()),
         cfg.trusted_proxies,
     );
+    app.issuer = cfg.signin.as_ref().map(|s| s.issuer.trim_end_matches('/').to_string());
     let heartbeat = cfg.heartbeat.map(|h| Heartbeat { token_file: expand(home, &h.token_file), ..h });
     Ok((Arc::new(app), cfg.listen, heartbeat))
 }
@@ -204,6 +205,7 @@ async fn run(
     tokio::spawn(async move {
         let mut last: Option<String> = None;
         loop {
+            a.refresh_scope().await;
             let problem = a.problem().await;
             if problem != last {
                 match &problem {

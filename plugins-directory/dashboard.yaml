@@ -12,7 +12,7 @@ command: fleetlayer-dashboard
 platforms: [linux, macos]
 min_fleetlayer: 0.4.0
 protocol: 1
-needs: [a control plane API token, Fleetlayer's sign-in service (or a login key)]
+needs: [a delegate token from the control plane, Fleetlayer's sign-in service (or a login key)]
 grants: [access.check]
 config: |
   plugins:
@@ -29,9 +29,10 @@ config: |
           issuer: https://signin.example
           secret_file: ~/.config/fleetlayer/signin-clients/dashboard
 security: >-
-  Reads only through the control plane's API with a token of its own, so it sees what that token sees: a read token
-  shows the fleet, an admin token also lets people the policy allows approve requests and close admin windows. Every
-  page checks the person's access again (within a minute), forms carry a per-session token, and it keeps no state.
+  Reads only through the control plane's API with a token of its own. With a delegate token each signed-in person
+  decides requests and closes windows as themselves, checked and recorded by the control plane, and opening an admin
+  window takes their passkey. Every page checks the person's access again (within a minute), forms carry a
+  per-session token, and it keeps no state.
 docs: dashboard
 description: |
   Machines with their nodes, versions, heartbeats and plugin status; sessions grouped by whether they wait on you;

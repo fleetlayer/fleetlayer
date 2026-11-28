@@ -129,6 +129,24 @@ pub fn owner_may_approve(
     }
 }
 
+/// The person a delegate token acts for (a person ID, from `Fleetlayer-Person`), when they're one of the tenant's
+/// admins: their ID and `person:<handle>`.
+pub fn person_may_approve(
+    fleet: &crate::directory::Fleet,
+    tenant: &str,
+    person: &str,
+) -> Result<(String, String), String> {
+    let t = fleet.tenant(tenant).ok_or("no such tenant")?;
+    let Some(handle) = t.handles.get(person) else {
+        return Err(format!("{person} isn't a member of the tenant"));
+    };
+    match t.people.get(handle) {
+        Some(p) if p.id == person && p.role == "admin" => Ok((person.to_string(), format!("person:{handle}"))),
+        Some(p) if p.id == person => Err(format!("person:{handle} isn't one of the tenant's admins")),
+        _ => Err(format!("{person} isn't a member of the tenant")),
+    }
+}
+
 /// The person ID behind `handle` in the tenant, when they're one of its admins (minting an approve token).
 pub fn admin_by_handle(fleet: &crate::directory::Fleet, tenant: &str, handle: &str) -> Result<String, String> {
     let handle = handle.strip_prefix("person:").unwrap_or(handle);

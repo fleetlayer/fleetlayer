@@ -23,13 +23,82 @@ pub struct App {
     pub base_url: Option<String>,
     pub trusted_proxies: Vec<IpAddr>,
     pub cache: Cache,
+    /// The sign-in service's address, for its passkey step-up page (`/stepup`).
+    pub issuer: Option<String>,
+    /// What the dashboard's own token is (`GET /v1/token`): `delegate`, `admin`, `read`...
+    scope: std::sync::RwLock<Option<String>>,
+}
+
+/// What a viewer may do through the dashboard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Powers {
+    /// Decide requests and close windows.
+    pub act: bool,
+    /// Approve a request that opens a role window, after their passkey at the sign-in service.
+    pub windows: bool,
 }
 
 type St = State<Arc<App>>;
 
 impl App {
     pub fn new(source: Source, auth: Auth, base_url: Option<String>, trusted_proxies: Vec<IpAddr>) -> App {
-        App { source, auth, base_url, trusted_proxies, cache: Cache::default() }
+        App {
+            source,
+            auth,
+            base_url,
+            trusted_proxies,
+            cache: Cache::default(),
+            issuer: None,
+            scope: std::sync::RwLock::new(None),
+        }
+    }
+
+    /// Ask the control plane what the dashboard's token is (at start, then every minute).
+    pub async fn refresh_scope(&self) {
+        if let Source::Control(c) = &self.source {
+            match c.scope().await {
+                Ok(s) => *self.scope.write().unwrap_or_else(|e| e.into_inner()) = Some(s),
+                Err(e) => tracing::warn!("asking the control plane what the dashboard's token is: {e}"),
+            }
+        }
+    }
+
+    fn token_scope(&self) -> Option<String> {
+        self.scope.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// A signed-in person acts as themselves, through a delegate token, so the control plane checks and records them;
+    /// the login key's holder acts through an admin token. Nobody approves a role window without their own passkey,
+    /// so only a person, through a delegate token, does (the admin token would skip the step-up).
+    pub async fn powers(&self, v: &Viewer) -> Powers {
+        if matches!(self.source, Source::Demo(_)) {
+            return Powers { act: true, windows: false };
+        }
+        if self.token_scope().is_none() {
+            self.refresh_scope().await;
+        }
+        let scope = self.token_scope();
+        match &v.person {
+            Some(_) => {
+                let act = scope.as_deref() == Some("delegate") && self.auth.may_act(v).await == Access::Yes;
+                Powers { act, windows: act && self.issuer.is_some() && self.base_url.is_some() }
+            }
+            None => Powers { act: scope.as_deref() == Some("admin"), windows: false },
+        }
+    }
+
+    /// Who the control plane should act as: the signed-in person, when the token is a delegate token.
+    fn acting_as<'a>(&self, v: &'a Viewer) -> Option<&'a str> {
+        (self.token_scope().as_deref() == Some("delegate")).then_some(())?;
+        v.person.as_ref().map(|p| p.sub.as_str())
+    }
+
+    /// The sign-in service's passkey page for approval `id`, coming back to the confirm page here.
+    fn stepup_url(&self, v: &Viewer, id: &str) -> Option<String> {
+        let (issuer, base, person) = (self.issuer.as_deref()?, self.base_url.as_deref()?, v.person.as_ref()?);
+        let e = |s: &str| form_urlencoded::byte_serialize(s.as_bytes()).collect::<String>();
+        let back = format!("{base}/_/approvals/{}/confirm", e(id));
+        Some(format!("{issuer}/stepup?tenant={}&approval={}&return={}", e(&person.tenant), e(id), e(&back)))
     }
 
     /// Cookies are Secure unless the site is plain HTTP on loopback.
@@ -55,6 +124,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/_/logout", post(logout))
         .route("/_/assets/{name}", get(asset))
         .route("/_/approvals/{id}", post(decide))
+        .route("/_/approvals/{id}/confirm", get(confirm))
         .route("/_/windows/{role}/close", post(close_window))
         .route("/", get(page_overview))
         .route("/machines", get(page_machines))
@@ -94,7 +164,8 @@ async fn security_headers(mut res: Response) -> Response {
 }
 
 const ASSETS: &[(&str, &str, &str)] = &[
-    ("dashboard.css", "text/css; charset=utf-8", include_str!("../web/dashboard.css")),
+    // Fleetlayer's shared look first (the hub's and sign-in's too), then the dashboard's own.
+    ("dashboard.css", "text/css; charset=utf-8", concat!(include_str!("../../../web/fleetlayer.css"), include_str!("../web/dashboard.css"))),
     ("dashboard.js", "text/javascript; charset=utf-8", include_str!("../web/dashboard.js")),
     ("icon.svg", "image/svg+xml", include_str!("../web/icon.svg")),
 ];
@@ -275,9 +346,10 @@ async fn page(State(app): St, headers: HeaderMap, Query(q): Query<PageQuery>, wh
             return r;
         }
     };
-    let can_act = app.auth.may_act(&v).await == Access::Yes;
+    let powers = app.powers(&v).await;
     let snap = app.cache.get(&app.source).await;
-    let c = Ctx { can_act, csrf: &v.csrf, now: views::now_ms() };
+    let stepup = |id: &str| if powers.windows { app.stepup_url(&v, id) } else { None };
+    let c = Ctx { can_act: powers.act, csrf: &v.csrf, now: views::now_ms(), stepup: &stepup };
     let mut main = match which {
         Page::Overview => views::overview(&snap, &c),
         Page::Machines => views::machines(&snap, &c),
@@ -349,19 +421,34 @@ async fn actor(app: &App, headers: &HeaderMap, csrf: &str) -> Result<Viewer, Res
             "<p>That form had expired. Go back, reload and try again.</p>",
         ));
     }
-    match app.auth.may_act(&v).await {
-        Access::Yes => Ok(v),
-        Access::No => Err(simple(
-            StatusCode::FORBIDDEN,
-            "Not yours to decide",
-            "<p>Deciding requests and closing windows needs <code>admin</code> on the dashboard in the access policy.</p>",
-        )),
-        Access::CantTell(_) => Err(simple(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Try again soon",
-            "<p>Your access can't be checked right now.</p>",
-        )),
+    if v.person.is_some() {
+        match app.auth.may_act(&v).await {
+            Access::Yes => {}
+            Access::No => {
+                return Err(simple(
+                    StatusCode::FORBIDDEN,
+                    "Not yours to decide",
+                    "<p>Deciding requests and closing windows needs <code>admin</code> on the dashboard in the access policy.</p>",
+                ));
+            }
+            Access::CantTell(_) => {
+                return Err(simple(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Try again soon",
+                    "<p>Your access can't be checked right now.</p>",
+                ));
+            }
+        }
     }
+    if !app.powers(&v).await.act {
+        return Err(simple(
+            StatusCode::FORBIDDEN,
+            "Not from here",
+            "<p>The dashboard's control plane token can't act for you. Signed-in people act through a delegate token \
+            (<code>fleetlayer-control token add dashboard --scope delegate</code>); the login key through an admin token.</p>",
+        ));
+    }
+    Ok(v)
 }
 
 fn auth_eq(a: &str, b: &str) -> bool {
@@ -370,7 +457,7 @@ fn auth_eq(a: &str, b: &str) -> bool {
 
 fn failed_words(e: &Failed) -> String {
     match e {
-        Failed::Refused(_) => "The dashboard's control plane token can't do that: it needs an admin token (fleetlayer-control token add dashboard --scope admin).".into(),
+        Failed::Refused(m) => format!("The control plane refused: {m}."),
         Failed::Missing(m) => format!("Nothing to do: {m}."),
         Failed::Down(m) => format!("That didn't go through: {m}."),
     }
@@ -391,17 +478,18 @@ async fn decide(
         "deny" => false,
         _ => return StatusCode::BAD_REQUEST.into_response(),
     };
-    // Opening a role window needs its owner's passkey for that request; the dashboard's token would skip it.
+    // Opening a role window needs the approver's own passkey for that request: only a signed-in person, through a
+    // delegate token, approves one here (the control plane checks the step-up); never the admin token.
     let snap = app.cache.get(&app.source).await;
-    if approve && snap.approvals.iter().any(|a| a.id == id && a.verb == "activate") {
+    if approve && snap.approvals.iter().any(|a| a.id == id && a.verb == "activate") && !app.powers(&v).await.windows {
         return back(
             &headers,
-            "Opening a role window is approved with your passkey: approve it from your deck or inbox.",
+            "Opening a role window is approved with your passkey: sign in to the dashboard as yourself, or approve it from your deck.",
         );
     }
     let msg = match &app.source {
         Source::Demo(_) => format!("Demo: the request would be {}.", if approve { "approved" } else { "denied" }),
-        Source::Control(c) => match c.decide(&id, approve).await {
+        Source::Control(c) => match c.decide(&id, approve, app.acting_as(&v)).await {
             Ok(_) => {
                 tracing::info!(who = %v.label(), id, approve, "decided a request from the dashboard");
                 format!("{} the request.", if approve { "Approved" } else { "Denied" })
@@ -425,7 +513,7 @@ async fn close_window(
     };
     let msg = match &app.source {
         Source::Demo(_) => format!("Demo: the {role} window would close."),
-        Source::Control(c) => match c.close_window(&role).await {
+        Source::Control(c) => match c.close_window(&role, app.acting_as(&v)).await {
             Ok(r) if r["closed"].as_bool() == Some(false) => format!("The {role} window was already closed."),
             Ok(_) => {
                 tracing::info!(who = %v.label(), role, "closed a window from the dashboard");
@@ -436,6 +524,44 @@ async fn close_window(
     };
     app.cache.forget().await;
     back(&headers, &msg)
+}
+
+/// `/_/approvals/<id>/confirm`: where the sign-in service's passkey page sends the person back. The step-up is
+/// recorded; this page shows the request once more and approves it with one press, within the five minutes it holds.
+async fn confirm(State(app): St, headers: HeaderMap, UrlPath(id): UrlPath<String>) -> Response {
+    let v = match viewer(&app, &headers, &format!("/_/approvals/{id}/confirm")).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    app.cache.forget().await;
+    let snap = app.cache.get(&app.source).await;
+    let Some(a) = snap.approvals.iter().find(|a| a.id == id && a.status == "pending") else {
+        return simple(
+            StatusCode::NOT_FOUND,
+            "Nothing to approve",
+            r#"<p>That request isn't waiting any more: it was decided, or it expired.</p><a class="btn btn-block" href="/access">Back to Access</a>"#,
+        );
+    };
+    if !app.powers(&v).await.windows {
+        return simple(
+            StatusCode::FORBIDDEN,
+            "Not from here",
+            r#"<p>Opening a role window from the dashboard needs you signed in as yourself, and the dashboard's delegate token.</p><a class="btn btn-block" href="/access">Back to Access</a>"#,
+        );
+    }
+    let what = a.to.strip_prefix("window:").unwrap_or(&a.to);
+    simple(
+        StatusCode::OK,
+        "Open the window?",
+        &format!(
+            r#"<p><span class="addr">{}</span> asks to open the <span class="addr">{}</span> window.{}</p><p>Your passkey confirmed it. Approve within five minutes.</p><form class="login-form" method="post" action="/_/approvals/{}"><input type="hidden" name="csrf" value="{}"><button class="btn btn-primary btn-block" name="decision" value="approve">Open the window</button></form><a class="btn btn-ghost btn-block" href="/access">Not now</a>"#,
+            esc(&a.from),
+            esc(what),
+            a.detail.as_deref().map(|d| format!(" {}", esc(d))).unwrap_or_default(),
+            esc(&form_urlencoded::byte_serialize(id.as_bytes()).collect::<String>()),
+            esc(&v.csrf),
+        ),
+    )
 }
 
 // ------------------------------------------------------------------ sign-in
@@ -748,6 +874,124 @@ mod tests {
         let r = router(app.clone()).oneshot(post(body)).await.unwrap();
         assert_eq!(r.status(), StatusCode::SEE_OTHER);
         assert!(r.headers()[header::LOCATION].to_str().unwrap().starts_with("/access?msg=Demo"));
+    }
+
+    /// What reached the fake control plane: each decision or close, and who it was for.
+    type Seen = Arc<std::sync::Mutex<Vec<(String, Option<String>)>>>;
+
+    /// A control plane that answers like the real one for a delegate token, and remembers who each decision was for.
+    async fn fake_control(scope: &'static str) -> (String, Seen) {
+        use axum::routing::{delete, get, post};
+        let seen: Seen = Arc::default();
+        let s1 = seen.clone();
+        let s2 = seen.clone();
+        let person = |h: &HeaderMap| h.get("fleetlayer-person").and_then(|v| v.to_str().ok()).map(str::to_string);
+        let router = Router::new()
+            .route("/v1/token", get(move || async move { axum::Json(serde_json::json!({"scope": scope, "name": "dashboard"})) }))
+            .route("/v1/fleet", get(|| async { axum::Json(serde_json::json!({"nodes": [], "sessions": []})) }))
+            .route("/v1/events", get(|| async { axum::Json(serde_json::json!({"events": []})) }))
+            .route("/v1/readings", get(|| async { axum::Json(serde_json::json!({"readings": []})) }))
+            .route("/v1/tools", get(|| async { axum::Json(serde_json::json!({"tools": []})) }))
+            .route("/v1/windows", get(|| async { axum::Json(serde_json::json!({"roles": [], "windows": []})) }))
+            .route(
+                "/v1/approvals",
+                get(|| async {
+                    axum::Json(serde_json::json!({"approvals": [
+                        {"id": "ap_tool", "from": "a@n", "verb": "use_tool", "to": "tool:b@n", "status": "pending", "createdAt": 1},
+                        {"id": "ap_win", "from": "a@n", "verb": "activate", "to": "window:ops", "status": "pending", "createdAt": 1}]}))
+                }),
+            )
+            .route(
+                "/v1/approvals/{id}",
+                post(move |UrlPath(id): UrlPath<String>, h: HeaderMap| async move {
+                    s1.lock().unwrap().push((id.clone(), person(&h)));
+                    axum::Json(serde_json::json!({"id": id, "approved": true}))
+                }),
+            )
+            .route(
+                "/v1/windows/{role}",
+                delete(move |UrlPath(role): UrlPath<String>, h: HeaderMap| async move {
+                    s2.lock().unwrap().push((format!("close {role}"), person(&h)));
+                    axum::Json(serde_json::json!({"role": role, "closed": true}))
+                }),
+            );
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(l, router).await.unwrap() });
+        (url, seen)
+    }
+
+    async fn signed_in_person(
+        scope: &'static str,
+    ) -> (Arc<App>, String, String, Arc<std::sync::Mutex<Vec<(String, Option<String>)>>>) {
+        let (url, seen) = fake_control(scope).await;
+        let f = fleetlayer_oidc::testing::FakeIssuer::start().await;
+        let oidc = fleetlayer_oidc::Oidc::new(&f.url, "dashboard", "s", "https://d.example").unwrap();
+        let checker = auth::Checker::Fixed(Box::new(|_: &str, _: &str| Ok(true)));
+        let auth = Auth::new(None, Some(oidc), Some(checker), "dashboard".into()).unwrap();
+        let control = crate::control::Control::new(&url, "t").unwrap();
+        let mut app = App::new(Source::Control(control), auth, Some("https://d.example".into()), vec![]);
+        app.issuer = Some("https://signin.example".into());
+        let app = Arc::new(app);
+        let person = fleetlayer_oidc::Person {
+            sub: "p_sam".into(),
+            tenant: "home".into(),
+            handle: Some("sam".into()),
+            name: None,
+            sid: None,
+        };
+        let sid = app.auth.start(Some(person)).await;
+        let cookie = format!("{}={sid}", auth::COOKIE);
+        let mut h = HeaderMap::new();
+        h.insert(header::COOKIE, cookie.parse().unwrap());
+        let csrf = app.auth.viewer(&h).await.unwrap().csrf;
+        (app, cookie, csrf, seen)
+    }
+
+    async fn post_form(app: &Arc<App>, path: &str, cookie: &str, body: String) -> Response {
+        let req = Request::post(path)
+            .header(header::COOKIE, cookie)
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(header::REFERER, "https://d.example/access")
+            .body(Body::from(body))
+            .unwrap();
+        router(app.clone()).oneshot(req).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_signed_in_person_decides_as_themselves_and_opens_windows_only_through_their_passkey() {
+        let (app, cookie, csrf, seen) = signed_in_person("delegate").await;
+        // An ordinary request, and closing a window: sent as the person.
+        let r = post_form(&app, "/_/approvals/ap_tool", &cookie, format!("csrf={csrf}&decision=approve")).await;
+        assert_eq!(r.status(), StatusCode::SEE_OTHER);
+        let r = post_form(&app, "/_/windows/ops/close", &cookie, format!("csrf={csrf}")).await;
+        assert_eq!(r.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [("ap_tool".to_string(), Some("p_sam".to_string())), ("close ops".to_string(), Some("p_sam".to_string()))]
+        );
+        // A window request: Access offers the passkey page, which comes back to the confirm page here.
+        let (_, _, page) = get(&app, "/access", Some(&cookie)).await;
+        let want = "https://signin.example/stepup?tenant=home&amp;approval=ap_win&amp;return=https%3A%2F%2Fd.example%2F_%2Fapprovals%2Fap_win%2Fconfirm";
+        assert!(page.contains(want), "{page}");
+        let (status, _, page) = get(&app, "/_/approvals/ap_win/confirm", Some(&cookie)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(page.contains("Open the window") && page.contains(r#"action="/_/approvals/ap_win""#), "{page}");
+        let r = post_form(&app, "/_/approvals/ap_win", &cookie, format!("csrf={csrf}&decision=approve")).await;
+        assert_eq!(r.status(), StatusCode::SEE_OTHER);
+        assert_eq!(seen.lock().unwrap().last().cloned(), Some(("ap_win".to_string(), Some("p_sam".to_string()))));
+    }
+
+    #[tokio::test]
+    async fn with_an_admin_token_a_signed_in_person_does_nothing_and_no_window_is_approved() {
+        let (app, cookie, csrf, seen) = signed_in_person("admin").await;
+        let r = post_form(&app, "/_/approvals/ap_tool", &cookie, format!("csrf={csrf}&decision=approve")).await;
+        assert_eq!(r.status(), StatusCode::FORBIDDEN, "the admin token would record 'admin token', not the person");
+        let r = post_form(&app, "/_/approvals/ap_win", &cookie, format!("csrf={csrf}&decision=approve")).await;
+        assert_eq!(r.status(), StatusCode::FORBIDDEN);
+        let (_, _, page) = get(&app, "/access", Some(&cookie)).await;
+        assert!(!page.contains("stepup") && !page.contains(r#"value="approve""#), "{page}");
+        assert!(seen.lock().unwrap().is_empty(), "nothing reached the control plane");
     }
 
     #[test]

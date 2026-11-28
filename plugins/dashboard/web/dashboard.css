@@ -1,180 +1,25 @@
-/* Hallmark · genre: modern-minimal · macrostructure: Workbench (app) · theme: custom (cool neutral + one indigo signal),
- * the Claude hub's tokens, shared with pages · fonts: system UI + system mono (nothing fetched) · nav: app bar with tabs
- * motion: live pulse, button press, dialog-free · icons: Tabler outline (MIT)
- * states: default · hover · focus · active · disabled · loading · error · success
+/* The dashboard's own components, after web/fleetlayer.css (Fleetlayer's shared tokens, base, controls, sign-in card
+ * and app bar), which is served first. Only what's the dashboard's, and the few places it differs on purpose.
+ *
+ * Hallmark · genre: modern-minimal · macrostructure: Workbench (app) · theme: the shared one (cool neutral + one indigo
+ * signal) · nav: app bar with tabs · motion: live pulse, button press · icons: Tabler outline (MIT)
  * Hallmark · pre-emit critique: P4 H4 E4 S4 R5 V4
  */
 
-:root {
-  color-scheme: light dark;
+/* ---------------------------------------------------------------- base, beyond the shared one */
 
-  --color-paper: oklch(98.4% 0.003 260);
-  --color-surface: oklch(100% 0 0);
-  --color-surface-2: oklch(97.2% 0.004 260);
-  --color-ink: oklch(23% 0.014 262);
-  --color-ink-2: oklch(42% 0.014 262);
-  --color-ink-3: oklch(56% 0.012 262);
-  --color-rule: oklch(92% 0.005 262);
-  --color-rule-2: oklch(86% 0.007 262);
-  --color-accent: oklch(50% 0.2 266);
-  --color-accent-hover: oklch(45% 0.2 266);
-  --color-accent-ink: oklch(99% 0.003 266);
-  --color-accent-soft: oklch(95% 0.03 266);
-  --color-focus: oklch(58% 0.19 266);
-  --color-ok: oklch(60% 0.15 152);
-  --color-ok-soft: oklch(96.5% 0.035 152);
-  --color-warn: oklch(72% 0.16 72);
-  --color-warn-ink: oklch(50% 0.12 62);
-  --color-warn-soft: oklch(96.5% 0.04 85);
-  --color-bad: oklch(56% 0.2 27);
-  --color-bad-hover: oklch(50% 0.2 27);
-  --color-bad-soft: oklch(96.5% 0.025 27);
-  --color-off: oklch(80% 0.008 262);
-  --color-backdrop: oklch(20% 0.02 262 / 0.42);
-  --shadow-pop: 0 1px 2px oklch(20% 0.02 262 / 0.06), 0 8px 28px oklch(20% 0.02 262 / 0.12);
-  --shadow-card: 0 1px 2px oklch(20% 0.02 262 / 0.04);
-
-  --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
-
-  --text-xs: 0.75rem;
-  --text-sm: 0.8125rem;
-  --text-md: 0.9375rem;
-  --text-lg: 1.125rem;
-  --text-xl: 1.5rem;
-
-  --space-3xs: 0.25rem;
-  --space-2xs: 0.5rem;
-  --space-xs: 0.75rem;
-  --space-sm: 1rem;
-  --space-md: 1.5rem;
-  --space-lg: 2rem;
-  --space-xl: 3rem;
-
-  --radius-sm: 6px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-  --control-h: 2.5rem;
-  --control-h-sm: 2rem;
-
-  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
-  --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
-  --dur-short: 140ms;
-  --dur-med: 220ms;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --color-paper: oklch(16.5% 0.006 262);
-    --color-surface: oklch(20.5% 0.007 262);
-    --color-surface-2: oklch(23.5% 0.008 262);
-    --color-ink: oklch(95.5% 0.004 262);
-    --color-ink-2: oklch(77% 0.008 262);
-    --color-ink-3: oklch(62% 0.01 262);
-    --color-rule: oklch(28% 0.008 262);
-    --color-rule-2: oklch(35% 0.01 262);
-    --color-accent: oklch(66% 0.17 266);
-    --color-accent-hover: oklch(71% 0.15 266);
-    --color-accent-ink: oklch(15% 0.03 266);
-    --color-accent-soft: oklch(27% 0.06 266);
-    --color-focus: oklch(70% 0.16 266);
-    --color-ok: oklch(72% 0.15 152);
-    --color-ok-soft: oklch(25% 0.04 152);
-    --color-warn: oklch(80% 0.14 80);
-    --color-warn-ink: oklch(84% 0.12 82);
-    --color-warn-soft: oklch(26% 0.04 75);
-    --color-bad: oklch(68% 0.18 25);
-    --color-bad-hover: oklch(73% 0.16 25);
-    --color-bad-soft: oklch(26% 0.05 25);
-    --color-off: oklch(42% 0.01 262);
-    --color-backdrop: oklch(5% 0.01 262 / 0.6);
-    --shadow-pop: 0 1px 2px oklch(0% 0 0 / 0.3), 0 12px 32px oklch(0% 0 0 / 0.45);
-    --shadow-card: none;
-  }
-}
-
-/* ---------------------------------------------------------------- base */
-
-*, *::before, *::after { box-sizing: border-box; }
-
-/* ---------------------------------------------------------------- base */
-
-*, *::before, *::after { box-sizing: border-box; }
-html, body { overflow-x: clip; }
-html { -webkit-text-size-adjust: 100%; }
-body {
-  margin: 0;
-  background: var(--color-paper);
-  color: var(--color-ink);
-  font: 400 var(--text-md) / 1.5 var(--font-sans);
-  -webkit-font-smoothing: antialiased;
-  font-feature-settings: "tnum" 1;
-}
-h1, h2, h3, p { margin: 0; }
-h1, h2, h3 { font-weight: 600; letter-spacing: -0.012em; text-wrap: balance; min-width: 0; overflow-wrap: anywhere; }
-button, input { font: inherit; color: inherit; }
-a { color: var(--color-accent); text-underline-offset: 0.18em; }
-code, .mono { font-family: var(--font-mono); }
-code { font-size: 0.9em; }
-[hidden] { display: none !important; }
-:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
-svg.i { width: 1rem; height: 1rem; flex: none; stroke: currentColor; fill: none; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+h1, h2, h3 { min-width: 0; overflow-wrap: anywhere; }
+a { text-underline-offset: 0.18em; }
+code { font-family: var(--font-mono); font-size: 0.9em; }
 .sub { font-size: var(--text-xs); color: var(--color-ink-3); }
 .is-bad { color: var(--color-bad); }
 .nowrap { white-space: nowrap; }
+/* A dashboard is wider than the hub's one list. */
+.wrap { max-width: 80rem; }
 
-.wrap { width: 100%; max-width: 80rem; margin: 0 auto; padding: 0 var(--space-sm); }
-@media (min-width: 40rem) { .wrap { padding: 0 var(--space-md); } }
+/* ---------------------------------------------------------------- sign-in and full-page messages */
 
-/* ---------------------------------------------------------------- controls (the hub's) */
-
-.btn {
-  display: inline-flex; align-items: center; justify-content: center; gap: var(--space-3xs);
-  height: var(--control-h); padding: 0 var(--space-sm);
-  border: 1px solid var(--color-rule-2); border-radius: var(--radius-sm);
-  background: var(--color-surface); color: var(--color-ink);
-  font-size: var(--text-sm); font-weight: 550; white-space: nowrap; text-decoration: none;
-  cursor: pointer; user-select: none;
-  transition: background-color var(--dur-short) var(--ease-out), border-color var(--dur-short) var(--ease-out), color var(--dur-short) var(--ease-out);
-}
-.btn:active { transform: translateY(1px); }
-.btn:disabled, .btn[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; transform: none; }
-.btn-sm { height: var(--control-h-sm); padding: 0 var(--space-xs); }
-.btn-block { width: 100%; }
-.btn-primary { background: var(--color-accent); border-color: var(--color-accent); color: var(--color-accent-ink); }
-.btn-ghost { background: transparent; border-color: transparent; color: var(--color-ink-2); }
-.btn.is-loading { color: transparent; position: relative; pointer-events: none; }
-.btn.is-loading::after { content: ""; position: absolute; inset: 0; margin: auto; width: 1rem; height: 1rem; border-radius: 50%; border: 2px solid var(--color-ink-2); border-right-color: transparent; animation: spin 700ms linear infinite; }
-.btn-primary.is-loading::after { border-color: var(--color-accent-ink); border-right-color: transparent; }
-@keyframes spin { to { transform: rotate(1turn); } }
-@media (hover: hover) {
-  .btn:hover { background: var(--color-surface-2); border-color: var(--color-ink-3); }
-  .btn-primary:hover { background: var(--color-accent-hover); border-color: var(--color-accent-hover); }
-  .btn-ghost:hover { background: var(--color-surface-2); border-color: transparent; color: var(--color-ink); }
-}
-.label { display: block; margin-bottom: var(--space-2xs); font-size: var(--text-sm); font-weight: 550; color: var(--color-ink); }
-.input {
-  width: 100%; min-width: 0; height: var(--control-h); padding: 0 var(--space-xs);
-  border: 1px solid var(--color-rule-2); border-radius: var(--radius-sm);
-  background: var(--color-surface); color: var(--color-ink); font-size: var(--text-md);
-  outline: 2px solid transparent; outline-offset: 1px;
-}
-.input:focus-visible, .input:focus { outline-color: var(--color-focus); border-color: var(--color-ink-3); }
-.input[aria-invalid="true"] { border-color: var(--color-bad); }
-.field-error { margin-top: var(--space-2xs); font-size: var(--text-sm); color: var(--color-bad); }
-
-/* ---------------------------------------------------------------- sign-in and full-page messages (the hub's login) */
-
-.login-body { min-height: 100dvh; display: grid; place-items: center; padding: var(--space-md) var(--space-sm); }
-.login { width: 100%; max-width: 22rem; }
-.login-brand { display: flex; align-items: center; gap: var(--space-xs); margin-bottom: var(--space-md); }
 .login-brand img { border-radius: 8px; }
-.login-brand h1 { font-size: var(--text-xl); }
-.login-card {
-  display: grid; gap: var(--space-sm);
-  padding: var(--space-md); border: 1px solid var(--color-rule); border-radius: var(--radius-lg);
-  background: var(--color-surface); box-shadow: var(--shadow-card);
-}
 .login-card h2 { font-size: var(--text-lg); }
 .login-card p { font-size: var(--text-sm); color: var(--color-ink-2); }
 .login-form { display: grid; gap: var(--space-2xs); }
@@ -183,7 +28,7 @@ svg.i { width: 1rem; height: 1rem; flex: none; stroke: currentColor; fill: none;
 /* ---------------------------------------------------------------- app bar */
 
 .topbar { position: sticky; top: 0; z-index: 10; background: color-mix(in oklch, var(--color-paper) 88%, transparent); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border-bottom: 1px solid var(--color-rule); }
-.topbar-in { display: flex; align-items: center; gap: var(--space-md); min-height: 3.5rem; }
+.topbar-in { display: flex; align-items: center; justify-content: flex-start; gap: var(--space-md); height: auto; min-height: 3.5rem; }
 .brand { display: inline-flex; align-items: center; gap: var(--space-2xs); color: var(--color-ink); font-weight: 650; font-size: var(--text-md); letter-spacing: -0.01em; text-decoration: none; white-space: nowrap; flex: none; }
 .brand img { border-radius: 6px; }
 .tabs { display: flex; gap: 2px; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; align-self: stretch; }

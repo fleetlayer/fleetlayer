@@ -111,6 +111,8 @@ pub struct Ctx<'a> {
     pub can_act: bool,
     pub csrf: &'a str,
     pub now: i64,
+    /// The passkey step-up page for an approval that opens a role window, when this viewer may open one here.
+    pub stepup: &'a dyn Fn(&str) -> Option<String>,
 }
 
 // ------------------------------------------------------------------ building blocks
@@ -201,10 +203,23 @@ fn approval_buttons(id: &str, verb: &str, c: &Ctx) -> String {
     if !c.can_act {
         return String::new();
     }
-    // Opening a role window needs its owner's passkey for that very request (`docs/access-control.md`), which the
-    // dashboard's own token would skip: it's approved where the passkey is asked for.
+    // Opening a role window needs the approver's passkey for that very request (`docs/access-control.md`): approving
+    // goes through the sign-in service's step-up page, and comes back to confirm.
     if verb == "activate" {
-        return r#"<span class="row-meta">Approve with your passkey, from your deck</span>"#.into();
+        let deny = format!(
+            r#"<form class="row-actions" method="post" action="/_/approvals/{id}"><input type="hidden" name="csrf" value="{csrf}"><button class="btn btn-sm" name="decision" value="deny">Deny</button>{approve}</form>"#,
+            id = esc(&enc(id)),
+            csrf = esc(c.csrf),
+            approve = match (c.stepup)(id) {
+                Some(url) => format!(
+                    r#"<a class="btn btn-sm btn-primary" href="{}">{}Approve with passkey</a>"#,
+                    esc(&url),
+                    icon("key")
+                ),
+                None => String::new(),
+            },
+        );
+        return deny;
     }
     format!(
         r#"<form class="row-actions" method="post" action="/_/approvals/{id}"><input type="hidden" name="csrf" value="{csrf}"><button class="btn btn-sm" name="decision" value="deny">Deny</button><button class="btn btn-sm btn-primary" name="decision" value="approve">{check}Approve</button></form>"#,
@@ -746,7 +761,7 @@ pub fn access(s: &Snapshot, c: &Ctx) -> String {
     }
     o.push_str("</div>");
     if !c.can_act && !pending.is_empty() {
-        o.push_str(r#"<p class="hint">You can see these but not decide them: that needs <code>admin</code> on the dashboard in the access policy.</p>"#);
+        o.push_str(r#"<p class="hint">You can see these but not decide them here: that needs <code>admin</code> on the dashboard in the access policy, and the dashboard's delegate token (“The dashboard” in the docs).</p>"#);
     }
     o.push_str("</section>");
 
@@ -928,7 +943,12 @@ mod tests {
     use super::*;
 
     fn ctx() -> Ctx<'static> {
-        Ctx { can_act: true, csrf: "tok", now: now_ms() }
+        Ctx {
+            can_act: true,
+            csrf: "tok",
+            now: now_ms(),
+            stepup: &|id: &str| Some(format!("https://signin.test/stepup?approval={id}")),
+        }
     }
 
     #[test]
@@ -961,7 +981,7 @@ mod tests {
     #[test]
     fn without_admin_there_are_no_buttons() {
         let s = crate::demo::Demo::new().snapshot();
-        let c = Ctx { can_act: false, csrf: "tok", now: now_ms() };
+        let c = Ctx { can_act: false, csrf: "tok", now: now_ms(), stepup: &|_: &str| None };
         assert!(!overview(&s, &c).contains("/_/approvals/"));
         assert!(!access(&s, &c).contains("Close now"));
     }
@@ -971,8 +991,13 @@ mod tests {
         let mut s = crate::demo::Demo::new().snapshot();
         s.approvals[0].verb = "activate".into();
         let o = access(&s, &ctx());
-        assert!(!o.contains("/_/approvals/"), "{o}");
-        assert!(o.contains("passkey"));
+        assert!(
+            o.contains(r#"href="https://signin.test/stepup?approval=ap_7d21""#),
+            "approved through the passkey page: {o}"
+        );
+        assert!(o.contains(r#"value="deny""#) && !o.contains(r#"value="approve""#), "{o}");
+        let none = Ctx { can_act: true, csrf: "tok", now: now_ms(), stepup: &|_: &str| None };
+        assert!(!access(&s, &none).contains("stepup"), "no passkey page, no approve button");
     }
 
     #[test]
