@@ -67,7 +67,12 @@ run() {
     [ -n "$slot_id" ] && trap '"$slot" release "$slot_id" >/dev/null 2>&1 || true' RETURN
   fi
   set +e
-  ssh "$host" "cd '$remote' && export PATH=\$HOME/.cargo/bin:\$PATH && systemd-run --scope -q -p MemoryMax=12G -p MemorySwapMax=0 nice -n 10 taskset -c 0-7 $quoted" 2>&1 |
+  # Light commands (fmt, check, clippy) get a smaller memory scope; both share a compile cache when the host has
+  # sccache (its own directory and server port, so it never mixes with other projects' builds on the host).
+  local mem=12G
+  [ "${FLEETLAYER_DEV_SLOT_CLASS:-heavy}" = light ] && mem=6G
+  local cache="command -v sccache >/dev/null && export RUSTC_WRAPPER=sccache SCCACHE_DIR=/opt/code/fleetlayer/sccache SCCACHE_CACHE_SIZE=20G SCCACHE_SERVER_PORT=4227;"
+  ssh "$host" "cd '$remote' && export PATH=\$HOME/.cargo/bin:\$PATH && { $cache true; } && systemd-run --scope -q -p MemoryMax=$mem -p MemorySwapMax=0 nice -n 10 taskset -c 0-7 $quoted" 2>&1 |
     grep --line-buffered -v setlocale
   status=${PIPESTATUS[0]}
   set -e
@@ -77,8 +82,8 @@ run() {
 case $cmd in
   sync) sync ;;
   fmt) sync; run cargo fmt --all --check; run cargo fmt --all --check --manifest-path plugins/matrix/Cargo.toml ;;
-  check) sync; run cargo check -q --locked -j 8 --workspace --all-targets "$@" ;;
-  clippy) sync; run cargo clippy -q --locked -j 8 --workspace --all-targets "$@" -- -D warnings ;;
+  check) sync; run cargo check -q --locked -j 4 --workspace --all-targets "$@" ;;
+  clippy) sync; run cargo clippy -q --locked -j 4 --workspace --all-targets "$@" -- -D warnings ;;
   build) sync; run cargo build -q --locked -j 8 "$@" ;;
   test) sync; run cargo test -q --locked -j 8 --workspace "$@" ;;
   format) sync; run cargo fmt --all; run cargo fmt --all --manifest-path plugins/matrix/Cargo.toml; rsync -a --no-owner --no-group --exclude=target --include='*/' --include='*.rs' --exclude='*' "$host:$remote/" "$dir/" ;;
