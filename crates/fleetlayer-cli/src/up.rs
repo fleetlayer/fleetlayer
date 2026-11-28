@@ -603,11 +603,16 @@ fn existing_control_url(node_yaml: &Path) -> Option<String> {
 }
 
 /// A control plane on this machine: a `ws://` address on loopback.
-fn is_local_control(url: &str) -> bool {
+fn is_local_control(url: &str, control_port: u16, control_here: bool) -> bool {
     let Some(rest) = url.strip_prefix("ws://") else { return false };
-    let host = rest.split(['/', '?']).next().unwrap_or("");
-    let host = host.rsplit_once(':').map_or(host, |(h, _)| h);
-    matches!(host, "127.0.0.1" | "localhost" | "[::1]")
+    let authority = rest.split(['/', '?']).next().unwrap_or("");
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((h, p)) if !p.contains(']') => (h, p.parse::<u16>().ok()),
+        _ => (authority, Some(80)),
+    };
+    // A loopback address alone isn't enough: a node joined through a tunnel (ssh -L) links to 127.0.0.1 too. Ours is
+    // on this instance's control port, with the control plane's own config on this machine.
+    matches!(host, "127.0.0.1" | "localhost" | "[::1]") && port == Some(control_port) && control_here
 }
 
 /// The machine's name, as the node works it out (it may have a name in node.yaml already).
@@ -644,7 +649,9 @@ pub async fn up(mut a: UpArgs) -> anyhow::Result<()> {
     let gateway_bin = find_bin("fleetlayer-gateway")?;
     // A node.yaml that already links elsewhere means this machine joined a fleet: no control plane here.
     let existing_control = existing_control_url(&Layout { config: config_dir(), state: state_dir() }.node_yaml());
-    let joined = a.join.is_some() || existing_control.as_deref().is_some_and(|u| !is_local_control(u));
+    let control_here = l.control_yaml().exists();
+    let joined = a.join.is_some()
+        || existing_control.as_deref().is_some_and(|u| !is_local_control(u, a.control_port, control_here));
     let control_bin = if joined { None } else { Some(find_bin("fleetlayer-control")?) };
     if !a.no_hub {
         find_bin("fleetlayer-claude-auth-manager")?;
@@ -1053,10 +1060,15 @@ mod tests {
         let f = d.join("node.yaml");
         std::fs::write(&f, "name: laptop\ncontrol:\n  url: wss://control.example/v1/link\n  token_file: /x\n").unwrap();
         assert_eq!(existing_control_url(&f).as_deref(), Some("wss://control.example/v1/link"));
-        assert!(!is_local_control("wss://control.example/v1/link"));
-        assert!(is_local_control("ws://127.0.0.1:7600/v1/link"));
-        assert!(is_local_control("ws://localhost:7700/v1/link"));
-        assert!(!is_local_control("ws://10.0.0.5:7600/v1/link"));
+        assert!(!is_local_control("wss://control.example/v1/link", 7600, true));
+        assert!(is_local_control("ws://127.0.0.1:7600/v1/link", 7600, true));
+        assert!(is_local_control("ws://localhost:7700/v1/link", 7700, true));
+        assert!(is_local_control("ws://[::1]:7600/v1/link", 7600, true));
+        assert!(!is_local_control("ws://10.0.0.5:7600/v1/link", 7600, true));
+        // Joined through a tunnel: a loopback address, but not this machine's control plane.
+        assert!(!is_local_control("ws://127.0.0.1:7610/v1/link", 7600, true), "another port");
+        assert!(!is_local_control("ws://127.0.0.1:7600/v1/link", 7600, false), "no control plane set up here");
+        assert!(!is_local_control("ws://localhost/v1/link", 7600, true), "no port is port 80");
         std::fs::write(&f, "name: laptop\n").unwrap();
         assert_eq!(existing_control_url(&f), None);
         std::fs::remove_dir_all(&d).unwrap();
