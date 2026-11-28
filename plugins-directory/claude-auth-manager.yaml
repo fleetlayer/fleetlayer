@@ -1,5 +1,5 @@
 name: claude-auth-manager
-summary: Year-long Claude setup tokens on every machine, usage shared across the fleet, sign-ins kept on one hub you run.
+summary: Year-long Claude setup tokens on every machine, each account's usage visible across your fleet, sign-ins kept on one hub you run.
 kind: plugin
 roles: [sync_source, sync_target]
 ships_with_fleetlayer: true

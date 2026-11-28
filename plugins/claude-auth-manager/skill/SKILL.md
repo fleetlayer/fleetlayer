@@ -1,6 +1,6 @@
 ---
 name: fleetlayer-claude-accounts
-description: What Fleetlayer's Claude account setup means for a Claude Code session: year-long setup tokens sent to every machine by a hub, usage shared across the fleet, and an account rotator that can move sessions between accounts. Use when you're asked to log in or see "signed in to a different account", when claude.ai connectors, Claude in Chrome or artifacts are missing, when the person asks how much Claude usage is left on each account, or when a Claude credential, account slot or token check fails.
+description: What Fleetlayer's Claude account setup means for a Claude Code session: year-long setup tokens sent to every machine by a hub, each account's usage visible across the fleet, and an account rotator that can move sessions between accounts. Use when you're asked to log in or see "signed in to a different account", when claude.ai connectors, Claude in Chrome or artifacts are missing, when the person asks how much Claude usage is left on each account, or when a Claude credential, account slot or token check fails.
 ---
 
 # Claude accounts on a Fleetlayer machine

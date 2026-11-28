@@ -6,8 +6,8 @@ out while another sits unused. Signing every account in on every machine takes a
 sign-ins expire and you do it again.
 
 This guide explains why that happens and sets up what the author runs instead: one sign-in hub on an always-on machine
-that holds the sign-ins, a year-long setup token per account sent to every machine, and usage shared across the fleet
-so an account rotator moves sessions before an account runs out.
+that holds the sign-ins for your own accounts, a year-long setup token per account sent to each of your machines, and
+each account's usage visible everywhere, so an account rotator moves sessions before an account runs out.
 
 The hub is early: it works and the author's fleet runs on it, and it will be redesigned.
 

@@ -61,8 +61,8 @@ credentials) and `fleetlayer` (the command line).
 - **Agents that message each other**: `fleetlayer msg send --to api@laptop "the staging deploy is done"`, on one
   machine or across machines, delivered through the agent's own channel and labelled with who sent it.
 - **Webhooks that find the right agent**: a CI failure goes to the session that wrote the branch.
-- **Many Claude accounts, many machines**: usage across all your accounts, shared with every session; year-long tokens
-  reach each machine sealed to its own key; sign-ins stay on a machine you control.
+- **Your own accounts, on your own machines**: each of your Claude accounts' usage, visible to every session; year-long
+  tokens reach each machine sealed to its own key; sign-ins stay on a machine you control.
 - **Separate users, separate rules**: run several nodes and herdr instances on the same machine or VM, each under its
   own Unix user. The access policy limits whom each agent may message and what it may use.
 - **Tools that live on one machine**: your signed-in browser on a laptop, used by an agent on a server with
