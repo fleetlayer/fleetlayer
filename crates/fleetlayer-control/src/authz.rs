@@ -174,6 +174,9 @@ pub struct Outcome {
     pub refusal: Option<RpcError>,
     /// The approval request it waits for, when that's why it isn't allowed.
     pub pending: Option<String>,
+    /// Approvals `for: once` it relies on, left unspent for the caller to spend (`approvals::spend_all`) once the
+    /// whole request has passed: a tool call through the MCP gate, whose other targets may still be refused.
+    pub to_spend: Vec<String>,
 }
 
 /// A tool call through the MCP gate: what an approval `for: once` is bound to, and what the person sees when asked.
@@ -444,6 +447,7 @@ async fn decide_in(
                  agent admit`"
             ))),
             pending: None,
+            to_spend: vec![],
         });
     }
     // Each tenant's say, from its rules alone.
@@ -480,6 +484,7 @@ async fn decide_in(
                  it to your person"
             ))),
             pending: None,
+            to_spend: vec![],
         });
     }
     // Allowed by every tenant's rules: then any tenant's `justify:` and `ask:`.
@@ -497,6 +502,9 @@ async fn decide_in(
     }
     let mut waiting: Vec<(String, String)> = vec![];
     let mut pending: Option<String> = None;
+    let mut to_spend: Vec<String> = vec![];
+    // A tool call too long to show the person whole can't be put to them: they'd approve what they didn't see.
+    let mut unshowable = false;
     if no_reason.is_none() {
         for s in &says {
             let Some(p) = &s.policy else { continue };
@@ -511,11 +519,18 @@ async fn decide_in(
                 held = format!("{held}#{}", c.args_hash);
             }
             // What the person sees: the tool call, or the agent's reason. Both are written by the agent.
-            let detail = call.and_then(|c| c.detail).or(why);
-            match crate::approvals::check(app, &s.tenant, who, verb, &held, hold, detail)
-                .await
-                .map_err(RpcError::internal)?
-            {
+            let (status, spend) = if call.is_some_and(|c| c.detail.is_none()) {
+                unshowable = true;
+                continue;
+            } else {
+                let detail = call.and_then(|c| c.detail).or(why);
+                // A tool call spends its approval only once all its targets pass (`link::tool_call`).
+                crate::approvals::check_spending(app, &s.tenant, who, verb, &held, hold, detail, call.is_none())
+                    .await
+                    .map_err(RpcError::internal)?
+            };
+            to_spend.extend(spend);
+            match status {
                 crate::approvals::Status::Approved => {}
                 crate::approvals::Status::Pending(id) => {
                     pending.get_or_insert(id.clone());
@@ -530,6 +545,7 @@ async fn decide_in(
     for s in &says {
         let wait = waiting.iter().find(|(t, _)| *t == s.tenant).map(|(_, w)| w.clone());
         let (decision, reason) = match (&no_reason, wait, why) {
+            (None, _, _) if unshowable => ("denied", "too long to show the person for approval".to_string()),
             (Some(r), _, _) => ("denied", r.clone()),
             (None, Some(w), _) => ("asked", w),
             (None, None, Some(w)) => ("allowed", format!("{}; why: {w}", s.because)),
@@ -544,6 +560,19 @@ async fn decide_in(
             because,
             refusal: Some(RpcError::refused(format!("{who} may {verb} {target} only with a reason: {r}"))),
             pending: None,
+            to_spend: vec![],
+        });
+    }
+    if unshowable {
+        return Ok(Outcome {
+            allowed: false,
+            because,
+            refusal: Some(RpcError::refused(format!(
+                "{who} needs its person's approval to {verb} {target}, and this call is too long to show them whole, \
+                 so it wasn't put to them. Make smaller calls (fewer at once, shorter arguments)"
+            ))),
+            pending: None,
+            to_spend: vec![],
         });
     }
     if let Some((_, w)) = waiting.first() {
@@ -554,9 +583,10 @@ async fn decide_in(
                 "{who} needs its person's approval to {verb} {target}: {w}. Try again once they've approved it"
             ))),
             pending,
+            to_spend: vec![],
         });
     }
-    Ok(Outcome { allowed: true, because, refusal: None, pending: None })
+    Ok(Outcome { allowed: true, because, refusal: None, pending: None, to_spend })
 }
 
 /// One tenant's say on a request, from its rules alone, with the audit rules that would have refused it. No side
@@ -1005,6 +1035,40 @@ mod tests {
         let logged = log(&app.db, "default").await;
         assert!(logged.contains(&"allowed recipes@laptop call tool:executor/search@laptop".to_string()), "{logged:?}");
         assert!(logged.contains(&"denied recipes@laptop call tool:executor/execute@laptop".to_string()), "{logged:?}");
+    }
+
+    /// Review of the MCP gate: an approval `for: once` is spent by exactly one call, however many identical calls
+    /// arrive at once, and only when the whole call goes ahead.
+    #[tokio::test]
+    async fn a_once_approval_is_spent_by_one_call_and_only_when_it_goes_ahead() {
+        use fleetlayer_protocol::link::ToolCall;
+        let (app, _) = example().await;
+        store(
+            &app.db,
+            "default",
+            "version: 2\ndefault: allow\nask:\n  - { who: \"*\", can: call, to: \"tool:x/send@*\", for: once }\n\
+             deny:\n  - { who: \"*\", can: call, to: \"tool:x/drop@*\" }\n",
+        )
+        .await
+        .unwrap();
+        let stream = app.streams.create(&app.db, "default", "x", "laptop", "laptop", "recipes@laptop").await.unwrap();
+        let call = |targets: &[&str]| ToolCall {
+            stream_id: stream.clone(),
+            targets: targets.iter().map(|t| t.to_string()).collect(),
+            args_hash: "same".into(),
+            detail: Some("send".into()),
+            justification: None,
+            peek: None,
+        };
+        let ask = |c: ToolCall| crate::link::tool_call(&app, "default", "laptop", c);
+        let id = ask(call(&["send"])).await.unwrap().approval.unwrap();
+        crate::approvals::decide(&app.db, "default", &id, true, None, "admin").await.unwrap();
+        // A call whose other target is refused doesn't spend it.
+        assert_eq!(ask(call(&["send", "drop"])).await.unwrap().decision, "denied");
+        // Ten identical calls at once: one goes ahead.
+        let all = futures::future::join_all((0..10).map(|_| ask(call(&["send"])))).await;
+        let allowed = all.iter().filter(|d| d.as_ref().is_ok_and(|d| d.decision == "allowed")).count();
+        assert_eq!(allowed, 1, "{:?}", all.iter().map(|d| d.as_ref().map(|d| d.decision.clone())).collect::<Vec<_>>());
     }
 
     #[tokio::test]

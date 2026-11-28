@@ -333,6 +333,8 @@ pub(crate) async fn tool_call(
     let call = crate::authz::CallContext { args_hash: &c.args_hash, detail: c.detail.as_deref() };
     let mut reasons = vec![];
     let mut approval = None;
+    let mut to_spend = vec![];
+    // Every target first, spending nothing; then the approvals `for: once` it relies on, all or none.
     for target in &targets {
         let out = crate::authz::check_call(app, tenant, &caller, target, call, c.justification.as_deref()).await?;
         if let Some(e) = out.refusal {
@@ -342,6 +344,24 @@ pub(crate) async fn tool_call(
         }
         reasons.push(format!("{target}: {}", out.because.join(", ")));
         approval = approval.or(out.pending);
+        to_spend.extend(out.to_spend);
+    }
+    to_spend.sort();
+    to_spend.dedup();
+    if !crate::approvals::spend_all(&app.db, tenant, &to_spend).await.map_err(RpcError::internal)? {
+        let reason =
+            "another call with the same arguments used its approval just now: make the call again to ask again";
+        for target in &targets {
+            let e = crate::audit::Entry {
+                decision: "denied".into(),
+                subject: caller.clone(),
+                verb: "call".into(),
+                target: target.clone(),
+                reason: reason.into(),
+            };
+            app.audit.record(&app.db, tenant, e).await.map_err(RpcError::internal)?;
+        }
+        return Ok(l::ToolCallDecision { decision: "denied".into(), approval: None, reason: reason.into() });
     }
     Ok(l::ToolCallDecision { decision: "allowed".into(), approval, reason: reasons.join("; ") })
 }

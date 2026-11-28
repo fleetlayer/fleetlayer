@@ -15,7 +15,8 @@ pub enum Status {
     Denied(String),
 }
 
-/// Whether `who` doing `verb` to `target` is approved now; files a request (and announces it) when there's none.
+/// Whether `who` doing `verb` to `target` is approved now; files a request (and announces it) when there's none. An
+/// approval `for: once` is spent by this use.
 pub async fn check(
     app: &App,
     tenant: &str,
@@ -25,6 +26,22 @@ pub async fn check(
     hold_ms: i64,
     detail: Option<&str>,
 ) -> anyhow::Result<Status> {
+    Ok(check_spending(app, tenant, who, verb, target, hold_ms, detail, true).await?.0)
+}
+
+/// [`check`], but an approval `for: once` that holds is left unspent and its ID returned, for the caller to spend
+/// with [`spend_all`] once everything else about the request has passed (a tool call with several targets).
+#[allow(clippy::too_many_arguments)]
+pub async fn check_spending(
+    app: &App,
+    tenant: &str,
+    who: &str,
+    verb: &str,
+    target: &str,
+    hold_ms: i64,
+    detail: Option<&str>,
+    spend: bool,
+) -> anyhow::Result<(Status, Option<String>)> {
     let db = &app.db;
     let now = now_ms();
     let rows = sqlx::query(
@@ -41,15 +58,17 @@ pub async fn check(
         let (id, status, expires, hold): (String, String, Option<i64>, i64) = (r.get(0), r.get(1), r.get(2), r.get(3));
         match status.as_str() {
             "approved" if expires.is_some_and(|e| e > now) => {
-                // `for: once`: this use spends it.
+                // `for: once`: this use spends it, if nothing else has in the meantime (requests run concurrently,
+                // so the spending is one conditional write, not a read and a write).
                 if hold == crate::policy::ONCE {
-                    sqlx::query("UPDATE approvals SET expires_at = ? WHERE tenant = ? AND id = ?")
-                        .bind(now)
-                        .bind(tenant)
-                        .bind(&id)
-                        .execute(db)
-                        .await?;
-                    return Ok(Status::Approved);
+                    if !spend {
+                        return Ok((Status::Approved, Some(id)));
+                    }
+                    if spend_all(db, tenant, std::slice::from_ref(&id)).await? {
+                        return Ok((Status::Approved, None));
+                    }
+                    // Spent by another request just now: this one asks again.
+                    return file(app, tenant, who, verb, target, hold_ms, detail).await.map(|s| (s, None));
                 }
                 if let Some(to) = renewal(verb, expires, hold, now) {
                     sqlx::query("UPDATE approvals SET expires_at = ? WHERE tenant = ? AND id = ?")
@@ -59,14 +78,53 @@ pub async fn check(
                         .execute(db)
                         .await?;
                 }
-                return Ok(Status::Approved);
+                return Ok((Status::Approved, None));
             }
-            "pending" => return Ok(Status::Pending(id)),
+            "pending" => return Ok((Status::Pending(id), None)),
             // A refusal stands for an hour; then the agent may ask again.
-            "denied" if expires.is_some_and(|e| e > now) => return Ok(Status::Denied(id)),
+            "denied" if expires.is_some_and(|e| e > now) => return Ok((Status::Denied(id), None)),
             _ => {}
         }
     }
+    file(app, tenant, who, verb, target, hold_ms, detail).await.map(|s| (s, None))
+}
+
+/// Spend approvals `for: once`, all or none: each must still be unspent and unexpired. False (and none spent) when
+/// another request spent one first.
+pub async fn spend_all(db: &Db, tenant: &str, ids: &[String]) -> anyhow::Result<bool> {
+    let now = now_ms();
+    let mut tx = db.begin().await?;
+    for id in ids {
+        let done = sqlx::query(
+            "UPDATE approvals SET expires_at = ? WHERE tenant = ? AND id = ? AND status = 'approved' AND expires_at > ?",
+        )
+        .bind(now)
+        .bind(tenant)
+        .bind(id)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+        if done.rows_affected() != 1 {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+    }
+    tx.commit().await?;
+    Ok(true)
+}
+
+/// File a new request and announce it.
+async fn file(
+    app: &App,
+    tenant: &str,
+    who: &str,
+    verb: &str,
+    target: &str,
+    hold_ms: i64,
+    detail: Option<&str>,
+) -> anyhow::Result<Status> {
+    let db = &app.db;
+    let now = now_ms();
     let id = format!("ap_{}", new_id());
     sqlx::query(
         "INSERT INTO approvals (tenant, id, subject, verb, target, status, hold_ms, created_at, detail) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)",

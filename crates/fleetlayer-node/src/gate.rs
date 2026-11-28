@@ -21,14 +21,60 @@ use crate::Node;
 pub const DEFAULT_WAIT: Duration = Duration::from_secs(120);
 /// How often to ask again while waiting.
 const POLL: Duration = Duration::from_secs(5);
-/// The most a detail shows the person.
-const DETAIL_MAX: usize = 4000;
+/// The longest detail the person is shown. A call that won't fit isn't put to them at all (the control plane refuses
+/// to ask with no detail): they'd approve arguments they never saw. The control plane takes up to 8192 bytes.
+const DETAIL_MAX: usize = 8000;
+
+/// Methods that pass without a check: they only set up the connection or list what's there. Every other request is
+/// checked as `rpc/<method>` (`resources/read`, `prompts/get`...), and `tools/call` by its tool and arguments.
+const UNCHECKED: &[&str] = &["initialize", "ping", "tools/list"];
+
+/// One message the gate checks before the server sees it.
+pub struct Gated {
+    /// The tool's name, or `rpc/<method>`.
+    pub label: String,
+    /// The targets to decide, or why the gate can't name them.
+    pub targets: Result<Vec<String>, String>,
+    pub args: Value,
+    pub id: Value,
+}
+
+/// Whether a message needs checking, and as what. None for replies to the server, notifications and the methods in
+/// [`UNCHECKED`].
+pub fn gated(text: &str, rules: &BTreeMap<String, Vec<String>>) -> Option<Gated> {
+    let v: Value = serde_json::from_str(text).ok()?;
+    let method = v.get("method")?.as_str()?;
+    if method.starts_with("notifications/") || UNCHECKED.contains(&method) {
+        return None;
+    }
+    let id = v.get("id").cloned().unwrap_or(Value::Null);
+    if method == "tools/call" {
+        let name = v["params"]["name"].as_str().unwrap_or_default().to_string();
+        let args = v["params"]["arguments"].clone();
+        return Some(Gated { targets: targets(&name, &args, rules), label: name, args, id });
+    }
+    let label = format!("rpc/{method}");
+    let targets = match clean(method, VALUE_CHARS) {
+        Some(_) => Ok(vec![label.clone()]),
+        None => Err(format!("the method name {method:?} can't be checked")),
+    };
+    Some(Gated { label, targets, args: v["params"].clone(), id })
+}
+
+/// The line to pass on: the message as the gate parsed it. A duplicate key then means the same to the server as it did
+/// to the checks (serde_json keeps the last one; a server might keep the first).
+pub fn reencode(text: &str) -> String {
+    match serde_json::from_str::<Value>(text) {
+        Ok(v @ Value::Object(_)) => v.to_string(),
+        _ => text.to_string(),
+    }
+}
 
 /// The targets a call names: its tool name, then, for each argument rule of that tool, `<name>/<value>` for each
 /// value the rule picks out. A rule that picks out nothing, or a value that isn't a short string, refuses the call:
 /// the gate never lets a call through as less than it is.
 pub fn targets(name: &str, args: &Value, rules: &BTreeMap<String, Vec<String>>) -> Result<Vec<String>, String> {
-    let name = clean(name).ok_or_else(|| format!("the tool name {name:?} can't be checked"))?;
+    let name = clean(name, NAME_CHARS).ok_or_else(|| format!("the tool name {name:?} can't be checked"))?;
     let Some(pointers) = rules.get(&name) else { return Ok(vec![name]) };
     let mut out = vec![];
     for p in pointers {
@@ -37,8 +83,11 @@ pub fn targets(name: &str, args: &Value, rules: &BTreeMap<String, Vec<String>>) 
             return Err(format!("this {name} call has nothing at {p}, so the gate can't tell what it does"));
         }
         for v in found {
-            let s = v.as_str().and_then(clean).ok_or_else(|| {
-                format!("this {name} call has something other than a short string at {p}, so the gate can't check it")
+            let s = v.as_str().and_then(|s| clean(s, VALUE_CHARS)).ok_or_else(|| {
+                format!(
+                    "this {name} call has something at {p} other than a short string of letters, digits and . _ / : -, \
+                     so the gate can't check it"
+                )
             })?;
             let t = format!("{name}/{s}");
             if !out.contains(&t) {
@@ -49,10 +98,15 @@ pub fn targets(name: &str, args: &Value, rules: &BTreeMap<String, Vec<String>>) 
     Ok(out)
 }
 
-/// A name or value as part of a target: 1 to 200 characters, none of them `@` (which ends the target) or control
-/// characters. None when it isn't.
-fn clean(s: &str) -> Option<String> {
-    (!s.is_empty() && s.len() <= 200 && !s.contains('@') && !s.chars().any(char::is_control)).then(|| s.to_string())
+/// The characters of a tool name (MCP's own rule), and of a value picked out of the arguments.
+const NAME_CHARS: &str = "._-";
+const VALUE_CHARS: &str = "._-/:";
+
+/// A name or value as part of a target: 1 to 200 ASCII letters, digits and the `extra` characters. Nothing a server
+/// might read differently (spaces, look-alike letters, an `@` that would end the target). None when it isn't.
+fn clean(s: &str, extra: &str) -> Option<String> {
+    (!s.is_empty() && s.len() <= 200 && s.chars().all(|c| c.is_ascii_alphanumeric() || extra.contains(c)))
+        .then(|| s.to_string())
 }
 
 /// The values at a JSON pointer, where a `*` segment means each item of an array, or the value itself when it isn't
@@ -104,8 +158,8 @@ pub fn args_hash(name: &str, args: &Value) -> String {
 
 /// What the person sees when asked: the tool and its arguments, cut short. For a program (Executor's `execute`), the
 /// code as it is, then the tool paths it names, which help the person read it but don't bind it to anything.
-pub fn detail(name: &str, args: &Value) -> String {
-    let mut out = match args.get("code").and_then(Value::as_str) {
+pub fn detail(name: &str, args: &Value) -> Option<String> {
+    let out = match args.get("code").and_then(Value::as_str) {
         Some(code) => {
             let paths = paths_named(code);
             let named = if paths.is_empty() { "none".to_string() } else { paths.join(", ") };
@@ -113,13 +167,26 @@ pub fn detail(name: &str, args: &Value) -> String {
         }
         None => format!("{name} {}", serde_json::to_string_pretty(args).unwrap_or_default()),
     };
-    if out.len() > DETAIL_MAX {
-        let mut cut = DETAIL_MAX;
-        while !out.is_char_boundary(cut) {
-            cut -= 1;
+    let out = visible(&out);
+    (out.len() <= DETAIL_MAX).then_some(out)
+}
+
+/// Characters that change how text looks without showing themselves (bidirectional overrides, zero-width characters,
+/// soft hyphens, control characters other than newline and tab) written out as `<U+XXXX>`, so what the person reads
+/// is what the call holds.
+pub fn visible(text: &str) -> String {
+    let hidden = |c: char| {
+        (c.is_control() && c != '\n' && c != '\t')
+            || matches!(c as u32, 0x00AD | 0x061C | 0x115F | 0x1160 | 0x180E | 0x200B..=0x200F | 0x202A..=0x202E
+                | 0x2060..=0x206F | 0x3164 | 0xFE00..=0xFE0F | 0xFEFF | 0xFFA0 | 0xE0000..=0xE007F)
+    };
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if hidden(c) {
+            out.push_str(&format!("<U+{:04X}>", c as u32));
+        } else {
+            out.push(c);
         }
-        out.truncate(cut);
-        out.push_str("\n… (cut short)");
     }
     out
 }
@@ -298,6 +365,43 @@ mod tests {
         assert!(targets("call", &json!({"calls": {"path": "a\nb"}}), &r).is_err());
         assert!(targets("bad@name", &json!({}), &r).is_err());
         assert!(targets("call", &json!({"calls": {"path": "x".repeat(201)}}), &r).is_err());
+        // Only plain ASCII: nothing a server might normalise into another path.
+        assert!(targets("call", &json!({"calls": {"path": "tools.google.gmail. send"}}), &r).is_err(), "a space");
+        assert!(targets("call", &json!({"calls": {"path": "tools.google.gmail.ｓend"}}), &r).is_err(), "full width");
+        assert!(targets("call", &json!({"calls": {"path": "tools.google.gmail.send\u{200b}"}}), &r).is_err());
+        assert!(targets("c all", &json!({}), &r).is_err());
+        assert!(targets("call", &json!({"calls": {"path": "tools.google.gmail.readThread"}}), &r).is_ok());
+    }
+
+    #[test]
+    fn every_request_but_setup_and_listing_is_checked() {
+        let r = executor();
+        let g = |t: &str| gated(t, &r).map(|g| (g.label, g.targets));
+        assert!(g(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#).is_none());
+        assert!(g(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#).is_none());
+        assert!(g(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#).is_none());
+        assert!(g(r#"{"jsonrpc":"2.0","id":3,"result":{}}"#).is_none(), "a reply to the server");
+        assert_eq!(
+            g(r#"{"jsonrpc":"2.0","id":4,"method":"resources/read","params":{"uri":"x"}}"#),
+            Some(("rpc/resources/read".into(), Ok(vec!["rpc/resources/read".into()])))
+        );
+        assert_eq!(
+            g(
+                r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"call","arguments":{"calls":{"path":"tools.a"}}}}"#
+            ),
+            Some(("call".into(), Ok(vec!["call/tools.a".into()])))
+        );
+        assert!(g(r#"{"jsonrpc":"2.0","id":6,"method":"weird method"}"#).unwrap().1.is_err());
+    }
+
+    #[test]
+    fn the_server_gets_the_message_the_checks_read() {
+        let dup = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"drop","name":"search"}}"#;
+        let g = gated(dup, &BTreeMap::new()).unwrap();
+        assert_eq!(g.label, "search");
+        let sent: Value = serde_json::from_str(&reencode(dup)).unwrap();
+        assert_eq!(sent["params"]["name"], "search");
+        assert_eq!(reencode(dup).matches("\"name\"").count(), 1);
     }
 
     #[test]
@@ -323,9 +427,12 @@ mod tests {
     fn a_program_shows_its_code_and_the_paths_it_names() {
         let code = "const t = await tools.google.gmail.search({q: 'x'});\nreturn tools.slack.post(t); // mytools.no";
         assert_eq!(paths_named(code), ["tools.google.gmail.search", "tools.slack.post"]);
-        let d = detail("execute", &json!({"code": code}));
+        let d = detail("execute", &json!({"code": code})).unwrap();
         assert!(d.contains("tools.google.gmail.search, tools.slack.post") && d.ends_with("// mytools.no"), "{d}");
-        let long = detail("call", &json!({"calls": {"path": "tools.a", "input": {"body": "é".repeat(5000)}}}));
-        assert!(long.len() < DETAIL_MAX + 40 && long.ends_with("(cut short)"));
+        // Too long to show whole: no detail, never a part of one.
+        assert_eq!(detail("call", &json!({"calls": {"path": "tools.a", "input": {"body": "é".repeat(5000)}}})), None);
+        // Text that hides itself is written out.
+        let d = detail("call", &json!({"to": "sam\u{202e}moc.live", "x": "a\u{200b}b"})).unwrap();
+        assert!(d.contains("sam<U+202E>moc.live") && d.contains("a<U+200B>b"), "{d}");
     }
 }

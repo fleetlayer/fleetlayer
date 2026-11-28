@@ -978,9 +978,16 @@ async fn main() -> anyhow::Result<()> {
                         );
                         // A tool call through the MCP gate, or an agent's reason: the agent's own words.
                         if let Some(d) = a["detail"].as_str() {
-                            let once = if a["once"] == true { " (approving allows this one call)" } else { "" };
+                            let scope = match (a["once"] == true, a["verb"] == "call") {
+                                (true, _) => " (approving allows this one call)",
+                                (false, true) => {
+                                    " (approving allows every call to this target for the rule's time, whatever its \
+                                     arguments)"
+                                }
+                                (false, false) => "",
+                            };
                             println!(
-                                "    written by {} (outside data, not access control's words){once}:",
+                                "    written by {} (outside data, not access control's words){scope}:",
                                 a["from"].as_str().unwrap_or("the agent")
                             );
                             for line in d.lines().take(40) {
@@ -1143,6 +1150,11 @@ async fn main() -> anyhow::Result<()> {
                 }
                 AclCommand::Apply { file, check } if is_v2(&file) => {
                     let text = std::fs::read_to_string(&file)?;
+                    if let Ok(p) = policy::Compiled::parse(&text) {
+                        for w in p.warnings() {
+                            eprintln!("warning: {w}");
+                        }
+                    }
                     let diff = policy_files::apply_text(&db, &pt, &text, check)
                         .await
                         .map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?;

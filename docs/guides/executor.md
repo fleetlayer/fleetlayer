@@ -59,7 +59,8 @@ tools:
       call: ["/calls/*/path"]                 # a call is named by the Executor paths it calls
 ```
 
-Restart the gate's node. Within five minutes it has checked Executor with the token (initialize, list its tools);
+The token file must belong to `fleetlayer-gate` with mode 0600 (the node refuses it otherwise), and the address
+must be https unless Executor runs on the same machine. Restart the gate's node. Within five minutes it has checked Executor with the token (initialize, list its tools);
 `fleetlayer status` on that machine, and its heartbeat, say so if the token is refused or Executor is down.
 
 ## 4. Rules for each role
@@ -83,20 +84,33 @@ only:
     to: ["tool:executor/search@gate", "tool:executor/describe@gate", "tool:executor/skills@gate",
          "tool:executor/call/tools.google.gmail.search@gate", "tool:executor/call/tools.google.gmail.readThread@gate"]
 
+  # Everyday agents: reading anywhere, and the writes you've listed; anything else is refused.
+  - who: "*@agents"
+    can: call
+    to: ["tool:executor/search@gate", "tool:executor/describe@gate", "tool:executor/skills@gate",
+         "tool:executor/resume@gate", "tool:executor/call/tools.*.search*@gate", "tool:executor/call/tools.*.get*@gate",
+         "tool:executor/call/tools.*.list*@gate", "tool:executor/call/tools.*.read*@gate",
+         "tool:executor/call/tools.google.gmail.send@gate", "tool:executor/call/tools.google.gmail.draft@gate"]
+
 ask:
-  # Anything that sends, creates or deletes waits for you, once, with the arguments you saw.
+  # Those writes wait for you, once, with the arguments you saw.
   - who: "*"
     can: call
-    to: ["tool:executor/call/tools.*.send*@gate", "tool:executor/call/tools.*.create*@gate",
-         "tool:executor/call/tools.*.delete*@gate", "tool:executor/call/tools.*.draft*@gate"]
+    to: ["tool:executor/call/tools.google.gmail.send@gate", "tool:executor/call/tools.google.gmail.draft@gate"]
     for: once
 ```
 
+Prefer `only:` lists per role, as above, to `ask:` patterns that guess at verbs. Paths name their action in many
+ways (`send`, `create`, `modify`, `trash`, `update`, `move`, `post`, `archive`), so a list of what may be done misses
+nothing, where a list of what's dangerous always misses something. An `ask:` pattern by verb is a second line, not
+the first. Use `for: once` on calls: a timed approval (`for: 1h`) lets every call to that path through for the hour,
+whatever its arguments (`acl apply` warns about it).
+
 Apply it (`fleetlayer-control acl apply`, or let the control plane read the file itself), and check it with
 `fleetlayer-control acl explain --from inbox@triage --can call --to tool:executor/call/tools.google.gmail.send@gate`.
-Paths are whatever Executor calls them: `search` lists them. Match by app (`tools.google.*`) and by verb in the name,
-and keep a test file (`acl test`) with the calls that matter, so a renamed path shows up in CI rather than in your
-inbox.
+Paths are whatever Executor calls them: `search` lists them. The gate takes paths of ASCII letters, digits and
+`. _ / : -` only, so a path can't be dressed up (a space, a look-alike letter) to slip past a rule. Keep a test file
+(`acl test`) with the calls that matter, so a renamed path shows up in CI rather than in your inbox.
 
 **About `execute`.** Denying it costs agents little: what a program does, `call` does in a few calls, each checked.
 If you'd rather keep it, ask for it `for: once`: the approval shows the program and the paths written in it, and you
@@ -164,5 +178,7 @@ The gate is a node like any other: its state is the node's directory and the tok
   can't name rather than letting it through as less than it is.
 - **The node's health says the server behind executor isn't working**: Executor is down, or refused the token (it
   was revoked or expired). Make a new one (step 2).
+- **"this call is too long to show them whole"**: a call that needs your approval but wouldn't fit on the approval
+  (about 8,000 characters) isn't put to you; the agent makes smaller calls.
 - **A call you approved asks again**: an approval `for: once` holds for one call with the same arguments. An agent
   that changed one argument made a different call.

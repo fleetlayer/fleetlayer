@@ -28,9 +28,11 @@ struct Session {
     protocol: Option<String>,
 }
 
+/// No redirects: a redirect would carry the credential headers to wherever it points.
 fn client() -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .unwrap_or_else(|_| reqwest::Client::new())
 }
@@ -323,7 +325,16 @@ mod tests {
                 _ => Response::builder().status(StatusCode::ACCEPTED).body(Body::empty()).unwrap(),
             })
         }
-        let app = axum::Router::new().route("/mcp", axum::routing::post(mcp).delete(|| async { "" }));
+        let moved = || async {
+            Response::builder()
+                .status(StatusCode::TEMPORARY_REDIRECT)
+                .header("location", "/mcp")
+                .body(Body::empty())
+                .unwrap()
+        };
+        let app = axum::Router::new()
+            .route("/mcp", axum::routing::post(mcp).delete(|| async { "" }))
+            .route("/moved", axum::routing::post(moved));
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = l.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
@@ -343,6 +354,11 @@ mod tests {
         assert_eq!(probe(&up(addr, "right")).await, Ok(1));
         let e = probe(&up(addr, "revoked")).await.unwrap_err();
         assert!(e.contains("401"), "{e}");
+        // A redirect isn't followed: it would take the credentials along.
+        let mut moved = up(addr, "right");
+        moved.url = format!("http://{addr}/moved");
+        let e = probe(&moved).await.unwrap_err();
+        assert!(e.contains("307"), "{e}");
     }
 
     #[tokio::test]

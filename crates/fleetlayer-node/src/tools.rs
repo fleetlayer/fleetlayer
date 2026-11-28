@@ -147,8 +147,17 @@ impl ToolConfig {
             (None, true) => return Err("give command: (a program) or url: (a remote MCP server)".into()),
             (Some(u), true) => {
                 let parsed = reqwest::Url::parse(u).map_err(|e| format!("url {u}: {e}"))?;
-                if !matches!(parsed.scheme(), "https" | "http") {
-                    return Err(format!("url {u}: only http and https"));
+                // The token goes with every request: in the clear only to this machine.
+                let host = parsed.host_str().unwrap_or_default();
+                let loopback = host == "localhost"
+                    || host.trim_matches(['[', ']']).parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback());
+                match parsed.scheme() {
+                    "https" => {}
+                    "http" if loopback => {}
+                    "http" => {
+                        return Err(format!("url {u}: https, or http only to this machine (127.0.0.1, localhost)"));
+                    }
+                    _ => return Err(format!("url {u}: only https (or http to this machine)")),
                 }
                 if !self.args.is_empty() || !self.env.is_empty() || !self.env_files.is_empty() {
                     return Err("args, env and env_files are for a program, not a url".into());
@@ -190,6 +199,7 @@ pub fn upstream(node: &Node, tool: &ToolConfig) -> Result<crate::mcp_http::Upstr
     let mut headers: Vec<(String, String)> = tool.headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     let read = |f: &std::path::Path| {
         let f = expand(node, f);
+        private(&f).map_err(|e| format!("{} can't connect: {e}", tool.name))?;
         std::fs::read_to_string(&f)
             .map(|v| v.trim().to_string())
             .map_err(|e| format!("{} can't connect: reading {}: {e}", tool.name, f.display()))
@@ -205,6 +215,24 @@ pub fn upstream(node: &Node, tool: &ToolConfig) -> Result<crate::mcp_http::Upstr
 
 fn yes() -> bool {
     true
+}
+
+/// A credential file must be this Unix user's and readable by nobody else: otherwise another user (an agent beside the
+/// gate) may have read it, or may have put it there.
+pub fn private(f: &std::path::Path) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::metadata(f).map_err(|e| format!("reading {}: {e}", f.display()))?;
+    if m.uid() != nix::unistd::getuid().as_raw() {
+        return Err(format!("{} belongs to another Unix user", f.display()));
+    }
+    if m.mode() & 0o077 != 0 {
+        return Err(format!(
+            "{} can be read or changed by other Unix users (mode {:o}): chmod 600 it",
+            f.display(),
+            m.mode() & 0o777
+        ));
+    }
+    Ok(())
 }
 
 /// How long to wait for each cleanup call's reply.
@@ -745,7 +773,10 @@ async fn mcp_pipe<R, W, S>(
             let text = String::from_utf8_lossy(&raw).trim_end().to_string();
             // A delivered secret in what the agent sends goes no further.
             let text = crate::gate::scrub(&node, &text, &up_ctx).into_owned();
-            let line = format!("{text}\n");
+            // What the server gets is what the checks read: the message as parsed, so a duplicate key can't mean one
+            // thing to the gate (which keeps the last) and another to the server.
+            let line = format!("{}\n", crate::gate::reencode(&text));
+            let mut gated = if config.check_calls { crate::gate::gated(&text, &config.call_targets) } else { None };
             match inbound(filter.as_ref(), &text, &node_name, &tool) {
                 Inbound::Forward(Some(n)) if config.close_with.contains(&n) => {
                     // The caller is done: close what it opened, the same way as when it disconnects.
@@ -766,25 +797,30 @@ async fn mcp_pipe<R, W, S>(
                         "text": format!("Closed what this session opened ({made} cleanup calls).")}]}});
                     let _ = out_tx.send(Message::Binary(format!("{reply}\n").into_bytes().into())).await;
                 }
-                Inbound::Forward(Some(n)) if config.check_calls => {
-                    let v: Value = serde_json::from_str(&text).unwrap_or_default();
-                    let args = v["params"]["arguments"].clone();
+                Inbound::Refuse(reply) => {
+                    tracing::warn!(tool = %tool, caller = %caller, line = %text, "refused a tool call");
+                    let _ = out_tx.send(Message::Binary(format!("{reply}\n").into_bytes().into())).await;
+                }
+                Inbound::Forward(_) if gated.is_some() => {
+                    let Some(g) = gated.take() else { continue };
+                    let n = g.label.clone();
                     let (node, out_tx, stdin, used) = (node.clone(), out_tx.clone(), stdin.clone(), used.clone());
                     let (config, caller, stream_id, tool) =
                         (config.clone(), caller.clone(), stream_id.clone(), tool.clone());
                     checks.spawn(async move {
-                        let verdict = match crate::gate::targets(&n, &args, &config.call_targets) {
+                        let verdict = match g.targets {
                             Err(why) => crate::gate::Verdict::Refused(format!(
                                 "{} refused this call: {why}. If this stops you doing your job, report it to your person.",
                                 node.name
                             )),
                             Ok(targets) => {
-                                let detail = crate::gate::detail(&n, &args);
                                 let call = fleetlayer_protocol::link::ToolCall {
                                     stream_id: stream_id.clone(),
                                     targets,
-                                    args_hash: crate::gate::args_hash(&n, &args),
-                                    detail: Some(detail),
+                                    args_hash: crate::gate::args_hash(&n, &g.args),
+                                    // None when it's too long to show whole: the control plane then won't ask the
+                                    // person, rather than show them part of it.
+                                    detail: crate::gate::detail(&n, &g.args),
                                     justification: None,
                                     peek: None,
                                 };
@@ -801,7 +837,7 @@ async fn mcp_pipe<R, W, S>(
                             }
                             crate::gate::Verdict::Refused(why) => {
                                 tracing::warn!(tool = %tool, caller = %caller, call = %n, "refused a tool call: {why}");
-                                let reply = crate::gate::refusal(&v["id"], &why);
+                                let reply = crate::gate::refusal(&g.id, &why);
                                 let _ = out_tx.send(Message::Binary(format!("{reply}\n").into_bytes().into())).await;
                             }
                         }
@@ -817,10 +853,6 @@ async fn mcp_pipe<R, W, S>(
                         break 'read;
                     }
                     let _ = w.flush().await;
-                }
-                Inbound::Refuse(reply) => {
-                    tracing::warn!(tool = %tool, caller = %caller, line = %text, "refused a tool call");
-                    let _ = out_tx.send(Message::Binary(format!("{reply}\n").into_bytes().into())).await;
                 }
             }
         }
@@ -1132,6 +1164,28 @@ mod tests {
         assert_eq!(out["result"]["tools"].as_array().unwrap().len(), 1);
         let only = ToolFilter { allow: Some(vec!["browser_snapshot".into()]), deny: vec![] };
         assert!(only.permits("browser_snapshot") && !only.permits("browser_navigate"));
+    }
+
+    #[test]
+    fn a_remote_server_needs_https_and_a_private_token_file() {
+        let t = |url: &str| -> ToolConfig {
+            serde_json::from_value(serde_json::json!({"name": "executor", "url": url})).unwrap()
+        };
+        assert!(t("https://executor.example/mcp").check().is_ok());
+        assert!(t("http://127.0.0.1:4400/mcp").check().is_ok());
+        assert!(t("http://localhost:4400/mcp").check().is_ok());
+        assert!(t("http://[::1]:4400/mcp").check().is_ok());
+        assert!(t("http://executor.example/mcp").check().is_err());
+        assert!(t("http://10.0.0.5/mcp").check().is_err());
+        assert!(t("ftp://executor.example/mcp").check().is_err());
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("token");
+        std::fs::write(&f, "secret").unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(private(&f).unwrap_err().contains("chmod 600"));
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(private(&f).is_ok());
     }
 
     #[test]

@@ -111,6 +111,8 @@ around the gate is going around your person. What its answers mean:
   a few `call`s, each checked.
 - **"… refused this call: this <tool> call has nothing at <pointer> …"**: the gate couldn't tell what the call does
   (an Executor `call` without a `path`). Fix the arguments.
+- **"… this call is too long to show them whole …"**: it needs approval, and your person can't approve what they
+  can't read. Make smaller calls: fewer calls in one, shorter arguments.
 - **"… couldn't check this call with the control plane …"**: the gate fails closed. Try again in a minute; tell your
   person if it keeps failing.
 

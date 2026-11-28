@@ -373,21 +373,25 @@ around the gate.
 # node.yaml of the gate's own node (its own Unix user)
 tools:
   - name: executor
-    url: https://executor.example/mcp      # or command: + args: for a program
-    bearer_file: ~/.config/executor/token    # read when a connection opens; header_files: for other headers
+    url: https://executor.example/mcp      # https, or http to this machine; or command: + args: for a program
+    bearer_file: ~/.config/executor/token    # this user's, mode 0600; header_files: for other headers
     allow: ["*@agents", "*@laptop"]
     check_calls: true
     call_targets:                            # argument rules: more of the call's name, from its arguments
       call: ["/calls/*/path"]
 ```
 
-With `check_calls: true`, the node asks the control plane about each `tools/call` (`link/tool_call`). A call is
+With `check_calls: true`, the node asks the control plane about each request before the server sees it
+(`link/tool_call`). Only `initialize`, `ping`, `tools/list` and notifications pass unasked; any other method is
+checked as `tool:<tool>/rpc/<method>@<node>` (`rpc/resources/read`, `rpc/prompts/get`), and each `tools/call` by what
+it calls. A call is
 named `tool:<tool>/<target>@<node>`: the MCP tool's name, and with `call_targets`, one more part for each value a JSON
 pointer picks out of the arguments (`*` for each item of a list, or the value itself when it isn't one). Executor's
 `call` with two calls in it is two targets, `tool:executor/call/tools.google.gmail.search@gate` and
 `tool:executor/call/tools.google.gmail.send@gate`, and both must be allowed. A call whose arguments lack what a rule
-names, or hold something other than a short string there, is refused by the node: it never passes as less than it
-is. The caller is the one the control plane recorded when the stream opened, not whatever the node says.
+names, or hold anything there but a short string of ASCII letters, digits and `. _ / : -`, is refused by the node:
+it never passes as less than it is, and nothing reaches the server that it might read as another path (a space, a
+look-alike letter). The server gets the message as the node parsed it, so a duplicate key means the same to both. The caller is the one the control plane recorded when the stream opened, not whatever the node says.
 
 Each target is decided as verb `call` by the same policy file, so per-role rules are the usual ones (a role is a Unix
 user with its own node, `*@<node>`):
@@ -411,15 +415,22 @@ ask:
 - **Allowed** calls go to the server; **denied** ones are answered by the node with an MCP error result naming the
   rule.
 - **Asked** calls wait: the person gets an `access.ask` event (and `fleetlayer-control approvals list` shows the call,
-  its arguments scrubbed of delivered secrets and cut short at 4,000 characters), and the node holds the call for up to
+  its arguments scrubbed of delivered secrets, with characters that hide themselves, such as bidirectional overrides
+  and zero-width spaces, written out as `<U+202E>`), and the node holds the call for up to
   `approval_wait` seconds (120 by default) while it looks at the request every five seconds without writing to the
   audit log. Approved in time, the call goes through and the agent never noticed; otherwise the agent is told the
-  request ID and makes the same call again once it's approved. An approval `for: once` is spent by that call and holds
-  only for those arguments.
+  request ID and makes the same call again once it's approved. An approval `for: once` holds only for those arguments
+  and is spent by one call: identical calls arriving together get one approval between them, and a call refused for
+  another of its targets spends nothing. A call too long to show the person whole (about 8,000 characters) isn't put
+  to them at all: it's refused, and the agent is told to make smaller calls.
+- Use `for: once` for calls: a timed approval (`for: 1h`) allows every call to its target for that long, whatever the
+  arguments, though the person saw only the first. `acl apply` warns about one.
 - **Every** decision is in the audit log with its caller and the full target. Arguments are not: the log says who
   called what, the server's own logs say with what.
 - A delivered secret in a call's arguments or its result is redacted by the node's scrubber
   ([credentials](credentials.md)) before it goes on, and raises the alert that says to rotate it.
+- A remote server's credentials are read from files that must be the gate user's own and readable by nobody else
+  (mode 0600), sent only over https (or plain http to this machine), and never follow a redirect.
 - The node checks a remote server every five minutes with its own credentials (initialize, list its tools), and a
   failure, a revoked token included, fails the node's health and its heartbeat.
 - Only one JSON-RPC message per line passes, for every shared MCP server (gated or not, from v0.3.13): a batch or a

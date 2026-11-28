@@ -644,6 +644,23 @@ impl Compiled {
         Ok(Compiled { file, enforced, audit, notes })
     }
 
+    /// Rules that do what they say but probably not what was meant, for `acl apply` to print.
+    pub fn warnings(&self) -> Vec<String> {
+        let mut out = vec![];
+        for (i, r) in self.file.ask.iter().flatten().enumerate() {
+            let covers_call = r.can.items().iter().any(|c| c == "call" || c == "*");
+            if covers_call && parse_duration_ms(&r.hold).is_ok_and(|h| h != ONCE) {
+                out.push(format!(
+                    "ask[{i}] approves tool calls (call) for {}: one approval allows every call to its target for that \
+                     long, whatever the arguments, though the person saw only the first. Use `for: once` for calls \
+                     that send, change or delete things, and for programs (Executor's execute)",
+                    r.hold
+                ));
+            }
+        }
+        out
+    }
+
     pub fn parse(text: &str) -> anyhow::Result<Compiled> {
         let file: PolicyFile = yaml_serde::from_str(text)?;
         Compiled::compile(file)
@@ -1230,6 +1247,18 @@ audit:
         let p = Compiled::parse(&format!("version: 2\ndefault: allow\n{by_node}")).unwrap();
         assert!(!p.decide("x@triage", "message", "finances@laptop", false).unwrap().allowed);
         assert!(suggest(&[], true).starts_with("# Nothing"));
+    }
+
+    #[test]
+    fn a_timed_approval_of_tool_calls_is_warned_about() {
+        let p = Compiled::parse(
+            "version: 2\ndefault: allow\nask:\n  - { who: \"*\", can: call, to: \"tool:e/execute@*\", for: 1h }\n  \
+             - { who: \"*\", can: [call], to: \"tool:e/call/*@*\", for: once }\n  - { who: \"*\", can: start, for: 10m }\n",
+        )
+        .unwrap();
+        let w = p.warnings();
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].starts_with("ask[0]") && w[0].contains("for 1h"), "{w:?}");
     }
 
     #[test]
