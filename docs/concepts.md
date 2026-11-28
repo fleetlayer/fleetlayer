@@ -78,4 +78,5 @@ stops the piece, copies its folder sealed and checked, starts it there and point
 
 ## What's being built
 
-Reaching every session from your phone with one pairing, and more harnesses: Cursor, OpenCode, Aider and pi.
+Reaching every session from your phone with one pairing, and more [harnesses](harnesses.md): pi, OpenCode, Gemini CLI
+and Cursor's CLI in v0.4.2, then Aider.
