@@ -39,6 +39,8 @@ pub const LINK_METHODS: &[(&str, Option<&str>)] = &[
     (m::TOOL_OPEN, Some("use_tool")),
     (m::TOOL_CALL, Some("call")),
     (m::TERMINAL_OPEN, Some("read")),
+    // Checked as `read` on the session, under every name it goes by (`route::read_transcript`).
+    (m::TRANSCRIPT_READ, Some("read")),
     (m::SYNC_PUBLISH, Some("sync")),
     (m::READINGS, None),
     (m::READING_SUBSCRIBE, Some("read")),
@@ -1258,6 +1260,41 @@ mod tests {
         assert!(log(&app.db, &acme).await.iter().any(|l| l == "allowed person:a sign_in service:pages"));
     }
 
+    /// Every method the control plane's link handler answers is in LINK_METHODS, read from the handler's own source,
+    /// so a new method can't be added to the match and forgotten here (transcript reads were, from v0.3.13 to v0.3.14:
+    /// the fail-closed check refused them as unknown).
+    #[test]
+    fn every_method_the_link_handler_answers_is_listed() {
+        let src = include_str!("link.rs");
+        let proto = include_str!("../../fleetlayer-protocol/src/link.rs");
+        let listed: Vec<&str> = LINK_METHODS.iter().map(|(m, _)| *m).collect();
+        let start = src.find("impl Handler for FromNode").expect("the node handler");
+        let body = &src[start..];
+        let end = body.find("_ => Err(RpcError::method_not_found(method))").expect("the handler's last arm");
+        let mut missing = vec![];
+        for line in body[..end].lines() {
+            let t = line.trim_start();
+            if let Some(rest) = t.strip_prefix("l::method::") {
+                let name: String = rest.chars().take_while(|c| c.is_ascii_uppercase() || *c == '_').collect();
+                if !rest[name.len()..].trim_start().starts_with("=>")
+                    && !rest[name.len()..].trim_start().starts_with('|')
+                {
+                    continue;
+                }
+                let decl = format!("pub const {name}: &str = \"");
+                let value = proto.find(&decl).map(|i| {
+                    let rest = &proto[i + decl.len()..];
+                    &rest[..rest.find('"').unwrap_or(0)]
+                });
+                match value {
+                    Some(v) if listed.contains(&v) => {}
+                    _ => missing.push(name),
+                }
+            }
+        }
+        assert!(missing.is_empty(), "answered by the link handler but not in LINK_METHODS: {missing:?}");
+    }
+
     /// Every method a node can call is listed, with the verb it needs or None on purpose.
     #[test]
     fn every_link_method_is_classified() {
@@ -1279,6 +1316,7 @@ mod tests {
             m::TOOL_OPEN,
             m::TOOL_CALL,
             m::TERMINAL_OPEN,
+            m::TRANSCRIPT_READ,
             m::SYNC_PUBLISH,
             m::READINGS,
             m::READING_SUBSCRIBE,

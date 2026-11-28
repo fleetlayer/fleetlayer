@@ -414,6 +414,7 @@ impl Handler for FromNode {
         let (app, tenant) = (&self.app, self.tenant.as_str());
         // Fail closed: a method that isn't classified for authorization isn't served.
         if method != ext::method::PING && !crate::authz::LINK_METHODS.iter().any(|(m, _)| *m == method) {
+            tracing::warn!(node = %self.node, method, "refused a link method that isn't classified for authorization");
             return Err(RpcError::method_not_found(method));
         }
         match method {
