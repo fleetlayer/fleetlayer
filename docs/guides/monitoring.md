@@ -30,6 +30,11 @@ This uses `laptop` and `server` for machines and `planning` and `infra@server` f
 | A daemon whose work you can't see (a sync) | a heartbeat after each real piece of work | the work stops |
 | The Fleetlayer node | its own heartbeat, or the gateway asking it | a plugin, the link or the gateway is down |
 
+The control plane has three health paths, for the three questions a monitor asks. In Kubernetes: the liveness probe
+uses `/livez`, which never touches the database, so a busy disk doesn't get the server restarted; the readiness probe
+uses `/healthz`; and the uptime check that alerts uses `/healthz?strict`, which also fails while something is degraded
+([deploy notes](https://github.com/fleetlayer/fleetlayer/blob/main/deploy/README.md)).
+
 The third row is the one people skip. A sync daemon that's up but disconnected passes every "is it running" check. Push
 the heartbeat from the place where a sync succeeds, so a stalled sync stops the heartbeat.
 

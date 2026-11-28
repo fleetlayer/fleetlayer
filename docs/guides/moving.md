@@ -133,7 +133,8 @@ folders with the new machine (and the move leaves them alone, since they're alre
 Keys and tokens never travel in the clear and never pass through the control plane: the whole copy is sealed to a key
 made for this move on the other machine, and it's sent over SSH as well. That key is deleted when the move ends. The
 piece's own state here is deleted once it's healthy there, unless you pass `--keep-old`; delete a kept copy once
-you're happy, since it still holds the secrets.
+you're happy, since it still holds the secrets. A signing key (the Claude hub's) is never kept in the old copy, so
+only the moved piece can sign.
 
 ## Trying it on one machine
 

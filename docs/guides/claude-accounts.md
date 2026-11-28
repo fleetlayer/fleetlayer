@@ -325,8 +325,9 @@ sync:claude-auth-manager/tokens@laptop` shows the decision.
 - **Nothing reaches a node:** look in the hub's node log for a refused sync (your policy) or a target whose key
   changed. The hub's node pins each target's key the first time it seals to it, in
   `~/.local/state/fleetlayer/known-keys.json`, and refuses a changed key until you remove the old pin.
-- **A node refuses the tokens bundle** ("signed by another key" in its log): it pinned a different hub's key, from a
-  hub you replaced rather than moved. Remove its entry from `~/.local/state/fleetlayer/claude-auth-manager/sources.json`
-  and restart the node, so it pins the new hub's key.
+- **A node refuses the tokens bundle** ("signed by another key" or "it first came from …" in its log): it trusts a
+  different hub, one you replaced rather than moved. Only if that's really so, run `fleetlayer secrets unpin
+  claude-auth-manager/tokens` on that machine (with no name, it lists what's pinned), and the next bundle is trusted
+  from scratch.
 - **CodexBar shows nothing:** run `fleetlayer-claude-accounts --list --json` in a terminal. It prints the reason
   (`NodeUnreachable`, `NoAccounts` when this node may not read the hub's readings, `HubTooOld`).
