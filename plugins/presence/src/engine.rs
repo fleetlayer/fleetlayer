@@ -172,7 +172,7 @@ pub fn judge(l: &Look) -> Verdict {
 
     // 2. Semi-present: a look at the phone, whatever else holds.
     let said = l.stated.map(|s| {
-        let note = s.note.as_ref().map(|n| format!(" (note \"{n}\")")).unwrap_or_default();
+        let note = s.note.as_ref().map(|n| format!(" (note {})", crate::engine::quote(n))).unwrap_or_default();
         let until = s.until.map(|u| format!(" until {}", local(p, u, l.now))).unwrap_or_default();
         format!("said {}{note}{until} at {} via {}", s.state.words(), local(p, s.set_at, l.now), s.by)
     });
@@ -194,7 +194,7 @@ pub fn judge(l: &Look) -> Verdict {
 
     // 4. A planned absence.
     if let Some(plan) = l.plans.iter().find(|x| x.from <= l.now && l.now < x.to) {
-        let note = plan.note.as_ref().map(|n| format!(" (note \"{n}\")")).unwrap_or_default();
+        let note = plan.note.as_ref().map(|n| format!(" (note {})", crate::engine::quote(n))).unwrap_or_default();
         return v(
             State::Away,
             format!("planned absence{note} until {}", local(p, plan.to, l.now)),
@@ -259,6 +259,12 @@ pub fn night_end(p: &Person, now: Timestamp) -> Option<Timestamp> {
     } else {
         None
     }
+}
+
+/// A note as it's quoted in a reason line: JSON-escaped, so a note can't close its own quotes and pass for the
+/// authority's words.
+pub fn quote(n: &str) -> String {
+    serde_json::to_string(n).unwrap_or_default()
 }
 
 /// A time as the person reads it: `13:05` today, `Mon 5 Jan 13:05` another day.

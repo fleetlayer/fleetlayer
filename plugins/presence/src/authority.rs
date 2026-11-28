@@ -444,7 +444,10 @@ impl Authority {
                             Look { person: &p, desks: &desks, seen: None, stated: Some(&stated), plans: &[], now };
                         stated.left = engine::desks_show_gone(&look);
                         kept.stated = Some(stated.clone());
-                        json!({"person": p.name, "stated": stated})
+                        // What the caller said, back; not whether the desk shows them gone (that's for `get`).
+                        let mut said = json!(stated);
+                        said.as_object_mut().map(|o| o.remove("left"));
+                        json!({"person": p.name, "stated": said})
                     }
                     other => return Err(format!("state {other:?}: away, asleep or back")),
                 }
@@ -513,7 +516,9 @@ impl Authority {
         drop(i);
         self.node.readings(readings);
         let mut answer = answer;
-        answer["now"] = view;
+        // Only what the shared reading says: a caller allowed to change a status may not be allowed to read the rest
+        // (the desk, notes, plans), which only `get` gives, as the policy decides.
+        answer["now"] = shared(&view);
         Ok(answer)
     }
 
@@ -602,7 +607,7 @@ pub fn decide(p: &Person, before: &Kept, desks: &[Desk], now: Timestamp) -> (Val
     }
     line.push_str(&format!(": {}. Their time: {} ({}).", verdict.why, local_now.strftime("%a %H:%M"), p.tz_name));
     if let Some(next) = upcoming.iter().find(|x| x.from > now) {
-        let note = next.note.as_ref().map(|n| format!(" (note \"{n}\")")).unwrap_or_default();
+        let note = next.note.as_ref().map(|n| format!(" (note {})", crate::engine::quote(n))).unwrap_or_default();
         line.push_str(&format!(
             " Next planned absence{note}: {} to {}.",
             engine::local(p, next.from, now),
@@ -611,7 +616,8 @@ pub fn decide(p: &Person, before: &Kept, desks: &[Desk], now: Timestamp) -> (Val
     }
     // Notes are what a caller wrote: a reader is told whose words they are.
     let mut writers: Vec<&str> = vec![];
-    let quoted = |n: &Option<String>| n.as_ref().is_some_and(|n| line.contains(&format!("(note \"{n}\")")));
+    let quoted =
+        |n: &Option<String>| n.as_ref().is_some_and(|n| line.contains(&format!("(note {})", engine::quote(n))));
     if let Some(s) = kept.stated.as_ref().filter(|s| quoted(&s.note)) {
         writers.push(&s.by);
     }

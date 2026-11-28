@@ -66,8 +66,11 @@ const LOOK_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn run(cmd: &str, args: &[&str]) -> Result<String, String> {
     use std::io::Read;
+    use std::os::unix::process::CommandExt;
+    // A process group of its own, so a timeout stops everything it started (a shell's children too).
     let mut child = std::process::Command::new(cmd)
         .args(args)
+        .process_group(0)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -90,6 +93,10 @@ fn run(cmd: &str, args: &[&str]) -> Result<String, String> {
         match child.try_wait().map_err(|e| format!("{cmd}: {e}"))? {
             Some(s) => break s,
             None if started.elapsed() >= LOOK_TIMEOUT => {
+                let _ = std::process::Command::new("kill")
+                    .args(["-KILL", "--", &format!("-{}", child.id())])
+                    .stderr(std::process::Stdio::null())
+                    .status();
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(format!("{cmd} {} took over {}s", args.join(" "), LOOK_TIMEOUT.as_secs()));

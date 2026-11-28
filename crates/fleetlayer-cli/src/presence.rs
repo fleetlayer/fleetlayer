@@ -151,7 +151,7 @@ pub async fn run(socket: &Path, args: PresenceArgs, as_json: bool) -> anyhow::Re
             let p = person().await?;
             let v =
                 call("set", json!({"person": p, "state": state, "for": for_, "until": until, "note": note})).await?;
-            done(&v, as_json)
+            done(&v, call("get", json!({"person": p})).await.ok(), as_json)
         }
         PresenceCommand::Plan { command: PlanCommand::Away { from, to, note } } => {
             let p = person().await?;
@@ -159,7 +159,7 @@ pub async fn run(socket: &Path, args: PresenceArgs, as_json: bool) -> anyhow::Re
             if !as_json {
                 eprintln!("Planned absence #{} added.", v["plan"]["id"]);
             }
-            done(&v, as_json)
+            done(&v, call("get", json!({"person": p})).await.ok(), as_json)
         }
         PresenceCommand::Plan { command: PlanCommand::List } => {
             let people = views().await?;
@@ -196,22 +196,38 @@ pub async fn run(socket: &Path, args: PresenceArgs, as_json: bool) -> anyhow::Re
         PresenceCommand::Plan { command: PlanCommand::Remove { id } } => {
             let p = person().await?;
             let v = call("plan_remove", json!({"person": p, "id": id})).await?;
-            done(&v, as_json)
+            done(&v, call("get", json!({"person": p})).await.ok(), as_json)
         }
         PresenceCommand::Seen { via, device } => {
             let p = person().await?;
             let v = call("seen", json!({"person": p, "via": via, "device": device})).await?;
-            done(&v, as_json)
+            done(&v, call("get", json!({"person": p})).await.ok(), as_json)
         }
     }
 }
 
-/// After a change: the person's state now.
-fn done(v: &Value, as_json: bool) -> anyhow::Result<()> {
+/// After a change: the person's state now, in full when this caller may read it, else the shared state.
+fn done(v: &Value, full: Option<Value>, as_json: bool) -> anyhow::Result<()> {
+    let full = full.and_then(|f| f["people"][0].as_object().cloned().map(Value::Object));
     if as_json {
-        println!("{}", serde_json::to_string_pretty(v)?);
-    } else {
-        print_view(&v["now"]);
+        let mut v = v.clone();
+        if let Some(f) = full {
+            v["now"] = f;
+        }
+        println!("{}", serde_json::to_string_pretty(&v)?);
+        return Ok(());
+    }
+    match full {
+        Some(f) => print_view(&f),
+        None => {
+            let now = &v["now"];
+            let until = now["until"].as_str().map(|u| format!(" until {u}")).unwrap_or_default();
+            println!(
+                "{} is {}{until}.",
+                now["person"].as_str().unwrap_or("?"),
+                now["state"].as_str().unwrap_or("?").replace('_', "-")
+            );
+        }
     }
     Ok(())
 }
