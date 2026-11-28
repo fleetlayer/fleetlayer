@@ -8,7 +8,7 @@ the command line and companion apps on macOS, iOS and Android
 It's MIT licensed and run by the OpenClaw Foundation, a non-profit, with no paid tier or hosted service
 ([GitHub](https://github.com/openclaw/openclaw)).
 
-Fleetlayer connects the agent sessions you already run, Claude Code and Codex in herdr or Rex, on your laptop, a home
+Fleetlayer connects the agent sessions you already run, Claude Code and Codex in herdr, Rex or tmux, on your laptop, a home
 server or a VPS, into one fleet. Any agent can message any other, events and webhooks reach the agent that owns the
 work, and each agent works under access rules you set, with approvals and an audit log
 ([How Fleetlayer fits together](concepts.md)). It's source-available under the Functional Source License, and you run
@@ -26,7 +26,7 @@ v2026.11.10 release ([Releases](https://docs.openclaw.ai/releases)). Fleetlayer'
 | | OpenClaw | Fleetlayer |
 |---|---|---|
 | Chat channels | About 30: Telegram built in, WhatsApp, Discord, Slack, Signal, iMessage, Matrix, Teams and more as plugins, plus WebChat ([Channels](https://docs.openclaw.ai/channels)) | Matrix rooms as channels (coming, in the next release). Telegram is planned |
-| A persistent agent you talk to | Yes: the Gateway's agent, reached from any channel or the Control UI ([Architecture](https://docs.openclaw.ai/concepts/architecture)) | A Claude Code or Codex session in herdr or Rex that stays running, reached by message, terminal, phone or (coming) a Matrix room |
+| A persistent agent you talk to | Yes: the Gateway's agent, reached from any channel or the Control UI ([Architecture](https://docs.openclaw.ai/concepts/architecture)) | A Claude Code or Codex session in herdr, Rex or tmux that stays running, reached by message, terminal, phone or (coming) a Matrix room |
 | Scheduled prompts | Built-in automations: one-shot, interval and cron jobs, with output to a chat or a webhook ([Automation](https://docs.openclaw.ai/automation)) | The scheduler plugin: every few hours, a cron expression or once at a set time, to any session ([fleetlayer-scheduler](plugins/scheduler.md)) |
 | Multiple agents, agent-to-agent messages | Isolated agents in one Gateway, routed by bindings; agent-to-agent access on by default, restrictable; sub-agents ([Multi-agent](https://docs.openclaw.ai/concepts/multi-agent)) | Any session messages any other across machines, `fleetlayer msg send --to api@laptop`, checked by the access policy ([Watch, steer and message](guides/day-to-day.md)) |
 | Skills and tools | Built-in tools (exec, browser, web search, messaging), plugins, `SKILL.md` skills and the ClawHub registry ([Tools](https://docs.openclaw.ai/tools), [Skills](https://docs.openclaw.ai/tools/skills)) | Your harness's own tools and skills; Fleetlayer installs its skills on every machine ([Tell your agents about Fleetlayer](guides/agents-know-fleetlayer.md)) |

@@ -1,0 +1,33 @@
+name: fleetlayer-tmux
+summary: Connects tmux, so the Claude Code and Codex sessions running in your panes are in the fleet.
+kind: plugin
+roles: [session_manager]
+ships_with_fleetlayer: true
+status: beta
+licence: FSL-1.1-ALv2
+maintainer: Fleetlayer
+source: https://github.com/fleetlayer/fleetlayer/tree/main/plugins/tmux
+install: bundled
+command: fleetlayer-tmux
+platforms: [linux, macos]
+min_fleetlayer: 0.4.2
+protocol: 1
+needs: [tmux 3.0 or later (https://github.com/tmux/tmux)]
+grants: []
+docs: plugins/tmux
+config: |
+  plugins:
+    - name: tmux
+      command: fleetlayer-tmux
+      config:
+        program: tmux
+security: >-
+  Sees every pane on its user's tmux server (names, folders, the processes under each pane) and types into a pane only
+  to deliver a message to an agent with no channel of its own, a first prompt, an answer to a prompt, or for
+  `fleetlayer attach` under the access policy. It never attaches a tmux client.
+description: |
+  The session manager plugin for [tmux](https://github.com/tmux/tmux). It finds the agents running in tmux panes, with
+  their status from Claude Code's session registry (or the screen, for other agents), opens and closes sessions in
+  windows of their own without taking focus, delivers messages by pasting them in when nothing better is available,
+  answers blocked prompts with keys, and lets `fleetlayer attach` watch and drive panes. It never attaches a tmux
+  client, so the person's own tmux works as before. More in [the plugin's docs](https://fleetlayer.ai/docs/plugins/tmux/).

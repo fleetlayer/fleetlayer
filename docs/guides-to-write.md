@@ -946,3 +946,16 @@ managers, machines that sleep.
   node's health fails when a command's program can't be found), and a file parameter must never be a path the agent
   picks (the node writes the bytes to a new 0700 folder of its own). Written: `docs/guides/shared-commands.md`, with
   Rack Gateway as the worked example; the skill section in `skills/fleetlayer/`.
+- **Agents run in plain tmux, not a session manager Fleetlayer knew.** Most Claude Code users run it in a terminal,
+  tmux or the desktop app, so the fleet saw none of their tmux sessions. Solved with `fleetlayer-tmux`, which reads
+  tmux without attaching a client (an attached client counts as the person's, resizes windows and shows in the status
+  line). Footguns met on the way: tmux has no event stream that doesn't attach a client, so the plugin polls
+  `list-panes` once a second; the agent is rarely the pane's own process (a shell runs it), so it walks the process
+  tree, nearest agent first, and stops at herdr or another manager run inside a pane, or the fleet sees one session
+  twice; Claude Code's session registry (`~/.claude/sessions/<pid>.json`) carries its state (`busy`, `idle`,
+  `waiting` with what for, `shell`), so status needs no screen-scraping for Claude Code; `send-keys` with text that
+  ends in `;` is cut at the `;` (tmux's command separator), so text goes in through a buffer of the plugin's own
+  (`load-buffer` from stdin, `paste-buffer -d -r -p`), and `-r` matters, or each newline is sent as Enter; keys sent
+  while a person scrolls (copy mode) go to copy mode, so nothing is typed then; a login shell started by tmux resets
+  PATH from `/etc/profile` before reading the person's own profile, so new agents start through `$SHELL -lc 'exec
+  "$0" "$@"'` with their arguments as positional parameters. Written: `docs/plugins/tmux.md`, `plugins/tmux/`.

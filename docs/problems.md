@@ -35,7 +35,7 @@ Marked **(planned)** where it isn't built yet.
 2. **You lose track of what an agent did and why.** Summaries of each session, written as it works and kept as plain
    files on the machine, with a copy you can search across the fleet; a catch-up for any session on request.
 3. **You can't watch or step into a session on another machine.** Watch or drive any session's terminal from anywhere,
-   whatever runs it (herdr now; tmux, T3 Code and others as plugins), under the access policy.
+   whatever runs it (herdr, Rex or tmux now; T3 Code and others as plugins), under the access policy.
 4. **Every isolated agent needs its own phone pairing** (a relay, ports, firewall rules, an invite per Unix user).
    One pairing reaches every session on every node, new ones included. **(planned)**
 

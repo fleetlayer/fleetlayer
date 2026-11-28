@@ -29,7 +29,11 @@ jobs:
       # Every program first: fleetlayer-cli's move tests run the node, control plane, gateway and plugins, and cargo
       # builds only a package's own binaries for its integration tests.
       - run: cargo build --locked --workspace --bins
+      # fleetlayer-tmux's tests drive a real tmux (it's on GitHub's Ubuntu images; installed if a new image drops it).
+      - run: command -v tmux || { sudo apt-get update -q && sudo apt-get install -y -q tmux; }
       - run: cargo test --locked --workspace
+        env:
+          FLEETLAYER_REQUIRE_TMUX: "1"
 
   # fleetlayer-matrix is a workspace of its own (matrix-sdk's SQLite links an older libsqlite3-sys than the main one).
   matrix:

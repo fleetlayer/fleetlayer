@@ -363,13 +363,14 @@ pub fn gateway_unit(gateway_bin: &Path, gateway_yaml: &Path) -> Unit {
 }
 
 /// The node.yaml `up` writes for a machine that has none.
-/// The session plugins `up` adds: herdr's when herdr is installed, Rex's when Rex is, Claude Code's when Claude Code
-/// is, summaries when asked for. herdr, Rex and summaries carry the absolute path of the program they run (herdr, claude), so a service PATH
-/// that differs from the shell's can't hide it.
+/// The session plugins `up` adds: herdr's when herdr is installed, Rex's when Rex is, tmux's when tmux is, Claude
+/// Code's when Claude Code is, summaries when asked for. herdr, Rex, tmux and summaries carry the absolute path of the
+/// program they run (herdr, rex, tmux, claude), so a service PATH that differs from the shell's can't hide it.
 #[derive(Debug, Clone, Default)]
 pub struct SessionPlugins {
     pub herdr: Option<PathBuf>,
     pub rex: Option<PathBuf>,
+    pub tmux: Option<PathBuf>,
     pub claude_code: bool,
     pub summaries: Option<PathBuf>,
 }
@@ -475,6 +476,12 @@ pub fn node_yaml_text(
             yaml_str(&rex.display().to_string())
         ));
     }
+    if let Some(tmux) = &sessions.tmux {
+        y.push_str(&format!(
+            "  # Your tmux panes, so the fleet sees and reaches the agents running in them.\n  - name: tmux\n    command: fleetlayer-tmux\n    config:\n      program: {}\n",
+            yaml_str(&tmux.display().to_string())
+        ));
+    }
     if sessions.claude_code {
         y.push_str("  # Claude Code's own view of each session (status, transcript), and starting sessions.\n  - name: claude-code\n    command: fleetlayer-claude-code\n");
     }
@@ -530,6 +537,12 @@ fn detect_sessions(want_summaries: bool) -> (SessionPlugins, Vec<String>) {
     if rex_bin.is_some() && rex.is_none() {
         skipped.push("rex: fleetlayer-rex isn't installed next to fleetlayer".to_string());
     }
+    // tmux: on many machines, and its absence isn't worth a line either.
+    let tmux_bin = on_path("tmux");
+    let tmux = tmux_bin.clone().filter(|_| find_bin("fleetlayer-tmux").is_ok());
+    if tmux_bin.is_some() && tmux.is_none() {
+        skipped.push("tmux: fleetlayer-tmux isn't installed next to fleetlayer".to_string());
+    }
     let claude_bin = on_path("claude").or_else(|| {
         let local = account_home().join(".claude/local/claude");
         local.is_file().then_some(local)
@@ -547,7 +560,7 @@ fn detect_sessions(want_summaries: bool) -> (SessionPlugins, Vec<String>) {
     if want_summaries && summaries.is_none() {
         skipped.push("summaries: needs Claude Code and fleetlayer-summaries".into());
     }
-    (SessionPlugins { herdr, rex, claude_code, summaries }, skipped)
+    (SessionPlugins { herdr, rex, tmux, claude_code, summaries }, skipped)
 }
 
 /// Whether a `rex` on PATH is Superlogical's: Debian, Ubuntu and Fedora have an unrelated Perl tool named rex.
@@ -717,6 +730,7 @@ pub async fn up(mut a: UpArgs) -> anyhow::Result<()> {
         let added: Vec<&str> = [
             ("herdr", sessions.herdr.is_some()),
             ("rex", sessions.rex.is_some()),
+            ("tmux", sessions.tmux.is_some()),
             ("claude-code", sessions.claude_code),
             ("summaries", sessions.summaries.is_some()),
         ]
@@ -760,6 +774,7 @@ pub async fn up(mut a: UpArgs) -> anyhow::Result<()> {
             ("dashboard", !dashboard),
             ("herdr", sessions.herdr.is_none()),
             ("rex", sessions.rex.is_none()),
+            ("tmux", sessions.tmux.is_none()),
             ("claude-code", !sessions.claude_code),
             ("summaries", sessions.summaries.is_none()),
         ] {
@@ -967,6 +982,7 @@ mod tests {
             &SessionPlugins {
                 herdr: Some("/h/.local/bin/herdr".into()),
                 rex: Some("/h/.local/bin/rex".into()),
+                tmux: Some("/usr/bin/tmux".into()),
                 claude_code: true,
                 summaries: None,
             },
@@ -980,8 +996,10 @@ mod tests {
         assert_eq!(v["plugins"][2]["config"]["program"], "/h/.local/bin/herdr");
         assert_eq!(v["plugins"][3]["name"], "rex");
         assert_eq!(v["plugins"][3]["config"]["program"], "/h/.local/bin/rex");
-        assert_eq!(v["plugins"][4]["command"], "fleetlayer-claude-code");
-        assert!(v["plugins"].get(5).is_none(), "summaries only when asked for");
+        assert_eq!(v["plugins"][4]["name"], "tmux");
+        assert_eq!(v["plugins"][4]["config"]["program"], "/usr/bin/tmux");
+        assert_eq!(v["plugins"][5]["command"], "fleetlayer-claude-code");
+        assert!(v["plugins"].get(6).is_none(), "summaries only when asked for");
         assert!(y.contains("# harnesses:") && v.get("harnesses").is_none(), "a commented hint only");
         let y = node_yaml_text(
             "ws://x/v1/link",

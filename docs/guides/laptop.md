@@ -24,8 +24,8 @@ Pages login key: ~/.local/state/fleetlayer/pages/login  Pages go in ~/Fleetlayer
 Dashboard login key: ~/.local/state/fleetlayer/dashboard/login
 ```
 
-It also adds your sessions to the fleet: the herdr plugin when [herdr](https://herdr.dev) is installed and the Claude
-Code plugin when Claude Code is, and says which it added or skipped and why. Then `fleetlayer sessions` lists them,
+It also adds your sessions to the fleet: the herdr plugin when [herdr](https://herdr.dev) is installed, the
+[tmux](../plugins/tmux.md) plugin when tmux is, and the Claude Code plugin when Claude Code is, and says which it added or skipped and why. Then `fleetlayer sessions` lists them,
 other machines can message them, and `fleetlayer session start` opens new ones. Session summaries stay off, since
 each one runs Claude Code and spends tokens: `fleetlayer up --summaries` turns them on.
 

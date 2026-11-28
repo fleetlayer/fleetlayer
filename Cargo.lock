@@ -2189,6 +2189,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "fleetlayer-tmux"
+version = "0.4.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "fleetlayer-plugin",
+ "fleetlayer-protocol",
+ "jiff 1.0.3",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+
+[[package]]
 name = "fluent"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

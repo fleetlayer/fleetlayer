@@ -12,7 +12,7 @@ laptop](guides/laptop.md) show how to run them.
   heartbeat. The `fleetlayer` command line talks to the node on its own machine.
 - **Plugins**, separate programs the node starts and talks to over JSON-RPC on stdin and stdout. They can be written
   in any language. A plugin takes one or more roles: a session manager knows where sessions run (`fleetlayer-herdr`,
-  `fleetlayer-rex` for [Rex](rex.md)); a harness knows one agent program from the inside
+  `fleetlayer-rex` for [Rex](rex.md), `fleetlayer-tmux` for [tmux](plugins/tmux.md)); a harness knows one agent program from the inside
   (`fleetlayer-claude-code` delivers through Claude Code's own messaging socket); others turn outside events into Fleetlayer events, apply files or secrets sent to the machine,
   write session summaries, or serve pages. The protocol is the [Agent Client
   Protocol](https://agentclientprotocol.com) plus Fleetlayer's extensions ([the plugin protocol](protocol.md)).
@@ -65,8 +65,8 @@ stops the piece, copies its folder sealed and checked, starts it there and point
 
 ## Rules that shape the design
 
-- **Fleetlayer works with your session manager.** It attaches to herdr (and later tmux, T3 Code and others)
-  without taking it over. Your own apps and terminals keep working beside it.
+- **Fleetlayer works with your session manager.** It attaches to herdr, Rex or tmux (and later T3 Code and
+  others) without taking it over. Your own apps and terminals keep working beside it.
 - **Plugins are separate processes.** Nothing is compiled into the node, so a plugin can't crash it, and you can write
   one in any language.
 - **Open protocols.** ACP for plugins, JSON-RPC over a WebSocket for the node's [link](link.md) to the control plane,
