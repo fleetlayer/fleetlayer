@@ -11,6 +11,7 @@
 pub mod pin;
 pub mod registry;
 pub mod scrub;
+pub mod sign;
 pub mod write;
 
 pub use registry::Secret;

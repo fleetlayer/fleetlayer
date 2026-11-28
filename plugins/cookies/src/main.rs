@@ -518,7 +518,9 @@ impl Handler for Shared {
                     .cloned()
                     .ok_or_else(|| RpcError::not_here(format!("no receive entry for {}", a.bundle)))?;
                 let pins = plugin.home.join(".local/state/fleetlayer/cookies/sources.json");
-                if let Err(e) = fleetlayer_secrets::pin::check(&pins, &a.bundle, a.from.as_deref(), r.from.as_deref()) {
+                if let Err(e) = signer_of(&a).and_then(|signer| {
+                    fleetlayer_secrets::pin::check(&pins, &a.bundle, a.from.as_deref(), r.from.as_deref(), signer.as_deref())
+                }) {
                     tracing::error!("{e}");
                     plugin.refused.lock().await.insert(set.clone(), (e.clone(), Timestamp::now()));
                     return Ok(json!({"applied": false, "error": e}));
@@ -1090,6 +1092,23 @@ async fn serve() {
         )
         .init();
     fleetlayer_plugin::serve_stdio(Arc::new(Shared(Mutex::new(None)))).await;
+}
+
+
+/// The key that signed a delivered bundle, if it's signed (`fleetlayer_secrets::sign`); an error when its signature
+/// doesn't hold.
+fn signer_of(a: &SyncApply) -> Result<Option<String>, String> {
+    let parts: Vec<fleetlayer_secrets::sign::Part> = a
+        .items
+        .iter()
+        .map(|i| fleetlayer_secrets::sign::Part {
+            name: &i.name,
+            content: &i.content,
+            mode: i.mode,
+            link: i.link.as_deref(),
+        })
+        .collect();
+    fleetlayer_secrets::sign::verify(&a.bundle, a.version, &parts)
 }
 
 #[cfg(test)]

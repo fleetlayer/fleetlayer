@@ -742,7 +742,9 @@ impl Handler for Shared {
                     return Err(RpcError::not_here(format!("this plugin doesn't receive {}", a.bundle)));
                 }
                 let pins = plugin.state_dir().join("sources.json");
-                if let Err(e) = fleetlayer_secrets::pin::check(&pins, &a.bundle, a.from.as_deref(), Some(&rc.from)) {
+                if let Err(e) = signer_of(&a).and_then(|signer| {
+                    fleetlayer_secrets::pin::check(&pins, &a.bundle, a.from.as_deref(), Some(&rc.from), signer.as_deref())
+                }) {
                     tracing::error!("{e}");
                     *plugin.refused.lock().await = Some((e.clone(), Timestamp::now()));
                     return Ok(json!({"applied": false, "error": e}));
@@ -953,6 +955,23 @@ async fn status_loop(plugin: Arc<Plugin>, peer: Peer) {
         peer.notify(ext::method::PLUGIN_STATUS, &report);
         tokio::time::sleep(Duration::from_secs(30)).await;
     }
+}
+
+
+/// The key that signed a delivered bundle, if it's signed (`fleetlayer_secrets::sign`); an error when its signature
+/// doesn't hold.
+fn signer_of(a: &SyncApply) -> Result<Option<String>, String> {
+    let parts: Vec<fleetlayer_secrets::sign::Part> = a
+        .items
+        .iter()
+        .map(|i| fleetlayer_secrets::sign::Part {
+            name: &i.name,
+            content: &i.content,
+            mode: i.mode,
+            link: i.link.as_deref(),
+        })
+        .collect();
+    fleetlayer_secrets::sign::verify(&a.bundle, a.version, &parts)
 }
 
 #[tokio::main]

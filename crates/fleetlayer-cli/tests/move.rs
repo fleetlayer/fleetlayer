@@ -397,6 +397,9 @@ fn the_hub_moves_with_its_folder() {
     f.a.start("node");
     wait_until("the hub's folder", 30, || f.a.path(".local/state/fleetlayer/claude-hub").exists());
     f.a.write(".local/state/fleetlayer/claude-hub/kept-by-the-test", "accounts");
+    // The key its tokens bundles are signed with: what targets trust, so it must arrive unchanged.
+    wait_until("the hub's signing key", 30, || f.a.path(".local/state/fleetlayer/claude-hub/signing-key").exists());
+    let key = f.a.read(".local/state/fleetlayer/claude-hub/signing-key");
     f.b.node("server", None, "");
     f.b.start("node");
     wait_until("the node there", 20, || f.b.status().is_some());
@@ -405,6 +408,7 @@ fn the_hub_moves_with_its_folder() {
     assert!(out.contains("It's healthy there."), "{out}");
     assert_eq!(http_get(new, "localhost", "/healthz").map(|r| r.0), Some(200));
     assert_eq!(f.b.read(".local/state/fleetlayer/claude-hub/kept-by-the-test"), "accounts");
+    assert_eq!(f.b.read(".local/state/fleetlayer/claude-hub/signing-key"), key, "targets keep trusting the moved hub");
     assert_eq!(f.b.read(".local/state/fleetlayer/claude-hub-login"), "l".repeat(48));
     // --keep-old: renamed here, not deleted.
     let kept: Vec<String> = std::fs::read_dir(f.a.path(".local/state/fleetlayer"))

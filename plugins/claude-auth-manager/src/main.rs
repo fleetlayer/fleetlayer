@@ -289,8 +289,11 @@ impl Handler for Shared {
                     return Err(RpcError::refused("hub: needs role: hub"));
                 }
                 let mut tokens_file = config.tokens_file.clone();
+                let mut signing_key: Option<PathBuf> = None;
                 if let Some(h) = &config.hub {
                     let dir = expand(&home, h.dir.as_deref().unwrap_or("~/.local/state/fleetlayer/claude-hub"));
+                    // In the hub's own folder, so it moves with the hub and its targets keep trusting it.
+                    signing_key = Some(PathBuf::from(&dir).join("signing-key"));
                     let hub = hub::Hub::open(hub::HubConfig {
                         dir: dir.into(),
                         claude: find_claude(&home, config.claude.as_deref()).into(),
@@ -340,7 +343,11 @@ impl Handler for Shared {
                     let file =
                         tokens_file.ok_or_else(|| RpcError::refused("tokens_file (or hub:) is needed on the hub"))?;
                     let file = PathBuf::from(expand(&home, &file.display().to_string()));
-                    tokio::spawn(publish_loop(peer.clone(), file, config.targets.clone()));
+                    let key_path = signing_key.unwrap_or_else(|| signing_key_beside(&file));
+                    let key = fleetlayer_secrets::sign::BundleKey::load_or_create(&key_path)
+                        .map_err(|e| RpcError::refused(format!("the hub's bundle signing key: {e}")))?;
+                    tracing::info!(key = %key.id(), "signing the tokens bundle");
+                    tokio::spawn(publish_loop(peer.clone(), file, config.targets.clone(), key));
                 }
                 let roles = Roles {
                     sync_target: applies.then(|| SyncRole { bundles: vec![BUNDLE.into()] }),
@@ -375,8 +382,9 @@ impl Handler for Shared {
                 if let Some(home) = self.0.home.lock().await.clone() {
                     let pins = home.join(".local/state/fleetlayer/claude-auth-manager/sources.json");
                     let from = self.0.from.lock().await.clone();
-                    if let Err(e) = fleetlayer_secrets::pin::check(&pins, &a.bundle, a.from.as_deref(), from.as_deref())
-                    {
+                    if let Err(e) = signer_of(&a).and_then(|signer| {
+                        fleetlayer_secrets::pin::check(&pins, &a.bundle, a.from.as_deref(), from.as_deref(), signer.as_deref())
+                    }) {
                         tracing::error!("{e}");
                         return Ok(json!({"applied": false, "error": e}));
                     }
@@ -514,8 +522,24 @@ async fn hub_poll_loop(peer: Peer, hub: Arc<hub::Hub>) {
     }
 }
 
+/// Where a hub without a `hub:` folder keeps its bundle signing key: beside its tokens file
+/// (`fleetlayer move` carries both).
+fn signing_key_beside(tokens_file: &Path) -> PathBuf {
+    let mut name = tokens_file.file_name().unwrap_or_default().to_os_string();
+    name.push(".signing-key");
+    tokens_file.with_file_name(name)
+}
+
+/// The tokens bundle's items for `version`, signed with the hub's key so targets trust it wherever the hub runs.
+fn signed_items(key: &fleetlayer_secrets::sign::BundleKey, version: u64, accounts_json: String) -> Vec<SyncItem> {
+    let item = SyncItem::text("accounts.json", accounts_json);
+    let part = fleetlayer_secrets::sign::Part { name: &item.name, content: &item.content, mode: None, link: None };
+    let sig = key.sign(BUNDLE, version, &[part]);
+    vec![item, SyncItem::text(fleetlayer_secrets::sign::SIGNATURE_ITEM, sig)]
+}
+
 /// Publish the tokens file whenever its contents change.
-async fn publish_loop(peer: Peer, file: PathBuf, targets: Vec<String>) {
+async fn publish_loop(peer: Peer, file: PathBuf, targets: Vec<String>, key: fleetlayer_secrets::sign::BundleKey) {
     let mut last = String::new();
     tokio::time::sleep(Duration::from_secs(3)).await;
     while !peer.is_closed() {
@@ -532,10 +556,11 @@ async fn publish_loop(peer: Peer, file: PathBuf, targets: Vec<String>) {
                                 version,
                                 secret: true,
                                 targets: targets.iter().map(|n| SyncTarget { node: n.clone() }).collect(),
-                                items: vec![SyncItem::text(
-                                    "accounts.json",
+                                items: signed_items(
+                                    &key,
+                                    version,
                                     serde_json::to_string(&accounts).unwrap_or_default(),
-                                )],
+                                ),
                             };
                             match peer
                                 .request_within::<_, Value>(ext::method::SYNC_PUBLISH, &p, Duration::from_secs(90))
@@ -557,6 +582,23 @@ async fn publish_loop(peer: Peer, file: PathBuf, targets: Vec<String>) {
     }
 }
 
+
+/// The key that signed a delivered bundle, if it's signed (`fleetlayer_secrets::sign`); an error when its signature
+/// doesn't hold.
+fn signer_of(a: &SyncApply) -> Result<Option<String>, String> {
+    let parts: Vec<fleetlayer_secrets::sign::Part> = a
+        .items
+        .iter()
+        .map(|i| fleetlayer_secrets::sign::Part {
+            name: &i.name,
+            content: &i.content,
+            mode: i.mode,
+            link: i.link.as_deref(),
+        })
+        .collect();
+    fleetlayer_secrets::sign::verify(&a.bundle, a.version, &parts)
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -568,4 +610,33 @@ async fn main() {
         )
         .init();
     fleetlayer_plugin::serve_stdio(Arc::new(Shared(Arc::new(Plugin::default())))).await;
+}
+
+#[cfg(test)]
+mod signing_tests {
+    use super::*;
+
+    #[test]
+    fn the_tokens_bundle_is_signed_and_a_target_trusts_it_after_the_hub_moves() {
+        let d = tempfile::tempdir().unwrap();
+        let key = fleetlayer_secrets::sign::BundleKey::load_or_create(&d.path().join("hub/signing-key")).unwrap();
+        let apply = |from: &str, version: u64| SyncApply {
+            bundle: BUNDLE.into(),
+            version,
+            items: signed_items(&key, version, "[]".into()),
+            from: Some(from.into()),
+        };
+        let pins = d.path().join("sources.json");
+        for (from, version) in [("laptop", 1), ("server-claudehub", 2)] {
+            let a = apply(from, version);
+            let signer = signer_of(&a).unwrap();
+            assert_eq!(signer.as_deref(), Some(key.id().as_str()));
+            fleetlayer_secrets::pin::check(&pins, BUNDLE, a.from.as_deref(), None, signer.as_deref())
+                .unwrap_or_else(|e| panic!("{from}: {e}"));
+        }
+        let mut forged = apply("agents", 3);
+        forged.items[0].content = "[{\"slot\": 2}]".into();
+        assert!(signer_of(&forged).is_err(), "a changed bundle doesn't verify");
+        assert_eq!(signing_key_beside(Path::new("/h/tokens.json")), Path::new("/h/tokens.json.signing-key"));
+    }
 }

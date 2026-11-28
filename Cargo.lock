@@ -2149,6 +2149,8 @@ version = "0.4.1"
 dependencies = [
  "aho-corasick",
  "base64 0.23.1",
+ "ed25519-dalek",
+ "getrandom 0.3.4",
  "jiff 1.0.3",
  "percent-encoding",
  "serde",

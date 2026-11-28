@@ -61,9 +61,12 @@ node leaves that alone.
 - **Linux:** `<slot>/.credentials.json`, mode 0600.
 - The entry has no refresh token; Claude Code uses it as it is and leaves it alone.
 - **Only the hub's bundle is applied.** Any node can run a plugin of this name and publish a bundle of the same name,
-  so a node applies the tokens bundle from one node only: `from:` in its config, or else the first node that sent it
-  (remembered in `~/.local/state/fleetlayer/claude-auth-manager/sources.json`). Another node's bundle is refused and
-  logged. After moving the hub, set `from:` to its new node (or remove that file).
+  so the hub signs each tokens bundle with a key of its own (`signing-key` in its folder, or beside its tokens file
+  without `hub:`), and a node applies only bundles signed by the key it first saw (remembered in
+  `~/.local/state/fleetlayer/claude-auth-manager/sources.json`; a node that pinned the hub's node name before moves to
+  the key when that node first sends a signed bundle). Another key, or an unsigned bundle, is refused and logged. The
+  key moves with the hub, so after `fleetlayer move hub` its nodes keep taking its bundles with nothing to change.
+  `from:` in a node's config still names the one node it takes the bundle from, signed or not.
 - Each token is also listed in the node's secrets registry as `claude://account/<slot>`, so the node redacts it from
   everything it sends the control plane ([scrubbing](../credentials.md#scrubbing-what-leaves-a-node)).
   `_fleetlayer.dev/sync/forget` (`fleetlayer secrets forget`, a role's window ending) removes every managed slot, as

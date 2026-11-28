@@ -180,6 +180,11 @@ fn declared(command: &str, config: &Value) -> Declared {
             d.files.extend(strs(&config["hub"]["login_file"]));
             d.files.extend(strs(&config["hub"]["signin"]["secret_file"]));
             d.files.extend(strs(&config["tokens_file"]));
+            // A hub without a `hub:` folder keeps its bundle signing key beside its tokens file; the key is what its
+            // targets trust, so it must move with it.
+            if config["hub"].is_null() {
+                d.files.extend(strs(&config["tokens_file"]).into_iter().map(|f| format!("{f}.signing-key")));
+            }
         }
         "fleetlayer-pages" => {
             d.files.extend(strs(&config["login_file"]));
