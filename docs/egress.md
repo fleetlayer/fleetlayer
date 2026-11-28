@@ -66,7 +66,7 @@ roles:
       - github.com:22         # another port: say which
       - fleet.example.net     # your control plane, if the role's node reaches it through here
     networks: []              # private ranges the role may reach (100.101.102.103/32 for a control plane on the
-                              # tailnet, 10.5.0.0/16 for a LAN): none by default
+                              # tailnet, 192.168.0.0/16 for a LAN): none by default
     loopback: true            # its own test servers on this machine (default true)
 ```
 
