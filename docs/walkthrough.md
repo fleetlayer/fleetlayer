@@ -42,12 +42,15 @@ Here the control plane runs on the laptop. Later it can move to the server with 
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/fleetlayer/fleetlayer/main/install.sh | sh
+# open a new shell, or add ~/.local/bin to your PATH, so the next commands are found
 fleetlayer up
 fleetlayer-control node add server     # prints the server's token once: copy it
 ```
 
 `fleetlayer up` starts a control plane, a node, and a status page at `http://fleetlayer.localhost:7680`, all for your
-user, as services that start again after a reboot. In herdr, open a tab named `docs` and start `claude` in it.
+user, as services that start again after a reboot. On a Linux laptop they keep running after you log out only with
+lingering on (`loginctl enable-linger "$USER"`, which `fleetlayer up` reminds you of). Running `node add` again
+prints a new token, and only the newest works. In herdr, open a tab named `docs` and start `claude` in it.
 
 ## 2. A way from the server to the control plane (1 minute)
 
@@ -65,6 +68,8 @@ private network (Tailscale, a LAN) or move the control plane to the server (step
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/fleetlayer/fleetlayer/main/install.sh | sh
+# open a new shell, or add ~/.local/bin to your PATH
+loginctl enable-linger "$USER"         # Linux: keep the node running after you log out of SSH
 mkdir -p ~/.config/fleetlayer
 printf '%s\n' '<the token from step 1>' > ~/.config/fleetlayer/node-token
 chmod 600 ~/.config/fleetlayer/node-token

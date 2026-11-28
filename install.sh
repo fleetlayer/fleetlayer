@@ -61,5 +61,7 @@ done
 # shellcheck disable=SC2010
 ls -1t "$lib/versions" | grep -vx "$version" | tail -n +2 | while IFS= read -r v; do rm -rf "${lib:?}/versions/$v"; done
 echo "Installed Fleetlayer $version in $lib, linked from ~/.local/bin."
-case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) echo "Add ~/.local/bin to your PATH." ;; esac
-echo "Next: write ~/.config/fleetlayer/node.yaml (see docs/getting-started.md), then run: fleetlayer-node install"
+case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) echo "Add ~/.local/bin to your PATH, or open a new shell if your profile already adds it." ;; esac
+echo "Next: run 'fleetlayer up' to start everything on this machine, or 'fleetlayer up --join <url> --token-file <file>'"
+echo "to join a control plane elsewhere. https://fleetlayer.ai/docs/getting-started/ and the ten-minute walkthrough,"
+echo "https://fleetlayer.ai/docs/walkthrough/, have the rest."
