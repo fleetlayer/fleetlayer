@@ -782,6 +782,74 @@ pub async fn event_delivered(db: &Db, id: i64, deliveries: &serde_json::Value) -
     Ok(())
 }
 
+/// How far back `fleetlayer events` looks.
+pub const MISSED_KEEP_MS: i64 = 7 * 24 * 3600 * 1000;
+
+/// The events `target` was sent since it last read them (an ID above its mark, within `MISSED_KEEP_MS`), oldest
+/// first: only those whose delivery to it failed, or with `all` every one. Each is `{id, channel, kind, subject,
+/// summary, body, source, at, delivered, error}`, and the mark moves to the newest shown unless `peek`.
+pub async fn missed_events(
+    db: &Db,
+    tenant: &str,
+    target: &str,
+    channel: Option<&str>,
+    all: bool,
+    peek: bool,
+    limit: i64,
+) -> anyhow::Result<Vec<serde_json::Value>> {
+    let mark: i64 = sqlx::query("SELECT last_id FROM event_reads WHERE tenant = ? AND target = ?")
+        .bind(tenant)
+        .bind(target)
+        .fetch_optional(db)
+        .await?
+        .map_or(0, |r| r.get(0));
+    let rows = sqlx::query(
+        "SELECT e.id, e.channel, e.kind, e.subject, e.summary, e.body, e.source, e.at,
+                json_extract(d.value, '$.ok'), json_extract(d.value, '$.error')
+         FROM events e, json_each(e.deliveries) d
+         WHERE e.tenant = ? AND e.id > ? AND e.at > ? AND (? IS NULL OR e.channel = ?)
+           AND json_extract(d.value, '$.target') = ? AND (? OR NOT json_extract(d.value, '$.ok'))
+         GROUP BY e.id ORDER BY e.id LIMIT ?",
+    )
+    .bind(tenant)
+    .bind(mark)
+    .bind(now_ms() - MISSED_KEEP_MS)
+    .bind(channel)
+    .bind(channel)
+    .bind(target)
+    .bind(all)
+    .bind(limit)
+    .fetch_all(db)
+    .await?;
+    let out: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| {
+            let body: String = r.get(5);
+            serde_json::json!({
+                "id": r.get::<i64, _>(0), "channel": r.get::<String, _>(1), "kind": r.get::<String, _>(2),
+                "subject": r.get::<Option<String>, _>(3), "summary": r.get::<String, _>(4),
+                "body": serde_json::from_str::<serde_json::Value>(&body).unwrap_or(serde_json::Value::String(body)),
+                "source": r.get::<String, _>(6),
+                "at": jiff::Timestamp::from_millisecond(r.get(7)).ok(),
+                "delivered": r.get::<Option<bool>, _>(8).unwrap_or(false),
+                "error": r.get::<Option<String>, _>(9),
+            })
+        })
+        .collect();
+    if !peek && let Some(last) = out.last().and_then(|e| e["id"].as_i64()) {
+        sqlx::query(
+            "INSERT INTO event_reads (tenant, target, last_id) VALUES (?, ?, ?)
+             ON CONFLICT (tenant, target) DO UPDATE SET last_id = MAX(last_id, excluded.last_id)",
+        )
+        .bind(tenant)
+        .bind(target)
+        .bind(last)
+        .execute(db)
+        .await?;
+    }
+    Ok(out)
+}
+
 pub async fn recent_events(db: &Db, tenant: &str, limit: i64) -> anyhow::Result<Vec<serde_json::Value>> {
     let rows = sqlx::query(
         "SELECT id, channel, kind, subject, summary, source, at, deliveries FROM events WHERE tenant = ?
@@ -864,6 +932,45 @@ mod tests {
         assert_eq!(targets(&db, DEFAULT_TENANT, "ci", Some("repo@main")).await.unwrap(), ["sre@server"]);
         assert!(unsubscribe(&db, DEFAULT_TENANT, &sub(None, "sre@server")).await.unwrap());
         assert!(targets(&db, DEFAULT_TENANT, "ci", None).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_session_reads_the_events_it_missed_once() {
+        let db = open_memory().await.unwrap();
+        let t = DEFAULT_TENANT;
+        let ev = |ch: &str, key: &str| fleetlayer_protocol::ext::Event {
+            channel: ch.into(),
+            kind: "matrix.message".into(),
+            subject: None,
+            at: jiff::Timestamp::now(),
+            dedupe_key: Some(key.into()),
+            summary: format!("{ch} {key}"),
+            body: serde_json::json!({"text": key}),
+        };
+        let deliver = |ok_a: bool| {
+            serde_json::json!([{"target": "a@n", "ok": ok_a, "error": if ok_a { None } else { Some("a@n is offline") }},
+                               {"target": "b@n", "ok": true}])
+        };
+        for (ch, key, ok_a) in [("alerts", "1", false), ("alerts", "2", true), ("ci", "3", false)] {
+            let id = add_event(&db, t, &ev(ch, key), "src").await.unwrap().unwrap();
+            event_delivered(&db, id, &deliver(ok_a)).await.unwrap();
+        }
+        let keys = |v: &[serde_json::Value]| {
+            v.iter().map(|e| e["body"]["text"].as_str().unwrap().to_string()).collect::<Vec<_>>()
+        };
+        let peek = missed_events(&db, t, "a@n", None, false, true, 50).await.unwrap();
+        assert_eq!(keys(&peek), ["1", "3"], "only the failed deliveries");
+        assert_eq!(peek[0]["error"], "a@n is offline");
+        assert_eq!(peek[0]["delivered"], false);
+        let alerts = missed_events(&db, t, "a@n", Some("alerts"), false, false, 50).await.unwrap();
+        assert_eq!(keys(&alerts), ["1"]);
+        let rest = missed_events(&db, t, "a@n", None, false, false, 50).await.unwrap();
+        assert_eq!(keys(&rest), ["3"], "the mark moved past 1 (and 2)");
+        assert!(missed_events(&db, t, "a@n", None, false, false, 50).await.unwrap().is_empty(), "read once");
+        assert!(missed_events(&db, t, "b@n", None, false, false, 50).await.unwrap().is_empty(), "b missed nothing");
+        let all = missed_events(&db, t, "b@n", None, true, true, 50).await.unwrap();
+        assert_eq!(keys(&all), ["1", "2", "3"]);
+        assert!(missed_events(&db, t, "c@n", None, true, true, 50).await.unwrap().is_empty(), "never sent any");
     }
 
     #[tokio::test]

@@ -1,0 +1,40 @@
+# Its own workspace and lockfile, outside the main one: matrix-sdk's SQLite store links an older libsqlite3-sys than
+# sqlx and rusqlite in the main workspace, and a native library can be linked only once. Build it with
+# `--manifest-path plugins/matrix/Cargo.toml`. Its version follows the main Cargo.toml's (CI checks).
+[workspace]
+
+[package]
+name = "fleetlayer-matrix"
+description = "fleetlayer-matrix: Matrix rooms as Fleetlayer channels, and a tool to post to them"
+version = "0.3.13"
+edition = "2024"
+license = "FSL-1.1-ALv2"
+repository = "https://github.com/fleetlayer/fleetlayer"
+rust-version = "1.99"
+
+[dependencies]
+fleetlayer-protocol = { path = "../../crates/fleetlayer-protocol" }
+fleetlayer-plugin = { path = "../../crates/fleetlayer-plugin" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+jiff = { version = "1.0.2", features = ["serde"] }
+tokio = { version = "1.54.1", features = ["full"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4.6.9", features = ["derive", "env"] }
+anyhow = "1"
+async-trait = "0.1.92"
+regex = "1.13.2"
+yaml_serde = "0.10.7"
+matrix-sdk = { version = "0.19.1", default-features = false, features = ["e2e-encryption", "automatic-room-key-forwarding", "sqlite", "bundled-sqlite", "rustls-aws-lc-rs"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { version = "1.54.1", features = ["full", "test-util"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+dbg_macro = "deny"

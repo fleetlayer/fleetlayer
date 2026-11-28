@@ -216,7 +216,18 @@ fleetlayer-control fallback alerts infra@server
 
 A session subscribed to `alerts` without `--subject` gets every alert on the channel. The fallback gets an alert only
 when nobody subscribes to it. Nothing is queued: if the target session is offline, the event is kept with its delivery
-result, so pick a fallback that's always running.
+result, so pick a fallback that's always running. A session that was offline reads what it missed with `fleetlayer
+events` (up to 7 days back).
+
+**Alertmanager** sends its own format, which the endpoint recognises: point a `webhook_configs` receiver at the
+endpoint's URL and each alert becomes its own event, `[FIRING] DiskFull (critical, nas): /srv is 95% full`, with the
+alert's name as subject (`?subject_label=namespace` to use another label, so an owner subscribes to its namespace or
+job). Alertmanager repeats a firing alert every `repeat_interval`; those repeats are dropped as duplicates, while its
+resolution comes through.
+
+**A chat room your monitors already post to** (a Matrix room that people read too) works as a channel without a
+second webhook: the [Matrix plugin](../plugins/matrix.md) publishes each message in the room on a channel, routes
+give matching messages a subject, and agents answer in the room.
 
 ## Gatus or Uptime Kuma
 

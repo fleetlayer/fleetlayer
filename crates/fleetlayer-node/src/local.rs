@@ -199,6 +199,32 @@ impl Handler for Local {
                 };
                 peer.request::<_, Value>(m, &p).await
             }
+            "node/events" => {
+                let peer =
+                    node.link.peer().await.ok_or_else(|| {
+                        RpcError::not_here(format!("{} isn't linked to a control plane now", node.name))
+                    })?;
+                let target = match p.get("target").and_then(Value::as_str) {
+                    Some(t) => t.to_string(),
+                    None => {
+                        let c = self
+                            .caller(p.get("caller").and_then(|c| serde_json::from_value(c.clone()).ok()).as_ref())
+                            .await
+                            .ok_or_else(|| {
+                                RpcError::refused("run this from a session, or say which one with --target")
+                            })?;
+                        format!("{}@{}", c.tab().unwrap_or(&c.session_id), node.name)
+                    }
+                };
+                let req = l::EventsRequest {
+                    target,
+                    channel: p.get("channel").and_then(Value::as_str).map(str::to_string),
+                    all: p.get("all").and_then(Value::as_bool).unwrap_or(false),
+                    peek: p.get("peek").and_then(Value::as_bool).unwrap_or(false),
+                    limit: p.get("limit").and_then(Value::as_u64).map(|n| n.min(500) as u32),
+                };
+                peer.request::<_, Value>(l::method::EVENTS, &req).await
+            }
             "node/readings" => crate::readings::latest(node, &p).await,
             "node/secrets_forget" => match crate::sync::forget_all(node).await {
                 Ok(n) => answer(&json!({"forgotten": n})),

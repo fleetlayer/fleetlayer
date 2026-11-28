@@ -69,6 +69,11 @@ fleetlayer-cookies (plugins/cookies) depends on the psl crate (https://github.co
 which carries data from the Public Suffix List (https://publicsuffix.org), under the Mozilla Public License 2.0, used
 unmodified. No MPL code is copied into Fleetlayer's own files.
 
+fleetlayer-matrix (plugins/matrix) depends on matrix-sdk (https://github.com/matrix-org/matrix-rust-sdk, Apache
+License 2.0), which brings in as_variant, eyeball, eyeball-im, imbl, imbl-sized-chunks, readlock and readlock-tokio,
+under the Mozilla Public License 2.0, used unmodified as libraries; their source is available from crates.io. No MPL
+code is copied into Fleetlayer's own files. Its release binary includes SQLite (public domain), built from source.
+
 fleetlayer-dashboard (plugins/dashboard/src/icons.rs) includes icon path data from Tabler Icons
 (https://github.com/tabler/tabler-icons), unchanged, under the MIT License:
 

@@ -8,6 +8,8 @@
 #       cargo fmt --check; cargo check; clippy --all-targets -D warnings; cargo test; cargo build.
 #   scripts/on-dev format   run cargo fmt there and copy the formatted sources back
 #   scripts/on-dev lock     update Cargo.lock there (after changing dependencies) and copy it back
+#   plugins/matrix is a workspace of its own: pass --manifest-path plugins/matrix/Cargo.toml to check, clippy, test
+#   and build it (fmt, format and lock cover it already).
 #   scripts/on-dev sync     only copy the checkout there
 #   scripts/on-dev clean    delete this checkout's copy and target/ there
 #
@@ -24,7 +26,7 @@ name=$(basename "$dir")
 remote=$remote_root/$name
 
 die() { echo "scripts/on-dev: $*" >&2; exit 1; }
-usage() { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 [ $# -gt 0 ] || usage
 cmd=$1; shift
 
@@ -63,13 +65,17 @@ run() {
 
 case $cmd in
   sync) sync ;;
-  fmt) sync; run cargo fmt --all --check ;;
+  fmt) sync; run cargo fmt --all --check; run cargo fmt --all --check --manifest-path plugins/matrix/Cargo.toml ;;
   check) sync; run cargo check -q --locked -j 8 --workspace --all-targets "$@" ;;
   clippy) sync; run cargo clippy -q --locked -j 8 --workspace --all-targets "$@" -- -D warnings ;;
   build) sync; run cargo build -q --locked -j 8 "$@" ;;
   test) sync; run cargo test -q --locked -j 8 --workspace "$@" ;;
-  format) sync; run cargo fmt --all; rsync -a --no-owner --no-group --exclude=target --include='*/' --include='*.rs' --exclude='*' "$host:$remote/" "$dir/" ;;
-  lock) sync; run cargo update -q "$@"; rsync -a "$host:$remote/Cargo.lock" "$dir/Cargo.lock" ;;
+  format) sync; run cargo fmt --all; run cargo fmt --all --manifest-path plugins/matrix/Cargo.toml; rsync -a --no-owner --no-group --exclude=target --include='*/' --include='*.rs' --exclude='*' "$host:$remote/" "$dir/" ;;
+  lock) sync; run cargo update -q "$@"; rsync -a "$host:$remote/Cargo.lock" "$dir/Cargo.lock"
+    # The workspaces of their own (plugins/matrix): their lockfiles too.
+    for m in plugins/matrix; do
+      run cargo update -q --manifest-path "$m/Cargo.toml"; rsync -a "$host:$remote/$m/Cargo.lock" "$dir/$m/Cargo.lock"
+    done ;;
   clean) ssh "$host" "rm -rf '$remote'" ;;
   *) die "unknown command $cmd" ;;
 esac

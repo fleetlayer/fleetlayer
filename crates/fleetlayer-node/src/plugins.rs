@@ -421,6 +421,51 @@ fn status_reading(plugin: &str, r: ext::PluginStatusReport) -> Value {
     }]})
 }
 
+/// How long the control plane gets to store and deliver a plugin's event.
+const PUBLISH_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// A plugin's event (protocol section 6), checked and passed to the control plane as `link/publish` from
+/// `plugin:<name>`, so the policy decides `publish` on its channel for the plugin itself. Answers the control plane's
+/// result (`{duplicate, deliveries}`); an error while this node isn't linked, so the plugin keeps it and tries again.
+async fn publish_event(
+    node: &Node,
+    plugin: &str,
+    p: Value,
+) -> Result<fleetlayer_protocol::link::PublishResult, RpcError> {
+    let e: ext::Event = params(p)?;
+    if let Some(why) = event_problem(&e) {
+        return Err(RpcError::invalid_params(why));
+    }
+    let peer = node.link.peer().await.ok_or_else(|| {
+        RpcError::not_here(format!("{} isn't linked to a control plane now; try again later", node.name))
+    })?;
+    let mut v = serde_json::to_value(&e).map_err(RpcError::internal)?;
+    v["caller"] = json!(format!("plugin:{plugin}"));
+    peer.request_within(fleetlayer_protocol::link::method::PUBLISH, &v, PUBLISH_TIMEOUT).await
+}
+
+/// What's wrong with a plugin's event, if anything.
+fn event_problem(e: &ext::Event) -> Option<String> {
+    let name_ok =
+        |s: &str| !s.is_empty() && s.len() <= 100 && s.chars().all(|c| c.is_ascii_alphanumeric() || "-_.:".contains(c));
+    if !name_ok(&e.channel) {
+        return Some(format!("channel {:?}: 1 to 100 letters, digits and - _ . :", e.channel));
+    }
+    if !name_ok(&e.kind) {
+        return Some(format!("kind {:?}: 1 to 100 letters, digits and - _ . :", e.kind));
+    }
+    if e.summary.trim().is_empty() {
+        return Some("an event needs a summary".into());
+    }
+    if e.subject.as_deref().is_some_and(|s| s.is_empty() || s.len() > 500) {
+        return Some("subject: 1 to 500 bytes".into());
+    }
+    if e.dedupe_key.as_deref().is_some_and(|k| k.is_empty() || k.len() > 500) {
+        return Some("dedupeKey: 1 to 500 bytes".into());
+    }
+    None
+}
+
 /// What a plugin sends the node.
 struct FromPlugin {
     node: Arc<Node>,
@@ -546,6 +591,10 @@ impl Handler for FromPlugin {
                 peer.request_within(fleetlayer_protocol::link::method::ACCESS_CHECK, &req, Duration::from_secs(10))
                     .await
             }
+            ext::method::EVENT_PUBLISH => {
+                self.grant("event.publish")?;
+                answer(&publish_event(&self.node, self.plugin.name(), p).await?)
+            }
             ext::method::SESSIONS_QUERY => {
                 self.grant("sessions.query")?;
                 answer(&json!({"sessions": self.node.registry.all().await}))
@@ -620,6 +669,17 @@ impl Handler for FromPlugin {
                 }
                 crate::readings::publish(&node, &p).await;
             }
+            ext::method::EVENT_PUBLISH => {
+                // The notification form: nobody hears the outcome, so a failure is only logged. Plugins that must
+                // not lose an event send it as a request and keep it until it's taken.
+                if !plugin.config.granted("event.publish") {
+                    tracing::warn!(plugin = plugin.name(), "event.publish isn't granted in node.yaml; dropping");
+                    return;
+                }
+                if let Err(e) = publish_event(&node, plugin.name(), p).await {
+                    tracing::warn!(plugin = plugin.name(), "publishing its event: {}", e.message);
+                }
+            }
             ext::method::SUMMARY_PUBLISH => {
                 if !plugin.config.granted("summary.publish") {
                     tracing::warn!(plugin = plugin.name(), "summary.publish isn't granted in node.yaml; dropping");
@@ -645,6 +705,23 @@ impl Handler for FromPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_plugins_event_is_checked_before_it_leaves() {
+        let e = |channel: &str, summary: &str| ext::Event {
+            channel: channel.into(),
+            kind: "matrix.message".into(),
+            subject: None,
+            at: Timestamp::now(),
+            dedupe_key: Some("matrix:$ev".into()),
+            summary: summary.into(),
+            body: Value::Null,
+        };
+        assert_eq!(event_problem(&e("infrastructure-alerts", "disk full")), None);
+        assert!(event_problem(&e("", "x")).unwrap().contains("channel"));
+        assert!(event_problem(&e("has space", "x")).unwrap().contains("channel"));
+        assert!(event_problem(&e("alerts", "  ")).unwrap().contains("summary"));
+    }
 
     #[test]
     fn a_status_report_becomes_a_reading_keyed_by_the_plugin_with_its_detail_capped() {

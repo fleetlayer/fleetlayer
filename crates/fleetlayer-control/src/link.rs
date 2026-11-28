@@ -236,9 +236,7 @@ impl FromNode {
     fn own(&self, target: &str) -> Result<(), RpcError> {
         match crate::route::split_target(target) {
             Some((_, node)) if node == self.node => Ok(()),
-            _ => {
-                Err(RpcError::refused(format!("node {} can subscribe only its own sessions, not {target}", self.node)))
-            }
+            _ => Err(RpcError::refused(format!("node {} can act only for its own sessions, not {target}", self.node))),
         }
     }
 }
@@ -458,9 +456,12 @@ impl Handler for FromNode {
                 answer(&delivered)
             }
             l::method::PUBLISH => {
+                // A plugin's event is from `plugin:<name>@<node>`, so the policy can let a plugin publish where the
+                // node's agents may not. The node can claim any of its plugins: it's the trust boundary.
+                let (who, source) = publisher(&self.node, p.get("caller").and_then(Value::as_str))?;
                 let e: Event = params(p)?;
-                crate::authz::check(app, tenant, &self.me(), "publish", &format!("channel:{}", e.channel)).await?;
-                let out = crate::route::publish(app, tenant, e, &format!("node {}", self.node)).await?;
+                crate::authz::check(app, tenant, &who, "publish", &format!("channel:{}", e.channel)).await?;
+                let out = crate::route::publish(app, tenant, e, &source).await?;
                 answer(&out)
             }
             l::method::SUBSCRIBE => {
@@ -474,6 +475,15 @@ impl Handler for FromNode {
                 self.own(&s.target)?;
                 let removed = db::unsubscribe(&app.db, tenant, &s).await.map_err(RpcError::internal)?;
                 Ok(json!({"removed": removed}))
+            }
+            l::method::EVENTS => {
+                let r: l::EventsRequest = params(p)?;
+                self.own(&r.target)?;
+                let limit = i64::from(r.limit.unwrap_or(50).clamp(1, 500));
+                let events = db::missed_events(&app.db, tenant, &r.target, r.channel.as_deref(), r.all, r.peek, limit)
+                    .await
+                    .map_err(RpcError::internal)?;
+                Ok(json!({"events": events}))
             }
             l::method::SUBSCRIPTIONS => {
                 let mut subs = db::subscriptions(&app.db, tenant).await.map_err(RpcError::internal)?;
@@ -818,9 +828,35 @@ impl Handler for FromNode {
     }
 }
 
+/// Who publishes an event `node` sends, for the policy, and the source its subscribers read: the node itself
+/// (`-@<node>`), or one of its plugins when the event names one as `caller` (`plugin:<name>`).
+fn publisher(node: &str, caller: Option<&str>) -> Result<(String, String), RpcError> {
+    match caller {
+        None => Ok((format!("-@{node}"), format!("node {node}"))),
+        Some(c) => match c.strip_prefix("plugin:").filter(|n| {
+            !n.is_empty() && n.len() <= 64 && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        }) {
+            Some(n) => Ok((format!("plugin:{n}@{node}"), format!("{n} on {node}"))),
+            None => Err(RpcError::invalid_params("caller is plugin:<name>")),
+        },
+    }
+}
+
 #[cfg(test)]
 mod sync_tests {
     use super::*;
+
+    #[test]
+    fn a_plugins_event_is_published_as_the_plugin() {
+        assert_eq!(publisher("agents", None).unwrap(), ("-@agents".into(), "node agents".into()));
+        assert_eq!(
+            publisher("agents", Some("plugin:matrix")).unwrap(),
+            ("plugin:matrix@agents".into(), "matrix on agents".into())
+        );
+        assert!(publisher("agents", Some("planning")).is_err(), "only a plugin may be named");
+        assert!(publisher("agents", Some("plugin:x@other")).is_err(), "never another node's");
+        assert!(publisher("agents", Some("plugin:")).is_err());
+    }
 
     #[test]
     fn an_approved_sync_names_its_source_bundle_and_target() {

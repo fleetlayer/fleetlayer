@@ -63,6 +63,7 @@ export const pages = [
   { file: "plugins/signin", group: "Plugins", label: "Sign-in" },
   { file: "plugins/shared-folders", group: "Plugins", label: "Folders" },
   { file: "plugins/scheduler", group: "Plugins", label: "Scheduler" },
+  { file: "plugins/matrix", group: "Plugins", label: "Matrix rooms" },
   { file: "plugins/herdr-fleet", group: "Plugins", label: "Every herdr as one" },
   { file: "plugins/cookies", group: "Plugins", label: "Cookies" },
   { file: "plugins/1password", group: "Plugins", label: "1Password" },

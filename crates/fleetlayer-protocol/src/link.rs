@@ -20,6 +20,9 @@ pub mod method {
     pub const SUBSCRIBE: &str = "link/subscribe";
     pub const UNSUBSCRIBE: &str = "link/unsubscribe";
     pub const SUBSCRIPTIONS: &str = "link/subscriptions";
+    /// Node → control plane: the events one of its sessions missed (delivery failed: offline, busy) since it last
+    /// read them, or with `all` every event it was sent; `peek` leaves them unread. `EventsRequest` → `{events}`.
+    pub const EVENTS: &str = "link/events";
     /// Node → control plane: every node and session in the fleet.
     pub const FLEET: &str = "link/fleet";
     /// Node → control plane (notification): `SummaryPush` without the node (the link knows it).
@@ -319,6 +322,22 @@ pub struct TargetResult {
     pub ok: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventsRequest {
+    /// `<tab>@<node>`: a session of the asking node.
+    pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+    /// Every event sent to it, delivered or not, not only the missed ones.
+    #[serde(default)]
+    pub all: bool,
+    /// Leave them unread.
+    #[serde(default)]
+    pub peek: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

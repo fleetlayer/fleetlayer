@@ -29,7 +29,7 @@ else actual=$(shasum -a 256 "$tmp/$name.tar.gz" | cut -d' ' -f1); fi
 [ -n "$expected" ] && [ "$actual" = "$expected" ] || { echo "fleetlayer: checksum mismatch for $name.tar.gz" >&2; exit 1; }
 tar -xzf "$tmp/$name.tar.gz" -C "$tmp"
 lib="$HOME/.local/lib/fleetlayer"
-binaries="fleetlayer fleetlayer-node fleetlayer-herdr fleetlayer-rex fleetlayer-claude-code fleetlayer-summaries fleetlayer-file-sync fleetlayer-claude-auth-manager fleetlayer-claude-accounts fleetlayer-pages fleetlayer-control fleetlayer-gateway fleetlayer-signin fleetlayer-shared-folders fleetlayer-scheduler fleetlayer-cookies fleetlayer-1password fleetlayer-egress fleetlayer-herdr-fleet fleetlayer-dashboard"
+binaries="fleetlayer fleetlayer-node fleetlayer-herdr fleetlayer-rex fleetlayer-claude-code fleetlayer-summaries fleetlayer-file-sync fleetlayer-claude-auth-manager fleetlayer-claude-accounts fleetlayer-pages fleetlayer-control fleetlayer-gateway fleetlayer-signin fleetlayer-shared-folders fleetlayer-scheduler fleetlayer-cookies fleetlayer-1password fleetlayer-egress fleetlayer-herdr-fleet fleetlayer-dashboard fleetlayer-matrix"
 mkdir -p "$lib/versions" "$HOME/.local/bin"
 [ -f "$tmp/$name/fleetlayer-node" ] || { echo "fleetlayer: $name.tar.gz has no fleetlayer-node" >&2; exit 1; }
 rm -rf "${lib:?}/versions/$version"

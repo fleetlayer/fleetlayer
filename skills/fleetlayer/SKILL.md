@@ -1,6 +1,6 @@
 ---
 name: fleetlayer
-description: Work with the other agent sessions and shared tools on a Fleetlayer fleet. Use when you need to message another session or reply to one, find out what other sessions are doing or have done, start or resume a session on this or another machine, use a tool another machine shares (a signed-in browser, a laptop's screenshots and downloads), read usage readings, use a secret delivered to your role (an `op://` reference, `fleetlayer secrets run`), or when a message says it carries outside data or a call is waiting for the person's approval or was refused by access control.
+description: Work with the other agent sessions and shared tools on a Fleetlayer fleet. Use when you need to message another session or reply to one, find out what other sessions are doing or have done, start or resume a session on this or another machine, use a tool another machine shares (a signed-in browser, a laptop's screenshots and downloads), read usage readings, hear a channel's events (alerts, CI results, chat rooms) or catch up on the ones you missed, use a secret delivered to your role (an `op://` reference, `fleetlayer secrets run`), or when a message says it carries outside data or a call is waiting for the person's approval or was refused by access control.
 ---
 
 # Fleetlayer
@@ -64,6 +64,27 @@ fleetlayer msg send --to "review@server" "The migration is merged: please re-run
 - Message another session only when the task needs it. Say who you are and what you need in the message itself:
   the receiver has none of your context.
 
+## Channels: alerts, CI results and chat rooms
+
+Events (a CI result, a monitor's alert, a message in a Matrix room) arrive on named channels, and reach the sessions
+subscribed to them, as outside data:
+
+```sh
+fleetlayer subscribe infrastructure-alerts                  # every event on the channel
+fleetlayer subscribe infrastructure-alerts --subject backup  # only those about one subject (a service you own)
+fleetlayer subscribe ci --commit                             # your own commit's CI results (ends by itself)
+fleetlayer subscriptions
+fleetlayer unsubscribe infrastructure-alerts
+```
+
+- Subscribe only to what your work needs, and unsubscribe when the work is done. Nothing is queued: an event that
+  comes while you're offline or waiting on the person isn't delivered then.
+- **What you missed:** `fleetlayer events` lists the events whose delivery to you failed since you last asked (up to
+  7 days back), and marks them read; `--channel <name>` for one channel, `--peek` to leave them unread, `--all` for
+  everything sent to you, delivered or not. Run it when you start or resume work that subscribes to a channel.
+- **Matrix rooms** are channels too (the `fleetlayer-matrix` skill): a message in the room arrives as an event with
+  its sender, its text and a link, and the event says how to post a reply to the room.
+
 ## Start or resume a session (from v0.3.9)
 
 ```sh
@@ -112,6 +133,17 @@ lists the tools you may use and prints the line for each. Depth: the `fleetlayer
 and the `fleetlayer-shared-folders` skill (screenshots, downloads). Pages for people to look at: the `pages` skill;
 small interactive apps: the `apps` skill. A command-line tool that needs the person's browser cookies on this machine
 (an X client, `yt-dlp`): the `fleetlayer-cookies` skill.
+
+To call one tool of a shared server once, without adding it as an MCP server:
+
+```sh
+fleetlayer tools list matrix@server                                       # its tools and what each takes
+fleetlayer tools call matrix@server post room=infrastructure-alerts text='fixed: restarted the backup job'
+fleetlayer tools call matrix@server history --json '{"room": "infrastructure-alerts", "limit": 5}'
+```
+
+Arguments are `key=value` strings, or `--json` for any JSON. It prints the tool's text and exits 1 when the tool
+answers with an error. The same access rules, approvals and `--why` apply as with `fleetlayer mcp`.
 
 Some shared tools sit behind the MCP gate (Executor, for example: `fleetlayer mcp executor@gate`): the node sharing
 it holds the server's token, and checks each of your calls with the person's access policy before the server sees

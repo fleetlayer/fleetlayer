@@ -32,6 +32,8 @@ pub const LINK_METHODS: &[(&str, Option<&str>)] = &[
     (m::SUBSCRIBE, Some("subscribe")),
     (m::UNSUBSCRIBE, Some("subscribe")),
     (m::SUBSCRIPTIONS, Some("read")),
+    // Only the asking node's own sessions, and only events already sent to them.
+    (m::EVENTS, None),
     (m::FLEET, Some("read")),
     (m::SUMMARIES_SEARCH, Some("read")),
     (m::TOOL_OPEN, Some("use_tool")),
@@ -1270,6 +1272,7 @@ mod tests {
             m::SUBSCRIBE,
             m::UNSUBSCRIBE,
             m::SUBSCRIPTIONS,
+            m::EVENTS,
             m::FLEET,
             m::SUMMARY,
             m::SUMMARIES_SEARCH,

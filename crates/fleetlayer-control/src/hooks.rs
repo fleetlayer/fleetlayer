@@ -89,13 +89,18 @@ async fn receive(
         return StatusCode::OK;
     }
     let _ = db::endpoint_hit(&app.db, &id).await;
-    let mut event = to_event(&endpoint.channel, &headers, &query, &body);
-    // A payload can carry the endpoint's own URL (GitHub's ping has it in hook.config.url): its path holds the secret,
-    // which must never reach a session.
-    redact_event(&mut event, &secret);
+    let events = alertmanager_events(&endpoint.channel, &query, &body)
+        .unwrap_or_else(|| vec![to_event(&endpoint.channel, &headers, &query, &body)]);
     let source = format!("{} webhook", endpoint.label);
-    // Deliver in the background: the sender gets its 200 at once.
-    tokio::spawn(handle(app, tenant, endpoint, event, source));
+    // Deliver in the background, in order: the sender gets its 200 at once.
+    tokio::spawn(async move {
+        for mut event in events {
+            // A payload can carry the endpoint's own URL (GitHub's ping has it in hook.config.url): its path holds
+            // the secret, which must never reach a session.
+            redact_event(&mut event, &secret);
+            handle(app.clone(), tenant.clone(), endpoint.clone(), event, source.clone()).await;
+        }
+    });
     StatusCode::OK
 }
 
@@ -257,6 +262,73 @@ pub fn to_event(channel: &str, headers: &HeaderMap, query: &HashMap<String, Stri
     }
 }
 
+/// Alertmanager's webhook, known by `?kind=alertmanager` or by its body (`version`, `alerts[]` and `groupKey`): one event
+/// per alert, `[FIRING] HighMemory (warning, talira): Memory above 90%`. The subject is `?subject=` when given, else
+/// the label `?subject_label=` names (default `alertname`), so an owner subscribes to the alerts it owns. The dedupe
+/// key is the alert's fingerprint, status and start, so Alertmanager repeating a firing alert reaches nobody twice,
+/// while its resolution, or the same alert firing again later, does. None for anything else.
+pub fn alertmanager_events(channel: &str, query: &HashMap<String, String>, body: &[u8]) -> Option<Vec<Event>> {
+    let j: Value = serde_json::from_slice(body).ok()?;
+    let alerts = j.get("alerts")?.as_array()?;
+    let by_body = j.get("version").is_some() && j.get("groupKey").is_some();
+    if !by_body && query.get("kind").map(String::as_str) != Some("alertmanager") {
+        return None;
+    }
+    let text = |v: &Value, path: &[&str]| -> Option<String> {
+        let mut cur = v;
+        for p in path {
+            cur = cur.get(p)?;
+        }
+        match cur {
+            Value::String(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
+            Value::Number(n) => Some(n.to_string()),
+            _ => None,
+        }
+    };
+    let one_line = |s: &str, max: usize| {
+        let one = s.split_whitespace().collect::<Vec<_>>().join(" ");
+        if one.chars().count() <= max { one } else { format!("{}…", one.chars().take(max).collect::<String>()) }
+    };
+    let subject_label = query.get("subject_label").map_or("alertname", String::as_str);
+    let receiver = j.get("receiver").cloned().unwrap_or(Value::Null);
+    let events = alerts
+        .iter()
+        .map(|a| {
+            let status = text(a, &["status"]).unwrap_or_else(|| "firing".into());
+            let name = text(a, &["labels", "alertname"]).unwrap_or_else(|| "alert".into());
+            let tags: Vec<String> = ["severity", "namespace", "instance", "node", "pod"]
+                .iter()
+                .filter_map(|l| text(a, &["labels", l]))
+                .collect();
+            let what = text(a, &["annotations", "summary"])
+                .or_else(|| text(a, &["annotations", "description"]))
+                .unwrap_or_default();
+            let tags = if tags.is_empty() { String::new() } else { format!(" ({})", tags.join(", ")) };
+            let summary = one_line(&format!("[{}] {name}{tags}: {what}", status.to_uppercase()), 300);
+            let id = text(a, &["fingerprint"]).unwrap_or_else(|| {
+                let mut labels = a.get("labels").cloned().unwrap_or(Value::Null).to_string();
+                labels.truncate(200);
+                labels
+            });
+            let starts = text(a, &["startsAt"]).unwrap_or_default();
+            let mut body = a.clone();
+            if let Some(o) = body.as_object_mut() {
+                o.insert("receiver".into(), receiver.clone());
+            }
+            Event {
+                channel: channel.into(),
+                kind: "alertmanager.alert".into(),
+                subject: query.get("subject").cloned().or_else(|| text(a, &["labels", subject_label])),
+                at: jiff::Timestamp::now(),
+                dedupe_key: Some(format!("alertmanager:{id}:{status}:{starts}")),
+                summary,
+                body,
+            }
+        })
+        .collect();
+    Some(events)
+}
+
 /// The fields of any other GitHub event a session can use: the event, action, repository, branch, commit,
 /// conclusion and the one page about it.
 fn github_body(kind: &str, j: &Value) -> Value {
@@ -397,6 +469,42 @@ fn github(kind: &str, j: &Value) -> (Option<String>, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn alertmanager_gives_one_event_per_alert_firing_and_resolved() {
+        let body = br#"{"version":"4","groupKey":"{}:{}","status":"firing","receiver":"fleetlayer","alerts":[
+            {"status":"firing","labels":{"alertname":"HighMemory","severity":"warning","namespace":"talira"},
+             "annotations":{"summary":"Memory above 90% on app-1"},"startsAt":"2026-11-25T08:00:00Z","fingerprint":"abc"},
+            {"status":"resolved","labels":{"alertname":"PodCrashLooping","severity":"critical"},
+             "annotations":{"description":"web restarted 5 times"},"startsAt":"2026-11-25T07:00:00Z","fingerprint":"def"}]}"#;
+        let q = HashMap::new();
+        let e = alertmanager_events("alerts", &q, body).unwrap();
+        assert_eq!(e.len(), 2);
+        assert_eq!(e[0].summary, "[FIRING] HighMemory (warning, talira): Memory above 90% on app-1");
+        assert_eq!(e[1].summary, "[RESOLVED] PodCrashLooping (critical): web restarted 5 times");
+        assert_eq!(e[0].dedupe_key.as_deref(), Some("alertmanager:abc:firing:2026-11-25T08:00:00Z"));
+        assert_ne!(e[0].dedupe_key, e[1].dedupe_key);
+        assert_eq!(e[0].subject.as_deref(), Some("HighMemory"));
+        assert_eq!(e[0].kind, "alertmanager.alert");
+        assert_eq!(e[0].body["receiver"], "fleetlayer");
+        assert_eq!(e[0].body["labels"]["namespace"], "talira");
+
+        let by_label = HashMap::from([("subject_label".to_string(), "namespace".to_string())]);
+        assert_eq!(alertmanager_events("alerts", &by_label, body).unwrap()[0].subject.as_deref(), Some("talira"));
+        let fixed = HashMap::from([("subject".to_string(), "monitoring".to_string())]);
+        assert_eq!(alertmanager_events("alerts", &fixed, body).unwrap()[1].subject.as_deref(), Some("monitoring"));
+    }
+
+    #[test]
+    fn only_alertmanagers_body_or_kind_is_read_as_alerts() {
+        let q = HashMap::new();
+        let other = br#"{"alerts":[{"status":"firing"}],"text":"from something else"}"#;
+        assert!(alertmanager_events("alerts", &q, other).is_none(), "alerts[] alone isn't enough");
+        let asked = HashMap::from([("kind".to_string(), "alertmanager".to_string())]);
+        assert_eq!(alertmanager_events("alerts", &asked, other).unwrap().len(), 1);
+        assert!(alertmanager_events("alerts", &asked, b"not json").is_none());
+        assert!(alertmanager_events("alerts", &q, br#"{"message":"backup failed"}"#).is_none());
+    }
 
     const SHA: &str = "1a2b3c4d5e6f70811a2b3c4d5e6f70811a2b3c4d";
 

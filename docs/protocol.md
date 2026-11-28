@@ -397,6 +397,17 @@ An event source publishes with a notification to the node:
 The node forwards it to the control plane, which delivers it to every session subscribed to the channel (or to that
 `subject`), and to a fallback session when nobody is. `dedupeKey` lets the control plane drop repeats.
 
+- It needs the `event.publish` grant. The node checks the event (`channel` and `kind` are 1 to 100 letters, digits
+  and `- _ . :`; a `summary`) and passes it on as `link/publish` with `caller: "plugin:<name>"`, so the policy decides
+  `publish` on `channel:<channel>` for `plugin:<name>@<node>`, and subscribers read it as from `<name> on <node>`.
+- **Sent as a request**, it's answered with the control plane's result, `{duplicate, deliveries: [{target, ok,
+  error?}]}`, or an error: `-32010` while the node isn't linked, `-32011` when the policy refuses, `-32602` for an
+  event the node won't pass on. A plugin that mustn't lose events keeps each until it's answered, and retries; the
+  dedupe key makes a retry safe (`fleetlayer-matrix` does this, `docs/plugins/matrix.md`). Sent as a notification,
+  a failure is only logged on the node.
+- Every event reaches sessions as outside data. A session that was offline reads what it missed with `fleetlayer
+  events` (the control plane keeps each event with its delivery results).
+
 Event sources should also heartbeat with `_fleetlayer.dev/event/heartbeat` `{source, at}` so a source that goes quiet
 is noticed: the control plane raises `source.stale` when a heartbeat is late.
 
@@ -534,7 +545,7 @@ Numbers, never secrets, flow with readings: account usage and reset times, healt
 | Request | What it does |
 |---|---|
 | `_fleetlayer.dev/message/send` `{to, text, untrusted?, subkind?}` | Send to a session anywhere: `to` is `<name>@<node>`, `<name>` (this node first) or a session ID; `untrusted` marks the text as outside data for the recipient; `subkind` is a finer kind for its harness (`forward`). Fails at once if it isn't running. |
-| `_fleetlayer.dev/event/publish` | [Section 6](#6-events-the-event-source-role) |
+| `_fleetlayer.dev/event/publish` | [Section 6](#6-events-the-event-source-role) (grant `event.publish`) |
 | `_fleetlayer.dev/sync/publish` | [Section 8](#8-sync-and-sealed-secrets) |
 | `_fleetlayer.dev/reading/publish`, `/reading/subscribe` | [Section 9](#9-readings) |
 | `_fleetlayer.dev/sessions/query` `{node?, name?, harness?}` | This node's sessions (grant `sessions.query`) |

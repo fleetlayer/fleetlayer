@@ -865,3 +865,19 @@ managers, machines that sleep.
   approvals but can't decide them (give it an admin token to approve from the dashboard); nodes older than 0.4 don't
   publish `node.status`, so their plugins show as unknown; restarting it signs everyone out. Where it lives:
   `docs/dashboard.md`, `plugins/dashboard/`. To write: a guide that adds it to a running fleet, with the screenshot.
+- **Alerts in a chat room your agents act on.** Monitors (Alertmanager, Gatus) usually post to a chat room people
+  read; agents should hear the alerts for the services they own and answer in the room. Solved with the Matrix plugin:
+  a bot reads the room, each message becomes an event on the room's channel (routes give matching ones a subject, so an
+  owner subscribes to its own), and a shared tool posts replies, under the access policy. Footguns: the bot needs its
+  own account and an invitation, and in an encrypted room a sender's app must share its keys with the bot's device
+  (until then the plugin publishes "can't decrypt" instead of the text); a homeserver sends only the latest messages of
+  a busy room after a gap (the plugin fetches the rest); matrix-sdk's SQLite store links an older `libsqlite3-sys`
+  than sqlx and rusqlite, and Cargo links a native library once per workspace, so the plugin is a workspace of its own
+  (`plugins/matrix`, its own lockfile, built with `--manifest-path`). Alertmanager posting straight to a webhook
+  endpoint is the other way in: one event per alert, its repeats dropped. Written: `docs/plugins/matrix.md`,
+  `docs/guides/monitoring.md`. To write: a guide from an empty Matrix server (Synapse or Conduit) to an agent answering
+  its first alert.
+- **An agent that was offline missed an event.** Nothing is queued, so a CI result or an alert that came while its
+  session was closed or waiting on the person was gone for it. Solved: every event is kept with its delivery results,
+  and `fleetlayer events` lists what failed to reach the calling session since it last asked (7 days back), marking
+  it read. Written: `skills/fleetlayer/SKILL.md` ("Channels"), `docs/link.md`.

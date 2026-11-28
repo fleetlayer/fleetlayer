@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "plugins/*"]
+# Its own workspace and lockfile: matrix-sdk's SQLite store links an older libsqlite3-sys than sqlx and rusqlite here.
+exclude = ["plugins/matrix"]
 
 [workspace.package]
 version = "0.3.13"

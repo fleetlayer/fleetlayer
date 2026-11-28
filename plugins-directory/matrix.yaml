@@ -1,0 +1,46 @@
+name: matrix
+summary: Matrix rooms as channels - each new message reaches the agents subscribed to the room, and agents post replies as its bot.
+kind: plugin
+roles: [event_source]
+ships_with_fleetlayer: true
+status: beta
+licence: FSL-1.1-ALv2
+maintainer: Fleetlayer
+source: https://github.com/fleetlayer/fleetlayer/tree/main/plugins/matrix
+install: bundled
+command: fleetlayer-matrix
+platforms: [linux, macos]
+min_fleetlayer: 0.4.0
+protocol: 1
+needs: [a Matrix account for the bot, invited to the rooms]
+grants: [event.publish]
+config: |
+  plugins:
+    - name: matrix
+      command: fleetlayer-matrix
+      grants: [event.publish]
+      config:
+        homeserver: https://matrix.example.com
+        user: "@fleetlayer:example.com"
+        password_file: ~/.config/fleetlayer/matrix-password
+        tool: matrix
+        rooms:
+          - room: "#infrastructure-alerts:example.com"
+  tools:
+    - name: matrix
+      command: fleetlayer-matrix
+      args: [mcp]
+      allow: ["*@server"]
+security: >-
+  Signs in as the bot with a password read once from a file only its Unix user can read; the device, its token and its
+  encryption keys stay in its state directory (mode 700) and never leave the machine. Messages reach agents marked as
+  outside data. Events are published as plugin:matrix@<node>, and posting goes through the node's shared-tool checks,
+  so the access policy decides who hears a room and who may post to it (and can ask the person first). It can post
+  only to the rooms its config names.
+docs: plugins/matrix
+description: |
+  For the alerts room your monitors already post to: the agent that owns each service hears its alerts there (routes
+  give matching messages a subject to subscribe to) and answers in the room. Works with end-to-end encrypted rooms. It
+  keeps its own sync position and an outbox on disk, so a restart or an unreachable control plane loses no message
+  and repeats none, and it reports a problem when the sync stalls, the bot is removed from a room, or messages stop
+  getting through. An optional heartbeat room turns Alertmanager's Watchdog into a dead man's switch.

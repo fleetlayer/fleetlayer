@@ -18,7 +18,8 @@ up to a minute.
 | `link/session` | notification | `{session}`: one session changed |
 | `link/session_gone` | notification | `{sessionId}` |
 | `link/send` | request | `{to: "<name>@<node>", deliveryId, from, text}` → `{via}`. The sending node renders `text` (header and reply line). |
-| `link/publish` | request | an event (protocol section 6) → `{duplicate, deliveries: [{target, ok, error?}]}` |
+| `link/publish` | request | an event (protocol section 6), plus `caller: "plugin:<name>"` when one of the node's plugins sent it → `{duplicate, deliveries: [{target, ok, error?}]}`. Checked as `publish` on `channel:<channel>`, for `plugin:<name>@<node>` or else `-@<node>`. |
+| `link/events` | request | `{target, channel?, all?, peek?, limit?}` → `{events: [{id, channel, kind, subject, summary, body, source, at, delivered, error}]}`: the events whose delivery to `target` (one of the node's own sessions) failed since it last asked, oldest first, at most 7 days back; `all` adds those delivered; the mark moves to the newest shown unless `peek` (`fleetlayer events`). |
 | `link/subscribe`, `link/unsubscribe` | request | `{channel, subject?, target: "<name>@<node>"}` |
 | `link/subscriptions` | request | `{}` → `{subscriptions}` |
 | `link/fleet` | request | `{}` → `{nodes: [{name, machine, online, ...}], sessions: [{node, ...}]}` |
@@ -68,5 +69,10 @@ channel (kept in the event log; subscribe a session or set the channel's fallbac
   subscriptions and those to the event's subject), or to the channel's fallback when none match. Each event is kept
   with its delivery results. A repeated `dedupeKey` on the same channel goes nowhere.
 - **Webhooks** arrive on the control plane's second listener, `POST /hooks/<endpoint id>/<secret>`, the only one that
-  needs to face the internet. GitHub webhooks get the subject `<owner/repo>@<branch>`; anything else uses its
-  `summary`/`text`/`message` field, or `?subject=` and `?kind=` in the URL.
+  needs to face the internet. GitHub webhooks get the subject `<owner/repo>@<branch>`. Alertmanager's (known by its
+  body, or `?kind=alertmanager`) become one `alertmanager.alert` event per alert, `[FIRING] HighMemory (warning,
+  talira): Memory above 90%`, with the alert's `alertname` as subject (another label with `?subject_label=`, or a fixed
+  `?subject=`) and a dedupe key from its fingerprint, status and start, so a repeated notification goes nowhere.
+  Anything else uses its `summary`/`text`/`message` field, or `?subject=` and `?kind=` in the URL.
+- **Missed events:** every event is kept with its delivery results, so a session that was offline reads what it missed
+  with `fleetlayer events` (`link/events`).

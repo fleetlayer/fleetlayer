@@ -31,6 +31,28 @@ jobs:
       - run: cargo build --locked --workspace --bins
       - run: cargo test --locked --workspace
 
+  # fleetlayer-matrix is a workspace of its own (matrix-sdk's SQLite links an older libsqlite3-sys than the main one).
+  matrix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: plugins/matrix
+      - name: Its version follows the main Cargo.toml's
+        run: |
+          main=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          own=$(sed -n 's/^version = "\(.*\)"/\1/p' plugins/matrix/Cargo.toml | head -1)
+          [ "$main" = "$own" ] || { echo "plugins/matrix/Cargo.toml is version $own, Cargo.toml $main: set both"; exit 1; }
+      - run: cargo fmt --all --check --manifest-path plugins/matrix/Cargo.toml
+      - run: cargo clippy --locked --all-targets --manifest-path plugins/matrix/Cargo.toml -- -D warnings
+      - run: cargo test --locked --manifest-path plugins/matrix/Cargo.toml
+
   # claude-auth-manager writes setup tokens into the macOS login keychain through /usr/bin/security, and
   # fleetlayer-cookies reads a browser's key from it. This runs their tests on macOS, and the real-keychain tests against
   # a throwaway keychain made the default (never a real login keychain).
@@ -56,3 +78,5 @@ jobs:
       # A Keychain prompt would wait forever on a runner: fail in minutes instead
       - run: cargo test --locked -p fleetlayer-cookies -- --ignored real_keychain
         timeout-minutes: 5
+      # The release builds fleetlayer-matrix for macOS too: find out here, not on the tag.
+      - run: cargo build --locked --manifest-path plugins/matrix/Cargo.toml
