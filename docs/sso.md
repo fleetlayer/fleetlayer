@@ -1,13 +1,5 @@
 # Fleetlayer sign-in: one sign-in for every service
 
-Status: built and in use (28 November 2026). Steps 1a (people, tenants, teams, memberships, invites, node owners on the control
-plane), 1b (decisions in the owning tenant, people in the policy, the check call), 1c (the sign-in token and its
-routes), 2a (the sign-in service: OpenID Connect provider, passkeys, invites, the move test), 2b (the admin pages),
-2c (back-channel logout, signing out everywhere, key rotation, `previous_issuers`), 4b (upstream groups as teams),
-5 (forward-auth), 3 (the hub and pages sign in with Fleetlayer, through the shared `crates/fleetlayer-oidc`) and 4a (Google Workspace
-and generic OIDC upstreams, linking by issuer and subject, `join`) are built. What's left (SAML, per-page sharing, members' own sharing pages,
-decisions cached on the node) is step 6 at the end.
-
 People sign in once, with Fleetlayer, to every web service the fleet runs: the Claude sign-in hub, pages, and any
 other service someone chooses to run. Who may use what comes from the same access policy that decides what agents may
 do (`docs/access-control.md`), with the same `deny`/`only`/`allow`, the same `acl explain` and the same audit log.
@@ -545,29 +537,9 @@ Everything today is in the tenant `default` (nodes, policy, audit log, summaries
   its policy. Nodes stay as they are. History stays in the audit log it was written to; moving existing rows between
   tenants isn't offered, since it would break the audit chain.
 
-## Steps
+## Not built yet
 
-1. **The control plane's side**, in three releases, each deployed before the next:
-   - **1a.** Global people, tenants, teams, memberships (people and agents), roles, handles, invites and node
-     owners, with the commands and the migration above. Decisions stay in `default`.
-   - **1b.** Decisions in the owning tenant (membership first, then its policy; both sides' tenants between agents;
-     `outside`, `agents_elsewhere`); `person:`, `team:`, `role:`, `owned-by:`, `service:`, `page:` in the policy; the
-     new verbs (`sign_in`, `admin`, `write`; approvals for `page:` held per space), `default_people`, `owners:`;
-     `link/access_check {tenant, who, can, to}` and `_fleetlayer.dev/access/check`; `acl explain`/`acl test` for
-     people.
-   - **1c.** The sign-in token and `signin/*`.
-2. **The sign-in service**, in three releases:
-   - **2a.** OIDC provider (one token per tenant, PKCE required of every client, `sign_in` checked before any code),
-     passkeys, invites, `/api/check`, health and heartbeat, the move test.
-   - **2b.** The admin pages (members, invites, clients, teams, tenants and providers).
-   - **2c.** Back-channel logout, key rotation, `previous_issuers`. Built: logouts wait on disk and are retried until
-     delivered or the session would have expired, and one undelivered for an hour fails `/healthz`; receivers in
-     pages and the hub; `fleetlayer-signin keys rotate [--drop-previous]` and `fleetlayer-signin signout --person`.
-3. **The hub signs in with Fleetlayer** (coordinated with the hub's owner): "Sign in with Fleetlayer" next to the
-   login key, which keeps working until a deployment turns it off.
-4. **Google Workspace** as an upstream, then generic OIDC.
-5. **Forward-auth.** Built: `/forward-auth` and `/forward/start`, the cookie tied to the sign-in session, decisions
-   cached a minute, configs for Caddy, Traefik and nginx in `docs/plugins/signin.md`. Per-host cookies (no shared
-   domain) are for later.
-6. Later: SAML upstreams, per-page sharing (pages), members' own sharing pages, `_fleetlayer.dev/access/check`
-   decisions cached on the node for when the control plane is briefly away.
+- SAML providers.
+- Sharing one page with someone, and pages where members share their own.
+- Access decisions cached on the node, for when the control plane is briefly away.
+- Forward-auth with a cookie per host, for services that don't share a domain.

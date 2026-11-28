@@ -1,8 +1,9 @@
 # Releases and updates
 
-Fleetlayer ships one release per set of features: a version tag (`v0.4.0`) with release notes, never every build.
-Each release can need a backup or a look at its notes before you roll it out, so read them first. A tag outside that
-rhythm is for an urgent security fix or a bug that breaks someone's work, and its notes say which.
+Fleetlayer ships one release per set of features: a version tag (`v0.4.0`) with release notes, never every build. Each
+release can need a backup or a look at its notes before you roll it out, so read them first; the
+[changelog](changelog.md) sums each one up. A tag outside that rhythm is for an urgent security fix or a bug that
+breaks someone's work, and its notes say which.
 
 Each release on [GitHub](https://github.com/fleetlayer/fleetlayer/releases) has a tarball of every binary for each
 platform (Linux and macOS, x86-64 and ARM), a `SHA256SUMS` file, and a build attestation for each tarball. A tag with

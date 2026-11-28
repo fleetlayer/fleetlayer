@@ -67,7 +67,7 @@ the folder is `~/Fleetlayer/personal/pages/` and the address `http://pages.local
 
 For more than a few lines of instructions, there are two skills that ship with the plugin:
 `plugins/pages/skill/SKILL.md` (pages) and `plugins/pages/apps-skill/SKILL.md` (apps), which the node installs on
-every machine from v0.3.9 ([Tell your agents about Fleetlayer](agents-know-fleetlayer.md)). They tell an agent to use a
+every machine ([Tell your agents about Fleetlayer](agents-know-fleetlayer.md)). They tell an agent to use a
 page wherever it would have published an artifact, how to lay out screenshots, and what an app may and may not
 contain.
 

@@ -1,9 +1,8 @@
-# claude-auth-manager (design notes)
+# The Claude accounts plugin
 
-Status: built (the node half, readings and the hub); the hub awaits its first real sign-in. Fleetlayer's second plugin, after the herdr adapter. It shares one person's Claude sign-ins
-and usage with every parallel agent they run, on every machine, while keeping Claude credentials on machines that
-person controls. The control plane never holds them; it only relays them sealed to each node's key
-([protocol section 8](../protocol.md#8-sync-and-sealed-secrets)).
+`claude-auth-manager` lets every agent you run, on every machine, use your own Claude accounts, and shows each
+account's usage everywhere, while the sign-ins stay on a machine you control. The control plane never holds them; it
+only relays them sealed to each node's key ([protocol section 8](../protocol.md#8-sync-and-sealed-secrets)).
 
 ## Two halves, one binary
 
@@ -68,7 +67,7 @@ node leaves that alone.
   everything it sends the control plane ([scrubbing](../credentials.md#scrubbing-what-leaves-a-node)).
   `_fleetlayer.dev/sync/forget` (`fleetlayer secrets forget`, a role's window ending) removes every managed slot, as
   an empty bundle would.
-- **Replacing a token under a running session works** (tested 26 November 2026). A session keeps the token it holds
+- **Replacing a token under a running session works.** A session keeps the token it holds
   in memory while that token works; once it's rejected (401), the session reads the slot again on its retry and
   carries on with the new one, so nobody sees a failure. Still untested: how fast revoking a setup token takes
   effect.
@@ -190,7 +189,7 @@ plugins:
 - **What it protects against:** run it as a system service with its own user and hardening, and the agent users on
   the same machine can't read its sign-ins. Whoever administers the machine as root still can: that holds for anything
   on a host someone else manages.
-## Signing in headless (tested 26 November 2026, Claude Code 2.1.332)
+## Signing in headless
 
 The hub runs on an always-on machine with no browser; the person opens its web UI from their own browser and does
 every sign-in there. Both of Claude Code's flows work that way:

@@ -1,7 +1,5 @@
 # Network access per role
 
-Status (28 November 2026): new, Linux only. `fleetlayer-egress` ships with Fleetlayer from the release after v0.3.12.
-
 An agent that can read a secret can send it anywhere it can reach. Egress control narrows "anywhere" to the hosts a
 role's work needs: a model API, GitHub, the package registries, the docs it reads. It works like Little Snitch for a
 fleet of agents. The first connection to a new host gets a decision, and that decision is remembered. The rules belong

@@ -41,7 +41,7 @@ On the machine that runs the control plane:
 fleetlayer-control node add server
 ```
 
-It prints the node's token once. Enrolling the same name again replaces the token. Since v0.3.8 it finds the database
+It prints the node's token once. Enrolling the same name again replaces the token. It finds the database
 `fleetlayer up` made by itself; on a control plane that keeps it elsewhere, add `--db <path>` (or set
 `FLEETLAYER_CONTROL_DB`).
 
@@ -130,22 +130,18 @@ logs that a release is out, even with `mode: auto`.
 Releases are tagged once per set of features, and each one can need a backup or a look at the release notes first.
 Set `mode: notify` on a machine where you want to choose the moment.
 
-**Upgrading by hand.** Rerun the installer, then `fleetlayer-node install`. A node installed before 26 November 2026
-wrote the versioned path (`~/.local/lib/fleetlayer/<version>/fleetlayer-node`) into its service file, so swapping
-the links never reached it and it kept running the old binary. Rerunning `install` writes the link instead.
+**Upgrading by hand.** Rerun the installer, then `fleetlayer-node install`. Steps for old installs are in the
+[changelog](../changelog.md#upgrading-from-an-older-release).
 
-**Where the files are, and going back.** From v0.3.13 the live binaries sit directly in `~/.local/lib/fleetlayer/`
+**Where the files are, and going back.** The live binaries sit directly in `~/.local/lib/fleetlayer/`
 and keep the same paths from one release to the next: an upgrade copies each new binary beside the old one and renames
 it over it. `VERSION` there names the live release, and `versions/<tag>/` keeps the live release and the one before as
 they were unpacked. To go back, copy the binaries from `versions/<tag>/` over the live ones and restart the node (set
-`update: {mode: notify}` first, or it updates again). An install from before v0.3.13, with a folder per release, moves
-itself to this layout the first time a v0.3.13 node starts, and restarts once. The fixed path is what lets macOS keep
-the permissions you gave the node across upgrades ([Releases and updates](../releasing.md)); that first move is a new path, so
-macOS asks once more.
+`update: {mode: notify}` first, or it updates again). The fixed path is what lets macOS keep the permissions you gave the node
+across upgrades ([Releases and updates](../releasing.md)).
 
 **What a self-update relinks.** The node repoints the links for every binary in the release: `fleetlayer`,
-`fleetlayer-node`, the plugins, and (from v0.3.8) `fleetlayer-control`, `fleetlayer-gateway` and `fleetlayer-pages`.
-On a machine still running an older node that runs those three, rerun the installer once.
+`fleetlayer-node`, the plugins, `fleetlayer-control`, `fleetlayer-gateway` and `fleetlayer-pages`.
 
 **New binaries in a release.** A release can add a binary the old node didn't know, so the update that installed it
 didn't link it. When the new node starts from the installer's folder, it links any of its release's binaries that have
@@ -164,8 +160,7 @@ heartbeat:
   every: 60
 ```
 
-From v0.3.8 the node logs an error when it can't read `token_file` (older nodes sent reports without a token, and
-didn't expand `~` there). A monitor that refuses a report shows in the node's log as
+The node logs an error when it can't read `token_file`. A monitor that refuses a report shows in the node's log as
 `heartbeat: <url> answered <status>`, so check the log once after setting this up.
 
 After a minute's grace at start, the node posts `?success=true` every `every` seconds, or `success=false` with the
@@ -208,7 +203,7 @@ middle of what someone is typing in that tab. In the test node's node.yaml:
 typing_fallback: false     # such messages fail at once instead
 ```
 
-**Give it its own instance.** From v0.3.9, `FLEETLAYER_INSTANCE` runs a second node under the same
+**Give it its own instance.** `FLEETLAYER_INSTANCE` runs a second node under the same
 account without touching the real one: its own launchd label or systemd unit (`dev.fleetlayer.test.node`,
 `fleetlayer-test-node.service`), its own config and state under the `HOME` you give it, and its own socket. Pointing
 `XDG_CONFIG_HOME` somewhere else isn't enough: `fleetlayer-node install` would replace the real node's service.
@@ -255,7 +250,7 @@ pkill -f 'bin/[f]leetlayer-node'
 - **The node keeps running an old version after an upgrade**: its service file names a versioned path. Run
   `fleetlayer-node install` again.
 - **A command from a new release isn't found**: see "New binaries in a release" above.
-- **"another node is already running on <socket> (pid N)"** (from v0.3.9, after the node has waited 10 seconds): a
+- **"another node is already running on <socket> (pid N)"** (after the node has waited 10 seconds): a
   node already serves that socket, usually the real one while you start a second by hand. Stop it first, or give the
   second one its own instance with `FLEETLAYER_INSTANCE` (see "Test nodes" above).
 - **"<path> exists and isn't a socket"**: something else is at the socket's path. Move it away, or set `socket:` in

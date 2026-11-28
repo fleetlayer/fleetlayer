@@ -204,12 +204,14 @@ async function main() {
     "",
     `Licence: ${SITE.licence}. Source: ${REPO}.`,
     "",
-    `Every page is also served as Markdown: add \`.md\` to its address. All of them in one file: ${SITE.url}/llms-full.txt.`,
+    `Every page is also served as Markdown: add \`.md\` to its address. The core docs in one file: ${SITE.url}/llms-full.txt. Each group below is also one file, linked beside its heading.`,
     "",
     `- [Fleetlayer, in one page](${SITE.url}/index.md): what it is, who it's for and how to start`,
     ...groups.flatMap((g) => [
       "",
       `## ${g.name}`,
+      "",
+      `All of it in one file: ${SITE.url}/llms/${g.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}.txt`,
       "",
       ...g.docs.map((d) => `- [${d.title}](${mdUrl(d.slug)})${d.description ? `: ${d.description}` : ""}`),
     ]),
@@ -231,10 +233,19 @@ async function main() {
   );
   await writeFile(join(publicRoot, `${BASE}.md`), `# Documentation\n\n${docsIndex(mdUrl)}`);
 
-  const ordered = [...PAGES.map((p) => docs.find((d) => d.slug === p.file)), ...children];
-  const full = [homepage.trim(), ...ordered.map((d) => `<!-- ${mdUrl(d.slug)} -->\n\n${d.markdown.trim()}`)].join(
-    "\n\n---\n\n",
-  );
+  // One file per group, and llms-full.txt with the core groups, so each fits in an agent's context.
+  const slugOfGroup = (name) => name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  const section = (d) => `<!-- ${mdUrl(d.slug)} -->\n\n${d.markdown.trim()}`;
+  const groupFiles = groups.map((g) => ({ ...g, url: `${SITE.url}/llms/${slugOfGroup(g.name)}.txt` }));
+  await mkdir(join(publicRoot, "llms"), { recursive: true });
+  for (const g of groupFiles) {
+    const text = [`# ${SITE.title}: ${g.name}`, ...g.docs.map(section)].join("\n\n---\n\n");
+    await writeFile(join(publicRoot, "llms", `${slugOfGroup(g.name)}.txt`), text + "\n");
+  }
+  const groupList = groupFiles.map((g) => `- ${g.name}: ${g.url}`).join("\n");
+  const core = groupFiles.filter((g) => SITE.llmsFull.includes(g.name));
+  const head = `# ${SITE.title}: the core docs\n\nThis file holds ${core.map((g) => g.name).join(", ")}. Every group has a file of its own:\n\n${groupList}`;
+  const full = [head, homepage.trim(), ...core.flatMap((g) => g.docs.map(section))].join("\n\n---\n\n");
   await writeFile(join(publicRoot, "llms-full.txt"), full + "\n");
 
   console.log(`sync-docs: ${docs.length + children.length} pages`);

@@ -46,7 +46,7 @@ the agent checks `fleetlayer me` first.
 
 ## Install the skills
 
-From v0.3.9 the node installs them itself. Each release carries them, and when the node starts it copies every skill
+The node installs them itself. Each release carries them, and when the node starts it copies every skill
 into Claude Code's folder (`~/.claude/skills/<name>/`, if you use Claude Code) and Codex's (`~/.agents/skills/<name>/`,
 if you use Codex), on every machine. A self-update restarts the node, so the new release's skills arrive with it.
 
@@ -67,7 +67,7 @@ if you use Codex), on every machine. A self-update restarts the node, so the new
   status` says that too. Copy them by hand from a checkout of the release you run:
 
   ```sh
-  git clone --depth 1 --branch v0.3.9 https://github.com/fleetlayer/fleetlayer /tmp/fleetlayer-src
+  git clone --depth 1 --branch <release> https://github.com/fleetlayer/fleetlayer /tmp/fleetlayer-src
   /tmp/fleetlayer-src/scripts/collect-skills /tmp/fleetlayer-skills
   cp -R /tmp/fleetlayer-skills/* ~/.claude/skills/    # and ~/.agents/skills/ for Codex
   ```

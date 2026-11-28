@@ -47,8 +47,8 @@ manager. With `--github-secret-file`, a request must also carry GitHub's signatu
 (`X-Hub-Signature-256`) made with that secret, or it's refused. `fleetlayer-control endpoint secret <id>
 --github-secret-file …` adds one to an endpoint you already have.
 
-**If the URL leaks** (it ended up in a log, a screenshot or a chat), give the endpoint a new one. These commands come
-in v0.3.12. `fleetlayer-control endpoint list` shows each endpoint's ID, and `endpoint rotate <id>` prints a new
+**If the URL leaks** (it ended up in a log, a screenshot or a chat), give the endpoint a new one. 
+`fleetlayer-control endpoint list` shows each endpoint's ID, and `endpoint rotate <id>` prints a new
 `/hooks/<id>/<secret>` once. The old URL answers 404 at once, and the label, channel and GitHub signing secret stay.
 Deliveries fail until GitHub has the new URL; its Recent Deliveries tab can send them again. For no gap at all, add a
 second endpoint with the same `--github-secret-file`, repoint GitHub to it, then `endpoint remove <old id>`.

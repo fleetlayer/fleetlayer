@@ -108,7 +108,7 @@ tools:
       PLAYWRIGHT_MCP_EXECUTABLE_PATH: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
       PATH: /opt/homebrew/bin:/usr/bin:/bin
     env_files: { PLAYWRIGHT_MCP_EXTENSION_TOKEN: ~/.config/browser-mcp/extension-token }   # read at start; keep it 0600
-    description: Your Chrome, signed in to your sites   # optional: one line agents see in `fleetlayer me` (v0.3.9)
+    description: Your Chrome, signed in to your sites   # optional: one line agents see in `fleetlayer me`
     allow: ["*@server"]          # <tab>@<node> patterns; nobody when empty
     networks: ["10.5.0.0/16"]    # optional: offer it only while this machine is on these networks (at home)
     tools:
@@ -116,7 +116,7 @@ tools:
     # When a session's connection ends, close its tabs one at a time (browser_close only disconnects in extension
     # mode, leaving the tabs open in a grey group).
     on_close: [{ name: browser_tabs, arguments: { action: close, index: 0 }, repeat: 50 }]
-    close_with: [browser_close]   # from v0.3.9: browser_close only disconnects in extension mode, so it runs the cleanup instead
+    close_with: [browser_close]   # browser_close only disconnects in extension mode, so it runs the cleanup instead
 ```
 
 In a session on another machine, the MCP server command is `fleetlayer mcp browser@laptop`. With `networks:` set, the
@@ -135,7 +135,7 @@ each call is decided by the access policy before the server sees it, and calls t
 approval: [the MCP gate](access-control.md#the-mcp-gate), and [Executor behind Fleetlayer](guides/executor.md) for
 the whole setup.
 
-A session finds the tools it may use with `fleetlayer me` (from v0.3.9): each one with its description, whether its
+A session finds the tools it may use with `fleetlayer me`: each one with its description, whether its
 first use still asks, its folders for `fleetlayer-shared-folders`, and the `claude mcp add` line that adds it. Tools a rule
 refuses it aren't listed. For agents to know they can, give them the skills and a few lines in their global
 instructions: [Tell your agents about Fleetlayer](guides/agents-know-fleetlayer.md).

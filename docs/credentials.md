@@ -77,7 +77,7 @@ through it, [your shared browser](guides/browser.md) is better: the cookies neve
 
 ### Secrets from 1Password, granted per role
 
-*Since v0.3.13.* `fleetlayer-1password` delivers 1Password items to the roles you grant them to. It runs under a
+`fleetlayer-1password` delivers 1Password items to the roles you grant them to. It runs under a
 Unix user of its own and holds the 1Password service-account token there, so no agent holds a token that opens a whole
 vault. A grant names items (`op://github/deploy-bot/token`) and the nodes of a role, so vaults become a way to
 organise items, not a way to control access, and nobody makes a vault or a token per agent. Each node gets exactly its
@@ -86,7 +86,7 @@ a grant is taken away. [fleetlayer-1password](plugins/1password.md) covers the s
 
 ### Using a secret without seeing it
 
-*Since v0.3.13.* Agents use a delivered secret by its reference, so the value never appears in their commands or
+Agents use a delivered secret by its reference, so the value never appears in their commands or
 their context:
 
 ```sh
@@ -104,7 +104,7 @@ puts it back.
 
 ### Scrubbing what leaves a node
 
-*Since v0.3.13.* The node knows exactly which secrets it delivered, so it removes exact matches, with no
+The node knows exactly which secrets it delivered, so it removes exact matches, with no
 guessing, from everything it sends the control plane: messages, events, readings, session titles, summaries and
 catch-ups. A match is replaced by `[REDACTED <reference>]`, such as `[REDACTED op://github/deploy-bot/token]`. It
 matches the forms a value takes once something has encoded it:
@@ -138,7 +138,7 @@ It refuses the live folders (`~/.claude/projects`, `~/.codex/sessions`): rewriti
 to loses its lines. [gitleaks](https://github.com/gitleaks/gitleaks) (MIT) catches secrets nobody delivered, such as
 a key pasted into a chat; it's optional, and has to be on `PATH`.
 
-A shared MCP server's calls and results are scrubbed too, from v0.3.13: the node sharing the tool redacts the secrets
+A shared MCP server's calls and results are scrubbed too: the node sharing the tool redacts the secrets
 delivered to it from every line in both directions, before a call reaches the server and before a result reaches the
 agent ([the MCP gate](access-control.md#the-mcp-gate)). A session's transcript read from another
 machine (`_fleetlayer.dev/transcript/read`, which herdr-fleet uses) is scrubbed as plain text on the machine it's on,
@@ -167,7 +167,7 @@ Fleetlayer](guides/executor.md) sets it up.
 
 ### Network access per role
 
-*Since v0.3.13.* A role's agents reach only the hosts on its list, through a proxy that reads the host name and
+A role's agents reach only the hosts on its list, through a proxy that reads the host name and
 never decrypts the traffic. A host that isn't on the list is refused with a message that tells the agent how to ask.
 The request goes to a person through the same approvals as everything else, and once approved it stays allowed. It
 starts in a mode that only logs, so a week of real traffic builds the list before anything is blocked, and it keeps
@@ -190,7 +190,7 @@ act as any of its sessions, so Fleetlayer draws the line there too:
 
 ### An admin role that's off until you open it
 
-*Since v0.3.13.* An agent that can change everything sits in a role that's switched off: every request by it or
+An agent that can change everything sits in a role that's switched off: every request by it or
 to it is refused, and nothing is delivered to it. It asks for a window (`fleetlayer role activate admin --for 1h`),
 you approve, and its rules apply until the time is up. Then its sessions are closed, what was delivered to it is
 removed, a hook takes away its sudo rule, and its node confirms; a window that didn't close cleanly shows as a health

@@ -1,13 +1,10 @@
 # Pages
 
-Status: built (27 November 2026): the renderer, the web app, live updates, `fleetlayer pages push`, and signing in
-through Fleetlayer (or with a login key). The same service hosts **apps** (interactive HTML and JavaScript, each on a
-subdomain of its own): `docs/plugins/apps.md`.
-
 Pages are for people to look at: QA screenshots, reports, mock-ups, decision write-ups. Any agent or script that can
 write files makes one (Claude, Codex, Gemini, Pi, a shell script), as a plain folder in a synced, backed-up vault.
 `fleetlayer-pages` hosts whatever is in the folder: there's no publish step and nothing to build. It replaces vendor
-"artifacts", which open only for the account that published them.
+"artifacts", which open only for the account that published them. The same service hosts [apps](apps.md): interactive
+HTML and JavaScript, each on a subdomain of its own.
 
 ## Spaces and addresses
 
@@ -280,4 +277,4 @@ its images in `img/`. Images on consecutive lines make a gallery, alt text is th
 it to check it shows no problems, then give the person that link.
 ```
 
-The `pages` skill (`plugins/pages/skill/SKILL.md`) is the longer version, and the `apps` skill (`plugins/pages/apps-skill/SKILL.md`) covers apps: from v0.3.9 the node installs both on every machine ([Tell your agents about Fleetlayer](../guides/agents-know-fleetlayer.md)).
+The `pages` skill (`plugins/pages/skill/SKILL.md`) is the longer version, and the `apps` skill (`plugins/pages/apps-skill/SKILL.md`) covers apps: the node installs both on every machine ([Tell your agents about Fleetlayer](../guides/agents-know-fleetlayer.md)).

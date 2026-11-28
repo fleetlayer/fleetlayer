@@ -86,7 +86,7 @@ When a release comes out, ask your agent to rebase your branch on its tag, rebui
 
 ```sh
 git fetch https://github.com/fleetlayer/fleetlayer.git --tags
-git rebase v0.3.8
+git rebase v0.4.1    # the new release's tag
 ```
 
 The smaller your change, the easier this stays. A change that lands upstream needs no rebasing at all, which is the

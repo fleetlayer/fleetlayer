@@ -1,8 +1,5 @@
 # Apps
 
-Status: step 1 built (27 November 2026): static apps on subdomains of their own, sign-in, access, the home screen and
-untrusted spaces. Step 2, a small database with named queries, is designed below and not built yet.
-
 Apps are served by the same service as pages (`fleetlayer-pages`, `docs/plugins/pages.md`). Pages are Markdown and
 images, with no scripts. Apps are where interactive things go: HTML, CSS and JavaScript, each on a subdomain of its
 own.

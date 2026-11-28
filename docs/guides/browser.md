@@ -67,7 +67,7 @@ tools:
     tools:
       deny: [browser_run_code_unsafe]   # always on in Playwright MCP: arbitrary code in the server's process
     on_close: [{ name: browser_tabs, arguments: { action: close, index: 0 }, repeat: 50 }]
-    close_with: [browser_close]   # from v0.3.9: browser_close only disconnects in extension mode, so it runs the cleanup instead
+    close_with: [browser_close]   # browser_close only disconnects in extension mode, so it runs the cleanup instead
 ```
 
 Restart the node (`fleetlayer-node install` again, or restart its service) and check `fleetlayer status`.
@@ -83,11 +83,11 @@ What each line is for:
   turn it off. The node refuses it and leaves it out of the tool list.
 - **`on_close`:** in extension mode, closing the browser only disconnects and leaves the tabs open in a grey group.
   This closes the session's tabs one at a time when it disconnects, and when the node itself stops (an upgrade, a
-  restart), before it stops the server. From v0.3.13 it runs only for a session that made a tool call: Playwright MCP
+  restart), before it stops the server. It runs only for a session that made a tool call: Playwright MCP
   connects to Chrome, and opens a tab, at its first call of any kind, so a cleanup call for a session that never used
   the browser would open the very tab it meant to close.
-- **Nothing runs until it's used:** a session connects at launch whether or not it will use the browser. From
-  v0.4.0 the node answers a new connection from what Playwright MCP answered last time (kept in
+- **Nothing runs until it's used:** a session connects at launch whether or not it will use the browser. The
+  node answers a new connection from what Playwright MCP answered last time (kept in
   `~/.local/state/fleetlayer/tools/browser.mcp-cache.json`) and starts the process only at the session's first browser
   call, so twenty idle sessions cost nothing on the laptop. When Playwright MCP is upgraded, the first call after it
   notices the new tools, rewrites that file and tells the session. `lazy: false` starts it at every connection
@@ -99,7 +99,7 @@ What each line is for:
 
 The node's `allow:` list is one half. The control plane's access policy is the other, and both must agree.
 
-From v0.3.8, a fleet with no policy of its own uses a built-in default: each session's first use of the browser is
+A fleet with no policy of its own uses a built-in default: each session's first use of the browser is
 refused until you approve it once (`fleetlayer-control approvals list`, then `approvals approve <id>`), and the
 approval holds for 30 days, renewed each time the browser is used. `fleetlayer-control acl show` prints that default. A policy you apply that leaves `ask:`
 out asks the same way. To decide up front which agents have it, say so in your policy file:
@@ -146,7 +146,7 @@ machine may be asleep, or its node restarting)"), and the next call works as usu
 90 seconds closes. For slow work (a page that takes minutes to load), raise the limit after the target:
 `claude mcp add browser -- fleetlayer mcp browser@laptop --call-timeout 300`.
 
-**When the laptop sleeps or its node restarts**, a session keeps the browser's tools (from v0.4.0): the call in flight
+**When the laptop sleeps or its node restarts**, a session keeps the browser's tools: the call in flight
 gets an error at once, later calls get "browser@laptop can't be reached now" until the laptop is back, and the first
 call after that reconnects by itself. Claude Code never restarts an MCP server that exited, so before this a session
 lost the browser until it restarted. `fleetlayer mcp` keeps the tool's list (in `~/.local/state/fleetlayer/mcp/`) so a
@@ -161,8 +161,7 @@ The same mechanism shares other things on the laptop: [your screenshots and down
 
 Each session's tabs live in a tab group named after it, and close when the session calls `browser_close`, when its
 connection ends, or when the laptop's node stops. A grey group is one whose session left without closing it: the
-extension greys a group when its connection ends and never closes tabs itself. Before v0.3.13 every session that had
-the browser configured left one, holding an `about:blank` tab, even if it never used it. You can close grey groups by
+extension greys a group when its connection ends and never closes tabs itself. You can close grey groups by
 hand (right-click the group, **Close group**); no session can reach them any more.
 
 The laptop's node publishes a `tool.connections` reading for each shared tool: open connections, how many have used

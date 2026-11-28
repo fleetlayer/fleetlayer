@@ -1,8 +1,5 @@
 # The Fleetlayer plugin protocol
 
-Status: **draft 1** (26 November 2026). Nothing implements it yet; expect it to change as the node and the herdr
-adapter are built against it.
-
 A Fleetlayer node does almost nothing by itself. Everything that touches a session manager, an agent harness, an
 outside service or a secret is a **plugin**: a separate executable the node starts and talks to over stdio, the way
 an editor talks to a language server. Plugins can be written in any language. Fleetlayer never compiles a plugin into

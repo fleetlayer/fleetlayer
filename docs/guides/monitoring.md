@@ -55,7 +55,7 @@ to come up. When the node dies, the reports stop and the monitor's own timeout r
 about it.
 
 To see the same judgement by hand, `fleetlayer status` prints `healthy` or `unhealthy: <problem>` under the node line
-(from v0.3.8), and `fleetlayer status --json` includes it as `health` (absent when healthy, otherwise the reasons
+and `fleetlayer status --json` includes it as `health` (absent when healthy, otherwise the reasons
 joined with `;`).
 
 On a laptop that runs [`fleetlayer up`](laptop.md), you don't need this: the gateway asks the node directly (below).

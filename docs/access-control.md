@@ -1,16 +1,5 @@
 # Access control: running agents with least privilege
 
-Status (26 November 2026): version 2's first phase is built: the Cedar engine and the policy file (groups, deny,
-only, allow, `except`, default), `acl apply`, `explain`, `test`, `show`, `log` and `unapply`, read rules on the fleet
-view, summaries and subscriptions, untrusted marking, rate limits, audit rules, and a check that every request the
-control plane serves is classified; `acl suggest`; per-tool rules for shared MCP servers. The tamper-evident audit log
-(HMAC chain, optional anchors, counted repeats, `audit verify` and `audit tail`). Approvals, on by default (`approvals list|approve|deny`, `GET /v1/approvals`, `POST /v1/approvals/<id>`
-with an admin token). Justifications (`justify:` rules; `--why` on `fleetlayer msg send` and `fleetlayer mcp`, or
-`FLEETLAYER_WHY`). Grants with an expiry (`until:`) and roles that are off until a window is approved (the admin
-window, 28 November 2026). All of version 2's design is built. Without a version 2 policy, version 1's ordered rules still decide.
-From v0.3.13, the MCP gate: a node in front of any MCP server, local or remote, checking each tool call against the
-policy (verb `call`), with approvals `for: once` bound to the call's arguments.
-
 Agents act on what they read. An agent that reads email, issue trackers, web pages or public submissions can be
 steered by whoever wrote them (prompt injection), and every other agent it can reach inherits that risk. Fleetlayer's
 access control decides, for every agent on every machine:
@@ -482,7 +471,7 @@ ask:
   (mode 0600), sent only over https (or plain http to this machine), and never follow a redirect.
 - The node checks a remote server every five minutes with its own credentials (initialize, list its tools), and a
   failure, a revoked token included, fails the node's health and its heartbeat.
-- Only one JSON-RPC message per line passes, for every shared MCP server (gated or not, from v0.3.13): a batch or a
+- Only one JSON-RPC message per line passes, for every shared MCP server (gated or not): a batch or a
   line that isn't JSON is refused, so nothing reaches the server that the checks didn't read.
 - Calls run concurrently: one waiting for the person doesn't hold up the others. A call still being checked when the
   agent disconnects is dropped.

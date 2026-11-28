@@ -1,12 +1,9 @@
 # The dashboard
 
-Status: built (28 November 2026): machines, sessions, events, approvals and admin windows, readings and a graph of the
-fleet; people, invites and teams; and the access rules in force (read here, changed in the policy file). Sign-in
-providers and editing rules from the page come next.
-
 The dashboard is Fleetlayer's web page for people: one place to see every machine and what it runs, every agent
 session and whether it needs you, what arrived and who it reached, and what's waiting for your approval. It's live:
-each page refreshes itself every five seconds.
+each page refreshes itself every five seconds. Choosing sign-in providers and editing rules from the page aren't built
+yet.
 
 It shows only what the control plane's API gives it, with a token of its own, and does only what the API does. So
 everything on it can also be done with the `fleetlayer` command, the API, or an agent: the dashboard is for having a

@@ -59,16 +59,12 @@ To change it later: System Settings > Privacy & Security > **Files and Folders**
 **Downloads Folder** on or off.
 
 macOS remembers the answer for the node's binary at its exact path, and for a signed binary it keeps the answer
-when a new build replaces the old one there. From v0.3.13 that's how Fleetlayer upgrades: the macOS releases are
-signed with a Developer ID and notarised by Apple ([how](../releasing.md)), and the installer and the node's own
-update keep the node at one path, `~/.local/lib/fleetlayer/fleetlayer-node`. So you answer once (tested between two
-signed builds of v0.3.13: the second read Downloads with no prompt).
+when a new build replaces the old one there. That's how Fleetlayer upgrades: the macOS releases are signed with a
+Developer ID and notarised by Apple ([how](../releasing.md)), and the installer and the node's own update keep the node
+at one path, `~/.local/lib/fleetlayer/fleetlayer-node`. So you answer once.
 
-Three cases ask again:
+It asks again for:
 
-- **Moving to v0.3.13 from an earlier release**, once: earlier releases each lived in a folder of their own, so the
-  node's path changes one last time.
-- **v0.3.12 and earlier**, after every upgrade, for the same reason. Signing alone (from v0.3.9) didn't stop it.
 - **A node you built yourself**, or an unsigned build from a fork, after every upgrade even at one path: macOS knows
   an unsigned program by its exact bytes.
 
@@ -77,8 +73,8 @@ path the node has run from leaves a `fleetlayer-node` row under Files and Folder
 
 ## 4. Decide which agents see them
 
-The node's `allow:` list is one half; the control plane's access policy is the other, and both must agree. From
-v0.3.8 a fleet with no policy of its own asks you before each session's first use of a shared tool
+The node's `allow:` list is one half; the control plane's access policy is the other, and both must agree. A fleet
+with no policy of its own asks you before each session's first use of a shared tool
 (`fleetlayer-control approvals list`, then `approvals approve <id>`), and the approval holds for 30 days.
 
 To give your screenshots to more agents than your downloads, share them as two tools instead of one:
@@ -152,7 +148,7 @@ ask: "look at my latest screenshot", "read the CSV I downloaded this morning". T
 ## When it doesn't work
 
 - **"macOS refused access to the downloads folder"**: section 3. Answer the prompt on the Mac, or turn the node back
-  on under Files and Folders. Before v0.3.13, and with an unsigned build, this is expected once after every upgrade.
+  on under Files and Folders. With an unsigned build, this is expected after every upgrade.
 - **An agent's first read of Downloads hangs**: macOS is waiting for someone to answer its prompt on the Mac's screen.
 - **"is kept in the cloud and isn't downloaded"**: the file is an iCloud Drive or Dropbox placeholder. Open it in
   Finder once to download it, and ask again. The tool never starts a download itself.

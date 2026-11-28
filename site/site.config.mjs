@@ -13,6 +13,9 @@ export const site = {
     "FSL-1.1-ALv2 (Functional Source License, source-available: use it for anything except a competing product or service; each release becomes Apache 2.0 two years after it ships)",
   summary:
     "An open framework for running AI agents securely and at scale: it connects the Claude Code and Codex sessions you already run in herdr, on your laptop, a home server or a VPS, so any agent can message any other, webhooks reach the right agent, and each agent gets its own access rules. Source-available, self-hosted, no vendor lock-in.",
+  // The groups whose pages go into llms-full.txt, the core an agent reads first. Every group also has a file of its own,
+  // /llms/<group>.txt, listed at the top of llms-full.txt and in llms.txt.
+  llmsFull: ["Start here", "Works with", "Set up", "Day to day", "Comparisons"],
   // Working files that stay in the repo only.
   unpublished: ["guides-to-write", "problems"],
 };
@@ -76,6 +79,7 @@ export const pages = [
   { file: "egress", group: "Reference", label: "Network access", description: "Reference for network access per role: the proxy, DNS, modes, presets, approvals and the commands." },
   { file: "access-control", group: "Reference", label: "Access control", description: "Write the access policy: who may message whom, use which tools and receive which secrets, what needs your approval, and how to test and explain each decision." },
   { file: "events", group: "Reference", label: "Events", description: "Reference for events and channels: CI results, alerts, session status and the rest, how sessions subscribe and catch up." },
+  { file: "changelog", group: "Reference", label: "Changelog", description: "What changed in each release, newest first, and the steps to take when you upgrade from an older one." },
   { file: "releasing", group: "Reference", label: "Releases and updates", description: "How releases and self-updates work, how to check a release, and how to sign your own." },
   { file: "protocol", group: "Reference", label: "Plugin protocol", description: "Write a plugin: the JSON-RPC protocol between a node and its plugins, roles, sealed bundles, readings and status." },
   { file: "link", group: "Reference", label: "Node link", description: "Reference for the node's link to the control plane: the WebSocket, its messages and how a moved control plane is followed." },
