@@ -188,6 +188,8 @@ impl Event {
 #[serde(rename_all = "camelCase", default)]
 pub struct Approval {
     pub id: String,
+    /// The request in plain words, from access control (a control plane before 0.4.2 sends none).
+    pub line: Option<String>,
     pub from: String,
     pub verb: String,
     pub to: String,

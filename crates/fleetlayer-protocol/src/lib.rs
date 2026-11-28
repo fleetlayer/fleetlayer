@@ -13,6 +13,7 @@ pub mod ext;
 pub mod link;
 pub mod local;
 pub mod names;
+pub mod plain;
 pub mod rpc;
 pub mod summary;
 pub mod yaml_text;

@@ -139,16 +139,19 @@ async fn file(
     .bind(detail)
     .execute(db)
     .await?;
+    // The request in plain words, from access control's own names only (never the agent's detail): what a person
+    // reads first.
+    let line = fleetlayer_protocol::plain::ask_line(who, verb, target);
     let e = fleetlayer_protocol::ext::Event {
         channel: "access".into(),
         kind: "access.ask".into(),
         subject: Some(format!("{who} -> {target}")),
         at: jiff::Timestamp::now(),
         dedupe_key: Some(id.clone()),
-        summary: format!("{who} asks to {verb} {target} (approval {id})"),
+        summary: format!("{line} (approval {id})"),
         // `detail` is the agent's own text (a tool call, a reason): named as such, so whoever reads the event (a person,
         // an allowlist keeper agent) treats it as outside data, not as access control's words.
-        body: serde_json::json!({"id": id, "from": who, "verb": verb, "to": target, "detail": detail,
+        body: serde_json::json!({"id": id, "line": line, "from": who, "verb": verb, "to": target, "detail": detail,
             "detail_written_by": detail.map(|_| who), "outside_data": if detail.is_some() { vec!["detail"] } else { vec![] },
             "once": hold_ms == crate::policy::ONCE, "approve_with": format!("fleetlayer-control approvals approve {id}")}),
     };
@@ -263,8 +266,10 @@ pub async fn list(db: &Db, tenant: &str, all: bool) -> anyhow::Result<Vec<serde_
     Ok(rows
         .iter()
         .map(|r| {
-            serde_json::json!({"id": r.get::<String, _>(0), "from": r.get::<String, _>(1), "verb": r.get::<String, _>(2),
-                "to": r.get::<String, _>(3), "status": r.get::<String, _>(4), "createdAt": r.get::<i64, _>(5),
+            let (from, verb, to) = (r.get::<String, _>(1), r.get::<String, _>(2), r.get::<String, _>(3));
+            serde_json::json!({"id": r.get::<String, _>(0),
+                "line": fleetlayer_protocol::plain::ask_line(&from, &verb, &to), "from": from, "verb": verb,
+                "to": to, "status": r.get::<String, _>(4), "createdAt": r.get::<i64, _>(5),
                 "expiresAt": r.get::<Option<i64>, _>(6), "detail": r.get::<Option<String>, _>(7),
                 "once": r.get::<i64, _>(8) == crate::policy::ONCE})
         })

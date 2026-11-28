@@ -181,21 +181,21 @@ fn session_dot(s: &Session) -> String {
     dot(kind, status_word(st))
 }
 
+/// A principal in plain words (`-@laptop` as "laptop", `plugin:x@laptop` as "the x plugin on laptop"), the raw form
+/// kept as its tooltip.
 pub fn addr(a: &str) -> String {
-    format!(r#"<span class="addr">{}</span>"#, esc(a))
+    let words = fleetlayer_protocol::plain::principal(a);
+    if words == a {
+        format!(r#"<span class="addr">{}</span>"#, esc(a))
+    } else {
+        format!(r#"<span class="addr" title="{}">{}</span>"#, esc(a), esc(&words))
+    }
 }
 
-fn verb_words(v: &str) -> String {
-    match v {
-        "use_tool" => "use".into(),
-        "activate" => "open a window for".into(),
-        "message" => "message".into(),
-        "start" => "start a session on".into(),
-        "sync" => "receive".into(),
-        "read" => "read".into(),
-        "write" => "write to".into(),
-        other => other.replace('_', " "),
-    }
+/// An approval request's title: access control's plain-words line, or one built from its terms.
+fn ask_title(a: &crate::model::Approval) -> String {
+    let line = a.line.clone().unwrap_or_else(|| fleetlayer_protocol::plain::ask_line(&a.from, &a.verb, &a.to));
+    format!(r#"<span title="{}">{}</span>"#, esc(&format!("{} {} {}", a.from, a.verb, a.to)), esc(&line))
 }
 
 fn approval_buttons(id: &str, verb: &str, c: &Ctx) -> String {
@@ -357,11 +357,9 @@ pub fn overview(s: &Snapshot, c: &Ctx) -> String {
         for a in &approvals {
             let _ = write!(
                 o,
-                r#"<div class="row">{}<div class="row-body"><p class="row-title">{} asks to {} {}</p><p class="row-sub">{}</p></div><div class="row-end"><span class="row-meta">{}</span>{}</div></div>"#,
+                r#"<div class="row">{}<div class="row-body"><p class="row-title">{}</p><p class="row-sub">{}</p></div><div class="row-end"><span class="row-meta">{}</span>{}</div></div>"#,
                 tile("key", "warn"),
-                addr(&a.from),
-                esc(&verb_words(&a.verb)),
-                addr(&a.to),
+                ask_title(a),
                 esc(a.detail.as_deref().unwrap_or("")),
                 esc(&ago(a.created_at, now)),
                 approval_buttons(&a.id, &a.verb, c),
@@ -752,11 +750,9 @@ pub fn access(s: &Snapshot, c: &Ctx) -> String {
     for a in &pending {
         let _ = write!(
             o,
-            r#"<div class="row">{}<div class="row-body"><p class="row-title">{} asks to {} {}</p><p class="row-sub">{}{}</p></div><div class="row-end"><span class="row-meta">{}</span>{}</div></div>"#,
+            r#"<div class="row">{}<div class="row-body"><p class="row-title">{}</p><p class="row-sub">{}{}</p></div><div class="row-end"><span class="row-meta">{}</span>{}</div></div>"#,
             tile("key", "warn"),
-            addr(&a.from),
-            esc(&verb_words(&a.verb)),
-            addr(&a.to),
+            ask_title(a),
             esc(&sentence(a.detail.as_deref().unwrap_or(""))),
             a.expires_at.map(|e| format!(" Expires {}.", esc(&until(e, now)))).unwrap_or_default(),
             esc(&ago(a.created_at, now)),

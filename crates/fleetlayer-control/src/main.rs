@@ -978,9 +978,13 @@ async fn main() -> anyhow::Result<()> {
                 ApprovalsCommand::List { all } => {
                     for a in approvals::list(&db, &pt, all).await? {
                         println!(
-                            "{}  {:<9} {} {} {}",
+                            "{}  {:<9} {}",
                             a["id"].as_str().unwrap_or("?"),
                             a["status"].as_str().unwrap_or("?"),
+                            a["line"].as_str().unwrap_or("?"),
+                        );
+                        println!(
+                            "    rule terms: {} {} {}",
                             a["from"].as_str().unwrap_or("?"),
                             a["verb"].as_str().unwrap_or("?"),
                             a["to"].as_str().unwrap_or("?")

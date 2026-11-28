@@ -895,8 +895,8 @@ async fn confirm(
         StatusCode::OK,
         "Open the window?",
         &format!(
-            r#"<p><span class="addr">{}</span> asks to open the <span class="addr">{}</span> window.{}</p><p>Your passkey confirmed it. Approve within five minutes.</p><form class="login-form" method="post" action="/_/approvals/{}"><input type="hidden" name="csrf" value="{}"><input type="hidden" name="back" value="/access"><button class="btn btn-primary btn-block" name="decision" value="approve">Open the window</button></form><a class="btn btn-ghost btn-block" href="/access">Not now</a>"#,
-            esc(&a.from),
+            r#"<p>{} asks to open the <span class="addr">{}</span> window.{}</p><p>Your passkey confirmed it. Approve within five minutes.</p><form class="login-form" method="post" action="/_/approvals/{}"><input type="hidden" name="csrf" value="{}"><input type="hidden" name="back" value="/access"><button class="btn btn-primary btn-block" name="decision" value="approve">Open the window</button></form><a class="btn btn-ghost btn-block" href="/access">Not now</a>"#,
+            views::addr(&a.from),
             esc(what),
             a.detail.as_deref().map(|d| format!(" {}", esc(d))).unwrap_or_default(),
             esc(&form_urlencoded::byte_serialize(id.as_bytes()).collect::<String>()),
