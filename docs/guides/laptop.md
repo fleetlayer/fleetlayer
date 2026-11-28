@@ -25,12 +25,14 @@ Dashboard login key: ~/.local/state/fleetlayer/dashboard/login
 ```
 
 It also adds your sessions to the fleet: the herdr plugin when [herdr](https://herdr.dev) is installed, the
-[tmux](../plugins/tmux.md) plugin when tmux is, and the Claude Code plugin when Claude Code is, and says which it added or skipped and why. Then `fleetlayer sessions` lists them,
-other machines can message them, and `fleetlayer session start` opens new ones. Session summaries stay off, since
+[Rex](../plugins/rex.md) plugin when Rex is, the [tmux](../plugins/tmux.md) plugin when tmux is, and the Claude Code
+plugin when Claude Code is, and says which it added or skipped and why. Then `fleetlayer sessions` lists them, other
+machines can message them, and `fleetlayer session start` opens new ones. Session summaries stay off, since
 each one runs Claude Code and spends tokens: `fleetlayer up --summaries` turns them on.
 
-Open the status page. It shows each service, whether it's answering, and where alerts go. The hub, pages and the [dashboard](../dashboard.md) ask for
-their login key the first time (the file's contents); Fleetlayer's own sign-in replaces the keys when it ships.
+Open the status page. It shows each service, whether it's answering, and where alerts go. The hub, pages and the
+[dashboard](../dashboard.md) ask for their login key the first time (the file's contents), or put them behind
+[Fleetlayer sign-in](sign-in.md) instead.
 
 Each piece runs as a user service (a launchd agent on macOS, a systemd user service on Linux), so it starts when you
 log in and restarts if it crashes. On Linux, `loginctl enable-linger "$USER"` keeps them running while you're logged
@@ -60,10 +62,16 @@ sign-ins and passkeys work without certificates. TLS belongs on a server, in fro
 
 ## When an agent asks first
 
-A new fleet asks you before an agent does something sensitive: starting or attaching to a session on another machine
-(an approval holds 10 minutes), and each agent's first use of a shared tool, a sync, an admin action or a write to a
-target (it holds 30 days; for a tool or a sync, 30 days from its last use). Sessions on the same machine aren't checked. The agent's request is refused with a request
-ID until you answer:
+A new fleet asks you before an agent does something sensitive:
+
+- starting, attaching to, answering or closing a session on another machine (an approval holds 10 minutes);
+- each slash command typed into a session, and each run of a shared command on another machine (every time, with the
+  command in front of you);
+- each agent's first use of a shared tool, a sync, an admin action, a write or a connection to a target (it holds 30
+  days; for a tool, a sync or a connection, 30 days from its last use);
+- each read of your signed-in browser for cookies (every time).
+
+Sessions on the same machine aren't checked. The agent's request is refused with a request ID until you answer:
 
 ```sh
 fleetlayer-control approvals list            # pending requests: id, who, what, to what
@@ -72,13 +80,18 @@ fleetlayer-control approvals approve <id>    # or: approvals deny <id> (it stand
 
 Then the agent tries again. `--for 1h` on `approve` changes how long it holds.
 
-If your agents work on their own and you'd rather not be asked, apply a policy that turns asking off:
+If your agents work on their own and you'd rather not be asked, apply a policy that turns asking off, except before
+each cookie read, which [Access control](../access-control.md) says to keep:
 
 ```yaml
 # policy.yaml
 version: 2
 default: allow
-ask: []
+ask:
+  - who: "*"
+    can: [sync]
+    to: ["sync:cookies-from-browser/*"]
+    for: once
 ```
 
 ```sh
@@ -138,8 +151,9 @@ fleetlayer-gateway emit gatus --alert matrix > /etc/gatus/fleetlayer.yaml
 ```
 
 `emit traefik` writes a router and service for each route (and a `HostRegexp` for pages' apps); `--watch` keeps the
-file current as plugins restart on new ports, for Traefik's file watcher. On a server, give plugins fixed ports
-(`listen: 127.0.0.1:7670`) if your proxy runs elsewhere. `emit gatus` writes an endpoint for each health check and an
+file current as plugins restart on new ports, for Traefik's file watcher. On a server, give plugins fixed ports:
+`listen: 127.0.0.1:7670` when the proxy runs on the same machine, the machine's LAN or tailnet address when it runs
+elsewhere. `emit gatus` writes an endpoint for each health check and an
 external endpoint for each heartbeat, with `${FLEETLAYER_HEARTBEAT_<NAME>_TOKEN}` for Gatus to fill in from its
 environment.
 

@@ -36,6 +36,28 @@ work. The example throughout is a real setup: one home server running Proxmox, b
   whole, stopped for a moment so its database is consistent, with its encryption key kept in the secrets manager and
   never in the backup.
 
+## Fleetlayer's own state
+
+Fleetlayer keeps each piece's state in one folder and its settings in one file, so the list is short. Back up these,
+with the default paths on the machine that runs each piece:
+
+- **The control plane:** `~/.config/fleetlayer/control.yaml` and `~/.local/state/fleetlayer/control/` (the database
+  `control.db`, the `admin-token` and the `audit-key`), and the `audit_anchor_dir` if control.yaml names one. The
+  database is SQLite in WAL mode: stop the control plane for a moment, or copy it with
+  `sqlite3 control.db ".backup <file>"`, so the copy is consistent.
+- **Each node:** `~/.config/fleetlayer/node.yaml`, `node-key` and `node-token`. The key is the node's identity: secrets
+  sealed to it can't be opened without it, and a new key means enrolling the node again.
+- **Sign-in:** `~/.local/state/fleetlayer/signin/` (passkeys, the token-signing key, sessions) and its token,
+  `~/.config/fleetlayer/signin-token`. Without the folder everyone registers their passkeys again.
+- **Pages:** the space folders (`~/Fleetlayer/personal/` on a laptop) and the login key,
+  `~/.local/state/fleetlayer/pages/login`.
+- **The gateway:** `~/.config/fleetlayer/gateway.yaml`, and the heartbeat token files it names.
+- **Your policy files**, if they live outside a git repository.
+
+The node key, tokens and signing keys are secrets: they belong only in an encrypted backup (restic encrypts), never in
+a plain copy on a share. The Claude sign-in hub's folder is a choice (see below). [Moving a piece](moving.md#the-pieces)
+lists the same state per piece.
+
 ## What not to back up
 
 Leave out what's rebuilt from code or downloaded again, and say so in writing so nobody wonders later:

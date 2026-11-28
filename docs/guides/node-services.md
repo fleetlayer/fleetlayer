@@ -113,9 +113,9 @@ and that needs the keychain unlocked. A LaunchDaemon, or an SSH session on a Mac
 ## 5. Updates
 
 A node installed by the installer checks for a new release every 6 hours (the first check 5 minutes after it starts).
-When there is one, it downloads it, checks it against the release's checksums, unpacks it next to the old one,
-repoints the links in `~/.local/bin`, and exits so the service manager starts the new version. Choose how much of that
-it does in node.yaml:
+When there is one, it downloads it, checks it against the release's checksums, unpacks it under `versions/<tag>/`,
+renames each new binary over the live one, and exits so the service manager starts the new version. Choose how much
+of that it does in node.yaml:
 
 ```yaml
 update:
@@ -164,7 +164,18 @@ The node logs an error when it can't read `token_file`. A monitor that refuses a
 `heartbeat: <url> answered <status>`, so check the log once after setting this up.
 
 After a minute's grace at start, the node posts `?success=true` every `every` seconds, or `success=false` with the
-reason when an enabled plugin isn't running or the control plane link is down. When the node dies, the reports stop,
+reasons when something is wrong:
+
+- an enabled plugin isn't running, or reports a problem;
+- the link to the control plane is down, when one is configured;
+- a sync has waited over an hour for a person to unblock it (an approval, a changed key, an access rule);
+- a delivered secret was redacted from data leaving the node in the last day (rotate it);
+- a role window didn't close cleanly;
+- a remote MCP server this node shares fails its check;
+- a shared command's program is missing;
+- the gateway's `/healthz` isn't answering, when node.yaml names the gateway.
+
+`fleetlayer status` shows which. When the node dies, the reports stop,
 and the monitor's own timeout raises the alert. The URL takes the form Gatus external endpoints use; the
 [laptop gateway](laptop.md#when-something-stops) takes the same heartbeats, if you don't run Gatus.
 

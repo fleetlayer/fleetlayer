@@ -40,7 +40,10 @@ every agent follows it without being reminded.
 ## 2. The node's own heartbeat
 
 The node judges its own health: every enabled plugin running, the link to the control plane up when one is configured,
-and the gateway's `/healthz` answering when node.yaml names the gateway. In `~/.config/fleetlayer/node.yaml`:
+and the gateway's `/healthz` answering when node.yaml names the gateway. It also fails on a sync waiting over an hour
+for a person, a delivered secret redacted from outgoing data in the last day, a role window that didn't close cleanly,
+a shared remote MCP server failing its check, and a shared command whose program is missing
+([Node services](node-services.md#6-monitor-it) lists them). In `~/.config/fleetlayer/node.yaml`:
 
 ```yaml
 heartbeat:
@@ -55,8 +58,8 @@ to come up. When the node dies, the reports stop and the monitor's own timeout r
 about it.
 
 To see the same judgement by hand, `fleetlayer status` prints `healthy` or `unhealthy: <problem>` under the node line
-and `fleetlayer status --json` includes it as `health` (absent when healthy, otherwise the reasons
-joined with `;`).
+and `fleetlayer status --json` includes it as `health` (`null` when healthy, otherwise the reasons joined
+with `;`).
 
 On a laptop that runs [`fleetlayer up`](laptop.md), you don't need this: the gateway asks the node directly (below).
 
@@ -114,7 +117,7 @@ fi
 ```
 
 - **`success=false` is down at once.** A job that reports its own failure doesn't wait for a second round.
-- **A missing push is down after twice `every`.** Here, two hours without a report.
+- **A missing push is down after a little over twice `every`.** Here, about two hours without a report.
 - **The key** can be the heartbeat's name (`backup`) or Gatus's `<group>_<name>` form (`fleetlayer_backup`). Use the
   Gatus form and the job's URL differs between laptop and server only in the host.
 - **Without `token_file`**, any process on the machine may push. With one, a push without the right

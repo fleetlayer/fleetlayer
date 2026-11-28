@@ -27,8 +27,8 @@ fleetlayer move pages server
 - **For a plugin (hub, pages, sign-in...), a node there**, linked to the same control plane. If it has none yet, enrol
   one (`fleetlayer-control node add server` where the control plane runs) and on the server run
   `fleetlayer up --join wss://control.example/v1/link --token-file <file> --no-hub --no-pages`.
-- **From an older release:** run `fleetlayer up` once on the machine with the control plane. It writes the control
-  plane's settings file (`~/.config/fleetlayer/control.yaml`), which the move carries.
+- **For the control plane, its settings file** (`~/.config/fleetlayer/control.yaml`), which the move carries. If it's
+  missing, the plan stops and tells you to run `fleetlayer up` once on that machine, which writes it.
 
 ## What a move does
 
@@ -115,11 +115,12 @@ Nodes keep their tokens: the database moves with the control plane.
 
 ## Sign-in and passkeys
 
-A passkey belongs to a domain: by default the issuer's parent domain (`example.com` for `signin.example.com`), so it
-works for any address under it. Moved to another machine with the same issuer address (your DNS name now points at
-the new machine), everyone's passkeys keep working, and so they do at a new address under the same domain. Changing
-the issuer address still means repointing every service that signs in through it:
-[Sign-in: moving it](../sso.md#moving-it) explains it, and the plan reminds you.
+A passkey belongs to a domain: by default the issuer's registrable domain (`example.com` for `signin.example.com` or
+`signin.home.example.com`), so it works for any address under it; `passkey_domain` in sign-in's settings changes it.
+Moved to another machine with the same issuer address (your DNS name now points at the new machine), everyone's
+passkeys keep working, and so they do at a new address under the same domain. Changing the issuer address still means
+repointing every service that signs in through it: [Sign-in: moving it](../sso.md#moving-it) explains it, and the
+plan reminds you.
 
 ## Pages and the agents that write them
 
