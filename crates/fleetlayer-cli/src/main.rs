@@ -748,6 +748,30 @@ fn call_args(pairs: &[String], json_arg: Option<&str>) -> anyhow::Result<Value> 
     Ok(args)
 }
 
+/// Why a transcript read brought back nothing, in one line, from what the node answered.
+fn empty_read_reason(v: &Value, tail: Option<u64>, typed: bool) -> String {
+    let size = v["size"].as_u64().unwrap_or(0);
+    let next = v["next"].as_u64().unwrap_or(0);
+    let skipped = v["skipped"].as_u64().unwrap_or(0);
+    if size == 0 {
+        "-- nothing came back: the transcript is empty".into()
+    } else if typed && skipped > 0 {
+        format!(
+            "-- nothing came back: the {skipped} whole lines {} were all of other types; widen --tail or --types",
+            match tail {
+                Some(t) => format!("in the last {t} bytes"),
+                None => "read".into(),
+            }
+        )
+    } else if next >= size {
+        "-- nothing came back: there are no whole lines after this point yet (the last line may still be being \
+         written)"
+            .into()
+    } else {
+        "-- nothing came back".into()
+    }
+}
+
 /// A `tools/call` result's text (other content named by type), and whether it's an error.
 fn call_text(r: &Value) -> (String, bool) {
     let parts: Vec<String> = r["content"]
@@ -1489,6 +1513,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Transcript { to, tail, offset, max, before, line_max, types, agent, why } => {
             let tail = if offset.is_none() && tail.is_none() { Some(65536) } else { tail };
             let types = (!types.is_empty()).then_some(types);
+            let typed = types.is_some();
             let req = json!({"to": to, "tail": tail, "offset": offset, "max": max, "before": before,
                 "lineMax": line_max, "types": types, "agentId": agent, "why": why, "caller": caller()});
             let v: Value =
@@ -1506,6 +1531,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 println!();
             }
             let (offset, next) = (v["offset"].as_u64().unwrap_or(0), v["next"].as_u64().unwrap_or(0));
+            if bytes.is_empty() {
+                eprintln!("{}", empty_read_reason(&v, tail, typed));
+            }
             let mut notes = String::new();
             if let Some(n) = v["cut"].as_u64().filter(|n| *n > 0) {
                 notes.push_str(&format!(", {n} lines cut"));
