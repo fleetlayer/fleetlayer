@@ -115,6 +115,11 @@ fn signature_ok(secret: &str, given: Option<&str>, body: &[u8]) -> bool {
 }
 
 async fn handle(app: Arc<App>, tenant: String, endpoint: db::Endpoint, event: Event, source: String) {
+    // An endpoint made before these channels were the control plane's own can't publish there.
+    if let Err(e) = crate::route::outside_publish_allowed(&event.channel) {
+        tracing::warn!(endpoint = %endpoint.id, "dropped a webhook: {}", e.message);
+        return;
+    }
     let Some(run) = commit_run(&event) else {
         if let Err(e) = crate::route::publish(&app, &tenant, event, &source).await {
             tracing::warn!("publishing a webhook event: {e}");

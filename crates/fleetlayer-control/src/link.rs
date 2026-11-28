@@ -556,6 +556,7 @@ impl Handler for FromNode {
                 // node's agents may not. The node can claim any of its plugins: it's the trust boundary.
                 let (who, source) = publisher(&self.node, p.get("caller").and_then(Value::as_str))?;
                 let e: Event = params(p)?;
+                crate::route::outside_publish_allowed(&e.channel)?;
                 crate::authz::check(app, tenant, &who, "publish", &format!("channel:{}", e.channel)).await?;
                 let out = crate::route::publish(app, tenant, e, &source).await?;
                 answer(&out)
@@ -968,7 +969,7 @@ impl Handler for FromNode {
         let r = match method {
             l::method::SESSIONS => match serde_json::from_value::<SessionsPush>(p) {
                 Ok(s) => {
-                    let old = db::node_sessions(db, node).await.unwrap_or_default();
+                    let old = db::node_sessions(db, Some(tenant), node).await.unwrap_or_default();
                     let r = db::replace_sessions(db, tenant, node, &s.sessions).await;
                     if r.is_ok() {
                         crate::status::observe(&self.app, tenant, node, &old, &s.sessions, true);

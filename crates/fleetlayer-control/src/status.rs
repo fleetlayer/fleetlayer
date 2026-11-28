@@ -144,46 +144,53 @@ fn queue(app: &Arc<App>, c: Change) {
     }
     if m.sent >= PER_SESSION_PER_MINUTE {
         // Over its limit: hold the latest, and send it once the minute is over.
-        if m.held.replace(c).is_some() {
-            m.dropped += 1;
-        } else {
-            let (app, at) = (Arc::downgrade(app), m.start + Duration::from_secs(60));
-            tokio::spawn(async move {
-                tokio::time::sleep_until(at).await;
-                if let Some(app) = app.upgrade() {
-                    release(&app, &key);
-                }
-            });
-        }
+        let at = m.start + Duration::from_secs(60);
+        hold(app, m, key, c, at);
         return;
     }
-    send(&q.tx, m, c);
+    send(app, &q.tx, m, key, c);
 }
 
-/// Send one change, with the count of those not reported before it.
-fn send(tx: &mpsc::Sender<Change>, m: &mut Minute, mut c: Change) {
+/// Keep `c` as the session's latest unreported change, to send at `at` (one timer for however many replace it).
+fn hold(app: &Arc<App>, m: &mut Minute, key: (String, String, String), c: Change, at: tokio::time::Instant) {
+    if m.held.replace(c).is_some() {
+        m.dropped += 1;
+        return;
+    }
+    let app = Arc::downgrade(app);
+    tokio::spawn(async move {
+        tokio::time::sleep_until(at).await;
+        if let Some(app) = app.upgrade() {
+            release(&app, &key);
+        }
+    });
+}
+
+/// Send one change, with the count of those not reported before it. A full queue holds it for a second, so a
+/// session's last status still arrives.
+fn send(app: &Arc<App>, tx: &mpsc::Sender<Change>, m: &mut Minute, key: (String, String, String), mut c: Change) {
     c.dropped = std::mem::take(&mut m.dropped);
     match tx.try_send(c) {
         Ok(()) => m.sent += 1,
         Err(mpsc::error::TrySendError::Full(c)) => {
-            m.dropped += 1 + c.dropped;
-            tracing::warn!(session = %c.session_id, "the session.status queue is full: a change wasn't reported");
+            m.dropped += c.dropped;
+            tracing::warn!(session = %c.session_id, "the session.status queue is full: holding a change");
+            hold(app, m, key, c, tokio::time::Instant::now() + Duration::from_secs(1));
         }
         Err(mpsc::error::TrySendError::Closed(_)) => {}
     }
 }
 
-/// A session's minute is over: send the change it held, starting a new minute.
+/// A session's minute is over (or the queue had room again): send the change it held, starting a new minute.
 fn release(app: &Arc<App>, key: &(String, String, String)) {
     let mut q = app.links.status_queue.lock().expect("status queue");
     let Some(q) = q.as_mut() else { return };
     let Some(m) = q.minute.get_mut(key) else { return };
-    let Some(c) = m.held.take() else { return };
+    let Some(mut c) = m.held.take() else { return };
     (m.start, m.sent) = (tokio::time::Instant::now(), 0);
-    let mut c = c;
     // Its own wait (for a signal or a prompt) starts now.
     c.ready_at = c.ready_at.max(tokio::time::Instant::now());
-    send(&q.tx, m, c);
+    send(app, &q.tx, m, key.clone(), c);
 }
 
 /// How long every channel's events are kept, from `control.yaml`, set once at start.
@@ -348,7 +355,7 @@ mod tests {
 
     /// Push `new` as node n's whole list, as a node does.
     async fn push(app: &Arc<App>, new: Vec<Value>) {
-        let old = db::node_sessions(&app.db, "n").await.unwrap();
+        let old = db::node_sessions(&app.db, Some(db::DEFAULT_TENANT), "n").await.unwrap();
         db::replace_sessions(&app.db, db::DEFAULT_TENANT, "n", &new).await.unwrap();
         observe(app, db::DEFAULT_TENANT, "n", &old, &new, true);
     }

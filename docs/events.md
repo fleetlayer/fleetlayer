@@ -29,8 +29,10 @@ fleetlayer unwatch <id>
   `--status idle,done,blocked,gone` by default: it stopped working.
 - A session already in one of those statuses fires at once, and no watch is set.
 - It lasts `--for` (a day by default, 30 days at most). `--note` is shown when it fires or ends.
-- Watches are for the session that sets them, and need `subscribe` on the channel. A session gets a
-  `session.status` watch's event only when it may `read` that session. Each session can have 100 at once.
+- Watches are for the session that sets them, and need `subscribe` on the channel. A watch on a session's status
+  needs `read` on that session, checked when it's set and again when it fires: one that can't read the event isn't
+  used up by it. Each session can have 100 at once, each node's sessions 1000.
+- A watch is extra: a channel's fallback session still gets an event nobody subscribes to, even when a watch fired.
 - A watch takes the place of polling and of "check back later" loops: an agent waiting for another to finish, or for
   a run to complete, sets one and carries on.
 
@@ -103,7 +105,10 @@ GET /v1/events?after=4182&channel=alerts,ci&wait=30
   details, the prompts sessions are blocked on. Give one only to a service you'd let read all of that, and keep it in
   a file only that service's Unix user reads. (Tokens limited to some channels or sessions are planned.)
 - Events are kept 30 days (`event_days:` in `control.yaml`), `session.status` seven at most. A cursor older than
-  that just starts at the oldest event still kept.
+  that just starts at the oldest event still kept. A `dedupeKey` is remembered as long as its event is kept: a
+  source that repeats an event after that publishes it again.
+- Only the control plane publishes on `session.status` and `access`: an event there from a node, a plugin or a
+  webhook endpoint is refused.
 
 Without `after`, `GET /v1/events` answers the newest hundred events without their bodies, with where each was
 delivered: the dashboard's view.

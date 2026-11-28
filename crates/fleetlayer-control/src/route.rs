@@ -544,6 +544,20 @@ pub fn render_event(e: &Event, source: &str) -> String {
     out
 }
 
+/// Channels only the control plane publishes on: what a session's status is (`session.status`) and what access control
+/// decided (`access`). A node, a plugin or a webhook that publishes there could forge them.
+pub const OWN_CHANNELS: &[&str] = &[crate::status::CHANNEL, "access"];
+
+/// Refuse an event from outside the control plane on one of its own channels.
+pub fn outside_publish_allowed(channel: &str) -> Result<(), RpcError> {
+    if OWN_CHANNELS.contains(&channel) {
+        return Err(RpcError::refused(format!(
+            "only the control plane publishes on {channel}: an event there from anywhere else could forge it"
+        )));
+    }
+    Ok(())
+}
+
 /// Publish an event: store it, then deliver it to every subscriber, or the channel's fallback when none.
 pub async fn publish(app: &App, tenant: &str, e: Event, source: &str) -> Result<PublishResult, RpcError> {
     Ok(publish_matching(app, tenant, e, source, &[]).await?.1)
@@ -573,35 +587,40 @@ pub async fn publish_matching(
         db::targets(&app.db, tenant, &e.channel, subjects.first().copied()).await
     }
     .map_err(RpcError::internal)?;
-    // The watches it fires, taken (removed) now so each fires once.
-    let fired = crate::watches::take_matching(&app.db, tenant, &e).await.map_err(RpcError::internal)?;
-    if targets.is_empty()
-        && fired.is_empty()
-        && let Some(f) = db::fallback(&app.db, tenant, &e.channel).await.map_err(RpcError::internal)?
-    {
-        targets.push(f);
-    }
     // An event about a session goes only to those who may read that session.
     let about_session = (e.channel == crate::status::CHANNEL).then(|| e.subject.clone()).flatten().map(|about| {
         (about, e.body["sessionId"].as_str().map(str::to_string), e.body["node"].as_str().map(str::to_string))
     });
-    if let Some((about, id, node)) = &about_session {
-        let mut readable = vec![];
-        for t in targets {
-            if may_read_session(app, tenant, &t, about, id.as_deref(), node.as_deref().unwrap_or_default()).await {
-                readable.push(t);
-            }
+    let readable = async |t: &str| match &about_session {
+        Some((about, sid, node)) => {
+            may_read_session(app, tenant, t, about, sid.as_deref(), node.as_deref().unwrap_or_default()).await
         }
-        targets = readable;
+        None => true,
+    };
+    let mut kept = vec![];
+    for t in targets {
+        if readable(&t).await {
+            kept.push(t);
+        }
     }
+    targets = kept;
+    // The fallback is for events no subscriber gets; a watch never stands in for it.
+    if targets.is_empty()
+        && let Some(f) = db::fallback(&app.db, tenant, &e.channel).await.map_err(RpcError::internal)?
+        && readable(&f).await
+    {
+        targets.push(f);
+    }
+    // The watches it fires: only those whose session may read it are taken (removed, so each fires once).
+    let mut watching = vec![];
+    for w in crate::watches::matching(&app.db, tenant, &e).await.map_err(RpcError::internal)? {
+        if readable(&w.target).await {
+            watching.push(w.id);
+        }
+    }
+    let fired = crate::watches::take(&app.db, tenant, &watching).await.map_err(RpcError::internal)?;
     let mut deliveries = vec![];
     for f in fired {
-        if let Some((about, sid, node)) = &about_session
-            && !may_read_session(app, tenant, &f.target, about, sid.as_deref(), node.as_deref().unwrap_or_default())
-                .await
-        {
-            continue;
-        }
         // A target that subscribes too gets the event once, through its subscription.
         if targets.contains(&f.target) {
             continue;
@@ -633,7 +652,7 @@ pub async fn may_read_session(
     if let Some(id) = session_id
         && !node.is_empty()
     {
-        names.extend(crate::authz::session_names(app, &format!("{id}@{node}")).await);
+        names.extend(crate::authz::session_names_in(app, Some(tenant), &format!("{id}@{node}")).await);
     }
     names.sort();
     names.dedup();

@@ -25,6 +25,8 @@ pub const DEFAULT_FOR_SECS: u64 = 24 * 3600;
 pub const MAX_FOR_SECS: u64 = 30 * 24 * 3600;
 /// The most watches one target may have at once.
 pub const MAX_PER_TARGET: i64 = 100;
+/// The most watches one node's sessions may have at once (a node can name any target of its own).
+pub const MAX_PER_NODE: i64 = 1000;
 
 /// A watch that matched an event: removed already.
 #[derive(Debug, Clone, PartialEq)]
@@ -60,26 +62,38 @@ fn check(w: &WatchRequest) -> Result<u64, RpcError> {
 /// `{fired: true, event}` when a session's status already matches.
 pub async fn add(app: &App, tenant: &str, w: &WatchRequest) -> Result<Value, RpcError> {
     let secs = check(w)?;
+    // A watch on a session's status needs `read` on that session, under every name it goes by; checked again when it
+    // fires.
+    if w.channel == crate::status::CHANNEL
+        && let Some(subject) = w.subject.as_deref()
+    {
+        let (id, node) = match crate::route::split_target(subject) {
+            Some((name, node)) => {
+                let sessions = db::node_sessions(&app.db, Some(tenant), node).await.unwrap_or_default();
+                let id = sessions
+                    .iter()
+                    .find(|s| s["meta"]["tab"].as_str() == Some(name) || s["sessionId"].as_str() == Some(name))
+                    .and_then(|s| s["sessionId"].as_str().map(str::to_string));
+                (id, node.to_string())
+            }
+            None => (None, String::new()),
+        };
+        if !crate::route::may_read_session(app, tenant, &w.target, subject, id.as_deref(), &node).await {
+            return Err(RpcError::refused(format!("{} may not read {subject}, so it can't watch it", w.target)));
+        }
+    }
     if let Some(now) = already(app, tenant, w).await {
         return Ok(json!({"fired": true, "summary": now.summary, "event": now}));
     }
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM watches WHERE tenant = ? AND target = ?")
-        .bind(tenant)
-        .bind(&w.target)
-        .fetch_one(&app.db)
-        .await
-        .map_err(|e| RpcError::internal(e.to_string()))?;
-    if count >= MAX_PER_TARGET {
-        return Err(RpcError::refused(format!(
-            "{} has {count} watches already, the most it may have: remove some (fleetlayer unwatch <id>)",
-            w.target
-        )));
-    }
     let id = format!("w_{}", db::new_id());
     let expires = db::now_ms() + (secs as i64) * 1000;
-    sqlx::query(
+    let node = crate::route::split_target(&w.target).map(|(_, n)| format!("@{n}")).unwrap_or_default();
+    // Counted and added in one statement, so two at once can't both pass the limits.
+    let added = sqlx::query(
         "INSERT INTO watches (tenant, id, channel, subject, kinds, target, note, expires_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+         WHERE (SELECT COUNT(*) FROM watches WHERE tenant = ? AND target = ?) < ?
+           AND (SELECT COUNT(*) FROM watches WHERE tenant = ? AND substr(target, -length(?)) = ?) < ?",
     )
     .bind(tenant)
     .bind(&id)
@@ -90,9 +104,23 @@ pub async fn add(app: &App, tenant: &str, w: &WatchRequest) -> Result<Value, Rpc
     .bind(&w.note)
     .bind(expires)
     .bind(db::now_ms())
+    .bind(tenant)
+    .bind(&w.target)
+    .bind(MAX_PER_TARGET)
+    .bind(tenant)
+    .bind(&node)
+    .bind(&node)
+    .bind(MAX_PER_NODE)
     .execute(&app.db)
     .await
     .map_err(|e| RpcError::internal(e.to_string()))?;
+    if added.rows_affected() == 0 {
+        return Err(RpcError::refused(format!(
+            "{} has {MAX_PER_TARGET} watches already, or its node {MAX_PER_NODE}: remove some (fleetlayer watches, \
+             fleetlayer unwatch <id>)",
+            w.target
+        )));
+    }
     Ok(json!({"id": id, "expiresAt": jiff::Timestamp::from_millisecond(expires).ok()}))
 }
 
@@ -103,7 +131,7 @@ async fn already(app: &App, tenant: &str, w: &WatchRequest) -> Option<Event> {
     }
     let subject = w.subject.as_deref()?;
     let (name, node) = crate::route::split_target(subject)?;
-    let sessions = db::node_sessions(&app.db, node).await.ok()?;
+    let sessions = db::node_sessions(&app.db, Some(tenant), node).await.ok()?;
     let s =
         sessions.iter().find(|s| s["meta"]["tab"].as_str() == Some(name) || s["sessionId"].as_str() == Some(name))?;
     let status = crate::status::status_of(s);
@@ -168,19 +196,33 @@ pub async fn list(db: &Db, tenant: &str, node: Option<&str>) -> anyhow::Result<V
         .collect())
 }
 
-/// The watches event `e` fires, removed as they're taken, so each fires once even when two events race.
-pub async fn take_matching(db: &Db, tenant: &str, e: &Event) -> anyhow::Result<Vec<Fired>> {
+/// The watches event `e` matches, not yet taken.
+pub async fn matching(db: &Db, tenant: &str, e: &Event) -> anyhow::Result<Vec<Fired>> {
     let rows = sqlx::query(
-        "DELETE FROM watches WHERE tenant = ? AND channel = ? AND (subject IS NULL OR subject = ?)
+        "SELECT id, target, note FROM watches WHERE tenant = ? AND channel = ? AND (subject IS NULL OR subject = ?)
            AND (json_array_length(kinds) = 0 OR ? IN (SELECT value FROM json_each(kinds)))
-           AND expires_at > ?
-         RETURNING id, target, note",
+           AND expires_at > ?",
     )
     .bind(tenant)
     .bind(&e.channel)
     .bind(&e.subject)
     .bind(&e.kind)
     .bind(db::now_ms())
+    .fetch_all(db)
+    .await?;
+    Ok(rows.into_iter().map(|r| Fired { id: r.get(0), target: r.get(1), note: r.get(2) }).collect())
+}
+
+/// Take (remove) the watches `ids`: only those still there are answered, so each fires once even when two events race.
+pub async fn take(db: &Db, tenant: &str, ids: &[String]) -> anyhow::Result<Vec<Fired>> {
+    if ids.is_empty() {
+        return Ok(vec![]);
+    }
+    let rows = sqlx::query(
+        "DELETE FROM watches WHERE tenant = ? AND id IN (SELECT value FROM json_each(?)) RETURNING id, target, note",
+    )
+    .bind(tenant)
+    .bind(serde_json::to_string(ids)?)
     .fetch_all(db)
     .await?;
     Ok(rows.into_iter().map(|r| Fired { id: r.get(0), target: r.get(1), note: r.get(2) }).collect())
@@ -249,7 +291,7 @@ mod tests {
     use super::*;
 
     async fn app() -> Arc<App> {
-        Arc::new(App {
+        let app = Arc::new(App {
             db: db::open_memory().await.unwrap(),
             links: Default::default(),
             hook_limits: Default::default(),
@@ -257,7 +299,10 @@ mod tests {
             streams: Default::default(),
             authz: Default::default(),
             audit: crate::audit::Audit::new(None),
-        })
+        });
+        db::enrol(&app.db, db::DEFAULT_TENANT, "n").await.unwrap();
+        crate::people::agent_admit(&app.db, db::DEFAULT_TENANT, "*@n", "admin").await.unwrap();
+        app
     }
 
     fn ev(channel: &str, kind: &str, subject: &str) -> Event {
@@ -358,5 +403,83 @@ mod tests {
         assert!(!remove(&app.db, t, &id, "other").await.unwrap());
         assert!(!remove(&app.db, t, &id, "_").await.unwrap(), "a node name is matched exactly, never as a pattern");
         assert!(remove(&app.db, t, &id, "n").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_watch_whose_session_may_not_read_the_session_is_refused_and_never_consumed() {
+        let app = app().await;
+        let t = db::DEFAULT_TENANT;
+        let s = json!({"sessionId": "id-p", "meta": {"tab": "private", "status": "working", "running": true}, "ended": null});
+        db::replace_sessions(&app.db, t, "n", &[s]).await.unwrap();
+        let policy = "version: 2\ndefault: allow\nask: []\ndeny:\n  - { who: \"me@n\", can: read, to: [\"id-p@n\"] }\n";
+        crate::authz::store(&app.db, t, policy).await.unwrap();
+        // Refused when set, under the session's other name too.
+        let e = add(&app, t, &watch("session.status", Some("private@n"), &["session.idle"])).await.unwrap_err();
+        assert!(e.message.contains("may not read"), "{}", e.message);
+        // A watch set before the session was known isn't taken by an event it may not read.
+        sqlx::query(
+            "INSERT INTO watches (tenant, id, channel, subject, kinds, target, expires_at, created_at)
+             VALUES ('default', 'w_old', 'session.status', 'private@n', '[]', 'me@n', ?, 0)",
+        )
+        .bind(db::now_ms() + 60_000)
+        .execute(&app.db)
+        .await
+        .unwrap();
+        let mut idle = ev("session.status", "session.idle", "private@n");
+        idle.body = json!({"node": "n", "sessionId": "id-p", "tab": "private", "status": "idle"});
+        let r = crate::route::publish(&app, t, idle, "test").await.unwrap();
+        assert!(targets(&r).is_empty());
+        assert_eq!(list(&app.db, t, None).await.unwrap().len(), 1, "still there");
+    }
+
+    #[tokio::test]
+    async fn a_watch_never_takes_the_place_of_the_fallback() {
+        let app = app().await;
+        let t = db::DEFAULT_TENANT;
+        sqlx::query("INSERT INTO channels (tenant, name, fallback) VALUES ('default', 'alerts', 'oncall@n')")
+            .execute(&app.db)
+            .await
+            .unwrap();
+        add(&app, t, &watch("alerts", None, &[])).await.unwrap();
+        let r = crate::route::publish(&app, t, ev("alerts", "alert.firing", "disk"), "test").await.unwrap();
+        let mut got = targets(&r);
+        got.sort();
+        assert_eq!(got, vec!["me@n", "oncall@n"]);
+    }
+
+    #[tokio::test]
+    async fn another_tenants_node_of_the_same_name_is_never_seen() {
+        let app = app().await;
+        let t = db::DEFAULT_TENANT;
+        let theirs =
+            json!({"sessionId": "id-b", "meta": {"tab": "secret", "status": "idle", "running": true}, "ended": null});
+        db::replace_sessions(&app.db, "other", "n", &[theirs]).await.unwrap();
+        // Our node n pushes its whole list: the other tenant's session on its own n isn't ours, so it isn't "gone".
+        let ours = json!({"sessionId": "id-a", "meta": {"tab": "a", "status": "idle", "running": true}, "ended": null});
+        let old = db::node_sessions(&app.db, Some(t), "n").await.unwrap();
+        assert!(old.is_empty());
+        let diff = crate::status::diff(&old, &[ours], true);
+        assert!(diff.iter().all(|(_, _, s)| s["sessionId"] == json!("id-a")), "{diff:?}");
+        // A watch on its name doesn't fire from its status.
+        let v = add(&app, t, &watch("session.status", Some("secret@n"), &["session.idle"])).await.unwrap();
+        assert!(v["id"].is_string(), "not fired from another tenant's session: {v}");
+        assert_eq!(
+            crate::authz::session_names_in(&app, Some(t), "id-b@n").await,
+            vec!["id-b@n".to_string()],
+            "no names from the other tenant"
+        );
+    }
+
+    #[test]
+    fn only_the_control_plane_publishes_status_and_access() {
+        assert!(crate::route::outside_publish_allowed("session.status").is_err());
+        assert!(crate::route::outside_publish_allowed("access").is_err());
+        assert!(crate::route::outside_publish_allowed("alerts").is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_webhook_endpoint_can_t_publish_on_the_control_planes_channels() {
+        let app = app().await;
+        assert!(db::add_endpoint(&app.db, db::DEFAULT_TENANT, "x", "session.status", None, false).await.is_err());
     }
 }

@@ -375,12 +375,17 @@ async fn remember_name<'e>(
 }
 
 /// Every tab name session `id` on `node` has gone by, ended or not.
-pub async fn recorded_tabs(db: &Db, node: &str, id: &str) -> anyhow::Result<Vec<String>> {
-    Ok(sqlx::query_scalar("SELECT tab FROM session_names WHERE node = ? AND session_id = ? ORDER BY seen_at DESC")
-        .bind(node)
-        .bind(id)
-        .fetch_all(db)
-        .await?)
+pub async fn recorded_tabs(db: &Db, tenant: Option<&str>, node: &str, id: &str) -> anyhow::Result<Vec<String>> {
+    Ok(sqlx::query_scalar(
+        "SELECT tab FROM session_names WHERE (? IS NULL OR tenant = ?) AND node = ? AND session_id = ?
+         ORDER BY seen_at DESC",
+    )
+    .bind(tenant)
+    .bind(tenant)
+    .bind(node)
+    .bind(id)
+    .fetch_all(db)
+    .await?)
 }
 
 pub async fn upsert_session(db: &Db, tenant: &str, node: &str, s: &serde_json::Value) -> anyhow::Result<()> {
@@ -407,11 +412,16 @@ pub async fn remove_session(db: &Db, tenant: &str, node: &str, id: &str) -> anyh
     Ok(())
 }
 
-/// Every session in the tenant, as (node, session JSON).
-/// One node's sessions, whichever tenant keeps them (node names are unique).
-pub async fn node_sessions(db: &Db, node: &str) -> anyhow::Result<Vec<serde_json::Value>> {
+/// One node's sessions in `tenant` (node names are unique only within a tenant). With None, every tenant's node of
+/// that name: only for access control's alias check, where more names only means more rules to pass.
+pub async fn node_sessions(db: &Db, tenant: Option<&str>, node: &str) -> anyhow::Result<Vec<serde_json::Value>> {
     let rows =
-        sqlx::query("SELECT data FROM sessions WHERE node = ? ORDER BY session_id").bind(node).fetch_all(db).await?;
+        sqlx::query("SELECT data FROM sessions WHERE (? IS NULL OR tenant = ?) AND node = ? ORDER BY session_id")
+            .bind(tenant)
+            .bind(tenant)
+            .bind(node)
+            .fetch_all(db)
+            .await?;
     Ok(rows.into_iter().filter_map(|r| serde_json::from_str(&r.get::<String, _>(0)).ok()).collect())
 }
 
@@ -558,6 +568,9 @@ pub async fn add_endpoint(
     github_secret: Option<&str>,
     all_actions: bool,
 ) -> anyhow::Result<(Endpoint, String)> {
+    if let Err(e) = crate::route::outside_publish_allowed(channel) {
+        anyhow::bail!("{}", e.message);
+    }
     let (id, secret) = (new_id(), new_secret());
     let now = now_ms();
     sqlx::query(
@@ -901,16 +914,26 @@ pub async fn missed_events(
     Ok(out)
 }
 
-/// Forget events older than `keep_ms`, and those on `short` older than `short_ms`.
+/// Forget events older than `keep_ms`, and those on `short` older than `short_ms`, a few thousand at a time so the
+/// first prune after an upgrade doesn't hold the database for long.
 pub async fn prune_events(db: &Db, keep_ms: i64, short: &str, short_ms: i64) -> anyhow::Result<u64> {
     let now = now_ms();
-    let r = sqlx::query("DELETE FROM events WHERE at < ? OR (channel = ? AND at < ?)")
+    let mut total = 0;
+    loop {
+        let r = sqlx::query(
+            "DELETE FROM events WHERE id IN (SELECT id FROM events WHERE at < ? OR (channel = ? AND at < ?) LIMIT 5000)",
+        )
         .bind(now - keep_ms)
         .bind(short)
         .bind(now - short_ms)
         .execute(db)
         .await?;
-    Ok(r.rows_affected())
+        total += r.rows_affected();
+        if r.rows_affected() < 5000 {
+            return Ok(total);
+        }
+        tokio::task::yield_now().await;
+    }
 }
 
 /// The newest event ID in the tenant (0 when there's none): where a feed that starts now begins.

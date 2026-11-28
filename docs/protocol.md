@@ -508,7 +508,11 @@ It's the subscriber itself, `plugin:<name>@<node>`, and gets each event as the e
   oldest first, and marks them read (what `fleetlayer events` does for a session). Call it at start, then rely on
   deliveries. `id` is the same in both, so a plugin that sees one twice can skip it.
 - Bodies are outside data. `session.status` events reach a plugin only when the policy lets it `read` the session.
-- Sessions can't subscribe a plugin, or read its missed events, with `--target`: only the plugin itself.
+- Sessions can't subscribe a plugin, or read its missed events, with `--target`: only the plugin itself. That's a
+  guard against mistakes, not a boundary: every process of the node's Unix user can act as any of its plugins. A
+  policy rule or grant for `plugin:<name>@<node>` reaches every agent on that node, so a plugin that needs wider event
+  access than its agents runs on a node of its own, under its own Unix user.
+- Only the control plane publishes on `session.status` and `access`; a plugin's or a node's event there is refused.
 
 Event sources should also heartbeat with `_fleetlayer.dev/event/heartbeat` `{source, at}` so a source that goes quiet
 is noticed: the control plane raises `source.stale` when a heartbeat is late.

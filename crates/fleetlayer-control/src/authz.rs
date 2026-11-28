@@ -279,12 +279,19 @@ pub async fn check_why(
 /// tab, then `<session id>@<node>` (for a tab name, every session that ran under it). Anything that isn't one of a
 /// node's sessions (`-@<node>`, `tool:…`, a service, a person, a session the node hasn't reported) is just itself.
 pub async fn session_names(app: &App, target: &str) -> Vec<String> {
+    session_names_in(app, None, target).await
+}
+
+/// [`session_names`] for a session in `tenant` only. With None, every tenant's node of that name counts (node names
+/// are unique only within a tenant): right for access checks, where an extra name only adds rules to pass, never for
+/// anything that shows a session.
+pub async fn session_names_in(app: &App, tenant: Option<&str>, target: &str) -> Vec<String> {
     let only = || vec![target.to_string()];
     let Some((name, node)) = target.rsplit_once('@') else { return only() };
     if name.is_empty() || name == "-" || name.contains(':') {
         return only();
     }
-    let Ok(sessions) = crate::db::node_sessions(&app.db, node).await else { return only() };
+    let Ok(sessions) = crate::db::node_sessions(&app.db, tenant, node).await else { return only() };
     let mut tabs: Vec<String> = vec![];
     let mut ids: Vec<String> = vec![];
     for s in &sessions {
@@ -303,7 +310,7 @@ pub async fn session_names(app: &App, target: &str) -> Vec<String> {
     }
     // An ended session, or one that has had other tabs: every tab name it went by is recorded.
     for id in ids.clone().iter().chain(std::iter::once(&name.to_string())) {
-        for t in crate::db::recorded_tabs(&app.db, node, id).await.unwrap_or_default() {
+        for t in crate::db::recorded_tabs(&app.db, tenant, node, id).await.unwrap_or_default() {
             if !tabs.contains(&t) {
                 tabs.push(t);
             }
