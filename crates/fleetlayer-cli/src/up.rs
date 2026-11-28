@@ -5,7 +5,8 @@
 //!
 //! - the control plane (`dev.fleetlayer.control`), unless `--join` names one elsewhere: state in
 //!   `~/.local/state/fleetlayer/control/`;
-//! - the node (`fleetlayer-node install`), with the Claude sign-in hub and pages as its plugins: `node.yaml`;
+//! - the node (`fleetlayer-node install`), with the Claude sign-in hub, pages and (with the control plane here) the
+//!   dashboard as its plugins: `node.yaml`;
 //! - the gateway (`dev.fleetlayer.gateway`): `<name>.localhost:7680` for every service and the status page:
 //!   `gateway.yaml`.
 //!
@@ -32,6 +33,9 @@ pub struct UpArgs {
     /// Don't run pages here.
     #[arg(long)]
     pub no_pages: bool,
+    /// Don't run the dashboard here (it runs only where the control plane does).
+    #[arg(long)]
+    pub no_dashboard: bool,
     /// Also summarise this machine's sessions (it runs Claude Code for each summary, so it spends tokens).
     #[arg(long)]
     pub summaries: bool,
@@ -370,12 +374,21 @@ pub struct SessionPlugins {
     pub summaries: Option<PathBuf>,
 }
 
+/// The dashboard's files, for `node_yaml_text`.
+pub struct DashboardFiles<'a> {
+    pub login: &'a Path,
+    pub control_token: &'a Path,
+    pub port: u16,
+    pub control_port: u16,
+}
+
 pub fn node_yaml_text(
     control_url: &str,
     token_file: &Path,
     gateway: &str,
     hub: Option<&Path>,
     pages: Option<(&Path, &Path, u16)>,
+    dashboard: Option<&DashboardFiles>,
     sessions: &SessionPlugins,
 ) -> String {
     let mut y = format!(
@@ -422,6 +435,32 @@ pub fn node_yaml_text(
             yaml_str(&login.display().to_string()),
             yaml_str(&space.join("pages").display().to_string()),
             yaml_str(&space.join("apps").display().to_string()),
+        ));
+    }
+    if let Some(d) = dashboard {
+        let base = if d.port == 80 {
+            "http://dashboard.localhost".to_string()
+        } else {
+            format!("http://dashboard.localhost:{}", d.port)
+        };
+        y.push_str(&format!(
+            r#"  # The dashboard: every machine, session, event and approval, live, at http://dashboard.localhost.
+  - name: dashboard
+    command: fleetlayer-dashboard
+    grants: [access.check]
+    config:
+      listen: 127.0.0.1:0
+      base_url: {}
+      control:
+        url: {}
+        token_file: {}
+      login_file: {}
+      trusted_proxies: [127.0.0.1]
+"#,
+            yaml_str(&base),
+            yaml_str(&format!("http://127.0.0.1:{}", d.control_port)),
+            yaml_str(&d.control_token.display().to_string()),
+            yaml_str(&d.login.display().to_string()),
         ));
     }
     if let Some(herdr) = &sessions.herdr {
@@ -600,6 +639,11 @@ pub async fn up(mut a: UpArgs) -> anyhow::Result<()> {
     if !a.no_pages {
         find_bin("fleetlayer-pages")?;
     }
+    // The dashboard needs a token from the control plane, so it runs where the control plane does.
+    let dashboard = !a.no_dashboard && !joined;
+    if dashboard {
+        find_bin("fleetlayer-dashboard")?;
+    }
     private_dir(&l.config)?;
     private_dir(&l.state)?;
     let gateway_url = format!("http://127.0.0.1:{}", a.port);
@@ -643,10 +687,30 @@ pub async fn up(mut a: UpArgs) -> anyhow::Result<()> {
             }
         }
         let pages = (!a.no_pages).then_some((pages_login.as_path(), space.as_path(), a.port));
+        let dashboard_login = l.state.join("dashboard/login");
+        let dashboard_token = l.state.join("dashboard/control-token");
+        if dashboard {
+            private_dir(&l.state.join("dashboard"))?;
+            create(&dashboard_login, &random_hex(24)?, 0o600)?;
+        }
+        let dash = dashboard.then(|| DashboardFiles {
+            login: &dashboard_login,
+            control_token: &dashboard_token,
+            port: a.port,
+            control_port: a.control_port,
+        });
         let (sessions, skipped) = detect_sessions(a.summaries);
         create(
             &node_yaml,
-            &node_yaml_text(&control_url, &token_file, &gateway_url, hub_login.as_deref(), pages, &sessions),
+            &node_yaml_text(
+                &control_url,
+                &token_file,
+                &gateway_url,
+                hub_login.as_deref(),
+                pages,
+                dash.as_ref(),
+                &sessions,
+            ),
             0o600,
         )?;
         println!("Wrote {}.", node_yaml.display());
@@ -693,6 +757,7 @@ pub async fn up(mut a: UpArgs) -> anyhow::Result<()> {
         for (plugin, flag) in [
             ("claude-auth-manager", a.no_hub),
             ("pages", a.no_pages),
+            ("dashboard", !dashboard),
             ("herdr", sessions.herdr.is_none()),
             ("rex", sessions.rex.is_none()),
             ("claude-code", !sessions.claude_code),
@@ -721,6 +786,20 @@ pub async fn up(mut a: UpArgs) -> anyhow::Result<()> {
                 .map_err(|e| anyhow::anyhow!("enrolling node {name}: {e}"))?;
             create(&token_file, token.trim(), 0o600)?;
             println!("Enrolled this machine as node {name} in the control plane.");
+        }
+        // The dashboard's token: admin, so the person can approve requests and close windows there. Whoever has its
+        // login key is the person this machine belongs to.
+        let dashboard_token = l.state.join("dashboard/control-token");
+        if dashboard && fresh_node_yaml && !dashboard_token.exists() {
+            let token = run(Command::new(control_bin).arg("--db").arg(&db).args([
+                "token",
+                "add",
+                "dashboard",
+                "--scope",
+                "admin",
+            ]))
+            .map_err(|e| anyhow::anyhow!("a token for the dashboard: {e}"))?;
+            create(&dashboard_token, token.trim(), 0o600)?;
         }
         let control_yaml = l.control_yaml();
         if create(&control_yaml, &control_yaml_text(&dir, a.control_port), 0o600)? {
@@ -777,6 +856,9 @@ pub async fn up(mut a: UpArgs) -> anyhow::Result<()> {
     if !a.no_pages && fresh_node_yaml {
         want.push("pages");
     }
+    if dashboard && fresh_node_yaml {
+        want.push("dashboard");
+    }
     let deadline = std::time::Instant::now() + Duration::from_secs(45);
     let mut status = None;
     while std::time::Instant::now() < deadline {
@@ -831,6 +913,9 @@ pub async fn up(mut a: UpArgs) -> anyhow::Result<()> {
                 l.state.join("pages/login").display()
             );
         }
+        if dashboard {
+            println!("Dashboard login key: {}", l.state.join("dashboard/login").display());
+        }
     }
     for n in notes {
         println!("\n{n}");
@@ -878,6 +963,7 @@ mod tests {
             "http://127.0.0.1:7680",
             Some(Path::new("/h/.local/state/fleetlayer/claude-hub-login")),
             Some((Path::new("/h/.local/state/fleetlayer/pages/login"), Path::new("/h/Fleetlayer/personal"), 7680)),
+            None,
             &SessionPlugins {
                 herdr: Some("/h/.local/bin/herdr".into()),
                 rex: Some("/h/.local/bin/rex".into()),
@@ -903,12 +989,33 @@ mod tests {
             "http://g",
             None,
             None,
+            None,
             &SessionPlugins { summaries: Some("/h/.local/bin/claude".into()), ..Default::default() },
         );
         let v: serde_json::Value = yaml_serde_from(&y);
         assert_eq!(v["plugins"][0]["name"], "summaries");
         assert_eq!(v["plugins"][0]["grants"][1], "summary.publish");
         assert_eq!(v["plugins"][0]["config"]["claude"], "/h/.local/bin/claude");
+        let y = node_yaml_text(
+            "ws://x/v1/link",
+            Path::new("/t"),
+            "http://g",
+            None,
+            None,
+            Some(&DashboardFiles {
+                login: Path::new("/s/dashboard/login"),
+                control_token: Path::new("/s/dashboard/control-token"),
+                port: 7690,
+                control_port: 7700,
+            }),
+            &SessionPlugins::default(),
+        );
+        let v: serde_json::Value = yaml_serde_from(&y);
+        assert_eq!(v["plugins"][0]["name"], "dashboard");
+        assert_eq!(v["plugins"][0]["grants"][0], "access.check");
+        assert_eq!(v["plugins"][0]["config"]["base_url"], "http://dashboard.localhost:7690");
+        assert_eq!(v["plugins"][0]["config"]["control"]["url"], "http://127.0.0.1:7700");
+        assert_eq!(v["plugins"][0]["config"]["control"]["token_file"], "/s/dashboard/control-token");
         let g: serde_json::Value = yaml_serde_from(&gateway_yaml_text(7680, Some(7600), Some("planning")));
         assert_eq!(g["listen"], "127.0.0.1:7680");
         assert_eq!(g["services"]["control"]["url"], "http://127.0.0.1:7600");

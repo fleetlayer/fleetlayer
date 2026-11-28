@@ -20,6 +20,7 @@ export const site = {
 export const pages = [
   { file: "getting-started", group: "Start here" },
   { file: "concepts", group: "Start here", label: "How it fits together" },
+  { file: "dashboard", group: "Start here", label: "The dashboard" },
   {
     file: "rex",
     group: "Works with",

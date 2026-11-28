@@ -246,6 +246,7 @@ async fn run(cfg: NodeConfig, config_path: PathBuf) -> anyhow::Result<()> {
     match node.control.clone() {
         Some(control) => {
             tokio::spawn(link::run(node.clone(), control));
+            tokio::spawn(heartbeat::report_status(node.clone()));
         }
         None => tracing::info!("no control: section in node.yaml, so this node works on its own"),
     }

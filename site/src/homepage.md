@@ -7,6 +7,13 @@ home server or a VPS. Any agent can message any other agent, webhooks can be rou
 gets its own access rules. Open source under Apache 2.0, early, built in public:
 https://github.com/fleetlayer/fleetlayer
 
+## Your whole fleet on one page
+
+The dashboard shows every machine and what it runs, every agent session and whether it's waiting on you, the events
+that arrived and which agent each reached, and the requests waiting for your approval. Live, behind your own sign-in,
+and everything on it works from the command line too. Screenshot: https://fleetlayer.ai/img/dashboard-light.webp.
+Set it up: https://fleetlayer.ai/docs/dashboard/ (or try it with `fleetlayer-dashboard demo`).
+
 ## Claude Code is awesome…
 
 …when you have one Claude account and run it on one machine. Add a second account, a server or another agent,

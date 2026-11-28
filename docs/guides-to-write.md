@@ -846,3 +846,10 @@ managers, machines that sleep.
   gitleaks plus a grep for every private name the source's owner can list (domains, tailnets, hostnames, people,
   vaults, org names, MACs), review, then publish. Written: `docs/guides/server-setup.md`, the example repository's
   `docs/guides/`. Not yet: the end-to-end test on a throwaway rented host.
+- **A web dashboard that's only one way in.** People want to look around (machines, sessions, what's waiting on them),
+  but a UI with its own back door drifts from what agents and scripts can do. The dashboard reads and acts only
+  through the control plane's API with its own token, checks each person against the policy on every page (so access
+  taken away ends within a minute), and keeps no state, so it moves like any plugin. Footguns: a read token shows
+  approvals but can't decide them (give it an admin token to approve from the dashboard); nodes older than 0.4 don't
+  publish `node.status`, so their plugins show as unknown; restarting it signs everyone out. Where it lives:
+  `docs/dashboard.md`, `plugins/dashboard/`. To write: a guide that adds it to a running fleet, with the screenshot.

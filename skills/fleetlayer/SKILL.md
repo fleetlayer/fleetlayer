@@ -157,7 +157,7 @@ fleetlayer role activate admin --for 1h --why "upgrade postgres to 17 and restar
 fleetlayer role list        # off, waiting for the person (with the request ID), or open until when
 ```
 
-Tell your person the request ID and what it's for, and wait. They approve it from their deck or inbox, and opening a
+Tell your person the request ID and what it's for, and wait. They approve it from their deck or inbox (or the dashboard's Access page, if their fleet runs one), and opening a
 window asks for their passkey, so it can take a minute. Don't ask again in a loop, and ask for no longer than the job
 needs. Once
 it's open, work quickly and close it when you're done: `fleetlayer role deactivate admin`. At the end, every session in
@@ -176,7 +176,15 @@ Nodes publish small figures as readings: Claude usage per account, token health 
 fleetlayer readings claude.usage claude.token_health
 ```
 
-The `fleetlayer-claude-accounts` skill says what they mean for you.
+The `fleetlayer-claude-accounts` skill says what they mean for you. Each node also publishes `node.status` (its health
+and each plugin's state) every minute: `fleetlayer readings node.status`.
+
+## The dashboard
+
+When the person wants to look around (every machine, session, event and approval, live, with a graph of the fleet),
+point them at the dashboard, if their fleet runs one: `fleetlayer services` lists it as `dashboard` with its address.
+It shows nothing you can't read with `fleetlayer fleet`, `fleetlayer readings` and `fleetlayer me`, so use those
+yourself.
 
 ## Secrets
 

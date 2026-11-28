@@ -17,9 +17,11 @@ fleetlayer up
 Fleetlayer is running. Status: http://fleetlayer.localhost:7680
   claude-hub   http://claude-hub.localhost:7680
   control      http://control.localhost:7680
+  dashboard    http://dashboard.localhost:7680
   pages        http://pages.localhost:7680
 Hub login key: ~/.local/state/fleetlayer/claude-hub-login
 Pages login key: ~/.local/state/fleetlayer/pages/login  Pages go in ~/Fleetlayer/personal/pages/
+Dashboard login key: ~/.local/state/fleetlayer/dashboard/login
 ```
 
 It also adds your sessions to the fleet: the herdr plugin when [herdr](https://herdr.dev) is installed and the Claude
@@ -27,7 +29,7 @@ Code plugin when Claude Code is, and says which it added or skipped and why. The
 other machines can message them, and `fleetlayer session start` opens new ones. Session summaries stay off, since
 each one runs Claude Code and spends tokens: `fleetlayer up --summaries` turns them on.
 
-Open the status page. It shows each service, whether it's answering, and where alerts go. The hub and pages ask for
+Open the status page. It shows each service, whether it's answering, and where alerts go. The hub, pages and the [dashboard](../dashboard.md) ask for
 their login key the first time (the file's contents); Fleetlayer's own sign-in replaces the keys when it ships.
 
 Each piece runs as a user service (a launchd agent on macOS, a systemd user service on Linux), so it starts when you
@@ -35,7 +37,7 @@ log in and restarts if it crashes. On Linux, `loginctl enable-linger "$USER"` ke
 out. `fleetlayer down` stops them all and keeps every file; `fleetlayer up` again starts them where they left off.
 
 Useful flags: `--alerts-to planning` (a session that hears when something goes down; on a later `up` it doesn't
-change an existing gateway.yaml, so set `alerts.session` there), `--no-hub`, `--no-pages`,
+change an existing gateway.yaml, so set `alerts.session` there), `--no-hub`, `--no-pages`, `--no-dashboard`,
 `--port 7680`, `--summaries`.
 
 ## What's running
@@ -47,6 +49,7 @@ change an existing gateway.yaml, so set `alerts.session` there), `--no-hub`, `--
 | Node | (no web page: `fleetlayer status`) | `~/.config/fleetlayer/node.yaml`, `node-key`, `node-token` |
 | Claude sign-in hub | `http://claude-hub.localhost:7680` | `~/.local/state/fleetlayer/claude-hub/` |
 | Pages and apps | `http://pages.localhost:7680`, apps at `<app>--<space>.apps.localhost:7680` | `~/Fleetlayer/personal/` |
+| Dashboard | `http://dashboard.localhost:7680` | its login key and control plane token in `~/.local/state/fleetlayer/dashboard/` |
 
 Everything listens on this machine's own addresses only (`127.0.0.1`, and `[::1]` for the gateway, since macOS
 answers `*.localhost` with `::1` first): nothing is reachable from your network. The hub and pages pick a free port each

@@ -1,5 +1,6 @@
-//! The control plane's API, for programs that read the fleet (the web and phone apps, Quietdeck's deck): `GET
-//! /v1/fleet`, `/v1/events`, `/v1/subscriptions`, `/v1/endpoints`, `/v1/summaries`, and `POST
+//! The control plane's API, for programs that read the fleet (the dashboard, the web and phone apps, Quietdeck's deck):
+//! `GET /v1/fleet`, `/v1/events`, `/v1/subscriptions`, `/v1/endpoints`, `/v1/summaries`, `/v1/readings`, `/v1/tools`,
+//! and `POST
 //! /v1/sessions/<id>/catchup`. Each needs a bearer token: the admin token file's, or an API token
 //! (`fleetlayer-control token add <name> --scope read`). A self-hosted control plane has one tenant; the
 //! hosted one will sign people in instead.
@@ -242,6 +243,49 @@ pub async fn post_catchup(
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, e.message))?;
     Ok(Json(c))
+}
+
+#[derive(serde::Deserialize)]
+pub struct ReadingsQuery {
+    /// Comma-separated kinds (`node.status,plugin.status`); every kind when absent.
+    kind: Option<String>,
+}
+
+/// `GET /v1/readings?kind=a,b`: the newest reading of each kind, key and source node (`docs/protocol.md`, section 9),
+/// every kind when `kind` is absent. `{readings: [{kind, key, node, at, data}]}`.
+pub async fn get_readings(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Query(q): Query<ReadingsQuery>,
+) -> ApiResult {
+    guard(&app, &headers).await?;
+    let kinds: Vec<String> = match q.kind.as_deref().filter(|k| !k.trim().is_empty()) {
+        Some(k) => k.split(',').map(|k| k.trim().to_string()).filter(|k| !k.is_empty()).collect(),
+        None => crate::readings::kinds(&app.db, DEFAULT_TENANT).await.map_err(internal)?,
+    };
+    let readings = crate::readings::latest(&app.db, DEFAULT_TENANT, &kinds).await.map_err(internal)?;
+    Ok(Json(json!({"readings": readings})))
+}
+
+/// `GET /v1/tools`: the tools each node shares, as it last said (names, descriptions, its own `allow:` patterns and
+/// folder names; never paths or secrets), with whether the node is linked now. `{tools: [{node, online, ...ToolInfo}]}`.
+pub async fn get_tools(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
+    guard(&app, &headers).await?;
+    let online = app.links.online(DEFAULT_TENANT).await;
+    let mut tools: Vec<Value> = vec![];
+    for ((tenant, node), list) in app.links.tools.lock().await.iter() {
+        if tenant != DEFAULT_TENANT {
+            continue;
+        }
+        for t in list {
+            let mut v = serde_json::to_value(t).unwrap_or_default();
+            v["node"] = json!(node);
+            v["online"] = json!(online.contains(node));
+            tools.push(v);
+        }
+    }
+    tools.sort_by(|a, b| (a["node"].as_str(), a["name"].as_str()).cmp(&(b["node"].as_str(), b["name"].as_str())));
+    Ok(Json(json!({"tools": tools})))
 }
 
 pub async fn get_approvals(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
@@ -498,6 +542,46 @@ mod tests {
         assert!(v["degraded"][0].as_str().unwrap().starts_with("the audit log can't be written"), "{v}");
         let (status, _) = healthz(State(app), query(true)).await.unwrap();
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "?strict fails, for the uptime check");
+    }
+
+    #[tokio::test]
+    async fn readings_and_tools_need_a_read_token_and_filter_by_kind() {
+        let app = app().await;
+        sqlx::query(
+            "INSERT INTO readings (tenant, kind, key, node, at, data) VALUES
+             ('default', 'node.status', 'laptop', 'laptop', 1, '{\"healthy\":true}'),
+             ('default', 'claude.usage', 'a1', 'hub', 2, '{\"sevenDay\":40}'),
+             ('other', 'node.status', 'x', 'x', 3, '{}')",
+        )
+        .execute(&app.db)
+        .await
+        .unwrap();
+        app.links.tools.lock().await.insert(
+            ("default".into(), "laptop".into()),
+            vec![fleetlayer_protocol::link::ToolInfo { name: "browser".into(), ..Default::default() }],
+        );
+        let none = HeaderMap::new();
+        let q = |k: Option<&str>| Query(ReadingsQuery { kind: k.map(str::to_string) });
+        assert_eq!(
+            get_readings(State(app.clone()), none.clone(), q(None)).await.unwrap_err().0,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(get_tools(State(app.clone()), none).await.unwrap_err().0, StatusCode::UNAUTHORIZED);
+
+        let read = db::add_token(&app.db, DEFAULT_TENANT, "dashboard", "read").await.unwrap();
+        let mut h = HeaderMap::new();
+        h.insert("authorization", format!("Bearer {read}").parse().unwrap());
+        let Json(all) = get_readings(State(app.clone()), h.clone(), q(None)).await.unwrap();
+        assert_eq!(all["readings"].as_array().unwrap().len(), 2, "every kind, this tenant only: {all}");
+        let Json(some) = get_readings(State(app.clone()), h.clone(), q(Some("node.status"))).await.unwrap();
+        assert_eq!(some["readings"][0]["data"]["healthy"], true);
+        assert_eq!(some["readings"].as_array().unwrap().len(), 1);
+        let Json(tools) = get_tools(State(app.clone()), h).await.unwrap();
+        assert_eq!(tools["tools"][0]["name"], "browser");
+        assert_eq!(
+            (tools["tools"][0]["node"].clone(), tools["tools"][0]["online"].clone()),
+            (json!("laptop"), json!(false))
+        );
     }
 
     #[tokio::test]

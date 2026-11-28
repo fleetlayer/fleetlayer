@@ -61,6 +61,56 @@ async fn gateway_ok(base: &str) -> Result<(), String> {
     }
 }
 
+/// How often the node tells the control plane how it is (`node.status`).
+const STATUS_EVERY: Duration = Duration::from_secs(60);
+
+/// The `node.status` reading: the node's own health (the heartbeat's judgement) and each plugin's state, keyed by the
+/// node's name, for the dashboard and anything else that reads the fleet. Names, versions and states only: never a
+/// plugin's stderr, command line or config, which can carry paths or secrets.
+pub async fn status_reading(node: &Node, has_control: bool) -> serde_json::Value {
+    let problem = health(node, has_control).await;
+    let mut plugins = vec![];
+    for p in &node.plugins {
+        let s = p.status().await;
+        let (state, since, reason) = match &s.state {
+            State::Starting => ("starting", None, None),
+            State::Running { since } => ("running", Some(since.to_string()), None),
+            State::Restarting { at, reason } => ("restarting", Some(at.to_string()), Some(reason.clone())),
+            State::Broken { reason } => ("broken", None, Some(reason.clone())),
+        };
+        plugins.push(serde_json::json!({
+            "name": s.name, "enabled": p.config.enabled, "state": state, "since": since, "reason": reason,
+            "version": s.version, "roles": s.roles, "restarts": s.restarts, "problem": s.problem,
+            "services": s.services.iter().map(|x| x.name.clone()).collect::<Vec<_>>(),
+        }));
+    }
+    serde_json::json!({
+        "kind": "node.status",
+        "key": node.name,
+        "at": jiff::Timestamp::now(),
+        "data": {
+            "healthy": problem.is_none(),
+            "problem": problem,
+            "version": env!("CARGO_PKG_VERSION"),
+            "os": std::env::consts::OS,
+            "plugins": plugins,
+        },
+    })
+}
+
+/// Sends `node.status` every minute while linked (nothing is held while it isn't: the dashboard shows the node as
+/// offline then, from the link itself).
+pub async fn report_status(node: Arc<Node>) {
+    tokio::time::sleep(Duration::from_secs(20)).await;
+    loop {
+        if node.link.peer().await.is_some() {
+            let r = status_reading(&node, true).await;
+            crate::readings::publish(&node, &r).await;
+        }
+        tokio::time::sleep(STATUS_EVERY).await;
+    }
+}
+
 pub async fn run(node: Arc<Node>, cfg: HeartbeatConfig, has_control: bool) {
     // `~` means this user's home, as for the control plane's token; a token that can't be read is said once, loudly,
     // rather than heartbeats going out without it (and being refused).
@@ -99,5 +149,21 @@ pub async fn run(node: Arc<Node>, cfg: HeartbeatConfig, has_control: bool) {
             Err(e) => tracing::warn!("heartbeat: {e}"),
         }
         tokio::time::sleep(Duration::from_secs(cfg.every.max(10))).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[tokio::test]
+    async fn the_status_reading_says_how_the_node_is_and_names_no_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let node = crate::Node::for_test(dir.path());
+        let r = super::status_reading(&node, true).await;
+        assert_eq!((r["kind"].as_str(), r["key"].as_str()), (Some("node.status"), Some("n")));
+        // Not linked, with a control plane configured: unhealthy, and says why.
+        assert_eq!(r["data"]["healthy"], false);
+        assert!(r["data"]["problem"].as_str().unwrap().contains("not linked"), "{r}");
+        assert_eq!(r["data"]["plugins"], serde_json::json!([]));
+        assert!(!r.to_string().contains(&dir.path().display().to_string()));
     }
 }

@@ -85,6 +85,27 @@ const description = site.summary;
         </figure>
       </section>
 
+      <section class="showcase" aria-labelledby="showcase-title">
+        <div class="showcase__head">
+          <h2 id="showcase-title">Your whole fleet on one page.</h2>
+          <p>
+            The dashboard shows every machine and what it runs, every agent session and whether it's waiting on you,
+            the events that arrived and which agent each reached, and the requests waiting for your approval. Live,
+            behind your own sign-in, and everything on it works from the command line too.
+          </p>
+        </div>
+        <figure class="shot">
+          <picture>
+            <source media="(max-width: 40rem) and (prefers-color-scheme: dark)" srcset="/img/dashboard-phone-dark.webp" width="780" height="1688" />
+            <source media="(max-width: 40rem)" srcset="/img/dashboard-phone-light.webp" width="780" height="1688" />
+            <source media="(prefers-color-scheme: dark)" srcset="/img/dashboard-dark.webp" width="2880" height="1800" />
+            <img src="/img/dashboard-light.webp" width="2880" height="1800" loading="eager" decoding="async"
+              alt="The Fleetlayer dashboard's overview of a fleet: machines online, sessions, what's waiting on you and problems; a list of what needs you; a card per machine with its nodes, sessions and plugins; and a live feed of events." />
+          </picture>
+          <figcaption>A made-up fleet in the dashboard. <a href="/docs/dashboard/">Set it up</a> or try it with <code>fleetlayer-dashboard demo</code>.</figcaption>
+        </figure>
+      </section>
+
       <section class="pain" aria-labelledby="pain-title">
         <div class="pain__head">
           <h2 id="pain-title">Claude Code is awesome…</h2>

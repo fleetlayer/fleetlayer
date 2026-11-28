@@ -1827,6 +1827,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "fleetlayer-dashboard"
+version = "0.3.13"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "fleetlayer-oidc",
+ "fleetlayer-plugin",
+ "fleetlayer-protocol",
+ "form_urlencoded",
+ "hex",
+ "jiff 1.0.3",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.2",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "fleetlayer-egress"
 version = "0.3.13"
 dependencies = [

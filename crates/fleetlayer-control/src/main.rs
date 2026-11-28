@@ -1398,6 +1398,8 @@ async fn serve(
         .route("/v1/endpoints", get(api::get_endpoints))
         .route("/v1/summaries", get(api::get_summaries))
         .route("/v1/sessions/{id}/catchup", axum::routing::post(api::post_catchup))
+        .route("/v1/readings", get(api::get_readings))
+        .route("/v1/tools", get(api::get_tools))
         .route("/v1/approvals", get(api::get_approvals))
         .route("/v1/audit/verify", get(api::get_audit_verify))
         .route("/v1/messages", axum::routing::post(api::post_message))

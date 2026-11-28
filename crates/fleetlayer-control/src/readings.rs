@@ -78,6 +78,14 @@ pub async fn latest(db: &Db, tenant: &str, kinds: &[String]) -> anyhow::Result<V
     Ok(out)
 }
 
+/// Every kind of reading there is, for `GET /v1/readings` without `?kind=`.
+pub async fn kinds(db: &Db, tenant: &str) -> anyhow::Result<Vec<String>> {
+    Ok(sqlx::query_scalar("SELECT DISTINCT kind FROM readings WHERE tenant = ? ORDER BY kind")
+        .bind(tenant)
+        .fetch_all(db)
+        .await?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -65,6 +65,8 @@
 
   --measure: 64ch;
   --page-max: 72rem;
+  /* The lift under a product screenshot. */
+  --shadow-shot: 0 24px 60px -30px oklch(20% 0.04 256 / 0.35);
 }
 
 @media (prefers-color-scheme: dark) {
