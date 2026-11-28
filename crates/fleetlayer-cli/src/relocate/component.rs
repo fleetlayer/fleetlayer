@@ -208,6 +208,10 @@ fn declared(command: &str, config: &Value) -> Declared {
             d.files.push(or(&config["settings"], "~/.config/fleetlayer/leases.yaml"));
             d.dirs.push(or(&config["state_dir"], "~/.local/state/fleetlayer/leases"));
         }
+        "fleetlayer-presence" => {
+            d.files.push(or(&config["settings"], "~/.config/fleetlayer/presence.yaml"));
+            d.dirs.push(or(&config["state_dir"], "~/.local/state/fleetlayer/presence"));
+        }
         "fleetlayer-summaries" => {
             d.dirs.push(or(&config["dir"], "~/.local/share/fleetlayer/summaries"));
             d.dirs.push("~/.local/state/fleetlayer/summaries".into());

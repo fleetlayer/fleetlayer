@@ -202,10 +202,22 @@ fn report(lease: &Value, as_json: bool) {
 
 /// The authority's tool and node, `(tool, node)`.
 async fn target(socket: &Path, at: &At) -> anyhow::Result<(String, String)> {
-    if let Some(a) = &at.at {
+    find_tool(socket, at.at.as_deref(), "leases", "leases authority", "FLEETLAYER_LEASES").await
+}
+
+/// The node sharing tool `name` that this session may use, or the one `at` names (`<node>` or `<tool>@<node>`):
+/// `(tool, node)`. `what` and `env` name it in errors.
+pub(crate) async fn find_tool(
+    socket: &Path,
+    at: Option<&str>,
+    name: &str,
+    what: &str,
+    env: &str,
+) -> anyhow::Result<(String, String)> {
+    if let Some(a) = at {
         return Ok(match a.rsplit_once('@') {
             Some((tool, node)) => (tool.to_string(), node.to_string()),
-            None => ("leases".to_string(), a.clone()),
+            None => (name.to_string(), a.to_string()),
         });
     }
     let stream = tokio::net::UnixStream::connect(socket).await.map_err(|e| {
@@ -219,19 +231,18 @@ async fn target(socket: &Path, at: &At) -> anyhow::Result<(String, String)> {
         .into_iter()
         .flatten()
         .filter_map(|t| {
-            let name = t["name"].as_str()?;
-            let (tool, node) = name.rsplit_once('@')?;
-            (tool == "leases").then(|| (tool.to_string(), node.to_string()))
+            let (tool, node) = t["name"].as_str()?.rsplit_once('@')?;
+            (tool == name).then(|| (tool.to_string(), node.to_string()))
         })
         .collect();
     match &found[..] {
         [one] => Ok(one.clone()),
         [] => anyhow::bail!(
-            "no leases authority found: no node shares a `leases` tool this session may use (`fleetlayer me` lists \
-             them). Name it with --at <node> or $FLEETLAYER_LEASES"
+            "no {what} found: no node shares a `{name}` tool this session may use (`fleetlayer me` lists \
+             them). Name it with --at <node> or ${env}"
         ),
         many => anyhow::bail!(
-            "several nodes share a `leases` tool ({}): choose one with --at <node> or $FLEETLAYER_LEASES",
+            "several nodes share a `{name}` tool ({}): choose one with --at <node> or ${env}",
             many.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>().join(", ")
         ),
     }
@@ -242,9 +253,15 @@ struct Conn {
     lines: Lines<BufReader<OwnedReadHalf>>,
     w: OwnedWriteHalf,
     next: u64,
+    /// `<tool> authority`, for errors.
+    authority: String,
 }
 
-async fn open(socket: &Path, (tool, node): &(String, String)) -> anyhow::Result<Conn> {
+async fn open(socket: &Path, target: &(String, String)) -> anyhow::Result<Conn> {
+    open_as(socket, target, "fleetlayer lease").await
+}
+
+async fn open_as(socket: &Path, (tool, node): &(String, String), client: &str) -> anyhow::Result<Conn> {
     let tools = socket.with_extension("tools.sock");
     let stream = tokio::net::UnixStream::connect(&tools)
         .await
@@ -263,11 +280,11 @@ async fn open(socket: &Path, (tool, node): &(String, String)) -> anyhow::Result<
     if let Some(e) = answer["error"].as_str() {
         anyhow::bail!("{tool}@{node}: {e}");
     }
-    let mut conn = Conn { lines, w, next: 1 };
+    let mut conn = Conn { lines, w, next: 1, authority: format!("{tool} authority") };
     conn.request(
         "initialize",
         json!({"protocolVersion": "2025-06-18", "capabilities": {},
-            "clientInfo": {"name": "fleetlayer lease", "version": env!("CARGO_PKG_VERSION")}}),
+            "clientInfo": {"name": client, "version": env!("CARGO_PKG_VERSION")}}),
         |_| {},
     )
     .await?;
@@ -315,7 +332,7 @@ impl Conn {
             }
             return Ok(v["result"].clone());
         }
-        anyhow::bail!("the leases authority went away (its node or the control plane may be restarting)")
+        anyhow::bail!("the {} went away (its node or the control plane may be restarting)", self.authority)
     }
 
     /// One tool call; its JSON answer, or its error text as an error.
@@ -337,6 +354,18 @@ impl Conn {
             serde_json::from_str(&text)?
         })
     }
+}
+
+/// One tool call on a fresh connection, for another command built on a shared tool (`fleetlayer presence`).
+pub(crate) async fn call_tool(
+    socket: &Path,
+    target: &(String, String),
+    client: &str,
+    name: &str,
+    args: Value,
+) -> anyhow::Result<Value> {
+    let mut conn = open_as(socket, target, client).await?;
+    conn.call(name, args, false).await
 }
 
 async fn call(

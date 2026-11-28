@@ -976,3 +976,13 @@ managers, machines that sleep.
   terminal by a messaging tool looks to Claude Code like the person typing, so the node's own record of what it
   delivered wins for ten seconds; a flapping session must not flood subscribers, so events are capped per session,
   with the last change held, never dropped. Written: `docs/events.md`, the fleetlayer skill's Watches section.
+- **Agents spend tokens on work nobody reads.** An overseer that audits every 30 minutes, a deck that refreshes in the
+  background, a mail agent that triages at 3 am: all of it is wasted while the person is out or asleep, and agents
+  can't tell. Solved with the presence plugin: one authority per fleet combines the laptop's screen lock and idle time
+  (macOS `ioreg`: `HIDIdleTime` of `IOHIDSystem`, and `CGSSessionScreenIsLocked` in the registry root's
+  `IOConsoleUsers`, both readable with no privacy permission), looks at pages on the phone, what the person told any
+  session, planned absences and their night, into present, semi_present, away or asleep. Two footguns it handles: a
+  person who says "going to lunch" is still typing, so a stated away holds until the desk has shown them gone; and a
+  laptop that sleeps stops reporting rather than reporting "away", so a desk report goes stale after 3 minutes and
+  never leaves someone present. Written: `docs/plugins/presence.md`, the `fleetlayer-presence` skill. Home Assistant
+  (home or out) is planned as another source.

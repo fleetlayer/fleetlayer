@@ -2062,6 +2062,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "fleetlayer-presence"
+version = "0.4.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "clap",
+ "fleetlayer-plugin",
+ "fleetlayer-protocol",
+ "jiff 1.0.3",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "yaml_serde",
+]
+
+[[package]]
 name = "fleetlayer-protocol"
 version = "0.4.1"
 dependencies = [
@@ -2204,7 +2223,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
 ]
-
 
 [[package]]
 name = "fluent"
@@ -4256,9 +4274,9 @@ dependencies = [
 
 [[package]]
 name = "psl"
-version = "2.1.265"
+version = "2.1.266"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6872c2df60248a709a9a1bda933f7db785147afcb3e5e6a892a3cc613f576c9c"
+checksum = "f7f5c6a15f97e7cce4912311348122307cfa7c32b2449155b1fcad0fa914cdc2"
 dependencies = [
  "psl-types",
 ]

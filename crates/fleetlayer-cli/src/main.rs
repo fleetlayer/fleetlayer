@@ -13,6 +13,7 @@ macro_rules! print {
 mod lease;
 mod mcp_bridge;
 mod pages;
+mod presence;
 mod relocate;
 mod run;
 mod secrets;
@@ -261,6 +262,9 @@ enum Command {
         #[command(subcommand)]
         command: lease::LeaseCommand,
     },
+    /// Whether the person is at their desk, on their phone, away or asleep: check before background work nobody may
+    /// read, and record it when they tell you they're going out (`set away --for 1h --note lunch`).
+    Presence(presence::PresenceArgs),
     /// Messages between sessions.
     Msg {
         #[command(subcommand)]
@@ -1276,6 +1280,10 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         let Command::Lease { command } = cli.command else { unreachable!() };
         return lease::run(&socket, command, cli.json).await;
     }
+    if let Command::Presence(_) = &cli.command {
+        let Command::Presence(args) = cli.command else { unreachable!() };
+        return presence::run(&socket, args, cli.json).await;
+    }
     if let Command::Mcp { target, why, call_timeout } = &cli.command {
         let limit = std::time::Duration::from_secs(*call_timeout);
         return mcp(&socket.with_extension("tools.sock"), target, why.as_deref(), limit).await;
@@ -1664,7 +1672,11 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 }
             }
         }
-        Command::Mcp { .. } | Command::Lease { .. } | Command::Attach { .. } | Command::Pages { .. } => {}
+        Command::Mcp { .. }
+        | Command::Lease { .. }
+        | Command::Presence(_)
+        | Command::Attach { .. }
+        | Command::Pages { .. } => {}
         Command::Commands { node } => {
             let v: Value = peer.request("node/me", &json!({"caller": caller()})).await?;
             if cli.json {

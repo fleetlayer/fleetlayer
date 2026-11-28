@@ -58,6 +58,7 @@ pub const BINARIES: &[&str] = &[
     "fleetlayer-shared-folders",
     "fleetlayer-scheduler",
     "fleetlayer-leases",
+    "fleetlayer-presence",
     "fleetlayer-herdr-fleet",
     "fleetlayer-cookies",
     "fleetlayer-1password",

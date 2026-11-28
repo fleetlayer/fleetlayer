@@ -1,0 +1,47 @@
+name: presence
+summary: Whether the person is at their desk, on their phone, away or asleep, so agents skip background work nobody will read.
+kind: plugin
+roles: []
+ships_with_fleetlayer: true
+status: beta
+licence: FSL-1.1-ALv2
+maintainer: Fleetlayer
+source: https://github.com/fleetlayer/fleetlayer/tree/main/plugins/presence
+install: bundled
+command: fleetlayer-presence
+platforms: [linux, macos]
+min_fleetlayer: 0.4.2
+protocol: 1
+grants: [reading.subscribe, reading.publish, event.publish]
+config: |
+  plugins:
+    - name: presence
+      command: fleetlayer-presence
+      grants: [reading.subscribe, reading.publish, event.publish]
+      # people go in ~/.config/fleetlayer/presence.yaml
+  tools:
+    - name: presence
+      command: fleetlayer-presence
+      args: [serve, --caller, "{caller}"]
+      allow: ["*"]
+      check_calls: true
+      call_targets: { set: ["/person"], plan_add: ["/person"], plan_remove: ["/person"], seen: ["/person"] }
+  # and on the person's own computer:
+  # plugins:
+  #   - name: presence-desk
+  #     command: fleetlayer-presence
+  #     args: [desk]
+  #     grants: [reading.publish]
+  #     config: { person: alice }
+security: >-
+  The desk source reads only the screen lock and the idle time (on macOS from ioreg, with no privacy permission) and
+  sends those two figures, never what's on screen or typed. The authority trusts a desk report only from a node listed
+  as that person's desk, and every read or change goes through the shared tool, so the access policy decides who may
+  change whose status and the audit log records it. It reads only its settings file and state directory.
+docs: plugins/presence
+description: |
+  One authority combines the person's desk (locked, idle), their looks at pages on the phone, what they told any
+  session ("going out for lunch, back at one"), planned absences and the night where they live into one state:
+  present, semi_present, away or asleep, with since, until and why. Agents read it with `fleetlayer presence` before
+  periodic work, hear changes as events, and record what the person says. A desk that goes quiet stops counting
+  within minutes, so nobody is left "present" by a laptop that went to sleep.

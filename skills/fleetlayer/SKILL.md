@@ -337,6 +337,12 @@ fleetlayer lease release "$id"
 
 The `fleetlayer-leases` skill says more, including claims the person approves once.
 
+## Is the person here?
+
+Before background work only the person reads (an audit, a refresh, a report), check `fleetlayer presence`: present,
+semi_present (on their phone), away or asleep, with until when. When they tell you they're going out or to bed, record
+it (`fleetlayer presence set away --for 1h --note lunch`). The `fleetlayer-presence` skill says more.
+
 ## Secrets
 
 Secrets (tokens, keys, cookies) may be delivered to your Unix user's role by the person's secrets sources. Use them by

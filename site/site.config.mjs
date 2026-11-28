@@ -73,6 +73,7 @@ export const pages = [
   { file: "plugins/scheduler", group: "Plugins", label: "Scheduler", description: "Send a message to an agent session on a schedule: every few hours, on a cron expression, or once at a set time." },
   { file: "plugins/matrix", group: "Plugins", label: "Matrix rooms", description: "Turn Matrix rooms (an alerts room, a team room) into channels agents hear, and let them answer as the room's bot." },
   { file: "plugins/leases", group: "Plugins", label: "Leases", description: "Take turns on shared machines and claim things for a while (a build slot, an approved mail filter), with leases that end when their holder dies." },
+  { file: "plugins/presence", group: "Plugins", label: "Presence", description: "Know whether the person is at their desk, on their phone, away or asleep, so agents skip background work nobody will read." },
   { file: "plugins/herdr-fleet", group: "Plugins", label: "Every herdr as one", description: "Point any herdr client (the phone relay, a dashboard) at every herdr in your fleet as if it were one." },
   { file: "plugins/cookies", group: "Plugins", label: "Cookies", description: "Give command-line tools on other machines your browser's cookies for chosen sites, sealed in transit, and know what that exposes." },
   { file: "plugins/1password", group: "Plugins", label: "1Password", description: "Deliver 1Password items to the roles you grant them to, from a service-account token no agent holds." },
