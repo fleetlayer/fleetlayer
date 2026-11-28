@@ -1,0 +1,25 @@
+name: deploy-queue
+summary: "Branches take turns on a shared staging environment, with claims on shared infrastructure and a live page of every deploy."
+kind: service
+ships_with_fleetlayer: false
+status: in progress
+licence: FSL-1.1-ALv2
+maintainer: Fleetlayer
+source: https://github.com/fleetlayer/deploy-queue
+install: {command: "docker run -d -p 127.0.0.1:8080:8080 -v deploy-queue:/data -v ./deploy-queue.yaml:/config/deploy-queue.yaml:ro ghcr.io/fleetlayer/deploy-queue:<sha>"}
+command: deploy-queue serve
+platforms: [linux, macos]
+min_fleetlayer: 0.4.2
+needs: [a GitHub token that reads pull requests and commit statuses]
+security: >-
+  It reads your repository's pull requests and CI statuses with a read-only token, and approves nothing: production
+  approvals stay in your deploy tool. Anyone who can reach it can read the queue (PR titles, summaries, branch names),
+  so keep it on a private network or behind sign-in. Changing the queue takes a token per client, stored hashed, or a
+  person named by a signing-in proxy in front of it.
+docs: built-on-fleetlayer
+description: |
+  One branch holds staging at a time, from its staging deploy through QA until production is live and it's merged;
+  the rest wait in line, and a live page shows where every branch is. The steps, environments and CI job names are a
+  project's settings file, so it fits any pipeline that reports its jobs to GitHub. It also keeps claims on shared
+  infrastructure, so an apply and a deploy on one environment wait for each other. Using Fleetlayer's leases for turns
+  and claims, and its events for CI status, is being built.

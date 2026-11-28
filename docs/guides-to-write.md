@@ -1024,3 +1024,13 @@ managers, machines that sleep.
   writes a Chrome opener (`~/.local/state/fleetlayer/open-chrome`, `open -g -b com.google.Chrome <address>`) and uses it
   as `PLAYWRIGHT_MCP_EXECUTABLE_PATH`, the cookies plugin's default on macOS. The page opens in Chrome's last-used
   profile. Written: `docs/guides/browser.md`, `docs/plugins/cookies.md`, `crates/fleetlayer-protocol/src/local.rs`.
+- **Agents take turns on one staging environment.** With several agents finishing branches the same afternoon, each
+  wants staging, and two branches deployed over each other test neither. A deploy queue gives one branch the
+  environment at a time and frees it when the agent's session dies. Its phases come from CI's per-job commit statuses,
+  except the approval holds, which report success before anyone approves and must be ignored. Its page only showed
+  styles in dark mode for weeks: an unclosed `@media` block swallowed every rule in light mode, and nobody looked in
+  light mode. Solved: Deploy Queue (github.com/fleetlayer/deploy-queue), with a test that the CSS braces balance.
+  Written: `docs/built-on-fleetlayer.md`, `docs/guides/deploying-with-agents.md`.
+- **Two sessions apply Terraform over each other.** A lock per component (one holder per `racks/us`, others free) is a
+  lease whose slots count per payload field: `per: component` (leases plugin). A change that touches several takes one
+  lease each in sorted order, so two sessions never deadlock. Written: `docs/plugins/leases.md`, the leases skill.
