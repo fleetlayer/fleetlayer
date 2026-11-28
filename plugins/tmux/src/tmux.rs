@@ -375,9 +375,13 @@ pub fn key(name: &str) -> Option<Key> {
 
 // ---------------------------------------------------------------- panes
 
-/// The fields `list-panes` prints for each pane, tab-separated. Free text (names, the folder) comes last, and a
-/// name with a tab in it only loses what follows the tab.
-pub const PANE_FORMAT: &str = "#{pane_id}\t#{pane_pid}\t#{pane_dead}\t#{pane_in_mode}\t#{session_attached}\t#{window_active}\t#{window_index}\t#{pane_index}\t#{automatic-rename}\t#{pane_width}\t#{pane_height}\t#{session_name}\t#{window_name}\t#{pane_current_path}";
+/// What separates the fields `list-panes` prints. Not a tab: tmux before 3.3 prints control characters in a format,
+/// tabs included, as `_` (Debian 12 and Ubuntu 22.04 ship 3.2a), and the plugin then found no panes at all.
+pub const PANE_SEP: &str = "<|fl|>";
+
+/// The fields `list-panes` prints for each pane, separated by [`PANE_SEP`]. Free text (names, the folder) comes
+/// last, and a name holding the separator only loses what follows it.
+pub const PANE_FORMAT: &str = "#{pane_id}<|fl|>#{pane_pid}<|fl|>#{pane_dead}<|fl|>#{pane_in_mode}<|fl|>#{session_attached}<|fl|>#{window_active}<|fl|>#{window_index}<|fl|>#{pane_index}<|fl|>#{automatic-rename}<|fl|>#{pane_width}<|fl|>#{pane_height}<|fl|>#{session_name}<|fl|>#{window_name}<|fl|>#{pane_current_path}";
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Pane {
@@ -409,7 +413,8 @@ impl Pane {
 }
 
 pub fn parse_pane(line: &str) -> Option<Pane> {
-    let f: Vec<&str> = line.splitn(14, '\t').collect();
+    let f: Vec<&str> =
+        if line.contains(PANE_SEP) { line.splitn(14, PANE_SEP).collect() } else { line.splitn(14, '\t').collect() };
     if f.len() < 13 || !f[0].starts_with('%') {
         return None;
     }
@@ -718,6 +723,18 @@ mod tests {
         let auto = parse_pane("%4\t1\t0\t0\t0\t0\t1\t1\t1\t80\t24\ts\tclaude\t/w").unwrap();
         assert!(!auto.window_named && !auto.visible());
         assert!(parse_pane("garbage").is_none());
+        // What PANE_FORMAT prints, on any tmux.
+        let p = parse_pane(
+            &["%5", "9", "0", "0", "1", "1", "0", "0", "1", "80", "24", "person", "sh", "/root"].join(PANE_SEP),
+        )
+        .unwrap();
+        assert_eq!(
+            (p.id.as_str(), p.pid, p.attached, p.session.as_str(), p.cwd.as_deref()),
+            ("%5", 9, 1, "person", Some("/root"))
+        );
+        assert_eq!(PANE_FORMAT.matches(PANE_SEP).count(), 13, "fourteen fields");
+        // tmux 3.2a's answer to a tab-separated format: every tab printed as `_`, so nothing to read.
+        assert!(parse_pane("%0_2590486_0_0_0_1_0_0_1_80_24_person_sleep_/root").is_none());
     }
 
     #[test]
