@@ -251,14 +251,15 @@ grant `session.close`; across nodes `link/session_close`, verb `close`, asked by
 ### Starting sessions
 
 `fleetlayer session start|resume` asks its node on the local socket: `node/session_open` `{tab?, cwd?, harness?,
-prompt?, resume?, on?, why?, caller?}` → `{node, tab, address, sessionId, promptError}`. For another node it goes
+prompt?, resume?, model?, effort?, on?, why?, caller?}` → `{node, tab, address, sessionId, promptError}`. For another node it goes
 through the control plane (`link/session_start` → `link/session_serve`, [link.md](link.md)), checked as `start` on
 `<tab>@<node>`. The node that runs the session then:
 
 1. refuses a tab name a running session has, and a `resume` of a session that's running;
 2. for a resume, finds the folder and harness in its registry, else asks the harness plugins
    (`_fleetlayer.dev/harness/locate`);
-3. refuses a folder that isn't absolute, doesn't exist, or is the home folder;
+3. expands a leading `~/` against its own home (a caller on another node can't know it), then refuses a folder that
+   isn't absolute, doesn't exist, or is the home folder;
 4. asks the harness plugins for that harness to get the folder ready (`_fleetlayer.dev/harness/prepare`);
 5. builds the agent's arguments: its own `harnesses.<harness>.args` from `node.yaml`, then Fleetlayer's
    (`--name <tab>`, `--resume <id>` for Claude Code; `resume <id>` for Codex). A caller can't send arguments;

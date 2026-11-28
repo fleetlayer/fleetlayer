@@ -205,7 +205,7 @@ enum SessionCommand {
         /// The new tab's name; refused if a session is already running in a tab of that name.
         #[arg(long)]
         tab: String,
-        /// The folder it works in (absolute, on that node; not the home folder).
+        /// The folder it works in (absolute or under ~/, on that node; not the home folder itself).
         #[arg(long)]
         cwd: String,
         /// The node to start it on. Default: this one.
@@ -217,6 +217,12 @@ enum SessionCommand {
         /// The first prompt, typed in once the agent takes input.
         #[arg(long)]
         prompt: Option<String>,
+        /// The model, as the agent names it (claude: opus, sonnet or a full name; codex: gpt-6...). Default: its own.
+        #[arg(long)]
+        model: Option<String>,
+        /// How hard it thinks: low, medium, high, xhigh or max, as the agent accepts. Default: its own.
+        #[arg(long)]
+        effort: Option<String>,
         /// Why, in one line, when the access rules ask for a reason. Default: $FLEETLAYER_WHY.
         #[arg(long, env = "FLEETLAYER_WHY")]
         why: Option<String>,
@@ -261,6 +267,12 @@ enum SessionCommand {
         /// A prompt to type in once it takes input.
         #[arg(long)]
         prompt: Option<String>,
+        /// The model to go on with, as the agent names it. Default: its own.
+        #[arg(long)]
+        model: Option<String>,
+        /// How hard it thinks from now on: low, medium, high, xhigh or max. Default: its own.
+        #[arg(long)]
+        effort: Option<String>,
         #[arg(long, env = "FLEETLAYER_WHY")]
         why: Option<String>,
     },
@@ -719,9 +731,10 @@ fn print_acted(v: &Value, json: bool) {
     println!("{done} {tab}@{}.", v["node"].as_str().unwrap_or("?"));
 }
 
-/// A folder on this machine made absolute; one on another node is passed as it is (that node checks it).
+/// A folder on this machine made absolute; one on another node, or one under `~` (that node's home), is passed as it
+/// is (that node checks it).
 fn absolute(dir: &str, elsewhere: bool) -> String {
-    if elsewhere || dir.starts_with('/') {
+    if elsewhere || dir.starts_with('/') || dir.starts_with('~') {
         return dir.to_string();
     }
     std::path::absolute(dir).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| dir.to_string())
@@ -1095,13 +1108,13 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Session { command } => {
             let req = match command {
                 SessionCommand::Answer { .. } | SessionCommand::Close { .. } => unreachable!("handled above"),
-                SessionCommand::Start { tab, cwd, on, harness, prompt, why } => json!({
+                SessionCommand::Start { tab, cwd, on, harness, prompt, model, effort, why } => json!({
                     "tab": tab, "cwd": absolute(&cwd, on.is_some()), "on": on, "harness": harness, "prompt": prompt,
-                    "why": why, "caller": caller(),
+                    "model": model, "effort": effort, "why": why, "caller": caller(),
                 }),
-                SessionCommand::Resume { session_id, on, tab, cwd, prompt, why } => json!({
+                SessionCommand::Resume { session_id, on, tab, cwd, prompt, model, effort, why } => json!({
                     "resume": session_id, "tab": tab, "cwd": cwd.map(|c| absolute(&c, on.is_some())), "on": on,
-                    "prompt": prompt, "why": why, "caller": caller(),
+                    "prompt": prompt, "model": model, "effort": effort, "why": why, "caller": caller(),
                 }),
             };
             let v: Value = peer.request_within("node/session_open", &req, std::time::Duration::from_secs(180)).await?;

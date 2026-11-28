@@ -414,6 +414,13 @@ pub struct StartSpec {
     /// Resume this session ID instead of starting a new one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume: Option<String>,
+    /// The model, as the harness names it (`opus`, `claude-sonnet-5-5`, `gpt-6`). Default: the harness's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// How hard the model thinks (`low`, `medium`, `high`, `xhigh`, `max`, as the harness accepts). Default: the
+    /// harness's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
 }
 
 /// `link/session_start`

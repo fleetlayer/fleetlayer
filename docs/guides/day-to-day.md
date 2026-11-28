@@ -168,7 +168,10 @@ fleetlayer session start --on server --tab review --cwd /srv/app --prompt "revie
 
 The tab opens in the background: nobody's focus moves, and nothing is typed into a session already running. The
 command answers once the agent takes input and the session is listed, so a message sent straight after reaches it.
-`--harness codex` starts Codex instead of Claude Code. Leave out `--on` to start it on this machine.
+`--harness codex` starts Codex instead of Claude Code. Leave out `--on` to start it on this machine. `--model` and
+`--effort` choose the model and how hard it thinks (`--model opus --effort high` for Claude Code, `--model gpt-6
+--effort xhigh` for Codex); left out, the agent's own defaults. `--cwd ~/src/app` means that machine's home, whatever
+it is.
 
 **Resume** a stored session by its ID, in the folder it worked in:
 
@@ -177,7 +180,9 @@ fleetlayer session resume 45be65c7-…
 ```
 
 Fleetlayer finds the machine from the fleet's lists (or the summaries, for a session long gone); `--on` says it
-yourself. The tab gets the session's old name unless you give `--tab`.
+yourself. The tab gets the session's old name unless you give `--tab`. If the agent can't resume it (Claude Code
+says "No conversation found with session ID"), the tab it opened closes again and the error ends with the agent's
+own last line.
 
 **What it won't do.** It refuses a tab name a running session already has, a session that's already running, and the
 home folder. Claude Code asks "Do you trust this folder?" every time in the home folder, and the session would wait

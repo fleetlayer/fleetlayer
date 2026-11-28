@@ -239,7 +239,8 @@ async fn plan(node: &Node, spec: &StartSpec) -> Result<Plan, RpcError> {
     }
     let cwd = check_dir(&cwd, &node.home)?;
     let own = node.harnesses.get(&harness).map(|h| h.args.clone()).unwrap_or_default();
-    let args = agent_args(&harness, &own, &tab, spec.resume.as_deref())?;
+    let mut args = agent_args(&harness, &own, &tab, spec.resume.as_deref())?;
+    args.splice(own.len()..own.len(), model_args(&harness, spec.model.as_deref(), spec.effort.as_deref())?);
     Ok(Plan { tab, cwd, harness, args })
 }
 
@@ -252,8 +253,15 @@ fn check_tab(tab: &str) -> Result<(), RpcError> {
     Ok(())
 }
 
-/// The folder, absolute and existing, and never the home folder (Claude Code asks about trusting it every time).
+/// The folder, absolute and existing, and never the home folder (Claude Code asks about trusting it every time). A
+/// leading `~/` is this node's home: a caller on another node can't know it.
 fn check_dir(cwd: &str, home: &std::path::Path) -> Result<String, RpcError> {
+    let expanded = match cwd.strip_prefix('~') {
+        Some("") => home.to_string_lossy().into_owned(),
+        Some(rest) if rest.starts_with('/') => format!("{}{rest}", home.display()),
+        _ => cwd.to_string(),
+    };
+    let cwd = expanded.as_str();
     if !cwd.starts_with('/') {
         return Err(RpcError::invalid_params(format!("{cwd} isn't an absolute folder")));
     }
@@ -284,6 +292,47 @@ fn agent_args(harness: &str, own: &[String], tab: &str, resume: Option<&str>) ->
         && (id.starts_with('-') || id.chars().any(|c| c.is_whitespace() || c.is_control()))
     {
         return Err(RpcError::invalid_params(format!("{id:?} isn't a session ID")));
+    }
+    Ok(a)
+}
+
+/// The model and effort as the harness takes them: `claude --model X --effort Y`, `codex -m X -c
+/// model_reasoning_effort=Y`. Placed after this node's own arguments and before Fleetlayer's (codex's `resume`
+/// subcommand comes last).
+fn model_args(harness: &str, model: Option<&str>, effort: Option<&str>) -> Result<Vec<String>, RpcError> {
+    for (what, v) in [("model", model), ("effort", effort)] {
+        if let Some(v) = v
+            && (v.is_empty()
+                || v.starts_with('-')
+                || !v.chars().all(|c| c.is_ascii_alphanumeric() || "._-[]:/".contains(c)))
+        {
+            return Err(RpcError::invalid_params(format!("{v:?} isn't a {what}")));
+        }
+    }
+    let mut a: Vec<String> = Vec::new();
+    match harness {
+        "claude" => {
+            if let Some(m) = model {
+                a.extend(["--model".into(), m.into()]);
+            }
+            if let Some(e) = effort {
+                a.extend(["--effort".into(), e.into()]);
+            }
+        }
+        "codex" => {
+            if let Some(m) = model {
+                a.extend(["-m".into(), m.into()]);
+            }
+            if let Some(e) = effort {
+                a.extend(["-c".into(), format!("model_reasoning_effort={e}")]);
+            }
+        }
+        h if model.is_some() || effort.is_some() => {
+            return Err(RpcError::refused(format!(
+                "Fleetlayer doesn't know how to choose a {h} session's model or effort"
+            )));
+        }
+        _ => {}
     }
     Ok(a)
 }
@@ -382,6 +431,29 @@ mod tests {
         assert!(check_dir(&again, home.path()).is_err());
         assert!(check_dir("relative", home.path()).unwrap_err().message.contains("absolute"));
         assert!(check_dir("/no/such/folder", home.path()).unwrap_err().message.contains("no folder"));
+        // ~/ is this node's home (a caller elsewhere can't know it); ~ alone is home, still refused; ~user isn't ours.
+        assert_eq!(check_dir("~/work", home.path()).unwrap(), work.canonicalize().unwrap().to_str().unwrap());
+        assert!(check_dir("~", home.path()).unwrap_err().message.contains("home folder"));
+        assert!(check_dir("~/", home.path()).unwrap_err().message.contains("home folder"));
+        assert!(check_dir("~other/work", home.path()).unwrap_err().message.contains("absolute"));
+    }
+
+    #[test]
+    fn model_and_effort_go_in_as_each_harness_takes_them() {
+        assert_eq!(model_args("claude", Some("opus"), Some("high")).unwrap().join(" "), "--model opus --effort high");
+        assert_eq!(model_args("claude", None, Some("max")).unwrap().join(" "), "--effort max");
+        assert_eq!(
+            model_args("codex", Some("gpt-6"), Some("xhigh")).unwrap().join(" "),
+            "-m gpt-6 -c model_reasoning_effort=xhigh"
+        );
+        assert!(model_args("claude", None, None).unwrap().is_empty());
+        assert!(model_args("other", None, None).unwrap().is_empty());
+        assert!(model_args("other", Some("x"), None).is_err());
+        // Neither can smuggle in a flag or a second setting.
+        assert!(model_args("claude", Some("--dangerously-skip-permissions"), None).is_err());
+        assert!(model_args("codex", None, Some("high -c sandbox_mode=danger-full-access")).is_err());
+        assert!(model_args("codex", None, Some("high\nx")).is_err());
+        assert!(model_args("claude", Some("claude-opus-5-5[1m]"), None).is_ok());
     }
 
     #[test]

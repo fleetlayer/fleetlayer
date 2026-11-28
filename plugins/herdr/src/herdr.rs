@@ -334,6 +334,14 @@ pub enum Failure {
     Other(String),
 }
 
+impl Failure {
+    pub fn message(&self) -> &str {
+        match self {
+            Failure::NotHere(m) | Failure::Busy(m) | Failure::Other(m) => m,
+        }
+    }
+}
+
 /// `herdr tab create --agent …`: answers once the agent takes input, with the new pane and the session ID if the
 /// agent reported it already, or with herdr's own message for a start-up screen or a failed start.
 pub async fn create_tab(herdr: &str, open: &OpenSession) -> Result<(String, Option<String>), String> {
@@ -343,7 +351,16 @@ pub async fn create_tab(herdr: &str, open: &OpenSession) -> Result<(String, Opti
         .map_err(|_| "herdr didn't answer within two minutes".to_string())?
         .map_err(|e| spawn_error(herdr, &e))?;
     if !out.status.success() {
-        return Err(herdr_error(&out.stderr));
+        let mut e = herdr_error(&out.stderr);
+        // A start that failed (a resume of a session the agent doesn't have, say) leaves a shell in the tab: close it,
+        // so a retry doesn't find the tab name taken and nobody is left a stray tab.
+        if let Some(tab) = left_open(&out.stderr) {
+            match close_tab(herdr, &tab).await {
+                Ok(()) => e.push_str(". The tab it opened is closed."),
+                Err(c) => e.push_str(&format!(". Closing the tab it opened failed too: {}", c.message())),
+            }
+        }
+        return Err(e);
     }
     let v: Value = serde_json::from_slice(&out.stdout).map_err(|e| format!("reading herdr's answer: {e}"))?;
     let tab_id = v.pointer("/result/tab/tab_id").and_then(Value::as_str);
@@ -354,20 +371,42 @@ pub async fn create_tab(herdr: &str, open: &OpenSession) -> Result<(String, Opti
     }
 }
 
-/// herdr's error as a sentence: its message, and for a failed start the agent's last line.
+/// The codes of a start that failed for good: the agent exited, or never became ready (its screen shows why). Not a
+/// start-up screen (folder trust, a login), which herdr leaves open for the person on purpose.
+const FAILED_STARTS: [&str; 2] = ["agent_start_failed", "timeout"];
+
+/// herdr's error as a sentence: its message, and for a failed start the agent's last line (`No conversation found
+/// with session ID: …`), not the shell prompt that follows it.
 pub fn herdr_error(stderr: &[u8]) -> String {
     let text = String::from_utf8_lossy(stderr).trim().to_string();
     let Ok(v) = serde_json::from_str::<Value>(&text) else { return text };
     let Some(err) = v.get("error") else { return text };
     let message = err.get("message").and_then(Value::as_str).unwrap_or(&text).to_string();
-    let last = err
-        .get("output")
-        .and_then(Value::as_array)
-        .and_then(|lines| lines.iter().rev().filter_map(Value::as_str).map(str::trim).find(|l| !l.is_empty()));
+    let failed = err.get("code").and_then(Value::as_str).is_some_and(|c| FAILED_STARTS.contains(&c));
+    let last = err.get("output").and_then(Value::as_array).and_then(|lines| {
+        let mut lines =
+            lines.iter().filter_map(Value::as_str).map(str::trim).filter(|l| !l.is_empty()).rev().peekable();
+        // The shell's prompt, back after the agent exited.
+        if lines.peek().is_some_and(|l| l.ends_with(['$', '#', '%', '>'])) {
+            lines.next();
+        }
+        lines.next()
+    });
     match last {
-        Some(l) if err.get("code").and_then(Value::as_str) == Some("agent_start_failed") => format!("{message}: {l}"),
+        Some(l) if failed => format!("{message}: {l}"),
         _ => message,
     }
+}
+
+/// The tab a failed start left open, to close.
+fn left_open(stderr: &[u8]) -> Option<String> {
+    let v: Value = serde_json::from_slice(stderr).ok()?;
+    let err = v.get("error")?;
+    let code = err.get("code")?.as_str()?;
+    if !FAILED_STARTS.contains(&code) || err.get("tab_closed") != Some(&Value::Bool(false)) {
+        return None;
+    }
+    err.get("tab_id")?.as_str().map(str::to_string)
 }
 
 /// `herdr tab create` arguments: herdr runs the agent itself, with the agent's arguments after `--`.
@@ -594,6 +633,18 @@ mod tests {
             "agent process exited before becoming interactive: No conversation found with session ID: 0000"
         );
         assert_eq!(herdr_error(b"plain words"), "plain words");
+        assert_eq!(left_open(failed), None, "herdr closed that tab itself");
+        // What herdr says for a resume of a session Claude Code doesn't have (herdr, 29 Nov 2026).
+        let timeout = br#"{"error":{"code":"timeout","message":"the agent started, but its screen never showed it ready for input","output":["nathan@agents:~/w$ claude --name 't' --resume 0000","No conversation found with session ID: 0000","nathan@agents:~/w$"],"pane_id":"w1:p1T","tab_closed":false,"tab_id":"w1:t1T"},"id":"cli:tab:create"}"#;
+        assert_eq!(
+            herdr_error(timeout),
+            "the agent started, but its screen never showed it ready for input: No conversation found with session ID: 0000"
+        );
+        assert_eq!(left_open(timeout).as_deref(), Some("w1:t1T"));
+        // A start-up screen waits for the person: its tab stays.
+        let trust = br#"{"error":{"code":"agent_startup_screen","message":"t needs you in herdr: the agent stopped at the folder trust prompt while starting. The tab is left open.","pane_id":"w1:p1S","screen":"trust","tab_closed":false,"tab_id":"w1:t1S"},"id":"cli:tab:create"}"#;
+        assert_eq!(left_open(trust), None);
+        assert!(herdr_error(trust).ends_with("The tab is left open."));
         assert!(matches!(classify("pane w1:p9 not found".into()), Failure::NotHere(_)));
         assert!(matches!(classify("the agent is blocked on a prompt".into()), Failure::Busy(_)));
         assert!(matches!(classify("something else".into()), Failure::Other(_)));

@@ -70,10 +70,14 @@ fleetlayer msg send --to "review@server" "The migration is merged: please re-run
 fleetlayer session start --tab review --cwd /srv/app --prompt "Review the open PR on branch x"   # this node
 fleetlayer session start --on server --tab review --cwd /srv/app --prompt "…"                   # another node
 fleetlayer session start --tab review --cwd /srv/app --harness codex --prompt "…"
+fleetlayer session start --on server --tab review --cwd ~/src/app --model opus --effort high --prompt "…"
 fleetlayer session resume <session-id> --prompt "Carry on from where you stopped"
 ```
 
-The folder must be absolute and not the home folder; a tab name already running is refused. It answers once the
+The folder must be absolute, or start with `~/` for the home folder of the machine it runs on (not the home folder
+itself); a tab name already running is refused. `--model` and `--effort` (low, medium, high, xhigh, max) choose the
+agent's model and thinking effort, on start and resume; left out, the agent's own defaults. A resume that fails (the
+agent has no such session) closes the tab it opened and says the agent's own last line. It answers once the
 agent takes input and never takes focus from the person. The node adds the agent's permission flags from its own
 config: you can't pass any. Starting a session on another node asks the person first by default.
 

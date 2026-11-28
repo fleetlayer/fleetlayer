@@ -6,7 +6,7 @@
 //! - `node/sessions` → every session the node knows.
 //! - `node/services` → `{services: [{plugin, name, url, health?, hosts}]}`: the HTTP services its plugins announced.
 //! - `node/readings` `{kinds}` → `{readings}`: the newest of each kind from every node this one may read.
-//! - `node/session_open` `{tab?, cwd?, harness?, prompt?, resume?, on?, why?, caller?}` → `SessionStarted`: start or
+//! - `node/session_open` `{tab?, cwd?, harness?, prompt?, resume?, model?, effort?, on?, why?, caller?}` → `SessionStarted`: start or
 //!   resume a session here or on node `on` (`crate::start`).
 //! - `node/session_close` `{to, why?, caller?}` and `node/session_answer` `{to, prompt, answers, why?, caller?}` →
 //!   `SessionActed`: close a session, or answer the prompt it's blocked on, here or on another node (`crate::act`).
