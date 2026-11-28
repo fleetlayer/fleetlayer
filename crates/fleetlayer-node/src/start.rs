@@ -156,9 +156,11 @@ fn secs(n: u64) -> Duration {
 /// Start or resume a session on this node.
 pub async fn here(node: &Node, spec: StartSpec) -> Result<SessionStarted, RpcError> {
     let plan = plan(node, &spec).await?;
-    prepare(node, &plan.harness, &plan.cwd).await?;
     let manager = manager(node).await?;
     let peer = manager.peer().await.ok_or_else(|| RpcError::refused(format!("{} isn't running", manager.name())))?;
+    // Trusting the folder comes last before opening (the agent reads it as it starts), and is taken back if the
+    // session doesn't open.
+    prepare(node, &plan.harness, &plan.cwd, false).await?;
     let open = OpenSession {
         label: plan.tab.clone(),
         cwd: plan.cwd.clone(),
@@ -168,14 +170,19 @@ pub async fn here(node: &Node, spec: StartSpec) -> Result<SessionStarted, RpcErr
     };
     // Watch for the session before opening it, so its first listing isn't missed.
     let changes = node.registry.subscribe();
-    let opened: OpenedSession =
-        peer.request_within(ext::method::SESSION_OPEN, &open, secs(140)).await.map_err(|e| {
-            if e.code == code::METHOD_NOT_FOUND {
+    let opened: OpenedSession = match peer.request_within(ext::method::SESSION_OPEN, &open, secs(140)).await {
+        Ok(o) => o,
+        Err(e) => {
+            if let Err(u) = prepare(node, &plan.harness, &plan.cwd, true).await {
+                tracing::warn!("taking back the folder's trust after a failed start: {}", u.message);
+            }
+            return Err(if e.code == code::METHOD_NOT_FOUND {
                 RpcError::refused(format!("{} can't open sessions", manager.name()))
             } else {
                 e
-            }
-        })?;
+            });
+        }
+    };
     let session_id =
         listed(node, &opened, changes).await.or(opened.session_id.clone()).filter(|id| !id.starts_with('@'));
     if let Some(e) = &opened.prompt_error {
@@ -295,8 +302,12 @@ fn agent_args(harness: &str, own: &[String], tab: &str, resume: Option<&str>) ->
         (_, None) => {}
         (h, Some(_)) => return Err(RpcError::refused(format!("Fleetlayer doesn't know how to resume a {h} session"))),
     }
+    // Letters, digits, `-` and `_` only: pi takes a path for `--session`, and an ID is never one.
     if let Some(id) = resume
-        && (id.starts_with('-') || id.chars().any(|c| c.is_whitespace() || c.is_control()))
+        && (id.is_empty()
+            || id.len() > 128
+            || id.starts_with('-')
+            || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'))
     {
         return Err(RpcError::invalid_params(format!("{id:?} isn't a session ID")));
     }
@@ -372,7 +383,8 @@ fn model_args(harness: &str, model: Option<&str>, effort: Option<&str>) -> Resul
 }
 
 /// Ask the harness plugins for this harness to get the folder ready. None for it: nothing to do.
-async fn prepare(node: &Node, harness: &str, cwd: &str) -> Result<(), RpcError> {
+/// `undo`: take back what the plugins wrote for this folder (the session didn't open).
+async fn prepare(node: &Node, harness: &str, cwd: &str, undo: bool) -> Result<(), RpcError> {
     for p in &node.plugins {
         let Some(role) = p.roles().await.harness else { continue };
         if !role.prepare || !role.harnesses.iter().any(|h| h == harness) {
@@ -381,7 +393,7 @@ async fn prepare(node: &Node, harness: &str, cwd: &str) -> Result<(), RpcError> 
         let Some(peer) = p.peer().await else {
             return Err(RpcError::refused(format!("{} isn't running, so the folder can't be got ready", p.name())));
         };
-        let req = HarnessPrepare { harness: harness.into(), cwd: cwd.into() };
+        let req = HarnessPrepare { harness: harness.into(), cwd: cwd.into(), undo };
         peer.request_within::<_, Value>(ext::method::HARNESS_PREPARE, &req, secs(10))
             .await
             .map_err(|e| RpcError::refused(format!("getting {cwd} ready for {harness}: {}", e.message)))?;
@@ -452,6 +464,8 @@ mod tests {
         assert_eq!(agent_args("gemini", &[], "t", Some("g1")).unwrap().join(" "), "--resume g1");
         assert!(agent_args("gemini", &[], "t", None).unwrap().is_empty());
         assert!(agent_args("omp", &[], "t", Some("--yolo")).is_err());
+        assert!(agent_args("pi", &[], "t", Some("/home/a/.pi/agent/sessions/x/y.jsonl")).is_err(), "never a path");
+        assert!(agent_args("pi", &[], "t", Some("../y")).is_err());
         // A session ID can't smuggle in a flag.
         assert!(agent_args("claude", &[], "t", Some("--dangerously-skip-permissions")).is_err());
         assert!(agent_args("claude", &[], "t", Some("a b")).is_err());

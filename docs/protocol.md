@@ -297,7 +297,8 @@ through the control plane (`link/session_start` → `link/session_serve`, [link.
    (`_fleetlayer.dev/harness/locate`);
 3. expands a leading `~/` against its own home (a caller on another node can't know it), then refuses a folder that
    isn't absolute, doesn't exist, or is the home folder;
-4. asks the harness plugins for that harness to get the folder ready (`_fleetlayer.dev/harness/prepare`);
+4. asks the harness plugins for that harness to get the folder ready (`_fleetlayer.dev/harness/prepare`), once the
+   session manager that will open it is found, and takes that back (`undo`) if the open fails;
 5. builds the agent's arguments: its own `harnesses.<harness>.args` from `node.yaml`, then Fleetlayer's
    (`--name <tab>`, `--resume <id>` for Claude Code; `resume <id>` for Codex; `--name <tab>`, `--session <id>` for
    pi; `--resume=<id>` for oh-my-pi; `--session <id>` for OpenCode; `--resume <id>` for Cursor and Gemini CLI). A
@@ -467,8 +468,9 @@ node's summaries at the session's transcript (`format`: `claude-jsonl`, `codex-j
 
 Two more help start sessions, each announced in the harness role (`"prepare": true`, `"locate": true`):
 
-- `_fleetlayer.dev/harness/prepare` `{harness, cwd}` → `{}`: get the folder ready before a session starts there with
-  nobody watching. Claude Code's plugin marks that exact folder trusted (`projects.<path>.hasTrustDialogAccepted` in
+- `_fleetlayer.dev/harness/prepare` `{harness, cwd, undo?}` → `{}`: get the folder ready before a session starts there
+  with nobody watching. The node asks right before opening the session, and again with `undo: true` when the open
+  fails, so a plugin takes back what it added for that folder (and only that: never trust the person gave). Claude Code's plugin marks that exact folder trusted (`projects.<path>.hasTrustDialogAccepted` in
   `~/.claude.json`, replaced in one rename with every other key kept), since Claude Code asks about each folder, even
   inside a trusted one. A failure stops the start.
 - `_fleetlayer.dev/harness/locate` `{sessionId}` → `{cwd, harness}`: where a stored session worked, for resuming it

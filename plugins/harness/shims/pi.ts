@@ -61,6 +61,10 @@ export default function (pi: any) {
       c.on("close", () => watchers.delete(c));
       c.on("data", (d) => {
         buf += d;
+        if (buf.length > 1 << 20) {
+          c.destroy(); // a request is a line of a few kilobytes at most
+          return;
+        }
         let i;
         while ((i = buf.indexOf("\n")) >= 0) {
           const line = buf.slice(0, i);

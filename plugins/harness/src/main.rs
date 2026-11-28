@@ -344,33 +344,79 @@ impl Plugin {
         }
     }
 
-    /// Get `cwd` ready for a session nobody is watching start: trust the folder where the harness asks.
-    fn prepare(&self, cwd: &str) -> Result<(), String> {
+    /// Get `cwd` ready for a session nobody is watching start: trust the folder where the harness asks. `undo` takes
+    /// back what an earlier prepare of that folder added (the session didn't open).
+    ///
+    /// Only entries this plugin added are ever removed: each is recorded in `trusted.json` in the state folder, so a
+    /// failed start and `install: false` take back exactly those and never a folder the person trusted themselves.
+    fn prepare(&self, cwd: &str, undo: bool) -> Result<(), String> {
         let s = self.settings.get().ok_or("initialize first")?;
-        match self.kind {
-            // pi asks before loading a project's own extensions and settings (`trust.json`, nearest folder wins).
-            Kind::Pi => files::edit_json(&s.dir.join("trust.json"), |r| {
-                r.insert(cwd.into(), Value::Bool(true));
-                Ok(())
-            })
-            .map(drop),
-            Kind::Gemini => files::edit_json(&s.dir.join("trustedFolders.json"), |r| {
-                r.insert(cwd.into(), json!("TRUST_FOLDER"));
-                Ok(())
-            })
-            .map(drop),
-            // Cursor's CLI checks for `projects/<folder as a slug>/.workspace-trusted`.
+        if undo {
+            return self.untrust(Some(cwd));
+        }
+        if self.kind == Kind::Opencode {
+            return Ok(()); // OpenCode doesn't ask
+        }
+        // pi's trust covers every folder below (the nearest trusted folder wins) and Gemini CLI's TRUST_FOLDER its
+        // subfolders: trusting `/` or the home folder would trust every project in it, and pi would run their code.
+        if matches!(self.kind, Kind::Pi | Kind::Gemini) {
+            narrow_enough(cwd, &s.home)?;
+        }
+        let added = match self.kind {
+            Kind::Pi => add_key(&s.dir.join("trust.json"), cwd, Value::Bool(true))?,
+            Kind::Gemini => add_key(&s.dir.join("trustedFolders.json"), cwd, json!("TRUST_FOLDER"))?,
+            // Cursor's CLI checks for `projects/<folder as a slug>/.workspace-trusted`, for that folder only.
             Kind::Cursor => {
                 let marker = s.dir.join("projects").join(cursor_slug(cwd)).join(".workspace-trusted");
                 if marker.exists() {
-                    return Ok(());
+                    false
+                } else {
+                    let body = json!({"trustedAt": jiff::Timestamp::now().to_string(), "workspacePath": cwd,
+                        "trustMethod": "cli-flag"});
+                    files::write_atomic(&marker, body.to_string().as_bytes())?;
+                    true
                 }
-                let body = json!({"trustedAt": jiff::Timestamp::now().to_string(), "workspacePath": cwd,
-                    "trustMethod": "cli-flag"});
-                files::write_atomic(&marker, body.to_string().as_bytes())
             }
-            Kind::Opencode => Ok(()),
+            Kind::Opencode => false,
+        };
+        if added {
+            let mut list = self.trusted();
+            if !list.iter().any(|d| d == cwd) {
+                list.push(cwd.to_string());
+            }
+            files::write_atomic(&s.state.join("trusted.json"), &serde_json::to_vec(&list).map_err(|e| e.to_string())?)?;
         }
+        Ok(())
+    }
+
+    /// The folders this plugin trusted (`trusted.json`).
+    fn trusted(&self) -> Vec<String> {
+        let Some(s) = self.settings.get() else { return vec![] };
+        std::fs::read(s.state.join("trusted.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
+    }
+
+    /// Take back the trust this plugin added: for `only` that folder, else every folder it trusted.
+    fn untrust(&self, only: Option<&str>) -> Result<(), String> {
+        let s = self.settings.get().ok_or("initialize first")?;
+        let list = self.trusted();
+        let (gone, kept): (Vec<String>, Vec<String>) = list.into_iter().partition(|d| only.is_none_or(|o| o == d));
+        if gone.is_empty() {
+            return Ok(());
+        }
+        for dir in &gone {
+            match self.kind {
+                Kind::Pi => remove_key(&s.dir.join("trust.json"), dir, &Value::Bool(true))?,
+                Kind::Gemini => remove_key(&s.dir.join("trustedFolders.json"), dir, &json!("TRUST_FOLDER"))?,
+                Kind::Cursor => {
+                    files::remove(&s.dir.join("projects").join(cursor_slug(dir)).join(".workspace-trusted"))?;
+                }
+                Kind::Opencode => {}
+            }
+        }
+        files::write_atomic(&s.state.join("trusted.json"), &serde_json::to_vec(&kept).map_err(|e| e.to_string())?)
     }
 
     /// Put the shim or the hooks in place (or take them out), where the harness is installed.
@@ -385,11 +431,19 @@ impl Plugin {
                     Kind::Pi => (s.dir.join("extensions/fleetlayer.ts"), PI_SHIM),
                     _ => (s.dir.join("plugins/fleetlayer.js"), OPENCODE_SHIM),
                 };
-                if s.install { files::ensure_file(&file, body) } else { files::remove(&file) }
+                if s.install {
+                    files::ensure_file(&file, body)
+                } else {
+                    self.untrust(None)?;
+                    files::remove(&file)
+                }
             }
             Kind::Gemini | Kind::Cursor => {
                 let command = match (s.install, exe) {
-                    (false, _) => None,
+                    (false, _) => {
+                        self.untrust(None)?;
+                        None
+                    }
                     (true, Some(exe)) => Some(hooks::command(exe, &s.home, self.kind)),
                     (true, None) => return Err("can't tell where fleetlayer-harness is, so no hooks".into()),
                 };
@@ -401,6 +455,45 @@ impl Plugin {
             }
         }
     }
+}
+
+/// A folder whose trust wouldn't cover more than its own projects: not `/`, the home folder or any folder above it.
+fn narrow_enough(cwd: &str, home: &Path) -> Result<(), String> {
+    let real = std::fs::canonicalize(cwd).unwrap_or_else(|_| PathBuf::from(cwd));
+    let home = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
+    if real.parent().is_none() || home.starts_with(&real) {
+        return Err(format!(
+            "won't trust {cwd} for every project below it: start the session in a project's own folder"
+        ));
+    }
+    Ok(())
+}
+
+/// Set `key` to `value` in a JSON object file, unless it's already that. True when it was added (or changed).
+fn add_key(file: &Path, key: &str, value: Value) -> Result<bool, String> {
+    let mut added = false;
+    files::edit_json(file, |r| {
+        if r.get(key) != Some(&value) {
+            r.insert(key.into(), value);
+            added = true;
+        }
+        Ok(())
+    })?;
+    Ok(added)
+}
+
+/// Remove `key` from a JSON object file if it still holds `value` (the person may have changed it since).
+fn remove_key(file: &Path, key: &str, value: &Value) -> Result<(), String> {
+    if !file.exists() {
+        return Ok(());
+    }
+    files::edit_json(file, |r| {
+        if r.get(key) == Some(value) {
+            r.remove(key);
+        }
+        Ok(())
+    })
+    .map(drop)
 }
 
 /// Session IDs name files here, so only plain ones: letters, digits, `-` and `_`.
@@ -817,8 +910,9 @@ impl Handler for Shared {
                 if r.harness != kind.name() {
                     return Ok(json!({}));
                 }
-                plugin.prepare(&r.cwd).map_err(RpcError::refused)?;
-                tracing::info!(cwd = %r.cwd, "got the folder ready for {}", kind.title());
+                plugin.prepare(&r.cwd, r.undo).map_err(RpcError::refused)?;
+                let what = if r.undo { "took back the folder's trust" } else { "got the folder ready" };
+                tracing::info!(cwd = %r.cwd, "{what} for {}", kind.title());
                 Ok(json!({}))
             }
             ext::method::HARNESS_LOCATE => {
@@ -959,16 +1053,43 @@ mod tests {
     #[test]
     fn folders_are_trusted_where_each_harness_asks() {
         let home = tempfile::tempdir().unwrap();
-        plugin(Kind::Gemini, home.path()).prepare("/w/app").unwrap();
+        let (project, gem) = (home.path().join("w/app"), plugin(Kind::Gemini, home.path()));
+        std::fs::create_dir_all(&project).unwrap();
+        let project = project.to_str().unwrap();
+        // Never a folder whose trust would cover the home folder or everything.
+        for broad in ["/", home.path().to_str().unwrap(), home.path().parent().unwrap().to_str().unwrap()] {
+            assert!(gem.prepare(broad, false).is_err(), "{broad}");
+            assert!(plugin(Kind::Pi, home.path()).prepare(broad, false).is_err(), "{broad}");
+        }
+        gem.prepare(project, false).unwrap();
+        let v: Value =
+            serde_json::from_slice(&std::fs::read(home.path().join(".gemini/trustedFolders.json")).unwrap()).unwrap();
+        assert_eq!(v[project], "TRUST_FOLDER");
+        // A failed start takes it back; a folder the person trusted is never taken back.
+        gem.prepare(project, true).unwrap();
+        let v: Value =
+            serde_json::from_slice(&std::fs::read(home.path().join(".gemini/trustedFolders.json")).unwrap()).unwrap();
+        assert!(v.get(project).is_none());
+        std::fs::write(home.path().join(".gemini/trustedFolders.json"), format!(r#"{{"{project}":"TRUST_FOLDER"}}"#))
+            .unwrap();
+        gem.prepare(project, false).unwrap();
+        gem.prepare(project, true).unwrap();
+        let v: Value =
+            serde_json::from_slice(&std::fs::read(home.path().join(".gemini/trustedFolders.json")).unwrap()).unwrap();
+        assert_eq!(v[project], "TRUST_FOLDER", "the person's own entry stays");
+        plugin(Kind::Gemini, home.path()).prepare("/w/app", false).unwrap();
         let v: Value =
             serde_json::from_slice(&std::fs::read(home.path().join(".gemini/trustedFolders.json")).unwrap()).unwrap();
         assert_eq!(v["/w/app"], "TRUST_FOLDER");
-        plugin(Kind::Pi, home.path()).prepare("/w/app").unwrap();
+        plugin(Kind::Pi, home.path()).prepare("/w/app", false).unwrap();
         let v: Value =
             serde_json::from_slice(&std::fs::read(home.path().join(".pi/agent/trust.json")).unwrap()).unwrap();
         assert_eq!(v["/w/app"], true);
-        plugin(Kind::Cursor, home.path()).prepare("/w/app").unwrap();
+        let cursor = plugin(Kind::Cursor, home.path());
+        cursor.prepare("/w/app", false).unwrap();
         assert!(home.path().join(".cursor/projects/w-app/.workspace-trusted").is_file());
+        cursor.untrust(None).unwrap();
+        assert!(!home.path().join(".cursor/projects/w-app/.workspace-trusted").exists(), "install: false takes it out");
     }
 
     #[test]

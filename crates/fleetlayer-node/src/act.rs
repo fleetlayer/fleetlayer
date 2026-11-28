@@ -313,6 +313,13 @@ async fn answer(
     prompt_id: &str,
     answers: &[PromptAnswer],
 ) -> Result<(), RpcError> {
+    // The menus read and the keys typed are Claude Code's; another harness's prompt is answered in its terminal.
+    let harness = session.meta.harness.as_deref().unwrap_or("claude");
+    if harness != "claude" {
+        return Err(RpcError::refused(format!(
+            "Fleetlayer answers only Claude Code's prompts so far; answer this {harness} session in its terminal (fleetlayer attach)"
+        )));
+    }
     let prompt = session.meta.blocked_prompt().filter(|p| p.id == prompt_id).ok_or_else(gone)?.clone();
     let shown = screen(peer, &session.session_id).await?;
     let menu = parse_menu(&shown);
@@ -473,7 +480,9 @@ pub async fn fill_menus(node: std::sync::Arc<Node>) {
             Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
         };
         let Some(p) = session.meta.blocked_prompt() else { continue };
-        if p.kind == PromptKind::Question || !p.options.is_empty() || !done.insert(p.id.clone()) {
+        // The menu parser reads Claude Code's menus.
+        let claude = session.meta.harness.as_deref().is_none_or(|h| h == "claude");
+        if !claude || p.kind == PromptKind::Question || !p.options.is_empty() || !done.insert(p.id.clone()) {
             continue;
         }
         if done.len() > 1000 {

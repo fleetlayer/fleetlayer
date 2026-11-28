@@ -74,6 +74,10 @@ export const FleetlayerHarness = async ({ client, directory }) => {
     c.on("close", () => watchers.delete(c));
     c.on("data", async (d) => {
       buf += d;
+      if (buf.length > 1 << 20) {
+        c.destroy(); // a request is a line of a few kilobytes at most
+        return;
+      }
       let i;
       while ((i = buf.indexOf("\n")) >= 0) {
         const line = buf.slice(0, i);
@@ -89,6 +93,11 @@ export const FleetlayerHarness = async ({ client, directory }) => {
           watchers.add(c);
           c.write(state());
         } else if (req.type === "deliver") {
+          // Only into a session this process runs: anything else is for another OpenCode, or for typing in.
+          if (!sessions.has(String(req.sessionId))) {
+            c.end(JSON.stringify({ ok: false, code: "unknown", error: "this OpenCode isn't running that session" }) + "\n");
+            return;
+          }
           try {
             const r = await client.session.promptAsync({
               path: { id: String(req.sessionId) },

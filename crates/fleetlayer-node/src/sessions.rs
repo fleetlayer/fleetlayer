@@ -138,8 +138,21 @@ impl Registry {
         let mut aliases = self.aliases.lock().expect("aliases");
         aliases.retain(|_, (_, p)| p != plugin);
         for info in list {
-            let Some(address) = meta_of(info).address.filter(|_| !info.session_id.starts_with('@')) else { continue };
+            let meta = meta_of(info);
+            let Some(address) = meta.address.filter(|_| !info.session_id.starts_with('@')) else { continue };
             let unnamed = format!("@{address}");
+            // Never another harness's session: not a pane the manager says runs another agent, and not an ID another
+            // harness plugin already reports.
+            let harness = meta.harness.as_deref();
+            let other_agent =
+                |s: &Session| s.meta.harness.as_deref().is_some_and(|h| harness.is_some_and(|mine| mine != h));
+            if sessions.get(&unnamed).is_some_and(other_agent)
+                || sessions
+                    .get(&info.session_id)
+                    .is_some_and(|s| other_agent(s) || s.harness_plugin.as_deref().is_some_and(|p| p != plugin))
+            {
+                continue;
+            }
             aliases.insert(unnamed.clone(), (info.session_id.clone(), plugin.to_string()));
             let Some(mut from) = sessions.remove(&unnamed) else { continue };
             match sessions.get_mut(&info.session_id) {
@@ -209,6 +222,17 @@ impl Registry {
                     entry.ended = None;
                 }
                 Role::Harness => {
+                    // A session another harness plugin reports, or that its manager says runs another agent, isn't
+                    // this plugin's to claim.
+                    let other_plugin = entry.harness_plugin.as_deref().is_some_and(|p| p != plugin);
+                    let other_agent = meta.harness.as_deref().is_some_and(|h| {
+                        entry.meta.harness.as_deref().is_some_and(|known| known != h)
+                            && (entry.manager.is_some() || entry.harness_plugin.is_some())
+                    });
+                    if other_plugin || other_agent {
+                        tracing::warn!(session = %info.session_id, "{plugin} lists a session another harness has");
+                        continue;
+                    }
                     // The harness plugin knows this session (its transcript, its prompts) whether or not it has a
                     // channel into it; one without (`deliverable: false`) answers a delivery with NO_CHANNEL, and the
                     // node types the message in.
@@ -471,8 +495,12 @@ mod tests {
         let unnamed =
             |status: &str| info("@w1:p5", "gem", json!({"harness": "gemini", "address": "w1:p5", "status": status}));
         r.replace("herdr", Role::Manager, vec![unnamed("idle")]).await;
-        r.replace("gemini", Role::Harness, vec![info("g1", "", json!({"address": "w1:p5", "deliverable": false}))])
-            .await;
+        r.replace(
+            "gemini",
+            Role::Harness,
+            vec![info("g1", "", json!({"harness": "gemini", "address": "w1:p5", "deliverable": false}))],
+        )
+        .await;
         assert!(r.get("@w1:p5").await.is_none(), "moved to the harness's ID");
         let g = r.get("g1").await.unwrap();
         assert_eq!(
@@ -488,6 +516,25 @@ mod tests {
         let e = SessionEnded { session_id: "@w1:p5".into(), at: Timestamp::now(), how: How::TabClosed };
         r.ended(&e).await;
         assert!(!r.get("g1").await.unwrap().running());
+    }
+
+    #[tokio::test]
+    async fn a_harness_never_takes_another_harnesss_session() {
+        let r = Registry::default();
+        // herdr runs Claude Code in w1:p1; a gemini plugin claiming that pane is ignored.
+        r.replace("herdr", Role::Manager, vec![info("@w1:p1", "c", json!({"harness": "claude", "address": "w1:p1"}))])
+            .await;
+        r.replace("gemini", Role::Harness, vec![info("g1", "", json!({"harness": "gemini", "address": "w1:p1"}))])
+            .await;
+        assert!(r.get("@w1:p1").await.is_some(), "the Claude pane stays as it was");
+        // A claude session the Claude plugin reports can't be claimed by ID through another pane either.
+        r.replace("claude", Role::Harness, vec![info("s1", "", json!({"deliverable": true}))]).await;
+        r.replace("herdr", Role::Manager, vec![info("@w1:p2", "x", json!({"harness": "gemini", "address": "w1:p2"}))])
+            .await;
+        r.replace("gemini", Role::Harness, vec![info("s1", "", json!({"harness": "gemini", "address": "w1:p2"}))])
+            .await;
+        assert!(r.get("@w1:p2").await.is_some(), "not moved onto the Claude session");
+        assert_eq!(r.get("s1").await.unwrap().meta.harness.as_deref(), Some("claude"));
     }
 
     #[tokio::test]

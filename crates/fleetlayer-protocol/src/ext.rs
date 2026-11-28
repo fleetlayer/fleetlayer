@@ -282,6 +282,10 @@ pub struct HarnessPrepare {
     pub harness: String,
     /// Absolute.
     pub cwd: String,
+    /// Take back what an earlier prepare of this folder wrote, when the session didn't open. A plugin removes only
+    /// what it added itself.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub undo: bool,
 }
 
 /// `_fleetlayer.dev/harness/locate`'s answer.

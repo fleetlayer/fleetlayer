@@ -10,11 +10,15 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
 /// The shim protocol this plugin speaks.
 pub const PROTOCOL: u32 = 1;
+
+/// The longest answer to a delivery read, and the longest state line followed: a shim's lines are small.
+const ANSWER_MAX: u64 = 64 * 1024;
+const STATE_MAX: u64 = 1 << 20;
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct Registration {
@@ -97,14 +101,22 @@ pub async fn deliver(reg: &Registration, session: &str, text: &str) -> Result<()
         line.push('\n');
         s.write_all(line.as_bytes()).await.map_err(|e| DeliverError::NoChannel(e.to_string()))?;
         let mut answer = String::new();
-        BufReader::new(s).read_line(&mut answer).await.map_err(|e| DeliverError::Failed(e.to_string()))?;
+        BufReader::new(s.take(ANSWER_MAX))
+            .read_line(&mut answer)
+            .await
+            .map_err(|e| DeliverError::Failed(e.to_string()))?;
         let v: Value = serde_json::from_str(&answer)
             .map_err(|_| DeliverError::Failed(format!("the agent answered {:?}", answer.trim())))?;
         if v["ok"] == true {
             return Ok(());
         }
         let why = v["error"].as_str().unwrap_or("no reason given").to_string();
-        Err(if v["code"] == "gone" { DeliverError::Gone(why) } else { DeliverError::Failed(why) })
+        Err(match v["code"].as_str() {
+            Some("gone") => DeliverError::Gone(why),
+            // A session that process doesn't run (yet): the node may type it in instead.
+            Some("unknown") => DeliverError::NoChannel(why),
+            _ => DeliverError::Failed(why),
+        })
     };
     // A delivery the agent took may still be answered late; the node reports a timeout as such, never as "not sent".
     tokio::time::timeout(Duration::from_secs(10), go)
@@ -116,8 +128,16 @@ pub async fn deliver(reg: &Registration, session: &str, text: &str) -> Result<()
 pub async fn watch(socket: &Path, mut on_state: impl FnMut(Vec<(String, Option<Value>)>)) -> std::io::Result<()> {
     let mut s = UnixStream::connect(socket).await?;
     s.write_all(b"{\"type\":\"watch\"}\n").await?;
-    let mut lines = BufReader::new(s).lines();
-    while let Some(l) = lines.next_line().await? {
+    let mut r = BufReader::new(s);
+    loop {
+        let mut l = String::new();
+        let n = (&mut r).take(STATE_MAX).read_line(&mut l).await?;
+        if n == 0 {
+            return Ok(());
+        }
+        if !l.ends_with('\n') {
+            return Err(std::io::Error::other("a state line past 1 MB")); // stop following a shim that misbehaves
+        }
         let Ok(v) = serde_json::from_str::<Value>(&l) else { continue };
         if v["type"] != "state" {
             continue;
@@ -130,7 +150,6 @@ pub async fn watch(socket: &Path, mut on_state: impl FnMut(Vec<(String, Option<V
             .collect();
         on_state(sessions);
     }
-    Ok(())
 }
 
 #[cfg(test)]

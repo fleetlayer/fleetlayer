@@ -195,7 +195,8 @@ impl Handler for Shared {
             }
             ext::method::HARNESS_PREPARE => {
                 let r: ext::HarnessPrepare = params(p)?;
-                if r.harness != "claude" {
+                // An undo leaves Claude Code's trust as it is: it can't tell an answer it wrote from the person's.
+                if r.harness != "claude" || r.undo {
                     return Ok(json!({}));
                 }
                 let path =

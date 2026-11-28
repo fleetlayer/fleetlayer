@@ -62,7 +62,8 @@ removing those folders. Have your agent do it, or follow these steps on each mac
    command contains `fleetlayer-claude-code`. The pi, OpenCode, Gemini CLI and Cursor plugins take theirs out with
    `install: false` in their `config:` the same way (otherwise delete `fleetlayer.ts` in `~/.pi/agent/extensions`,
    `fleetlayer.js` in `~/.config/opencode/plugins`, and the hooks whose command contains `fleetlayer-harness` in
-   `~/.gemini/settings.json` and `~/.cursor/hooks.json`).
+   `~/.gemini/settings.json` and `~/.cursor/hooks.json`). `install: false` also takes back the folder trust they
+   added for sessions they started ([what's written](plugins/harness.md#starting-sessions)).
 
 2. **Stop the services.** On the machine you ran `fleetlayer up` on, `fleetlayer down` stops the node, the control
    plane and the gateway and removes their service files. On a machine with only a node, `fleetlayer-node uninstall`
