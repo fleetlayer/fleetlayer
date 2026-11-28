@@ -382,6 +382,41 @@ pub async fn check_as(
     Ok(fleetlayer_protocol::link::AccessDecision { allowed: out.allowed, rules: out.because, reason })
 }
 
+/// A source node asking about a bundle it would send (`sync:<bundle>@<target>`, verb `sync`) before it does the work,
+/// so the person approves the sensitive part first with a reason they can read: the cookies plugin asks about
+/// `sync:cookies-from-browser/<set>@<target>` before reading the browser. Only in the node's own name (`-@<node>`).
+/// Decided, approved and audited exactly as the bundle's delivery would be (`check_why`); with `peek`, only looked
+/// at, and an approval `for: once` is left for the request that uses it.
+pub async fn sync_check(
+    app: &App,
+    home: &str,
+    node: &str,
+    req: &fleetlayer_protocol::link::AccessCheck,
+) -> Result<fleetlayer_protocol::link::AccessDecision, RpcError> {
+    let bundle_ok = req.to.strip_prefix("sync:").and_then(|t| t.rsplit_once('@')).is_some_and(|(b, n)| {
+        !b.is_empty() && !n.is_empty() && b.chars().all(|c| c.is_ascii_alphanumeric() || "-_./".contains(c))
+    });
+    if req.can != "sync" || !bundle_ok {
+        return Err(RpcError::invalid_params(format!("{} {}: sync goes with sync:<bundle>@<node>", req.can, req.to)));
+    }
+    if req.who != format!("-@{node}") {
+        return Err(RpcError::refused(format!(
+            "node {node} may ask about sending a bundle only in its own name (-@{node}), not as {}",
+            req.who
+        )));
+    }
+    if let Some(w) = &req.why {
+        crate::policy::check_justification(w).map_err(RpcError::invalid_params)?;
+    }
+    if req.peek {
+        return Ok(peek(app, home, &req.who, "sync", &req.to).await);
+    }
+    Ok(match check_why(app, home, &req.who, "sync", &req.to, req.why.as_deref()).await {
+        Ok(()) => fleetlayer_protocol::link::AccessDecision { allowed: true, rules: vec![], reason: "allowed".into() },
+        Err(e) => fleetlayer_protocol::link::AccessDecision { allowed: false, rules: vec![], reason: e.message },
+    })
+}
+
 /// An access check that only looks: the decision without an audit entry, an event or a new approval request. An
 /// approval in use is renewed, as a real use would (the egress proxy checking a host it lets through).
 async fn peek(
@@ -1141,6 +1176,45 @@ mod tests {
         }
         assert!(access_check(&app, "web", &req(false)).await.unwrap().allowed, "the request spends it");
         assert!(!access_check(&app, "web", &req(true)).await.unwrap().allowed, "and then it's gone");
+    }
+
+    #[tokio::test]
+    async fn a_source_node_asks_before_each_read_of_a_browser_for_cookies() {
+        let (app, acme) = example().await;
+        let req = |who: &str, to: &str, peek: bool| fleetlayer_protocol::link::AccessCheck {
+            tenant: String::new(),
+            who: who.into(),
+            can: "sync".into(),
+            to: to.into(),
+            why: Some("read auth_token, ct0 for x.com from Chrome on web for server".into()),
+            peek,
+        };
+        let to = "sync:cookies-from-browser/x@server";
+        // Only in its own name, and only about a bundle.
+        let e = sync_check(&app, &acme, "web", &req("-@other", to, false)).await.unwrap_err();
+        assert!(e.message.contains("only in its own name"), "{}", e.message);
+        assert!(sync_check(&app, &acme, "web", &req("-@web", "sync:nonode", false)).await.is_err());
+        // Fleetlayer's default asks each time, and the person sees what would be read.
+        let d = sync_check(&app, &acme, "web", &req("-@web", to, false)).await.unwrap();
+        assert!(!d.allowed && d.reason.contains("approv"), "{d:?}");
+        let pending = crate::approvals::list(&app.db, &acme, false).await.unwrap();
+        assert_eq!((pending[0]["to"].as_str(), pending[0]["once"].as_bool()), (Some(to), Some(true)));
+        assert!(pending[0]["detail"].as_str().unwrap().contains("auth_token, ct0 for x.com"));
+        let id = pending[0]["id"].as_str().unwrap().to_string();
+        crate::approvals::decide(&app.db, &acme, &id, true, None, "admin").await.unwrap().unwrap();
+        assert!(sync_check(&app, &acme, "web", &req("-@web", to, true)).await.unwrap().allowed);
+        assert!(sync_check(&app, &acme, "web", &req("-@web", to, true)).await.unwrap().allowed, "looking keeps it");
+        assert!(sync_check(&app, &acme, "web", &req("-@web", to, false)).await.unwrap().allowed, "one read");
+        assert!(!sync_check(&app, &acme, "web", &req("-@web", to, false)).await.unwrap().allowed, "the next asks");
+        // The delivery itself is an ordinary sync, held 30 days.
+        assert_eq!(
+            crate::policy::Compiled::parse(crate::policy::BUILTIN).unwrap().ask_for(
+                "-@web",
+                "sync",
+                "sync:cookies/x@server"
+            ),
+            Some(30 * 86_400_000)
+        );
     }
 
     #[tokio::test]

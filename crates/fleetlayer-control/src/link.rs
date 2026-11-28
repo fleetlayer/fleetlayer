@@ -721,6 +721,10 @@ impl Handler for FromNode {
                 if req.tenant.is_empty() {
                     req.tenant = tenant.to_string();
                 }
+                if req.to.starts_with("sync:") {
+                    // A bundle this node would send: decided where its delivery is (this link's tenant).
+                    return answer(&crate::authz::sync_check(app, tenant, &self.node, &req).await?);
+                }
                 answer(&crate::authz::access_check(app, &self.node, &req).await?)
             }
             l::method::PAGES_OPEN => answer(&crate::pages::open(app, tenant, &self.node, params(p)?).await?),

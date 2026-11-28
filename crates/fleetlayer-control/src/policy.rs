@@ -201,6 +201,9 @@ pub fn default_ask() -> Vec<AskRule> {
     vec![
         rule(&["start", "attach", "answer", "close"], "10m"),
         rule(&["use_tool", "sync", "admin", "write", "connect"], "30d"),
+        // Each read of a person's signed-in browser for cookies is its own approval (the cookies plugin asks before
+        // it reads; the shortest hold of the rules that match wins).
+        AskRule { to: Some(OneOrMany::One("sync:cookies-from-browser/*".into())), ..rule(&["sync"], "once") },
     ]
 }
 
