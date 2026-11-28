@@ -51,6 +51,7 @@ export const pages = [
   { file: "guides/sign-in", group: "Security", label: "One sign-in for your services" },
   { file: "sso", group: "Security", label: "Single sign-on, teams and tenants" },
   { file: "guides/unattended-agents", group: "Running it", label: "Agents that run while you're away" },
+  { file: "guides/shared-build-machines", group: "Running it", label: "Many agents, a few build machines" },
   { file: "guides/monitoring", group: "Running it", label: "Monitoring" },
   { file: "guides/backups", group: "Running it", label: "Backups" },
   { file: "guides/agents-building-software", group: "Building software", label: "Agents that build software" },

@@ -32,8 +32,10 @@ What makes it work:
    its own copy and its own `target/`. Two agents in two worktrees never fight over one build folder.
 3. **Only the source is copied.** `rsync --filter=':- .gitignore' --exclude=.git --delete-after` skips everything
    gitignored (the local `target/` included) and removes files you deleted locally.
-4. **It leaves room for others.** Cargo runs under `nice -n 10` and `taskset -c 0-23` with `-j 24`, so the build
-   server's remaining cores stay free for the CI jobs that share it. Pick numbers that suit your server.
+4. **It leaves room for others.** Cargo runs under `nice -n 10`, pinned to 8 cores, inside a memory scope (12 GB with
+   `-j 8` for build and test, 6 GB with `-j 4` for fmt, check and clippy), after taking a build slot, so many agents
+   share the build server without overloading it ([Many agents, a few build machines](shared-build-machines.md)).
+   Pick numbers that suit your server.
 5. **The exit code comes back.** The script returns cargo's status (it reads `PIPESTATUS` past the output filter), so
    an agent can tell a failed test from a passing one.
 
