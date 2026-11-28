@@ -1012,3 +1012,9 @@ managers, machines that sleep.
   and permission prompts. Run them under a Unix user of their own on the build server, never with the real HOME (see
   the sandboxed-HOME entry above). Cursor has no such switch: it needs a signed-in account. Where it lives:
   `plugins/harness/e2e/fake-model.py`. Still to write: a script that runs the whole check in CI.
+- **A compile cache that restores a workspace crate from before a version bump.** On a shared build server with
+  kache as `RUSTC_WRAPPER`, a version bump plus a rebase left a checkout failing with E0460 ("found possibly newer
+  version of crate fleetlayer_protocol") and E0463; deleting the checkout's copy fixed it. Cargo can't keep a wrapper
+  off workspace members (`RUSTC_WORKSPACE_WRAPPER` only adds one), so `scripts/on-dev` now recovers by itself: on
+  E0460/E0463 naming a workspace crate it cleans only the workspace's own crates (dependencies stay cached) and runs
+  the command once more. Written: `scripts/on-dev`. For the guide on build servers and compile caches.

@@ -87,9 +87,27 @@ run() {
   local mem=$heavy_mem
   [ "${FLEETLAYER_DEV_SLOT_CLASS:-heavy}" = light ] && mem=$light_mem
   local cache="[ -f /opt/code/fleetlayer/kache.toml ] && export KACHE_CONFIG=/opt/code/fleetlayer/kache.toml; if command -v kache >/dev/null; then export RUSTC_WRAPPER=kache; elif command -v sccache >/dev/null; then export RUSTC_WRAPPER=sccache SCCACHE_DIR=/opt/code/fleetlayer/sccache SCCACHE_CACHE_SIZE=20G SCCACHE_SERVER_PORT=4227; fi;"
-  ssh "$host" "cd '$remote' && export PATH=\$HOME/.cargo/bin:\$PATH && { $cache true; } && systemd-run --scope -q -p MemoryMax=$mem -p MemorySwapMax=0 nice -n 10 taskset -c 0-7 $quoted" 2>&1 |
-    grep --line-buffered -v setlocale
-  status=${PIPESTATUS[0]}
+  local log
+  log=$(mktemp)
+  remote_run() {
+    ssh "$host" "cd '$remote' && export PATH=\$HOME/.cargo/bin:\$PATH && { $cache true; } && systemd-run --scope -q -p MemoryMax=$mem -p MemorySwapMax=0 nice -n 10 taskset -c 0-7 $1" 2>&1 |
+      grep --line-buffered -v setlocale | tee "$log"
+    return "${PIPESTATUS[0]}"
+  }
+  remote_run "$quoted"
+  status=$?
+  # E0460 ("found possibly newer version of crate") or E0463 ("can't find crate") naming one of this workspace's own
+  # crates: the compile cache restored a workspace crate's output from before a version bump or a rebase (seen with
+  # kache on 28 Nov 2026). Clean only the workspace's own crates (dependencies stay cached) and run it once more.
+  if [ "$status" -ne 0 ] && [ "$1" = cargo ] && grep -Eq 'error\[E04(60|63)\].*`(fleetlayer|herdr)' "$log"; then
+    local manifest="" prev=""
+    for a in "$@"; do [ "$prev" = --manifest-path ] && manifest="--manifest-path $(printf '%q' "$a")"; prev=$a; done
+    echo "on-dev: stale workspace crates in the compile cache's output (E0460/E0463); cleaning them and running again" >&2
+    remote_run "cargo clean -q $manifest \$(cargo metadata -q --no-deps --format-version 1 $manifest | python3 -c 'import json,sys; print(\" \".join(\"-p \"+p[\"name\"] for p in json.load(sys.stdin)[\"packages\"]))')" &&
+      remote_run "$quoted"
+    status=$?
+  fi
+  rm -f "$log"
   set -e
   return "$status"
 }
