@@ -13,8 +13,7 @@ that can read it can send email as you. This guide puts Executor behind a Fleetl
 
 And you sign in to Executor's dashboard with Fleetlayer's sign-in, so there's no separate password.
 
-It takes an agent about ten minutes. You'll need Fleetlayer v0.3.13 or later on the control plane and on the gate's
-machine.
+It takes an agent about ten minutes.
 
 ## 1. A Unix user and a node for the gate
 
@@ -27,7 +26,7 @@ fleetlayer-control node add gate        # on the control plane: prints the node'
 ```
 
 Install the node service for that user as for any machine ([Add a machine](node-services.md)), with the token in
-`~fleetlayer-gate/.config/fleetlayer/token` (mode 0600, owned by `fleetlayer-gate`). On a laptop, use a second macOS
+`~fleetlayer-gate/.config/fleetlayer/node-token` (mode 0600, owned by `fleetlayer-gate`). On a laptop, use a second macOS
 account the same way.
 
 ## 2. Executor's token, where only the gate can read it

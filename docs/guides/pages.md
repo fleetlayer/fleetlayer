@@ -19,8 +19,9 @@ by Fleetlayer's pages plugin behind one sign-in.
 - **`fleetlayer-pages` hosts whatever is there.** There's no publish step and nothing to build. A page's address
   follows from its path (`/<space>/<folder>/`), so the agent that wrote it knows its link, and an open page reloads by
   itself when its files change.
-- **People sign in once and read the spaces they're allowed.** Today that's one login key that reads every space;
-  with Fleetlayer's single sign-on, each person reads the spaces the access policy gives them.
+- **People sign in once and read the spaces they're allowed.** A login key lets whoever has it read every space.
+  With `signin:` set, people sign in with Fleetlayer's sign-in instead, and each reads the spaces the access policy
+  gives them ([Sign-in](sign-in.md)).
 
 The same service hosts **apps**: interactive HTML and JavaScript, each on a subdomain of its own. Pages have no scripts
 at all; anything interactive is an app.

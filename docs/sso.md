@@ -75,8 +75,8 @@ deployment (one control plane, one sign-in service)
 Things in a tenant belong to a member or to a team of it:
 
 - **spaces of pages**, and **services' data**: everything under `service:<name>/<owner>/…` belongs to that owner
-  (Quietdeck's inbox for David is `service:quietdeck/david/inbox`; a team's shared inbox is
-  `service:quietdeck/team:support/inbox`). Each belongs to the tenant whose service holds it.
+  (an inbox service's inbox for Sam is `service:inbox/sam/inbox`; a team's shared inbox is
+  `service:inbox/team:support/inbox`). Each belongs to the tenant whose service holds it.
 
 Owners and member agents are kept on the control plane (not secret). The policy file can say owners for patterns too
 (`owners:`, for spaces before an admin page does); the most specific pattern wins.
@@ -86,13 +86,13 @@ Owners and member agents are kept on the control plane (not secret). The policy 
   agents count as theirs: `to: [owner]` means "whatever the subject's owner owns", so `allow: {who: "*", can: [read],
   to: [owner]}` lets each agent read its person's things in a tenant that's `default: deny`.
 - A rule names someone's things with `owned-by:person:<handle>` or `owned-by:team:<name>`, in `who` ("an agent of
-  `person:david`") or in `to` (their agents, spaces and data).
+  `person:sam`") or in `to` (their agents, spaces and data).
 - **Multi-user services** learn whose request it is, and for which tenant, from the sign-in (the ID token's `sub`,
   `fleetlayer.dev/tenant` and `fleetlayer.dev/principal`), key their data by tenant and owner, and ask before acting
-  on it (`read` on `service:quietdeck/david/inbox`): the owner passes, someone it's shared with passes, an admin
+  on it (`read` on `service:inbox/sam/inbox`): the owner passes, someone it's shared with passes, an admin
   doesn't by default. An agent acting for its owner is checked the same way, as itself, in the data's tenant.
 
-## Where it runs, and why (the open point)
+## Where it runs, and why
 
 Two kinds of information, kept apart:
 
@@ -136,7 +136,7 @@ Why this split:
 | A group of the policy's own (agents, people, teams) | `group:<name>` | `group:family` |
 | What someone owns | `owned-by:person:<handle>`, `owned-by:team:<name>` | `owned-by:team:support` |
 | A web service | `service:<name>` | `service:hub` |
-| A member's or team's data in a service | `service:<name>/<owner>/<path>` | `service:quietdeck/david/inbox` |
+| A member's or team's data in a service | `service:<name>/<owner>/<path>` | `service:inbox/sam/inbox` |
 | A page, or a space of pages | `page:<space>/<path>` | `page:handbook/*` |
 | An app in a space (a static site on its own address) | `app:<space>/<name>` | `app:home/budget` |
 | The tenant's admins | `role:admin` | |
@@ -165,7 +165,7 @@ Why this split:
 | `admin` | `service:<name>` | May use the service's admin features. `admin` on `service:signin` manages the tenant's members and teams. |
 | `read` | `page:<space>/<path>` | May see this page (pages asks per request). The existing `read` verb, for a new kind of target. |
 | `read` | `app:<space>/<name>` | May open this static app. Owners and the default are as for spaces. Pages signs people in to its apps itself (it's the client `service:pages`) and checks this before letting anyone in. |
-| `write` | `page:<space>/<path>` | May push to this space (`fleetlayer pages push`, for agents without file sync). Reserved here, defined by pages. |
+| `write` | `page:<space>/<path>` | May push to this space (`fleetlayer pages push`, for agents without file sync). |
 
 **Approvals:** `admin` and `write` join Fleetlayer's default `ask:` rules (approved once, held 30 days, like the first
 `use_tool`), since they change things; `sign_in` and `read` never ask by default, or every page load would.
@@ -263,7 +263,7 @@ Two ways, used together:
   "fleetlayer.dev/role": "admin",
   "fleetlayer.dev/teams": ["engineering"],
   "groups": ["acme", "acme/role:admin", "acme/engineering", "acme/engineering/platform"],
-  "amr": ["hwk"], "auth_time": 1795…, "exp": "+10 minutes"
+  "auth_time": 1795…, "exp": "+10 minutes"
 }
 ```
 
@@ -289,15 +289,18 @@ tenant per request. No dynamic registration.
 ## Sessions and signing out
 
 - **The sign-in session** is a cookie on the sign-in service's own origin (`__Host-`, HttpOnly, Secure, SameSite=Lax
-  so redirects from services carry it), lasting 30 days from the last passkey (or upstream) sign-in, kept hashed in
-  the sign-in folder so a restart doesn't sign everyone out.
+  so redirects from services carry it), lasting 14 days from the last passkey (or upstream) sign-in, kept hashed in
+  the sign-in folder so a restart doesn't sign everyone out (on a plain `http://` issuer, see
+  [On a laptop](#on-a-laptop)).
 - **A service's session** is the service's business, but it should last no longer than 12 hours and re-check access
   per request or at least every few minutes. Silent re-authentication (`prompt=none`) gets a fresh ID token without a
   passkey while the sign-in session holds.
 - **Signing out** (the person, from any service or the sign-in page) ends the sign-in session and sends an OIDC
   back-channel logout to every service the session signed in to.
-- **Removing someone from a tenant** ends their tokens for that tenant at once (per-request checks refuse a principal
-  who's no longer a member, even before a service handles the back-channel logout); their other tenants are untouched.
+- **Removing someone from a tenant** ends their access to that tenant within a minute where services check per
+  request, and forward-auth (both cache an answer for up to 60 seconds): checks refuse a principal who's no longer a
+  member, even before a service handles the back-channel logout. A service that checked only at sign-in keeps its own
+  session until its limit. Their other tenants are untouched.
   **"Sign out everywhere"** (the person themselves, or the deployment's operator for a compromised account) ends all
   their sessions.
 - If the control plane can't be reached, no new service sign-ins are issued (a check that can't be made is a refusal)
@@ -314,15 +317,15 @@ tenant per request. No dynamic registration.
   old ones. (A tenant admin can recover only the account's sign-in, never see its other tenants.)
 - **Passkeys** (WebAuthn, with [webauthn-rs](https://github.com/kanidm/webauthn-rs), MPL-2.0, used unmodified): a
   person can register several; discoverable credentials, so signing in needs no name typed. The relying party ID is
-  the sign-in service's host.
+  the sign-in service's registrable domain by default (`passkey_domain` to choose another domain above it).
 - **Managing people** is on the [dashboard](dashboard.md) (People and Teams), through the control plane's API as the
   signed-in person (`GET /v1/people`, `POST /v1/people/<action>`, for the tenant's admins or `admin` on
   `service:dashboard`). The sign-in service keeps only signing in, invites, passkey confirmation and "no access".
-- **CLI:** `fleetlayer-control tenant add`, `member add|remove|role`, `team add|remove|member`, `invite`, `node add
-  --tenant --owner`, run with the control plane's admin token; `fleetlayer-control signin token` makes the sign-in
-  service's token. The first admin of a deployment: `fleetlayer-control --tenant home invite add --handle a --role admin`
-  prints their link.
-- **The control plane's side** (built in 1c), `POST` with the sign-in token as a bearer token; no node, API or admin
+- **CLI:** `fleetlayer-control tenant add`, `member list|role|remove`, `team add|remove|list|member`, `invite
+  add|list|revoke`, `node add --tenant --owner`, run where it can open the control plane's database (`--db`);
+  `fleetlayer-control signin token` makes the sign-in service's token. The first admin of a deployment:
+  `fleetlayer-control --tenant home invite add --handle a --role admin` prints their link.
+- **The control plane's side**, `POST` with the sign-in token as a bearer token; no node, API or admin
   token reaches these, and the sign-in token reaches nothing else:
   - `/v1/signin/person {person}` → `{id, display_name, tenants: [{tenant, slug, name, handle, role, teams, groups}]}`:
     what each tenant's ID token says (`teams` with the teams above them and without `everyone`, `groups` the flat
@@ -387,7 +390,8 @@ upstreams:
 ## Forward-auth
 
 For services with no OIDC support. The proxy calls `GET /forward-auth` on the sign-in service with the original
-request's headers; the service is found by host (`forward_auth: [{host: grafana.example, service: grafana}]`).
+request's headers; the service is found by host (`forward_auth: {cookie_domain: example.com, hosts: [{host:
+grafana.example.com, service: grafana, tenant: acme}]}`, as in [Sign-in](guides/sign-in.md)).
 
 - A valid forward-auth cookie and an allowed `sign_in` on that `service:` (cached 60 seconds): 200, with
   `X-Fleetlayer-Tenant`, `X-Fleetlayer-Person`, `X-Fleetlayer-Teams` and `X-Forwarded-User` for the service to trust.
@@ -404,9 +408,9 @@ request's headers; the service is found by host (`forward_auth: [{host: grafana.
   `person:sam sign_in service:hub allowed`, with the node that asked. Repeats within a minute are counted, as
   usual.
 - Membership changes are written by the control plane as they happen (above).
-- Sign-in attempts: `signin/event`, written to the tenant's audit log (or the deployment's, before a tenant is
-  chosen) and published on the tenant's `access` channel (`signin.failed` for an Inbox card or an alert after
-  several).
+- Sign-in attempts: `signin/event`, written to the tenant's audit log as `signin.signed_in`, `signin.signed_out`,
+  `signin.refused`, `signin.passkey_added`, `signin.passkey_removed` or `signin.upstream_linked`. They aren't
+  published on a channel.
 
 ## The plugin
 
@@ -421,10 +425,10 @@ plugins:
       issuer: https://signin.example
       control_plane: https://control.example
       token_file: ~/.config/fleetlayer/signin-token   # the sign-in token
-      listen: 127.0.0.1:7680                    # behind a private HTTPS proxy
+      listen: 127.0.0.1:7650                    # behind a private HTTPS proxy
       clients:
         - name: hub
-          redirect_uris: [https://hub.example/auth/callback]
+          redirect_uris: [https://hub.example/_/auth/callback]
           secret_file: ~/.config/fleetlayer/signin-clients/hub
       heartbeat: {url: …, token_file: …}
 ```
@@ -433,7 +437,7 @@ plugins:
   heartbeat is pushed every five minutes with `success=false` when the control plane couldn't be reached, or the
   signing key is due to rotate and couldn't.
 - **Back it up:** losing this folder means every person registers new passkeys and every service's client secret is
-  reissued. Back up `people.json` and `keys/`; sessions can be lost.
+  reissued. Back up `people.json`, `keys/` and `logouts.json` (sign-outs not yet delivered); sessions can be lost.
 
 ## Moving it
 
@@ -457,9 +461,12 @@ Every component can move (a Mac first, a home server or VPS later), and the sign
     and outside any Advanced section: "Passkeys made now stop working if sign-in moves to another address; use a
     domain you own to avoid that." After such a move, people sign in once with an invite link or an upstream provider
     and register a new passkey; the dashboard's People page is where to invite them again.
-  Either way, services need the new issuer URL. While the old name still points at the service (a setting,
-  `previous_issuers`, for 30 days), it answers discovery with a redirect and keeps serving the JWKS, so tokens already issued verify until they expire; each client's issuer setting is
-  changed (the guide lists the hub's and pages' settings). Sessions on the old address end; people sign in again.
+  Either way, services need the new issuer URL. While the old name still points at the service and is
+  listed in `previous_issuers`, it answers every path but the JWKS with a redirect to the new issuer and keeps
+  serving the JWKS, so tokens already issued verify until they expire. It does so until you remove it from the list:
+  keep it at least as long as services' sessions last. Each client's issuer setting is still changed (the guide lists
+  the hub's and pages' settings), since a client won't follow a redirect on the token endpoint. Sessions on the old
+  address end; people sign in again.
 - The control plane's address is a setting too, and its sign-in token moves with the settings file.
 
 ## On a laptop
@@ -473,14 +480,14 @@ on its own later.
 - The issuer is an `http://` URL. Fleetlayer's own clients (the hub, pages) accept `http://` only for `localhost` and
   `*.localhost`; everywhere else the issuer must be HTTPS.
 - Server-to-server calls (token, JWKS, back-channel logout) can't rely on resolving `*.localhost` (it fails on Linux
-  without systemd-resolved), so each side has a `backend_url` setting next to the public one, and services check
-  tokens' `iss` against the public issuer while calling the backend one.
-- Cookies keep `Secure` and the `__Host-` prefix where the browser allows them on `http://localhost` (Chrome,
-  Firefox); a browser that doesn't is told so on the sign-in page rather than signed in with weaker cookies.
+  without systemd-resolved). There's no separate backend address setting: on one machine, give server-to-server calls
+  `127.0.0.1:<port>` ([Sign-in](guides/sign-in.md)).
+- On a plain `http://` issuer the session cookie is `fleetlayer-signin`, without the `__Host-` prefix, which browsers
+  accept only on secure origins.
 
 ## On the control plane: tables and commands
 
-Step 1a. Every table is per tenant except `people`, and nothing here is a credential.
+Every table is per tenant except `people`, and nothing here is a credential.
 
 | Table | Holds |
 |---|---|
@@ -498,11 +505,12 @@ Commands, with `--tenant <slug>` (default: the deployment's first tenant):
 
 - `fleetlayer-control tenant add <slug> [--name …]`, `tenant list`, `tenant rename <slug> <new-slug> [--name …]`
 - `member list`, `member role <handle> admin|member`, `member remove <handle>`
-- `team add <name> [--parent <team>]`, `team remove <name>`, `team list`, `team member add|remove <team> <handle>
-  [--maintainer]`
-- `invite --handle <h> --role admin|member [--team <t>]… [--person <id>]` prints the invite code (and its link once a
-  sign-in service is set up), `invite list`, `invite revoke <code>`; until the sign-in service exists, `invite redeem
-  <code> --new "<display name>" | --person <id>` uses one from the command line
+- `team add <name> [--parent <team>]`, `team remove <name>`, `team list`, `team member <team> <handle>
+  [--maintainer] [--remove]`
+- `invite add --handle <h> [--role admin|member] [--team <t>]… [--person <id>]` prints the invite code (and its link
+  once a sign-in service is set up), `invite list`, `invite revoke <handle>` (every open invite for that handle);
+  without a sign-in service, `invite redeem <code> --new "<display name>" | --person <id>` uses one from the command
+  line
 - `person list` (the operator's view: IDs, names, how many tenants), `person remove <id>` (from every tenant; their
   own nodes go offline)
 - `agent admit <pattern>`, `agent remove <pattern>`, `agent list` (each says whether another tenant may also admit
@@ -516,22 +524,19 @@ made it (`admin`, the person's handle, or `signin`).
 
 **Nodes, tenants and the existing `tenant` column.** Nodes and their sessions are a person's, so they belong to the
 deployment, not to a tenant. Every row's `tenant` stays `default` (where a node's sessions, messages and events are
-kept); decisions don't use it. Since 1b each request is decided and audited in the tenants that own what it touches:
+kept); decisions don't use it. Each request is decided and audited in the tenants that own what it touches:
 every tenant either agent is a member of, or for a service's data, a page or an app, the tenant the service names. An
 agent no tenant admitted is refused (`agent admit` lets it in). A tenant without a version 2 policy keeps the version 1
 rules for its agents, and decides people with the built-in defaults (`default_people: own`).
 
-## Migrating an existing deployment
+## The first tenant
 
-Everything today is in the tenant `default` (nodes, policy, audit log, summaries, readings).
+A deployment starts with one tenant, `default`, which holds its nodes, policy, audit log, summaries and readings.
 
-- The migration adds the tables and one `tenants` row: `id` and `slug` `default`. Nothing else changes, and a running
-  control plane keeps serving while it runs.
 - **Naming it** is `fleetlayer-control tenant rename default home --name "Home"`: one row, while the control plane
   runs. Every row keeps `tenant = 'default'` (the ID), so no data moves and every audit entry's hash still verifies.
-- **The first admin:** `fleetlayer-control --tenant home invite --handle a --role admin`, then nodes' owners with
-  `node owner`, and the tenant admits the existing agents (`agent admit "*@laptop"`). On migrating, every existing
-  node's agents are admitted to `default`, so nothing that works today stops. A node with no owner belongs to nobody:
+- **The first admin:** `fleetlayer-control --tenant home invite add --handle a --role admin`, then nodes' owners with
+  `node owner`, and the tenant admits the agents (`agent admit "*@laptop"`). A node with no owner belongs to nobody:
   owner-scoped rules don't match it, and `node list` says so.
 - **Adding a second tenant** (a company next to a personal one): make it, admit the agents that work for it, give it
   its policy. Nodes stay as they are. History stays in the audit log it was written to; moving existing rows between

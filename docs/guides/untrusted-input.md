@@ -10,7 +10,8 @@ The shape:
 - **Its own Unix user, with its own node.** The node is the trust boundary: every process of a Unix user can claim to
   be any of that user's sessions, so rules about one agent hold only if it's alone in its user.
 - **Rules applied before it reads anything.** It may message you (one inbox session) and nobody else, use no shared
-  tools, send no sync bundles, see nothing of the rest of the fleet, and send only so many messages an hour.
+  tools or shared commands, send no sync bundles, do nothing to another session (start, type into, answer or close
+  it), see nothing of the rest of the fleet, and send only so many messages an hour.
 - **Its messages arrive marked as outside data**, so the session that receives them treats them the way it would treat
   the email itself.
 - **Every refusal is recorded and visible**, so when a rule gets in its way you hear about it.
@@ -90,8 +91,10 @@ groups:
 
 deny:
   - who: group:untrusted-input
-    can: [use_tool, sync, start, attach]
-    why: Reads strangers' email. No shared tools, no secrets or skills sent, no sessions started or typed into.
+    can: [use_tool, call, run, sync, start, attach, answer, close, command, publish, subscribe, write, admin]
+    why: >-
+      Reads strangers' email. No shared tools or commands, no secrets or skills sent, no events, no pages, and no
+      other session started, typed into, answered or closed.
 
 only:
   - who: group:untrusted-input
@@ -114,8 +117,13 @@ limits:
 fleetlayer-control acl apply policy.yaml
 ```
 
-A `deny` can't be undone by a broader rule anywhere else in the file, so a later `allow` for `"*"` doesn't reopen the
-browser to it. Any session it messages may still reply, and the triage agent may answer that reply within 24 hours.
+The deny list names every verb that acts on another session, another machine or the fleet's shared state: shared tools
+(`use_tool`, and `call` for one call through the MCP gate), shared commands (`run`), sync bundles (`sync`), sessions
+(`start`, `attach`, `answer`, `close`, `command`), events (`publish`, `subscribe`), pages (`write`) and `admin`. A
+`deny` refuses outright: it doesn't fall back to asking you, and `ask: []` doesn't open it. It can't be undone by a
+broader rule anywhere else in the file either, so a later `allow` for `"*"` doesn't reopen the browser to it. The list
+leaves out `connect` (reaching internet hosts), which [network access per role](egress.md) handles. Any session it
+messages may still reply, and the triage agent may answer that reply within 24 hours.
 
 ## 4. Check the rules
 
@@ -132,6 +140,9 @@ Then write down what you expect, so a later change to the policy can't quietly b
 - { from: triage@triage, can: message,  to: inbox@laptop,         expect: allow }
 - { from: triage@triage, can: message,  to: infra@home,           expect: deny }
 - { from: triage@triage, can: use_tool, to: "tool:browser@laptop", expect: deny }
+- { from: triage@triage, can: run,      to: "command:deploy@laptop", expect: deny }
+- { from: triage@triage, can: answer,   to: infra@home,           expect: deny }
+- { from: triage@triage, can: command,  to: infra@home,           expect: deny }
 - { from: triage@triage, can: read,     to: infra@home,           expect: deny }
 - { from: inbox@laptop,  can: message,  to: triage@triage,        expect: allow }
 ```
@@ -169,9 +180,10 @@ change it.
 
 ## What this doesn't cover
 
-Fleetlayer controls what crosses the fleet: messages, shared tools, sync, the fleet view. It doesn't control what the
-triage user can do on its own machine. It can still reach the network, read anything on the machine that's readable by
-every user, and use any credentials in its home. Keep those small, and give an agent that must never reach your network
-a VM of its own instead of a Unix user.
+Fleetlayer's policy controls what crosses the fleet: messages, shared tools and commands, sync, sessions, the fleet
+view. It doesn't control what the triage user can do on its own machine. It can read anything on the machine that's
+readable by every user, and use any credentials in its home. Keep those small. To limit which internet hosts it can
+reach, see [Keep agents to the hosts they need](egress.md). An agent that must never reach your local network is still
+safer in a VM of its own than in a Unix user.
 
 Related: [access control](../access-control.md), the full policy language.

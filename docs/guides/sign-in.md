@@ -50,7 +50,7 @@ plugins:
       issuer: https://signin.example.com
       control_plane: https://control.example.com    # http://127.0.0.1:<port> on the same machine
       token_file: ~/.config/fleetlayer/signin-token
-      listen: 127.0.0.1:7680
+      listen: 127.0.0.1:7650
       clients: []                                   # step 4
       heartbeat:
         url: https://status.example.com/api/v1/endpoints/signin/external
@@ -63,7 +63,7 @@ confirmed a request with their passkey ([Sign-in](../plugins/signin.md#confirmin
 agent that read them could approve things as you. A machine's agents usually run as other users, so a new user just
 for sign-in, with its own node, is enough.
 
-It points the proxy's `signin.example.com` at `127.0.0.1:7680`, restarts the node (`fleetlayer-node install` again,
+It points the proxy's `signin.example.com` at `127.0.0.1:7650`, restarts the node (`fleetlayer-node install` again,
 or restart its service), and checks `https://signin.example.com/healthz`.
 
 **You:** your agent makes an invite with `fleetlayer-control invite add --handle you --role admin` and gives you the
@@ -142,10 +142,11 @@ forward_auth:
       tenant: acme
 ```
 
-The proxy passes the request on with `X-Fleetlayer-Person` and `X-Forwarded-User` set to the person's handle, which
-the service can trust. That only holds if a browser can never send those headers itself. Your agent must remove them
-from every request on **every site the proxy serves**, not only the protected ones: a forgotten unprotected route to
-the same backend lets anyone claim to be anyone.
+The proxy passes the request on with four headers set: `X-Fleetlayer-Person` and `X-Forwarded-User` (the person's
+handle), `X-Fleetlayer-Tenant` and `X-Fleetlayer-Teams`. The service can trust them only if a browser can never send
+them itself. Your agent must remove all four (or every `X-Fleetlayer-*` header and `X-Forwarded-User`) from every
+request on **every site the proxy serves**, not only the protected ones: a forgotten unprotected route to the same
+backend lets anyone claim to be anyone, or to be in any team.
 
 Two traps in the proxies themselves:
 

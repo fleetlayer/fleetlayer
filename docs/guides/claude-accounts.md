@@ -69,7 +69,7 @@ the rotator's slots (`~/.claude/accounts/<n>`).
 
 Keep the hub off the laptop. The agents on servers depend on it, and it can't poll usage while the lid is closed.
 `fleetlayer up` starts a hub on the laptop to begin with (see [Start on your laptop](laptop.md)); move it to a server
-before the server's agents rely on it.
+with `fleetlayer move hub` before the server's agents rely on it (step 2).
 
 The steps below use `server` for the always-on machine, `claudehub` for the hub's Unix user (so its node is
 `server-claudehub`, the default name for a second user on a machine), and `laptop` and `server` for the nodes whose
@@ -96,13 +96,32 @@ fleetlayer-control node add server-claudehub
 ```
 
 As `claudehub`, install Fleetlayer, save the token it printed to `~/.config/fleetlayer/node-token` (mode 0600), and
-make a login key for the hub's page:
+start a node with nothing else on it:
+
+```sh
+fleetlayer up --join wss://control.example/v1/link --token-file ~/.config/fleetlayer/node-token --no-hub --no-pages
+```
+
+Then, on the laptop, move the hub into that node, with its sign-ins and its login key (`ssh claudehub@server true`
+must work without a prompt; see [Moving a piece to another machine](moving.md)):
+
+```sh
+fleetlayer move hub claudehub@server --dry-run   # what it would do
+fleetlayer move hub claudehub@server
+```
+
+It listens on the address SSH reached the server on, port 7660; `--listen` and `--url` change that when the page is
+behind a proxy. The laptop's gateway routes `claude-hub` to its new address.
+
+No hub on the laptop (you ran `fleetlayer up --no-hub`)? Make a login key for the hub's page as `claudehub`, and write
+the block below yourself:
 
 ```sh
 (umask 077; mkdir -p ~/.config/fleetlayer && head -c 32 /dev/urandom | base64 > ~/.config/fleetlayer/claude-hub-login)
 ```
 
-Then `~/.config/fleetlayer/node.yaml`:
+Either way, `claudehub`'s `~/.config/fleetlayer/node.yaml` ends up like this. Set `targets`, `trusted_proxies` and the
+heartbeat in it:
 
 ```yaml
 control:
@@ -116,18 +135,15 @@ plugins:
       role: hub
       targets: [laptop, server]                    # the nodes that get the tokens
       hub:
-        listen: 10.0.0.5:7660                      # behind a private HTTPS proxy, never the internet
+        listen: 192.168.1.5:7660                   # behind a private HTTPS proxy, never the internet
         login_file: ~/.config/fleetlayer/claude-hub-login
-        trusted_proxies: [10.0.0.2]                # the proxy's address
+        trusted_proxies: [192.168.1.2]             # the proxy's address
         heartbeat:                                 # optional: a Gatus external endpoint
           url: https://status.example/api/v1/endpoints/claude-hub/external
           token_file: ~/.config/fleetlayer/claude-hub-heartbeat-token
 ```
 
-```sh
-fleetlayer-node install
-fleetlayer status
-```
+Restart the node after editing it (`fleetlayer-node install`), and check `fleetlayer status`.
 
 Put the page behind your private HTTPS proxy (`fleetlayer-gateway emit traefik` writes the route for it, see [Start
 on your laptop](laptop.md#on-a-server-traefik-and-gatus-from-the-same-list)) and firewall the port so only the proxy
@@ -156,7 +172,13 @@ plugins:
   - name: claude-auth-manager
     command: fleetlayer-claude-auth-manager
     grants: [reading.publish, reading.subscribe]
+    config:
+      from: server-claudehub      # the hub's node: the only one whose tokens it applies
 ```
+
+Each node applies the tokens bundle from one node only: the one `from:` names, or else the first node that sent it,
+remembered in `~/.local/state/fleetlayer/claude-auth-manager/sources.json`. A node that already took tokens from the
+hub on the laptop refuses them from `server-claudehub` until you set `from:` (or remove the entry from that file).
 
 Restart the node. When a bundle arrives, the plugin writes each account's token into its slot, removes slots for
 accounts that left the bundle, and replaces any sign-in someone made by hand in a slot it manages (a hand sign-in
@@ -254,8 +276,8 @@ machines: claude-auth-manager with the fork. The design notes are in
 
 ## Limit who can send tokens
 
-A node that could publish the tokens bundle could put its own tokens in your slots. Allow only the hub's node, in your
-[access policy](../access-control.md):
+A node that could publish the tokens bundle could put its own tokens in your slots. Each node defends itself with
+`from: server-claudehub` (step 4). Also allow only the hub's node, in your [access policy](../access-control.md):
 
 ```yaml
 version: 2
@@ -276,9 +298,10 @@ ask:                    # replaces the default, which also asks before each firs
 ```
 
 Keep `sync` out of your `ask:` rules, or write an `ask:` of your own as above. Fleetlayer's default `ask:`, used when no
-policy is applied or a policy leaves it out, holds each target's first bundle for your approval, and the approval lasts 30 days from the last bundle sent, so it
-lapses only if the hub stops publishing for a month. While a bundle waits, the hub's node reports it (a `sync.status`
-reading with the command that approves it) and tries again once you approve, without a restart. `fleetlayer-control acl explain --from=-@server-claudehub --can sync --to
+policy is applied or a policy leaves it out, holds each target's first bundle for your approval, and the approval
+lasts 30 days from the last bundle sent, so it lapses only if the hub stops publishing for a month. While a bundle
+waits, the hub's node reports it (a `sync.status` reading with the command that approves it) and tries again once you
+approve, without a restart. `fleetlayer-control acl explain --from=-@server-claudehub --can sync --to
 sync:claude-auth-manager/tokens@laptop` shows the decision.
 
 ## When it doesn't work
@@ -300,5 +323,8 @@ sync:claude-auth-manager/tokens@laptop` shows the decision.
 - **Nothing reaches a node:** look in the hub's node log for a refused sync (your policy) or a target whose key
   changed. The hub's node pins each target's key the first time it seals to it, in
   `~/.local/state/fleetlayer/known-keys.json`, and refuses a changed key until you remove the old pin.
+- **"came from node server-claudehub, but it first came from laptop"** in a node's log: that node took tokens from the
+  hub before it moved. Set `from: server-claudehub` in its plugin's `config:`, or remove the entry from
+  `~/.local/state/fleetlayer/claude-auth-manager/sources.json`, and restart the node.
 - **CodexBar shows nothing:** run `fleetlayer-claude-accounts --list --json` in a terminal. It prints the reason
   (`NodeUnreachable`, `NoAccounts` when this node may not read the hub's readings, `HubTooOld`).

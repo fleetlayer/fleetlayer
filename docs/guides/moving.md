@@ -79,7 +79,7 @@ slept, the connection dropped), a new move of the same piece waits, and:
 | `hub` | The hub's folder (sign-ins, setup tokens) and its login key | The gateway here routes `claude-hub` to it |
 | `pages` (or `apps`) | Its login key, and the space folders unless they're already there | The gateway here routes `pages` and the apps' names to it |
 | `sign-in` | Its folder (passkeys, the token-signing key, sessions) and its token | Tokens it signed still verify; see passkeys below |
-| any plugin's name | The files its settings name, and its usual state folder | Its block moves to the node there |
+| any plugin's name | The files its settings name. Its state folder too for the scheduler, leases, summaries and cookies; for other plugins (Matrix, 1Password), copy the state folder by hand | Its block moves to the node there |
 
 A node is one per Unix user, so `fleetlayer move node` needs a user on the other machine with no node yet.
 

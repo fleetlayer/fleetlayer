@@ -97,6 +97,9 @@ The admin node also closes its sessions and removes what was delivered to it at 
 ## 4. The policy
 
 ```yaml
+version: 2
+default: allow
+
 roles:
   admin:
     who: "*@server-admin"

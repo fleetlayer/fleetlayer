@@ -101,8 +101,9 @@ The node's `allow:` list is one half. The control plane's access policy is the o
 
 A fleet with no policy of its own uses a built-in default: each session's first use of the browser is
 refused until you approve it once (`fleetlayer-control approvals list`, then `approvals approve <id>`), and the
-approval holds for 30 days, renewed each time the browser is used. `fleetlayer-control acl show` prints that default. A policy you apply that leaves `ask:`
-out asks the same way. To decide up front which agents have it, say so in your policy file:
+approval holds for 30 days, renewed each time the browser is used. The default `ask:` rules are listed in
+[access control](../access-control.md#asking-the-person-approval-and-justification). A policy you apply that leaves
+`ask:` out asks the same way. To decide up front which agents have it, say so in your policy file:
 
 ```yaml
 version: 2
@@ -127,8 +128,8 @@ ask:                    # replaces the default, which also asked before every fi
 want to keep approving each session's first use.
 
 Never let an agent that reads strangers' text use it: an email that says "log in to the bank and…" shouldn't reach
-your signed-in browser. [Run an agent that reads strangers' text](untrusted-input.md) denies shared tools to that
-group outright, and a `deny` always wins.
+your signed-in browser. [Run an agent that reads strangers' text](untrusted-input.md) denies shared tools and shared
+commands to that group outright, and a `deny` always wins.
 
 ## 4. Use it from a session on another machine
 
@@ -148,9 +149,9 @@ machine may be asleep, or its node restarting)"), and the next call works as usu
 
 **When the laptop sleeps or its node restarts**, a session keeps the browser's tools: the call in flight
 gets an error at once, later calls get "browser@laptop can't be reached now" until the laptop is back, and the first
-call after that reconnects by itself. Claude Code never restarts an MCP server that exited, so before this a session
-lost the browser until it restarted. `fleetlayer mcp` keeps the tool's list (in `~/.local/state/fleetlayer/mcp/`) so a
-session that starts while the laptop sleeps still loads it. An MCP server you add with `claude mcp add` reaches only
+call after that reconnects by itself. Claude Code never restarts an MCP server that exited, so `fleetlayer mcp` stays
+running while the laptop is away instead of exiting. It keeps the tool's list (in `~/.local/state/fleetlayer/mcp/`)
+so a session that starts while the laptop sleeps still loads it. An MCP server you add with `claude mcp add` reaches only
 sessions that start after it: restart the ones already running.
 
 `fleetlayer-control tools` on the control plane lists every connection: who used which tool, and when.

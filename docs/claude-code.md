@@ -79,7 +79,7 @@ devices isn't included ([costs](https://code.claude.com/docs/en/costs)). Team an
 person.
 
 **Fleetlayer adds:** your own accounts on your own machines: year-long setup tokens delivered to every machine, every
-account's usage visible to every session, and a rotator that moves sessions off an account that's full
+account's usage visible to every session, and a rotator that moves sessions off an account that has no usage left
 ([Many Claude accounts](guides/claude-accounts.md)).
 
 ### Rules, approvals and audit

@@ -98,7 +98,8 @@ Most releases need only the installer or a node's own update. These need more, o
 - **Secrets per role** (`fleetlayer-1password`) and **network access per role** (`fleetlayer-egress`, Linux), both off
   until you turn them on. A node also scrubs every secret delivered to it from what it sends the rest of the fleet.
 - **The MCP gate** checks every call to a fronted MCP server against the access policy, and **admin windows** give a
-  role no rights until you open a time-limited window with `fleetlayer role activate`.
+  role no rights until you open a time-limited window with `fleetlayer role activate`. The control plane and the
+  gate's machine both need v0.3.13 or later.
 - `fleetlayer move <piece> <machine>` moves any component to another machine and keeps its identities and keys.
 - Every herdr on your phone (`herdr-fleet`), and sign-in is no longer experimental.
 
@@ -150,6 +151,7 @@ Most releases need only the installer or a node's own update. These need more, o
 - **CI results without polling:** `fleetlayer subscribe ci --commit` after pushing.
 - **Shared folders** (`fleetlayer-shared-folders`), **Rex support** (`fleetlayer-rex`) and **skills for agents**, which
   the node installs for Claude Code and Codex.
+- The shared browser's `browser_close` closes your tabs.
 - **Sign in with Fleetlayer:** the experimental `fleetlayer-signin`, an OpenID Connect provider with passkeys.
 - macOS builds are signed and notarised. Smaller fixes: shared-tool calls time out instead of hanging, and the
   control plane exits within seconds on `SIGTERM`.
@@ -181,7 +183,7 @@ Most releases need only the installer or a node's own update. These need more, o
 - **People, tenants and teams** in the control plane, the first step of Fleetlayer sign-in. A `default` tenant with an
   `everyone` team is added and every existing node is admitted to it.
 - Invites and recovery invites, and nodes owned by a person, a team or a tenant.
-- New `fleetlayer-control` commands: `people`, `invite`, `team`, `tenant`, `agent` and `node add --owner`. They log to
+- New `fleetlayer-control` commands: `person`, `invite`, `team`, `tenant`, `agent` and `node add --owner`. They log to
   stderr, so printed tokens and codes stay separate from log lines.
 - A first version of the pages plugin, in the source only.
 
@@ -199,7 +201,7 @@ Most releases need only the installer or a node's own update. These need more, o
 - **Upgrading:** upgrade the control plane first, then nodes.
 - `fleetlayer readings <kinds>` prints the newest readings of those kinds this node may read.
 - `fleetlayer-claude-accounts`, a new binary, lists every account the hub manages with its usage windows, in a format
-  CodexBar can read.
+  CodexBar can read. It needs a control plane and hub of v0.3.4 or later.
 - A self-installed node links binaries new in a release into `~/.local/bin` when it starts.
 
 ## v0.3.3 (26 November 2026)

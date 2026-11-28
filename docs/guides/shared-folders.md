@@ -44,7 +44,7 @@ tools:
 Restart the node (`fleetlayer-node install` again, or restart its service) and check `fleetlayer status`.
 
 `networks` works as it does for the browser: away from home the folders are refused unless you opt in for a while
-with `fleetlayer tools enable folders --for 2h`.
+with `fleetlayer tools enable shared-folders --for 2h`.
 
 ## 3. Let the node into Downloads
 
