@@ -590,6 +590,97 @@ mod tests {
             assert!(log.iter().any(|r| r.contains("answered prompt toolu_1 with [{\"pick\":2}]")), "{log:?}");
         }
 
+        fn handoff(caller: &str, from: &str, id: &str) -> l::SessionHandoff {
+            l::SessionHandoff {
+                id: id.into(),
+                from: from.into(),
+                note: Some("Tests pass; the deploy is next.".into()),
+                start: req(caller, "review"),
+            }
+        }
+
+        /// A session hands its own work off: the new session starts on the target, the note is kept for it, and the
+        /// fleet links old and new. Someone else needs `read` on the old session, to hand it off or to read the note.
+        #[tokio::test]
+        async fn a_handoff_starts_the_new_session_keeps_the_note_and_links_both_in_the_fleet() {
+            let (app, home) = fleet().await;
+            let policy = "version: 2\ndefault: allow\nask: []\ndeny:\n  - { who: \"triage@*\", can: read }\n";
+            crate::authz::store(&app.db, "default", policy).await.unwrap();
+            crate::db::replace_sessions(
+                &app.db,
+                "default",
+                "laptop",
+                &[json!({"sessionId": "p1", "meta": {"tab": "planning"}})],
+            )
+            .await
+            .unwrap();
+
+            let e = crate::handoffs::start(&app, "default", "laptop", handoff("planning", "planning@laptop", "bad"))
+                .await
+                .unwrap_err();
+            assert!(e.message.contains("16 hex digits"), "{}", e.message);
+            let e = crate::handoffs::start(
+                &app,
+                "default",
+                "laptop",
+                handoff("triage", "planning@laptop", "h0000000000000001"),
+            )
+            .await
+            .unwrap_err();
+            assert!(e.message.contains("deny[0]"), "{}", e.message);
+            assert!(home.served.lock().await.is_empty());
+
+            // By its session ID too.
+            let id = "h00000000000000aa";
+            let started =
+                crate::handoffs::start(&app, "default", "laptop", handoff("planning", "p1@laptop", id)).await.unwrap();
+            assert_eq!((started.handoff.as_str(), started.started.tab.as_str()), (id, "review"));
+            assert_eq!(home.served.lock().await[0]["caller"], "planning@laptop");
+            let e = crate::handoffs::start(&app, "default", "laptop", handoff("planning", "planning@laptop", id))
+                .await
+                .unwrap_err();
+            assert!(e.message.contains("already a handoff"), "{}", e.message);
+
+            let get = |caller: &str| l::HandoffGet { id: id.into(), caller: caller.into(), justification: None };
+            let h = crate::handoffs::get(&app, "default", "home", get("review")).await.unwrap();
+            assert_eq!((h.from.as_str(), h.from_session_id.as_deref()), ("planning@laptop", Some("p1")));
+            assert_eq!((h.to.as_str(), h.to_session_id.as_deref()), ("review@home", Some("s1")));
+            assert_eq!(
+                (h.note.as_deref(), h.by.as_str()),
+                (Some("Tests pass; the deploy is next."), "planning@laptop")
+            );
+            let e = crate::handoffs::get(&app, "default", "laptop", get("triage")).await.unwrap_err();
+            assert!(e.message.contains("deny[0]"), "{}", e.message);
+
+            crate::db::replace_sessions(
+                &app.db,
+                "default",
+                "home",
+                &[json!({"sessionId": "s1", "meta": {"tab": "review"}})],
+            )
+            .await
+            .unwrap();
+            let fleet = crate::api::fleet_with(&app, "default", false).await.unwrap();
+            let by_id =
+                |id: &str| fleet["sessions"].as_array().unwrap().iter().find(|s| s["sessionId"] == id).unwrap().clone();
+            assert_eq!(by_id("p1")["handoffTo"]["to"], "review@home");
+            assert_eq!(by_id("s1")["handoffFrom"]["from"], "planning@laptop");
+            assert!(by_id("p1").get("handoffFrom").is_none());
+
+            // A start that fails keeps no handoff.
+            app.links.nodes.lock().await.remove(&("default".into(), "home".into()));
+            let e = crate::handoffs::start(
+                &app,
+                "default",
+                "laptop",
+                handoff("planning", "planning@laptop", "h00000000000000bb"),
+            )
+            .await
+            .unwrap_err();
+            assert!(e.message.contains("offline"), "{}", e.message);
+            assert!(crate::handoffs::by_id(&app.db, "default", "h00000000000000bb").await.unwrap().is_none());
+        }
+
         #[tokio::test]
         async fn the_policy_refuses_a_caller_and_marks_untrusted_prompts() {
             let (app, home) = fleet().await;

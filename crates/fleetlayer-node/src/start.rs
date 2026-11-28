@@ -72,7 +72,7 @@ pub async fn open(
 }
 
 /// Who a prompt from this node is from, and where its answer goes.
-fn sender(node: &Node, caller: Option<&Session>) -> (From, Option<String>) {
+pub fn sender(node: &Node, caller: Option<&Session>) -> (From, Option<String>) {
     match caller {
         Some(c) => {
             let name = c.tab().unwrap_or(&c.session_id);

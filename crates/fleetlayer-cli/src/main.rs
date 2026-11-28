@@ -292,6 +292,49 @@ enum SessionCommand {
         #[arg(long, env = "FLEETLAYER_WHY")]
         why: Option<String>,
     },
+    /// Move a session's work to a new session, usually on another node: `fleetlayer session handoff --to server
+    /// --note "…"` hands off the session you're in. The new session's first prompt carries the note (or where to read
+    /// a long one) and how to read the old transcript; the fleet links old and new. The old session keeps running:
+    /// close it when you're done. With --json: `{handoff, node, tab, address, sessionId, promptError}`.
+    Handoff {
+        /// The session whose work moves: `<tab>@<node>`, a tab on this node, or a session ID. Default: the session
+        /// you're in.
+        from: Option<String>,
+        /// The node the new session starts on.
+        #[arg(long)]
+        to: String,
+        /// What the new session needs to know: where things stand, what's next, what to watch out for.
+        #[arg(long, conflicts_with = "note_file")]
+        note: Option<String>,
+        /// The note, from a file (`-` for stdin).
+        #[arg(long)]
+        note_file: Option<String>,
+        /// The new tab's name. Default: the old session's.
+        #[arg(long)]
+        tab: Option<String>,
+        /// The folder it works in, on that node. Default: the old session's, when it's on this node.
+        #[arg(long)]
+        cwd: Option<String>,
+        /// The agent: claude (default) or codex.
+        #[arg(long)]
+        harness: Option<String>,
+        /// More for it to do once it has read the handoff.
+        #[arg(long)]
+        prompt: Option<String>,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        effort: Option<String>,
+        #[arg(long, env = "FLEETLAYER_WHY")]
+        why: Option<String>,
+    },
+    /// A handoff's note, and where its work came from and went: `fleetlayer session handoff-note h…`. For the session
+    /// it went to, or anyone who may read the session it came from.
+    HandoffNote {
+        id: String,
+        #[arg(long, env = "FLEETLAYER_WHY")]
+        why: Option<String>,
+    },
     /// Resume a stored session in a new tab, in the folder it worked in. Finds the node from the session ID when
     /// --on is left out.
     Resume {
@@ -1369,6 +1412,56 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 println!("{}", v["message"].as_str().unwrap_or(""));
             }
         }
+        Command::Session {
+            command:
+                SessionCommand::Handoff { from, to, note, note_file, tab, cwd, harness, prompt, model, effort, why },
+        } => {
+            let note = match note_file.as_deref() {
+                Some("-") => Some(std::io::read_to_string(std::io::stdin())?),
+                Some(path) => Some(std::fs::read_to_string(path)?),
+                None => note,
+            };
+            let req = json!({
+                "from": from, "to": to, "note": note, "tab": tab, "cwd": cwd.map(|c| absolute(&c, true)),
+                "harness": harness, "prompt": prompt, "model": model, "effort": effort, "why": why, "caller": caller(),
+            });
+            let v: Value =
+                peer.request_within("node/session_handoff", &req, std::time::Duration::from_secs(180)).await?;
+            if cli.json {
+                println!("{v}");
+            } else {
+                let id = v["sessionId"].as_str().map(|id| format!(", session {id}")).unwrap_or_default();
+                println!(
+                    "Handed off to {}@{}{id} (handoff {}).",
+                    v["tab"].as_str().unwrap_or("?"),
+                    v["node"].as_str().unwrap_or("?"),
+                    v["handoff"].as_str().unwrap_or("?")
+                );
+                if let Some(e) = v["promptError"].as_str() {
+                    println!("  The first prompt didn't go in: {e}");
+                }
+            }
+        }
+        Command::Session { command: SessionCommand::HandoffNote { id, why } } => {
+            let req = json!({"id": id, "why": why, "caller": caller()});
+            let v: Value = peer.request_within("node/handoff_get", &req, std::time::Duration::from_secs(30)).await?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&v)?);
+            } else {
+                println!(
+                    "Handoff {} from {} to {}, by {}, {}.",
+                    v["id"].as_str().unwrap_or("?"),
+                    v["from"].as_str().unwrap_or("?"),
+                    v["to"].as_str().unwrap_or("?"),
+                    v["by"].as_str().unwrap_or("?"),
+                    v["createdAt"].as_str().unwrap_or("?")
+                );
+                match v["note"].as_str() {
+                    Some(n) => println!("\n{n}"),
+                    None => println!("\nIt has no note."),
+                }
+            }
+        }
         Command::Session { command: SessionCommand::Close { to, why } } => {
             let req = json!({"to": to, "why": why, "caller": caller()});
             let v: Value = peer.request_within("node/session_close", &req, std::time::Duration::from_secs(60)).await?;
@@ -1376,7 +1469,10 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Session { command } => {
             let req = match command {
-                SessionCommand::Answer { .. } | SessionCommand::Close { .. } => unreachable!("handled above"),
+                SessionCommand::Answer { .. }
+                | SessionCommand::Close { .. }
+                | SessionCommand::Handoff { .. }
+                | SessionCommand::HandoffNote { .. } => unreachable!("handled above"),
                 SessionCommand::Start { tab, cwd, on, harness, prompt, model, effort, why } => json!({
                     "tab": tab, "cwd": absolute(&cwd, on.is_some()), "on": on, "harness": harness, "prompt": prompt,
                     "model": model, "effort": effort, "why": why, "caller": caller(),

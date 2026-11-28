@@ -622,6 +622,8 @@ impl Handler for FromNode {
             l::method::SESSION_START => {
                 answer(&crate::route::start_session(app, tenant, &self.node, params(p)?).await?)
             }
+            l::method::SESSION_HANDOFF => answer(&crate::handoffs::start(app, tenant, &self.node, params(p)?).await?),
+            l::method::HANDOFF_GET => answer(&crate::handoffs::get(app, tenant, &self.node, params(p)?).await?),
             l::method::TERMINAL_OPEN => {
                 let t: l::TerminalOpen = params(p)?;
                 let caller = format!("{}@{}", t.caller, self.node);

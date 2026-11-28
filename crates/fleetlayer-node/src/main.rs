@@ -6,6 +6,7 @@ mod act;
 mod config;
 mod deliver;
 mod gate;
+mod handoffs;
 mod heartbeat;
 mod keys;
 mod lazy;

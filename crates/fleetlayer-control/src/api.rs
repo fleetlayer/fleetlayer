@@ -1,5 +1,5 @@
 //! The control plane's API, for programs that read the fleet (the dashboard, the web and phone apps, Quietdeck's deck):
-//! `GET /v1/fleet`, `/v1/events`, `/v1/subscriptions`, `/v1/endpoints`, `/v1/summaries`, `/v1/readings`, `/v1/tools`,
+//! `GET /v1/fleet`, `/v1/handoffs`, `/v1/events`, `/v1/subscriptions`, `/v1/endpoints`, `/v1/summaries`, `/v1/readings`, `/v1/tools`,
 //! and `POST
 //! /v1/sessions/<id>/catchup`. Each needs a bearer token: the admin token file's, or an API token
 //! (`fleetlayer-control token add <name> --scope read`). A self-hosted control plane has one tenant; the
@@ -178,7 +178,7 @@ pub async fn fleet_with(app: &App, tenant: &str, summaries: bool) -> anyhow::Res
         })
         .collect();
     let latest = if summaries { crate::summaries::latest(&app.db, tenant).await? } else { Default::default() };
-    let sessions: Vec<Value> = db::sessions(&app.db, tenant)
+    let mut sessions: Vec<Value> = db::sessions(&app.db, tenant)
         .await?
         .into_iter()
         .map(|(node, mut s)| {
@@ -189,12 +189,33 @@ pub async fn fleet_with(app: &App, tenant: &str, summaries: bool) -> anyhow::Res
             s
         })
         .collect();
+    crate::handoffs::link_sessions(&mut sessions, &crate::handoffs::recent(&app.db, tenant, 1000).await?);
     Ok(json!({"nodes": nodes, "sessions": sessions}))
 }
 
 pub async fn get_fleet(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
     guard(&app, &headers).await?;
     Ok(Json(fleet(&app, DEFAULT_TENANT).await.map_err(internal)?))
+}
+
+/// `GET /v1/handoffs`: the newest 200 handoffs (without their notes).
+pub async fn get_handoffs(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {
+    guard(&app, &headers).await?;
+    let handoffs = crate::handoffs::recent(&app.db, DEFAULT_TENANT, 200).await.map_err(internal)?;
+    Ok(Json(json!({"handoffs": handoffs})))
+}
+
+/// `GET /v1/handoffs/<id>`: one handoff, with its note.
+pub async fn get_handoff(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> ApiResult {
+    guard(&app, &headers).await?;
+    match crate::handoffs::by_id(&app.db, DEFAULT_TENANT, &id).await.map_err(internal)? {
+        Some(h) => Ok(Json(json!(h))),
+        None => Err((StatusCode::NOT_FOUND, format!("there's no handoff {id}"))),
+    }
 }
 
 pub async fn get_events(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult {

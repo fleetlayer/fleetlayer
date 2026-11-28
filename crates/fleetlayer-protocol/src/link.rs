@@ -93,6 +93,13 @@ pub mod method {
     /// Control plane → node: part of one of its sessions' transcripts, for a caller. `TranscriptServe` →
     /// `TranscriptChunk`.
     pub const TRANSCRIPT_SERVE: &str = "link/transcript_serve";
+    /// Node → control plane: start a session that takes over another one's work, after `start` on the new session
+    /// (and `read` on the old one, when the caller is someone else). The control plane keeps the note and links old
+    /// and new in the fleet. `SessionHandoff` → `HandoffStarted`.
+    pub const SESSION_HANDOFF: &str = "link/session_handoff";
+    /// Node → control plane: one handoff, for the session that took the work over, or a caller with `read` on the
+    /// session it came from. `HandoffGet` → `Handoff`.
+    pub const HANDOFF_GET: &str = "link/handoff_get";
     /// Node → control plane (notification): the tools this node shares, `Tools`, replacing its earlier list. Sent when
     /// it links and when an opt-in changes. Names, descriptions and folder names only: never paths or secrets.
     pub const TOOLS: &str = "link/tools";
@@ -476,6 +483,61 @@ pub struct SessionStarted {
     pub session_id: Option<String>,
     /// The session started, but its first prompt couldn't be typed in: why.
     pub prompt_error: Option<String>,
+}
+
+/// `link/session_handoff`: start `start` as the session taking over `from`'s work. The node has already put the
+/// handoff's instructions (its ID, where the note and the old transcript are) in the first prompt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionHandoff {
+    /// Its ID, made by the node (`h` and 16 hex digits); the control plane refuses one it already has.
+    pub id: String,
+    /// The session whose work moves: `<tab or session ID>@<node>`.
+    pub from: String,
+    /// What the old session (or whoever hands off) says the new one needs to know.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    #[serde(flatten)]
+    pub start: SessionStart,
+}
+
+/// A handoff whose new session started.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HandoffStarted {
+    pub handoff: String,
+    #[serde(flatten)]
+    pub started: SessionStarted,
+}
+
+/// `link/handoff_get`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HandoffGet {
+    pub id: String,
+    /// The calling session's name (its tab), or `-` for a shell.
+    pub caller: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub justification: Option<String>,
+}
+
+/// One session's work moved to another: `from` and `to` are `<tab>@<node>`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Handoff {
+    pub id: String,
+    pub from: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_session_id: Option<String>,
+    pub to: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// `<name>@<node>` of whoever handed off.
+    pub by: String,
+    /// RFC 3339.
+    pub created_at: String,
 }
 
 /// `link/tools`: what a node shares, for `fleetlayer me`. The control plane keeps it in memory only.

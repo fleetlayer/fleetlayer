@@ -109,6 +109,16 @@ agent has no such session) closes the tab it opened and says the agent's own las
 agent takes input and never takes focus from the person. The node adds the agent's permission flags from its own
 config: you can't pass any. Starting a session on another node asks the person first by default.
 
+To move your work to another machine (or someone else's, if you may read it), hand it off. The new session starts
+with your note and how to read your transcript, and the fleet links the two. You keep running: close yourself (or ask
+the person) once it has taken over.
+
+```sh
+fleetlayer session handoff --to server --note "Where things stand, what's next, what to watch out for"
+fleetlayer session handoff api@laptop --to server --cwd ~/src/api --note-file handoff.md --tab api
+fleetlayer session handoff-note h0123456789abcdef   # the note again (the new session's first prompt names it)
+```
+
 To watch a session's terminal: `fleetlayer attach review@server --observe` (Ctrl-] leaves). Without `--observe` you
 type into it, which also asks first; prefer a message.
 

@@ -13,6 +13,7 @@ mod audit;
 mod authz;
 mod db;
 mod directory;
+mod handoffs;
 mod hooks;
 mod link;
 mod me;
@@ -1395,6 +1396,8 @@ async fn serve(
         .route("/v1/link", get(link::upgrade))
         .route("/v1/stream/{id}", get(streams::upgrade))
         .route("/v1/fleet", get(api::get_fleet))
+        .route("/v1/handoffs", get(api::get_handoffs))
+        .route("/v1/handoffs/{id}", get(api::get_handoff))
         .route("/v1/events", get(api::get_events))
         .route("/v1/subscriptions", get(api::get_subscriptions))
         .route("/v1/endpoints", get(api::get_endpoints))

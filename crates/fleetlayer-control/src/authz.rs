@@ -50,6 +50,10 @@ pub const LINK_METHODS: &[(&str, Option<&str>)] = &[
     (m::PAGES_SPACES, None),
     (m::PAGES_OPEN, Some("write")),
     (m::SESSION_START, Some("start")),
+    // `start` on the new session, and `read` on the old one when someone else hands it off (`handoffs::start`).
+    (m::SESSION_HANDOFF, Some("start")),
+    // The session the work went to, or `read` on the one it came from (`handoffs::get`).
+    (m::HANDOFF_GET, Some("read")),
     (m::SESSION_CLOSE, Some("close")),
     (m::SESSION_ANSWER, Some("answer")),
     (m::TOOLS, None),
@@ -1429,6 +1433,8 @@ mod tests {
             m::PAGES_SPACES,
             m::PAGES_OPEN,
             m::SESSION_START,
+            m::SESSION_HANDOFF,
+            m::HANDOFF_GET,
             m::SESSION_CLOSE,
             m::SESSION_ANSWER,
             m::TOOLS,

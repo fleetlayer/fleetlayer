@@ -271,6 +271,24 @@ goes in as it is.
 
 - `close` and `cancel` on a session that isn't there answer `-32010`.
 
+### Handoffs
+
+`fleetlayer session handoff [<from>] --to <node> [--note …]` moves a session's work to a new session: `node/session_handoff`
+`{from?, to, note?, tab?, cwd?, harness?, prompt?, model?, effort?, why?, caller?}` → `{handoff, node, tab, address,
+sessionId, promptError}`. `from` defaults to the calling session, `tab` to the old session's, `cwd` to the old
+session's folder when it's on this node. The node makes the handoff's ID (`h` and 16 hex digits) and writes the new
+session's first prompt: who it takes over from, the note (or, past 2,000 characters, `fleetlayer session handoff-note
+<id>` to read it) and how to read the old transcript (`fleetlayer transcript <from> --tail … --types user,assistant`),
+rendered as a message from the caller. It goes through the control plane even to the same node (`link/session_handoff`,
+[link.md](link.md)), which checks `start` on the new session and `read` on the old one when someone else hands it off,
+keeps the note (64 KB at most) and starts the session as `link/session_start` does. The old session keeps running.
+
+`node/handoff_get` `{id, why?, caller?}` (`fleetlayer session handoff-note`) → `{id, from, fromSessionId?, to,
+toSessionId?, note?, by, createdAt}`: for the session the work went to, or a caller with `read` on the one it came from.
+`/v1/fleet` marks each session with `handoffFrom` `{id, from, fromSessionId, at}` and `handoffTo` `{id, to,
+toSessionId, at}` (the newest), matched by session ID when known; `/v1/handoffs` lists the newest 200 and
+`/v1/handoffs/<id>` has one with its note.
+
 ### Terminals
 
 A session manager that sets `terminal: true` in its role lets its sessions' terminals be watched and driven from
