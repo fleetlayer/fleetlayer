@@ -17,6 +17,7 @@
 //!           - { format: env, path: ~/.config/fleetlayer/cookies/x.env, values: { AUTH_TOKEN: auth_token, CT0: ct0 } }
 //! ```
 
+mod browser;
 mod chrome;
 mod disclaim;
 mod write;
@@ -55,6 +56,17 @@ struct Share {
     names: Vec<String>,
     /// Nodes to send to.
     to: Vec<String>,
+    /// Where the cookies come from: `browser` (the signed-in Chrome itself, through Playwright MCP's extension, each
+    /// read approved by the person; the default on macOS) or `file` (the browser's cookie database; the default
+    /// elsewhere).
+    #[serde(default)]
+    source: Option<Source>,
+    /// How to start Playwright MCP for the `browser` source.
+    #[serde(default)]
+    playwright: browser::Playwright,
+    /// The `browser` source reads again after this many days, even when no target asked (each read approved).
+    #[serde(default = "fourteen")]
+    refresh_days: u64,
     #[serde(default)]
     browser: Browser,
     #[serde(default = "default_profile")]
@@ -111,6 +123,23 @@ impl Receive {
         }
         r
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Source {
+    File,
+    Browser,
+}
+
+impl Share {
+    fn source(&self) -> Source {
+        self.source.unwrap_or(if cfg!(target_os = "macos") { Source::Browser } else { Source::File })
+    }
+}
+
+fn fourteen() -> u64 {
+    14
 }
 
 fn default_profile() -> String {
@@ -179,6 +208,18 @@ fn load(home: &Path, raw: &Value) -> Result<Config, String> {
         if s.to.is_empty() {
             return Err(format!("share {}: no nodes to send to", s.set));
         }
+        if s.source() == Source::Browser {
+            if s.browser != Browser::Chrome {
+                return Err(format!("share {}: the browser source reads Chrome only (or use source: file)", s.set));
+            }
+            if s.names.is_empty() {
+                return Err(format!(
+                    "share {}: the browser source sends only the cookies you name: add names (such as [auth_token, ct0])",
+                    s.set
+                ));
+            }
+            s.playwright = s.playwright.resolved(home);
+        }
         s.user_data_dir = s.user_data_dir.as_deref().map(|p| expand(home, p));
         s.cookies_file = s.cookies_file.as_deref().map(|p| expand(home, p));
     }
@@ -221,6 +262,10 @@ struct Body {
     domains: Vec<String>,
     read_at: Timestamp,
     cookies: Vec<Cookie>,
+    /// From the `browser` source: how many days it waits before reading again unasked, so a target doesn't call the
+    /// set stale before then. None from the `file` source, which sends at least every `resend_hours`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    refresh_days: Option<u64>,
 }
 
 /// A cookie without its value, as the state file and readings name it.
@@ -242,6 +287,9 @@ struct Received {
     /// Files this plugin wrote, so it never overwrites one a person made.
     written: Vec<PathBuf>,
     error: Option<String>,
+    /// The source's refresh period, when it reads a browser (see `Body::refresh_days`).
+    #[serde(default)]
+    refresh_days: Option<u64>,
 }
 
 /// The earliest expiry among `names` (Unix seconds), what's missing, and what's expired at `now`.
@@ -274,7 +322,9 @@ fn receive_problem(r: &Receive, st: &Received, now: Timestamp, started: Timestam
     if let Some(e) = &st.error {
         return Some(format!("cookies {}: {e}", r.set));
     }
-    let stale = Duration::from_secs(r.stale_hours * 3600);
+    // A browser source reads only every `refresh_days` unasked: stale two days after that.
+    let hours = st.refresh_days.map_or(r.stale_hours, |d| r.stale_hours.max(d * 24 + 48));
+    let stale = Duration::from_secs(hours * 3600);
     let Some(applied) = st.applied_at else {
         let waited = now.duration_since(started).unsigned_abs();
         return (waited > stale).then(|| {
@@ -351,6 +401,11 @@ fn digest(cookies: &[Cookie]) -> String {
 
 struct Plugin {
     home: PathBuf,
+    /// This node's name.
+    node: String,
+    /// The newest request each target made for a set, from its `cookies.receive` reading: (target, set) → (when,
+    /// why).
+    wanted: Mutex<HashMap<(String, String), (Timestamp, String)>>,
     receive: Vec<Receive>,
     started: Timestamp,
     received: Mutex<HashMap<String, Received>>,
@@ -404,6 +459,8 @@ impl Handler for Shared {
                 };
                 let plugin = Arc::new(Plugin {
                     home: home.clone(),
+                    node: node.node.clone(),
+                    wanted: Mutex::new(HashMap::new()),
                     receive: config.receive.clone(),
                     started: Timestamp::now(),
                     received: Mutex::new(HashMap::new()),
@@ -419,8 +476,14 @@ impl Handler for Shared {
                 }
                 let first = self.0.lock().await.replace(plugin.clone()).is_none();
                 if first {
+                    if config.share.iter().any(|s| s.source() == Source::Browser) {
+                        tokio::spawn(subscribe_requests(peer.clone()));
+                    }
                     for s in config.share {
-                        tokio::spawn(share_loop(plugin.clone(), s, home.clone(), peer.clone()));
+                        match s.source() {
+                            Source::File => tokio::spawn(share_loop(plugin.clone(), s, home.clone(), peer.clone())),
+                            Source::Browser => tokio::spawn(browser_loop(plugin.clone(), s, peer.clone())),
+                        };
                     }
                     if roles.sync_target.is_some() || roles.sync_source.is_some() {
                         tokio::spawn(status_loop(plugin.clone(), peer.clone()));
@@ -472,6 +535,7 @@ impl Handler for Shared {
                 st.written = written;
                 st.version = a.version;
                 st.read_at = Some(body.read_at);
+                st.refresh_days = body.refresh_days;
                 st.cookies = body
                     .cookies
                     .iter()
@@ -480,6 +544,7 @@ impl Handler for Shared {
                 if errors.is_empty() {
                     st.applied_at = Some(Timestamp::now());
                     st.error = None;
+                    let _ = std::fs::remove_file(request_file(&plugin.home, &set));
                 } else {
                     st.error = Some(errors.join("; "));
                 }
@@ -535,6 +600,27 @@ impl Handler for Shared {
                 }
             }
             _ => Err(RpcError::method_not_found(method)),
+        }
+    }
+
+    async fn notification(&self, _peer: &Peer, method: &str, p: Value) {
+        if method != ext::method::READING_UPDATE {
+            return;
+        }
+        let Some(plugin) = self.0.lock().await.clone() else { return };
+        let Ok(r) = serde_json::from_value::<ext::Readings>(p) else { return };
+        for reading in r.readings.into_iter().filter(|x| x.kind == "cookies.receive") {
+            let (Some(node), Some(at)) =
+                (reading.node.clone(), reading.data["requestedAt"].as_str().and_then(|t| t.parse::<Timestamp>().ok()))
+            else {
+                continue;
+            };
+            let why = reading.data["requestWhy"].as_str().unwrap_or_default().to_string();
+            let mut wanted = plugin.wanted.lock().await;
+            let key = (node, reading.key.clone());
+            if wanted.get(&key).is_none_or(|(old, _)| *old < at) {
+                wanted.insert(key, (at, why));
+            }
         }
     }
 }
@@ -630,7 +716,13 @@ async fn share_loop(plugin: Arc<Plugin>, s: Share, home: PathBuf, peer: Peer) {
                     });
                     if d != last || due {
                         let version = now.as_millisecond() as u64;
-                        let body = Body { set: s.set.clone(), domains: s.domains.clone(), read_at: now, cookies };
+                        let body = Body {
+                            set: s.set.clone(),
+                            domains: s.domains.clone(),
+                            read_at: now,
+                            cookies,
+                            refresh_days: None,
+                        };
                         let publish = SyncPublish {
                             bundle: format!("cookies/{}", s.set),
                             version,
@@ -677,6 +769,243 @@ async fn share_loop(plugin: Arc<Plugin>, s: Share, home: PathBuf, peer: Peer) {
     }
 }
 
+/// A target's request for a fresh read, written by `fleetlayer-cookies request <set>`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Request {
+    at: Timestamp,
+    why: String,
+}
+
+fn request_file(home: &Path, set: &str) -> PathBuf {
+    home.join(".local/state/fleetlayer/cookies").join(format!("{set}.request"))
+}
+
+fn read_request(home: &Path, set: &str) -> Option<Request> {
+    std::fs::read(request_file(home, set)).ok().and_then(|b| serde_json::from_slice(&b).ok())
+}
+
+/// A reason as one plain line (it reaches the person in an approval request): printable characters, at most 300.
+fn plain_line(s: &str) -> String {
+    let s: String = s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    s.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(300).collect()
+}
+
+/// Requests from targets arrive in their `cookies.receive` readings, from any node.
+async fn subscribe_requests(peer: Peer) {
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let kinds = json!({"kinds": ["cookies.receive"]});
+    if let Err(e) = peer.request::<_, Value>(ext::method::READING_SUBSCRIBE, &kinds).await {
+        tracing::warn!("subscribing to cookies.receive readings (grant reading.subscribe): {e}");
+    }
+}
+
+/// What a `browser` share remembers per target (`~/.local/state/fleetlayer/cookies/share-<set>.json`): never values.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Delivered {
+    delivered_at: Option<Timestamp>,
+    /// The newest request it has answered.
+    answered: Option<Timestamp>,
+}
+
+/// Why a `browser` share should read for `target` now, if it should.
+fn due(d: &Delivered, wanted: Option<&(Timestamp, String)>, refresh_days: u64, now: Timestamp) -> Option<String> {
+    if let Some((at, why)) = wanted
+        && d.answered.is_none_or(|a| a < *at)
+    {
+        return Some(if why.is_empty() { "it asked".into() } else { format!("it asked: {why}") });
+    }
+    match d.delivered_at {
+        None => Some("its first delivery".into()),
+        Some(t) if now.duration_since(t).unsigned_abs() >= Duration::from_secs(refresh_days.max(1) * 86_400) => {
+            Some(format!("the {refresh_days}-day refresh"))
+        }
+        Some(_) => None,
+    }
+}
+
+/// The approval to read the browser for `target` (`sync` on `sync:cookies-from-browser/<set>@<target>`, asked each
+/// time by default): Ok(true) to go ahead, Ok(false) while it waits for the person, Err when refused.
+async fn approved(peer: &Peer, node: &str, s: &Share, target: &str, why: &str) -> Result<bool, String> {
+    let ask = |peek: bool| fleetlayer_protocol::link::AccessCheck {
+        tenant: String::new(),
+        who: format!("-@{node}"),
+        can: "sync".into(),
+        to: format!("sync:cookies-from-browser/{}@{target}", s.set),
+        why: Some(why.to_string()),
+        peek,
+    };
+    let call = |peek: bool| async move {
+        peer.request_within::<_, fleetlayer_protocol::link::AccessDecision>(
+            ext::method::ACCESS_CHECK,
+            &ask(peek),
+            Duration::from_secs(20),
+        )
+        .await
+        .map_err(|e| format!("asking the control plane (grant access.check): {}", e.message))
+    };
+    // Look first, so an approval for one read is spent only by the read itself.
+    let looked = call(true).await?;
+    if !looked.allowed {
+        if looked.reason.contains("waiting for the person") {
+            return Ok(false);
+        }
+        if !looked.reason.contains("not asked yet") {
+            return Err(looked.reason);
+        }
+    }
+    let d = call(false).await?;
+    if d.allowed {
+        return Ok(true);
+    }
+    if d.reason.contains("approv") && !d.reason.contains("refused") { Ok(false) } else { Err(d.reason) }
+}
+
+/// The `browser` source: reads the signed-in Chrome only when a target is due (it asked, its first delivery, or the
+/// refresh), and only once the person approves that read. Each round is a `cookies.share` reading.
+async fn browser_loop(plugin: Arc<Plugin>, s: Share, peer: Peer) {
+    let state_path = plugin.home.join(".local/state/fleetlayer/cookies").join(format!("share-{}.json", s.set));
+    let mut state: BTreeMap<String, Delivered> =
+        std::fs::read(&state_path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    let required: BTreeSet<String> = s.require.clone().unwrap_or_else(|| s.names.clone()).into_iter().collect();
+    let mut waiting: BTreeMap<String, String> = BTreeMap::new();
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    while !peer.is_closed() {
+        let now = Timestamp::now();
+        let mut problem: Option<String> = None;
+        for target in &s.to {
+            let d = state.get(target).cloned().unwrap_or_default();
+            let wanted = plugin.wanted.lock().await.get(&(target.clone(), s.set.clone())).cloned();
+            let Some(reason) = due(&d, wanted.as_ref(), s.refresh_days, now) else {
+                waiting.remove(target);
+                continue;
+            };
+            let why = plain_line(&format!(
+                "read {} for {} from Chrome on {} and send them to {target}, for {reason}",
+                s.names.join(", "),
+                s.domains.join(", "),
+                plugin.node
+            ));
+            match approved(&peer, &plugin.node, &s, target, &why).await {
+                Ok(false) => {
+                    waiting.insert(target.clone(), "the person's approval".into());
+                    continue;
+                }
+                Err(e) if e.starts_with("asking the control plane") => {
+                    // Not an answer: try again next round, and say so.
+                    problem = Some(format!("cookies {}: {e}", s.set));
+                    continue;
+                }
+                Err(e) => {
+                    // Refused: counted as answered, so it isn't asked again until the target asks again or the
+                    // refresh comes round.
+                    tracing::warn!(set = %s.set, target, "not reading the browser: {e}");
+                    waiting.insert(target.clone(), format!("refused: {e}"));
+                    let entry = state.entry(target.clone()).or_default();
+                    entry.answered = wanted.as_ref().map(|w| w.0).or(Some(now));
+                    entry.delivered_at.get_or_insert(now);
+                    continue;
+                }
+                Ok(true) => {}
+            }
+            waiting.remove(target);
+            let read = browser::read(&s.playwright, &s.profile, &s.domains).await;
+            let mut cookies = match read {
+                Ok(c) => c,
+                Err(e) => {
+                    problem = Some(format!("cookies {}: reading Chrome: {e}", s.set));
+                    continue;
+                }
+            };
+            cookies.retain(|c| s.names.contains(&c.name));
+            let missing: Vec<&String> = required.iter().filter(|n| !cookies.iter().any(|c| &c.name == *n)).collect();
+            if !missing.is_empty() {
+                let missing: Vec<&str> = missing.iter().map(|n| n.as_str()).collect();
+                problem = Some(format!(
+                    "cookies {}: Chrome has no {} cookie for {}; sign in there in Chrome",
+                    s.set,
+                    missing.join(" or "),
+                    s.domains.join(", ")
+                ));
+                continue;
+            }
+            let version = now.as_millisecond() as u64;
+            let count = cookies.len();
+            let body = Body {
+                set: s.set.clone(),
+                domains: s.domains.clone(),
+                read_at: now,
+                cookies,
+                refresh_days: Some(s.refresh_days),
+            };
+            let publish = SyncPublish {
+                bundle: format!("cookies/{}", s.set),
+                version,
+                secret: true,
+                targets: vec![ext::SyncTarget { node: target.clone() }],
+                items: vec![SyncItem {
+                    name: ITEM.into(),
+                    content: serde_json::to_string(&body).unwrap_or_default(),
+                    mode: Some(0o600),
+                    link: None,
+                }],
+            };
+            match peer.request_within::<_, Value>(ext::method::SYNC_PUBLISH, &publish, Duration::from_secs(90)).await {
+                Ok(_) => {
+                    tracing::info!(set = %s.set, version, domains = ?s.domains, target, cookies = count, %reason,
+                        "read from Chrome and sent");
+                    let entry = state.entry(target.clone()).or_default();
+                    entry.delivered_at = Some(now);
+                    entry.answered = wanted.as_ref().map(|w| w.0).or(entry.answered);
+                }
+                Err(e) => problem = Some(format!("cookies {}: handing the bundle to the node: {e}", s.set)),
+            }
+        }
+        if let Err(e) = write::atomic(&state_path, &serde_json::to_string_pretty(&state).unwrap_or_default()) {
+            tracing::warn!("saving {}: {e}", state_path.display());
+        }
+        if let Some(p) = &problem {
+            tracing::warn!("{p}");
+        }
+        let targets: BTreeMap<&String, Value> =
+            s.to.iter()
+                .map(|t| {
+                    let d = state.get(t).cloned().unwrap_or_default();
+                    (t, json!({"deliveredAt": d.delivered_at.map(|x| x.to_string()), "waitingFor": waiting.get(t)}))
+                })
+                .collect();
+        let data = json!({"set": s.set, "source": "browser", "domains": s.domains, "names": s.names, "to": s.to,
+            "targets": targets, "readAt": now.to_string(), "problem": problem});
+        plugin.share_problems.lock().await.insert(s.set.clone(), problem);
+        let reading = ext::Reading { kind: "cookies.share".into(), key: s.set.clone(), at: now, node: None, data };
+        peer.notify(ext::method::READING_PUBLISH, &ext::Readings { readings: vec![reading] });
+        tokio::time::sleep(Duration::from_secs(60)).await;
+    }
+}
+
+/// `fleetlayer-cookies request <set> [--why "<reason>"]`, on a target: ask the source for a fresh read. The next
+/// `cookies.receive` reading carries it; the source asks the person to approve the read.
+fn request_command(args: &[String]) -> Result<String, String> {
+    let set = args
+        .first()
+        .filter(|s| set_name_ok(s))
+        .ok_or("usage: fleetlayer-cookies request <set> [--why \"<reason>\"]")?;
+    let why = match args.get(1).map(String::as_str) {
+        Some("--why") => args.get(2).cloned().ok_or("--why needs a reason")?,
+        Some(other) => return Err(format!("unknown argument {other}")),
+        None => String::new(),
+    };
+    let home = std::env::var_os("HOME").map(PathBuf::from).ok_or("HOME isn't set")?;
+    let req = Request { at: Timestamp::now(), why: plain_line(&why) };
+    let path = request_file(&home, set);
+    write::atomic(&path, &serde_json::to_string(&req).unwrap_or_default())
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(format!(
+        "Asked for a fresh read of the {set} cookies. The machine with the browser asks the person to approve it; the \
+         files are rewritten when it arrives (check with: fleetlayer readings cookies.receive)."
+    ))
+}
+
 /// Every 30 seconds: the plugin's status (every set's problem), and a `cookies.receive` reading per received set.
 async fn status_loop(plugin: Arc<Plugin>, peer: Peer) {
     tokio::time::sleep(Duration::from_secs(5)).await;
@@ -695,6 +1024,8 @@ async fn status_loop(plugin: Arc<Plugin>, peer: Peer) {
                     Some(format!("cookies: {e} (at {}); another node tried to send this set", when(at.as_second())));
             }
             let (earliest, _, _) = check(&st.cookies, &r.required(), now.as_second());
+            // A request made with `fleetlayer-cookies request`, until a version arrives after it.
+            let request = read_request(&plugin.home, &r.set).filter(|q| st.applied_at.is_none_or(|a| a < q.at));
             readings.push(ext::Reading {
                 kind: "cookies.receive".into(),
                 key: r.set.clone(),
@@ -702,7 +1033,9 @@ async fn status_loop(plugin: Arc<Plugin>, peer: Peer) {
                 node: None,
                 data: json!({"set": r.set, "version": st.version, "appliedAt": st.applied_at.map(|t| t.to_string()),
                     "readAt": st.read_at.map(|t| t.to_string()), "cookies": st.cookies.len(),
-                    "earliestExpiry": earliest.map(when), "files": st.written, "problem": problem}),
+                    "earliestExpiry": earliest.map(when), "files": st.written, "problem": problem,
+                    "requestedAt": request.as_ref().map(|q| q.at.to_string()),
+                    "requestWhy": request.as_ref().map(|q| q.why.clone())}),
             });
             problems.extend(problem);
         }
@@ -724,6 +1057,17 @@ fn main() {
     disclaim::relaunch();
     // `fleetlayer-cookies responsible`: whether macOS holds this program itself responsible for what it reads, after
     // that relaunch, for checking a setup (docs/plugins/cookies.md).
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("request") {
+        match request_command(&args[1..]) {
+            Ok(m) => println!("{m}"),
+            Err(e) => {
+                eprintln!("fleetlayer-cookies: {e}");
+                std::process::exit(2);
+            }
+        }
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("responsible") {
         let me = std::process::id() as i32;
         match disclaim::responsible_pid() {

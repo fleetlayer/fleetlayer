@@ -13,12 +13,12 @@ platforms: [linux, macos]
 min_fleetlayer: 0.3.12
 protocol: 1
 needs: []
-grants: [sync.publish, reading.publish]
+grants: [sync.publish, reading.publish, reading.subscribe, access.check]
 config: |
   plugins:
     - name: cookies
       command: fleetlayer-cookies
-      grants: [sync.publish, reading.publish]
+      grants: [sync.publish, reading.publish, reading.subscribe, access.check]   # on the source
       config:
         share:                        # on the machine with the browser
           - { set: x, domains: [x.com], names: [auth_token, ct0], to: [server] }
@@ -29,11 +29,12 @@ config: |
 security: >-
   Whoever can read a target's files can act as you on the shared sites until the cookies expire. Only the source's
   own list of domains leaves it, sealed to each target node's key; the control plane relays ciphertext and never
-  stores it. Values never appear in logs or readings. On macOS it reads the browser's key from your Keychain, once you
-  allow it.
+  stores it. Values never appear in logs or readings. With the browser source (the default on macOS) each read of
+  your browser waits for your approval, and its Playwright process with storage access is never shared with agents.
 docs: plugins/cookies
 description: |
-  Reads Chrome, Chromium, Brave or Edge cookies (macOS and Linux) for the domains you list, and sends them whenever
-  they change. Each target writes a Netscape `cookies.txt`, a Playwright `storageState` JSON file or an env file of
+  On macOS it asks your running, signed-in Chrome itself through the Playwright MCP extension, with your approval for
+  each read and no privacy grant. On Linux it reads Chrome, Chromium, Brave or Edge's cookie file and sends the cookies
+  whenever they change. Each target writes a Netscape `cookies.txt`, a Playwright `storageState` JSON file or an env file of
   named values, mode 0600. Expired or missing cookies and a source that can't read the browser show as a failing
   plugin. Bundles are named `cookies/<set>`.

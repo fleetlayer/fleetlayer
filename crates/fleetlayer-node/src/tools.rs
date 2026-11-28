@@ -169,6 +169,12 @@ impl ToolConfig {
                 }
             }
         }
+        if self.storage_caps() {
+            return Err("Playwright MCP's storage capability (--caps storage, PLAYWRIGHT_MCP_CAPS) reads and writes every \
+                        cookie in the browser: never share it as a tool. The cookies plugin reads a site's cookies with \
+                        the person's approval instead (docs/plugins/cookies.md)"
+                .into());
+        }
         if !self.call_targets.is_empty() && !self.check_calls {
             return Err("call_targets name calls for the gate to check: set check_calls: true".into());
         }
@@ -178,6 +184,24 @@ impl ToolConfig {
             }
         }
         Ok(())
+    }
+
+    /// Playwright MCP started with its `storage` capability, which offers every cookie of the browser to whoever
+    /// calls it: `--caps=storage`, `--caps storage` (in a list with others too) or `PLAYWRIGHT_MCP_CAPS`.
+    fn storage_caps(&self) -> bool {
+        let has = |v: &str| v.split(',').any(|c| c.trim() == "storage");
+        let mut args = self.args.iter();
+        while let Some(a) = args.next() {
+            if let Some(v) = a.strip_prefix("--caps=") {
+                if has(v) {
+                    return true;
+                }
+            } else if a == "--caps" && args.next().is_some_and(|v| has(v)) {
+                return true;
+            }
+        }
+        self.env.get("PLAYWRIGHT_MCP_CAPS").is_some_and(|v| has(v))
+            || self.env_files.contains_key("PLAYWRIGHT_MCP_CAPS")
     }
 
     fn wait(&self) -> Duration {
@@ -1181,6 +1205,26 @@ mod tests {
         assert_eq!(out["result"]["tools"].as_array().unwrap().len(), 1);
         let only = ToolFilter { allow: Some(vec!["browser_snapshot".into()]), deny: vec![] };
         assert!(only.permits("browser_snapshot") && !only.permits("browser_navigate"));
+    }
+
+    #[test]
+    fn a_browser_tool_with_storage_access_is_never_shared() {
+        let t = |extra: serde_json::Value| -> ToolConfig {
+            let mut v = serde_json::json!({"name": "browser", "command": "node", "args": ["cli.js", "--extension"]});
+            v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            serde_json::from_value(v).unwrap()
+        };
+        assert!(t(serde_json::json!({})).check().is_ok());
+        assert!(t(serde_json::json!({"args": ["cli.js", "--caps=vision,pdf"]})).check().is_ok());
+        for bad in [
+            serde_json::json!({"args": ["cli.js", "--extension", "--caps=storage"]}),
+            serde_json::json!({"args": ["cli.js", "--caps", "vision, storage"]}),
+            serde_json::json!({"env": {"PLAYWRIGHT_MCP_CAPS": "storage"}}),
+            serde_json::json!({"env_files": {"PLAYWRIGHT_MCP_CAPS": "/x"}}),
+        ] {
+            let e = t(bad.clone()).check().unwrap_err();
+            assert!(e.contains("never share it as a tool"), "{bad}: {e}");
+        }
     }
 
     #[test]

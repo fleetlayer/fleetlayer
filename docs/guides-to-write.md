@@ -464,6 +464,19 @@ managers, machines that sleep.
   `security add-generic-password -A` belongs to Apple's tools' partition, so reading it from your own binary still
   prompts (and hangs a CI runner); make the test item from the test binary itself. Where it lives:
   `docs/plugins/cookies.md`, `plugins/cookies/src/chrome.rs`.
+- **Reading cookies from the running browser instead of its files: no Keychain, no Full Disk Access.** Full Disk Access
+  isn't scoped (it opens every file), so a person may rightly refuse it to a cookie reader. Playwright MCP's extension
+  connection reaches the signed-in Chrome, and its `browser_cookie_list` tool (behind `--caps=storage`, from 0.0.86)
+  returns HttpOnly cookies such as X's `auth_token`, with one blank tab opened and no navigation. Its answer has no
+  expiry or flags. The storage capability must never be on a browser tool agents can call, since it reads and writes
+  every cookie; the node refuses such a tool. Solved by the cookies plugin's `browser` source (the default on macOS):
+  its own short-lived Playwright MCP process, started only after the person approves that read
+  (`sync:cookies-from-browser/<set>@<target>`, asked `for: once` by default). Where it lives:
+  `plugins/cookies/src/browser.rs`, `docs/plugins/cookies.md`.
+- **Looking at a `for: once` approval spent it.** A peek (`access/check` with `peek: true`) renewed an approval in use
+  through the call that also spends one-use approvals, so a plugin that looked before acting used up the person's
+  approval and was asked again. Fixed in the control plane (peeks never spend). Where it lives:
+  `crates/fleetlayer-control/src/authz.rs`.
 - **macOS 27 blocks reading another app's data folder without asking, and blames the responsible process.** Reading
   Chrome's cookie file is refused (TCC's "data from other apps", a "Data Access Blocked" notification, no prompt), and
   the grant that fixes it, Full Disk Access, is checked against the *responsible process*: for a plugin, the node that

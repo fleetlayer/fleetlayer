@@ -85,6 +85,8 @@ async fn from_the_browser_database_to_the_targets_files() {
     .share
     .remove(0);
     let plugin = Plugin {
+        node: "laptop".into(),
+        wanted: Mutex::new(HashMap::new()),
         home: d.path().to_path_buf(),
         receive: vec![],
         started: Timestamp::now(),
@@ -97,7 +99,13 @@ async fn from_the_browser_database_to_the_targets_files() {
     let cookies = read_share(&plugin, &share, d.path()).await.unwrap();
     assert_eq!(cookies.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["auth_token", "ct0"]);
     // The bundle's item round-trips.
-    let body = Body { set: "x".into(), domains: share.domains.clone(), read_at: Timestamp::now(), cookies };
+    let body = Body {
+        set: "x".into(),
+        domains: share.domains.clone(),
+        read_at: Timestamp::now(),
+        cookies,
+        refresh_days: None,
+    };
     let body: Body = serde_json::from_str(&serde_json::to_string(&body).unwrap()).unwrap();
 
     let out = d.path().join("out");
@@ -133,6 +141,7 @@ fn a_file_a_person_made_is_never_overwritten() {
         domains: vec!["x.com".into()],
         read_at: Timestamp::now(),
         cookies: vec![c("auth_token"), c("ct0")],
+        refresh_days: None,
     };
     let (written, errors) = apply(&r, &body, &[]);
     assert_eq!(std::fs::read_to_string(d.path().join("x.env")).unwrap(), "MINE=1\n");
@@ -172,6 +181,16 @@ fn problems_a_target_reports() {
     assert!(receive_problem(&r, &st, hours(101), start).unwrap().contains("the auth_token cookie expired"));
     st.cookies.pop();
     assert!(receive_problem(&r, &st, hours(99), start).unwrap().contains("has no ct0 cookie"));
+    // A browser source reads only every refresh_days unasked, so its sets go stale later.
+    let kept = st.cookies.clone();
+    st.cookies = vec![seen("auth_token", None), seen("ct0", None)];
+    st.refresh_days = Some(14);
+    st.applied_at = Some(start);
+    assert_eq!(receive_problem(&r, &st, hours(15 * 24), start), None);
+    assert!(receive_problem(&r, &st, hours(16 * 24 + 1), start).unwrap().contains("is the source machine awake"));
+    st.refresh_days = None;
+    st.cookies = kept;
+    st.applied_at = Some(hours(99));
     st.error = Some("writing /x: denied".into());
     assert_eq!(receive_problem(&r, &st, hours(99), start).unwrap(), "cookies x: writing /x: denied");
 }
@@ -184,4 +203,46 @@ fn the_state_file_never_holds_values() {
     };
     let text = serde_json::to_string(&st).unwrap();
     assert!(!text.contains("value"), "{text}");
+}
+
+#[test]
+fn the_browser_source_reads_only_named_cookies_from_chrome() {
+    let ok = load(
+        &home(),
+        &json!({"share": [{"set": "x", "source": "browser", "domains": ["x.com"], "names": ["auth_token"], "to": ["s"]}]}),
+    )
+    .unwrap();
+    assert_eq!(ok.share[0].source(), Source::Browser);
+    assert_eq!(ok.share[0].refresh_days, 14);
+    assert!(ok.share[0].playwright.cli.as_deref().unwrap().starts_with("/home/alice/.local/share/browser-mcp"));
+    for bad in [
+        json!({"share": [{"set": "x", "source": "browser", "domains": ["x.com"], "to": ["s"]}]}),
+        json!({"share": [{"set": "x", "source": "browser", "browser": "brave", "domains": ["x.com"], "names": ["a"], "to": ["s"]}]}),
+    ] {
+        assert!(load(&home(), &bad).is_err(), "{bad}");
+    }
+    // The default follows the system: the browser itself on macOS, the cookie file elsewhere.
+    let default =
+        load(&home(), &json!({"share": [{"set": "x", "domains": ["x.com"], "names": ["a"], "to": ["s"]}]})).unwrap();
+    assert_eq!(default.share[0].source(), if cfg!(target_os = "macos") { Source::Browser } else { Source::File });
+}
+
+#[test]
+fn a_browser_read_is_due_on_first_delivery_a_request_or_the_refresh_only() {
+    let t = |s: i64| Timestamp::from_second(1_800_000_000 + s).unwrap();
+    let day = 86_400;
+    assert_eq!(due(&Delivered::default(), None, 14, t(0)).as_deref(), Some("its first delivery"));
+    let d = Delivered { delivered_at: Some(t(0)), answered: None };
+    assert_eq!(due(&d, None, 14, t(13 * day)), None);
+    assert_eq!(due(&d, None, 14, t(14 * day)).as_deref(), Some("the 14-day refresh"));
+    let asked = (t(100), "bird whoami says signed out".to_string());
+    assert_eq!(due(&d, Some(&asked), 14, t(200)).as_deref(), Some("it asked: bird whoami says signed out"));
+    let answered = Delivered { delivered_at: Some(t(150)), answered: Some(t(100)) };
+    assert_eq!(due(&answered, Some(&asked), 14, t(200)), None, "a request is answered once");
+}
+
+#[test]
+fn reasons_reach_the_person_as_one_plain_line() {
+    assert_eq!(plain_line("  please\nrefresh\t\u{1b}[31m now "), "please refresh [31m now");
+    assert_eq!(plain_line(&"a".repeat(500)).len(), 300);
 }
