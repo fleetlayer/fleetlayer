@@ -157,9 +157,19 @@ builds link in a fraction of the memory, which is what let the light and heavy c
 Use full debug info locally when you need a debugger.
 
 **A shared compile cache.** Twelve worktrees of the same repo compile the same dependencies twelve times.
-[sccache](https://github.com/mozilla/sccache) caches each compiled crate, so the second worktree gets most of them
-from disk. Give each project its own cache directory and server port, so it never mixes with other projects' builds on
-the same host and one project's cache size can't push out another's:
+[kache](https://github.com/kunobi-ninja/kache) (Apache-2.0) runs as Cargo's `rustc-wrapper` and restores cached
+compiler outputs into each worktree's own `target/`, as copy-on-write clones where the file system supports them
+(APFS, Btrfs, XFS, ZFS with block cloning). Every worktree keeps its own build directory and lock, so parallel builds
+never queue on one shared `target/`, and a second worktree of the same revision builds in seconds while adding little
+disk. kache manages its cache within a size budget. Watch for flags that write source paths into the output (such as
+`-C instrument-coverage` on every crate): they make units depend on the checkout's path, and then nothing is shared.
+
+```sh
+export RUSTC_WRAPPER=kache
+```
+
+Where kache isn't available, [sccache](https://github.com/mozilla/sccache) is the fallback. Give each project its own
+cache directory and server port, so it never mixes with other projects' builds on the same host:
 
 ```sh
 export RUSTC_WRAPPER=sccache
@@ -168,14 +178,15 @@ export SCCACHE_CACHE_SIZE=20G
 export SCCACHE_SERVER_PORT=4227      # a port per project
 ```
 
-`scripts/on-dev` sets these only when the host has `sccache`, so a host without it still builds.
+`scripts/on-dev` uses kache when the host has it, sccache otherwise, and neither when the host has neither, so it
+always builds.
 
 **Release builds.** Link-time optimisation needs the most memory of any build, all at the end. Run release builds
 with fewer jobs (`-j 4`), in a container with a hard limit (`docker run --memory 12g --memory-swap 12g`), and holding a
 heavy slot like any other build. That turns "several release builds link at once" from a host outage into a queue.
 
-**Check:** on the build host, with the variables above set, `sccache --show-stats` shows cache hits climbing after a
-second worktree builds. `cargo build` in a fresh worktree should take a fraction of the first one's time.
+**Check:** on the build host, a second worktree of the same revision builds in a fraction of the first one's time,
+and kache's (or sccache's) statistics show hits climbing. `cargo build` in a fresh worktree should take a fraction of the first one's time.
 
 ## 4. Cap the sessions on each machine
 

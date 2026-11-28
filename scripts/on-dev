@@ -67,11 +67,12 @@ run() {
     [ -n "$slot_id" ] && trap '"$slot" release "$slot_id" >/dev/null 2>&1 || true' RETURN
   fi
   set +e
-  # Light commands (fmt, check, clippy) get a smaller memory scope; both share a compile cache when the host has
-  # sccache (its own directory and server port, so it never mixes with other projects' builds on the host).
+  # Light commands (fmt, check, clippy) get a smaller memory scope. Both share a compile cache when the host has one:
+  # kache first (each checkout keeps its own target/, with dependency outputs restored as copy-on-write clones), else
+  # sccache in its own directory and server port, so it never mixes with other projects' builds on the host.
   local mem=12G
   [ "${FLEETLAYER_DEV_SLOT_CLASS:-heavy}" = light ] && mem=6G
-  local cache="command -v sccache >/dev/null && export RUSTC_WRAPPER=sccache SCCACHE_DIR=/opt/code/fleetlayer/sccache SCCACHE_CACHE_SIZE=20G SCCACHE_SERVER_PORT=4227;"
+  local cache="if command -v kache >/dev/null; then export RUSTC_WRAPPER=kache; elif command -v sccache >/dev/null; then export RUSTC_WRAPPER=sccache SCCACHE_DIR=/opt/code/fleetlayer/sccache SCCACHE_CACHE_SIZE=20G SCCACHE_SERVER_PORT=4227; fi;"
   ssh "$host" "cd '$remote' && export PATH=\$HOME/.cargo/bin:\$PATH && { $cache true; } && systemd-run --scope -q -p MemoryMax=$mem -p MemorySwapMax=0 nice -n 10 taskset -c 0-7 $quoted" 2>&1 |
     grep --line-buffered -v setlocale
   status=${PIPESTATUS[0]}
