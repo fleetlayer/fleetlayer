@@ -598,7 +598,7 @@ pub struct SessionStart {
     pub node: String,
     #[serde(flatten)]
     pub spec: StartSpec,
-    /// The calling session's name (its tab), or `-` for a shell.
+    /// The calling session's name (its tab), `-` for a shell, or `plugin:<name>` for one of the node's plugins.
     pub caller: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub justification: Option<String>,

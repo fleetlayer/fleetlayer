@@ -155,13 +155,109 @@ pub async fn start_session(
     // A resume may not name its tab: the policy sees the session ID in its place.
     let name = t.spec.tab.clone().or(t.spec.resume.clone()).unwrap_or_default();
     let target = format!("{name}@{}", t.node);
-    crate::authz::check_why(app, tenant, &caller, "start", &target, t.justification.as_deref()).await?;
+    // A start past its limits is refused before anything is asked or an approval spent.
+    crate::authz::start_limit_check(app, tenant, &caller, &target).await?;
+    let to_spend = check_start(app, tenant, &caller, &target, &t).await?;
     let record = crate::authz::reserve_start(app, tenant, &caller, &target).await?;
+    if !crate::approvals::spend_all(&app.db, tenant, &to_spend).await.map_err(RpcError::internal)? {
+        crate::authz::start_failed(app, record).await;
+        return Err(RpcError::refused("that start's approval was used just now: ask again"));
+    }
     let started = serve_start(app, tenant, &caller, t).await;
-    if started.is_err() {
+    if let Err(e) = &started
+        && definitely_not_started(e)
+    {
         crate::authz::start_failed(app, record).await;
     }
     started
+}
+
+/// Whether a failed start certainly didn't happen (refused, or never reached the node), so it doesn't count against
+/// the caller's limits. A timeout or a lost link may have started it, so those still count.
+fn definitely_not_started(e: &RpcError) -> bool {
+    use fleetlayer_protocol::rpc::code;
+    matches!(
+        e.code,
+        code::REFUSED
+            | code::INVALID_PARAMS
+            | code::NO_SUCH
+            | code::UNKNOWN_SESSION
+            | code::NOT_HERE
+            | code::METHOD_NOT_FOUND
+            | code::BUSY
+    )
+}
+
+/// What a start's approval is bound to and shows: its whole spec, the first prompt by its length and hash. Answers
+/// (the hash, the detail the person sees).
+pub fn start_spec(t: &l::SessionStart) -> (String, String) {
+    use sha2::Digest;
+    let prompt = t.spec.prompt.as_deref().map(|p| (p.len(), hex::encode(sha2::Sha256::digest(p.as_bytes()))));
+    let canonical = serde_json::json!({
+        "node": t.node, "tab": t.spec.tab, "cwd": t.spec.cwd, "harness": t.spec.harness, "model": t.spec.model,
+        "effort": t.spec.effort, "resume": t.spec.resume, "prompt": prompt.as_ref().map(|(_, h)| h),
+    });
+    let hash = hex::encode(sha2::Sha256::digest(canonical.to_string().as_bytes()));
+    let mut detail = match (&t.spec.tab, &t.spec.resume) {
+        (Some(tab), Some(id)) => format!("resume session {id} as {tab} on {}", t.node),
+        (None, Some(id)) => format!("resume session {id} on {}", t.node),
+        (Some(tab), None) => format!("start {tab} on {}", t.node),
+        (None, None) => format!("start a session on {}", t.node),
+    };
+    if let Some(cwd) = &t.spec.cwd {
+        detail.push_str(&format!(" in {cwd}"));
+    }
+    let how: Vec<String> = [("harness", &t.spec.harness), ("model", &t.spec.model), ("effort", &t.spec.effort)]
+        .iter()
+        .filter_map(|(k, v)| v.as_ref().map(|v| format!("{k} {v}")))
+        .collect();
+    if !how.is_empty() {
+        detail.push_str(&format!(" ({})", how.join(", ")));
+    }
+    if let Some((len, h)) = &prompt {
+        detail.push_str(&format!(", first prompt of {len} bytes (sha256 {})", &h[..12]));
+    }
+    (hash, detail)
+}
+
+/// `start` on `target` for `caller`, the approval bound to the whole spec. A resume is also checked as `start` and
+/// `read` on the session it resumes, under every name it goes by, whatever tab it's given. Answers the approvals to
+/// spend once the start is counted.
+async fn check_start(
+    app: &App,
+    tenant: &str,
+    caller: &str,
+    target: &str,
+    t: &l::SessionStart,
+) -> Result<Vec<String>, RpcError> {
+    let why = t.justification.as_deref();
+    let mut names = crate::authz::session_names(app, tenant, target).await;
+    if let Some(id) = &t.spec.resume {
+        let resumed = format!("{id}@{}", t.node);
+        crate::authz::check_why(app, tenant, caller, "read", &resumed, why).await?;
+        for n in crate::authz::session_names(app, tenant, &resumed).await {
+            if !names.contains(&n) {
+                names.push(n);
+            }
+        }
+    }
+    // Rules written for the session's other names refuse it too.
+    for alias in names.iter().skip(1) {
+        if matches!(crate::authz::dry(app, tenant, caller, "start", alias).await, crate::authz::Dry::Denied) {
+            crate::authz::check_why(app, tenant, caller, "start", alias, why).await?;
+        }
+    }
+    let canonical = names.first().map(String::as_str).unwrap_or(target);
+    let (hash, detail) = start_spec(t);
+    let call = crate::authz::CallContext { args_hash: &hash, detail: Some(&detail), audit: Some(&detail) };
+    let out = crate::authz::check_call(app, tenant, caller, "start", canonical, call, why).await?;
+    if let Some(e) = out.refusal {
+        return Err(e);
+    }
+    let mut to_spend = out.to_spend;
+    to_spend.sort();
+    to_spend.dedup();
+    Ok(to_spend)
 }
 
 /// Start or resume a session on `t.node` for `caller`, already allowed.
@@ -978,6 +1074,82 @@ mod tests {
                 let e = start_session(&app, "default", "laptop", by(bad, "five")).await.unwrap_err();
                 assert!(e.message.contains("caller"), "{bad}: {}", e.message);
             }
+        }
+
+        #[tokio::test]
+        async fn a_starts_approval_is_bound_to_what_it_starts_and_shows_it() {
+            let (app, home) = fleet().await;
+            let e = start_session(&app, "default", "laptop", req("plugin:runner", "review")).await.unwrap_err();
+            assert!(e.message.to_lowercase().contains("approv"), "{}", e.message);
+            let (id, detail): (String, Option<String>) =
+                sqlx::query_as("SELECT id, detail FROM approvals WHERE status = 'pending'")
+                    .fetch_one(&app.db)
+                    .await
+                    .unwrap();
+            let detail = detail.unwrap();
+            assert!(detail.starts_with("start review on home in /srv/app, first prompt of "), "{detail}");
+            crate::approvals::decide(&app.db, "default", &id, true, None, "person:nathan").await.unwrap().unwrap();
+            // Another folder, model or prompt under the same tab isn't what was approved.
+            let mut other = req("plugin:runner", "review");
+            other.spec.cwd = Some("/srv/other".into());
+            let e = start_session(&app, "default", "laptop", other).await.unwrap_err();
+            assert!(e.message.to_lowercase().contains("approv"), "{}", e.message);
+            let mut other = req("plugin:runner", "review");
+            other.spec.prompt = Some("something else".into());
+            assert!(start_session(&app, "default", "laptop", other).await.is_err());
+            start_session(&app, "default", "laptop", req("plugin:runner", "review")).await.unwrap();
+            assert_eq!(home.served.lock().await.len(), 1);
+        }
+
+        #[tokio::test]
+        async fn a_resume_is_checked_against_the_session_it_resumes_whatever_its_tab() {
+            let (app, home) = fleet().await;
+            let s = json!({"sessionId": "id-private", "meta": {"tab": "private", "running": false}, "ended": null});
+            crate::db::replace_sessions(&app.db, "default", "home", &[s]).await.unwrap();
+            let policy = "version: 2\ndefault: allow\nask: []\ndeny:\n  - { who: \"planning@laptop\", can: [read, start], to: [\"private@home\"] }\n";
+            crate::authz::store(&app.db, "default", policy).await.unwrap();
+            let mut r = req("planning", "innocent");
+            r.spec.resume = Some("id-private".into());
+            let e = start_session(&app, "default", "laptop", r).await.unwrap_err();
+            assert!(e.message.contains("private@home") || e.message.contains("id-private"), "{}", e.message);
+            assert!(home.served.lock().await.is_empty());
+        }
+
+        #[tokio::test]
+        async fn a_start_past_its_limit_asks_nothing_spends_nothing_and_is_audited() {
+            let (app, _home) = fleet().await;
+            let policy = "version: 2\ndefault: allow\nlimits:\n  - { who: \"plugin:runner@laptop\", starts_per_hour: 1 }\n";
+            crate::authz::store(&app.db, "default", policy).await.unwrap();
+            sqlx::query(
+                "INSERT INTO session_starts (tenant, who, target, at) VALUES ('default', 'plugin:runner@laptop', 'x@home', ?)",
+            )
+            .bind(crate::db::now_ms())
+            .execute(&app.db)
+            .await
+            .unwrap();
+            let e = start_session(&app, "default", "laptop", req("plugin:runner", "review")).await.unwrap_err();
+            assert!(e.message.contains("limit"), "{}", e.message);
+            let pending: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM approvals").fetch_one(&app.db).await.unwrap();
+            assert_eq!(pending, 0, "nothing was asked");
+            let audited: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM audit_log WHERE verb = 'start' AND decision = 'denied' AND reason LIKE '%limit%'",
+            )
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+            assert_eq!(audited, 1);
+            // Another tenant's count of the same name doesn't count here.
+            sqlx::query("UPDATE session_starts SET tenant = 'other'").execute(&app.db).await.unwrap();
+            assert!(crate::authz::start_limit_check(&app, "default", "plugin:runner@laptop", "y@home").await.is_ok());
+        }
+
+        #[test]
+        fn only_a_start_that_certainly_didnt_happen_is_taken_back() {
+            use fleetlayer_protocol::rpc::code;
+            assert!(definitely_not_started(&RpcError::refused("no")));
+            assert!(definitely_not_started(&RpcError::not_here("offline")));
+            assert!(!definitely_not_started(&RpcError::internal("timed out")));
+            assert!(!definitely_not_started(&RpcError::new(code::CLOSED, "link lost")));
         }
 
         #[tokio::test]

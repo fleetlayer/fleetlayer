@@ -312,7 +312,7 @@ goes in as it is.
 `_fleetlayer.dev/session/start` `{on?, tab?, cwd?, harness?, prompt?, resume?, model?, effort?, why?}` → the same
 answer, with the grant `session.start`. It always goes through the control plane, even for its own node (`on` defaults
 to it), so the policy decides `start` for `plugin:<name>@<node>`, an `ask:` rule waits for the person's approval like
-any other, the policy's start limits apply (`starts_per_hour`, `starts_per_day` in `limits:`), and it's audited. The
+any other (bound to the whole start: node, tab, folder, harness, model, effort, resumed session, prompt hash), the policy's start limits apply (`starts_per_hour`, `starts_per_day` in `limits:`), and it's audited. The
 `prompt` arrives as a message from the plugin. A node that isn't linked can't. Calls on the node's socket are decided as
 the node's shell, `-@<node>`, so a runner that should be limited and approved as itself uses this method, not the
 socket.

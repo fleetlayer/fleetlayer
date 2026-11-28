@@ -7,4 +7,5 @@ CREATE TABLE session_starts (
     target TEXT NOT NULL,
     at INTEGER NOT NULL
 );
-CREATE INDEX session_starts_who ON session_starts (who, at);
+CREATE INDEX session_starts_who ON session_starts (tenant, who, at);
+CREATE INDEX session_starts_at ON session_starts (at);

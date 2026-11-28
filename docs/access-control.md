@@ -158,7 +158,10 @@ through a broad rule: `allow: [{ who: "plugin:runner@<node>", can: answer }]` wi
 its limit is refused with the limit named, and published as an `access.denied` event; a start that fails doesn't count.
 Start counts are kept in the control plane's database, so a daily limit holds across a restart. A session started from
 a shell or a session on its own node, through the node's socket, isn't decided by the control plane and isn't counted:
-give a runner the plugin method so its starts are decided and counted as `plugin:<name>@<node>`.
+give a runner the plugin method so its starts are decided and counted as `plugin:<name>@<node>`. Like every rule
+about a node's plugin, the cap guards against mistakes, not against the node itself: any process of the node's Unix
+user can use the node's socket, so a runner that must be held to its cap runs under a Unix user of its own, with its
+own node, where the agents can't reach its socket.
 
 ## Asking the person: approval and justification
 

@@ -886,56 +886,103 @@ pub async fn within_limits(app: &App, home: &str, who: &str, to: &str) -> Result
     Ok(())
 }
 
-/// Count a start by `who` against its start limits (the tightest of its tenants'), refusing one past them. The start
-/// is recorded (counted and added in one statement, so two at once can't both pass): answers its record's ID, for
-/// [`start_failed`] to take back when the start doesn't happen, or None when no limit applies. `home` is where a refusal
-/// is published.
-pub async fn reserve_start(app: &App, home: &str, who: &str, target: &str) -> Result<Option<i64>, RpcError> {
+/// The tightest start limits for `who` across its tenants: (per hour, per day).
+async fn start_limits(app: &App, who: &str) -> Result<(Option<u32>, Option<u32>), RpcError> {
     let (mut per_hour, mut per_day): (Option<u32>, Option<u32>) = (None, None);
     for p in policies_of(app, who).await.map_err(RpcError::internal)? {
         let (h, d) = p.start_limits_for(who);
         per_hour = h.map_or(per_hour, |h| Some(per_hour.map_or(h, |p| p.min(h))));
         per_day = d.map_or(per_day, |d| Some(per_day.map_or(d, |p| p.min(d))));
     }
+    Ok((per_hour, per_day))
+}
+
+const HOUR_MS: i64 = 3600 * 1000;
+const DAY_MS: i64 = 24 * HOUR_MS;
+
+/// Refuse a start past `who`'s limits: published as `access.denied` and written to the audit log.
+async fn start_limit_refusal(app: &App, home: &str, who: &str, target: &str, limits: (Option<u32>, Option<u32>)) -> RpcError {
+    let (n, window) = match limits {
+        (Some(h), Some(d)) => (format!("{h} an hour or {d} a day"), "the last hour or day"),
+        (Some(h), None) => (format!("{h}"), "the last hour"),
+        (_, d) => (format!("{}", d.unwrap_or(0)), "the last 24 hours"),
+    };
+    let reason = format!("{who} has started its limit of sessions in {window} ({n}, access policy `limits:`)");
+    crate::route::denied(app, home, who, target, "start (start limit)").await;
+    let entry = crate::audit::Entry {
+        decision: "denied".into(),
+        subject: who.into(),
+        verb: "start".into(),
+        target: target.into(),
+        reason: reason.clone(),
+    };
+    if let Err(e) = app.audit.record(&app.db, home, entry).await {
+        tracing::error!(target, "a start limit's refusal couldn't be written to the audit log: {e}");
+    }
+    RpcError::refused(format!("{reason}; try again later"))
+}
+
+/// Before a start is decided (and before an approval is asked for or spent): refuse it when `who` is at its start
+/// limits in `home` already.
+pub async fn start_limit_check(app: &App, home: &str, who: &str, target: &str) -> Result<(), RpcError> {
+    let limits = start_limits(app, who).await?;
+    if limits == (None, None) {
+        return Ok(());
+    }
+    let now = now_ms();
+    let count = |since: i64| {
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM session_starts WHERE tenant = ? AND who = ? AND at > ?")
+            .bind(home)
+            .bind(who)
+            .bind(since)
+            .fetch_one(&app.db)
+    };
+    let hour = count(now - HOUR_MS).await.map_err(|e| RpcError::internal(e.to_string()))?;
+    let day = count(now - DAY_MS).await.map_err(|e| RpcError::internal(e.to_string()))?;
+    if limits.0.is_some_and(|h| hour >= i64::from(h)) || limits.1.is_some_and(|d| day >= i64::from(d)) {
+        return Err(start_limit_refusal(app, home, who, target, limits).await);
+    }
+    Ok(())
+}
+
+/// Count a start by `who` in `home` against its start limits (the tightest of its tenants'), once it's allowed. It's
+/// counted and added in one statement, so two at once can't both pass: answers its record's ID, for [`start_failed`]
+/// to take back when the node definitely didn't start it, or None when no limit applies.
+pub async fn reserve_start(app: &App, home: &str, who: &str, target: &str) -> Result<Option<i64>, RpcError> {
+    let limits = start_limits(app, who).await?;
+    let (per_hour, per_day) = limits;
     if per_hour.is_none() && per_day.is_none() {
         return Ok(None);
     }
-    let (now, hour, day) = (now_ms(), 3600 * 1000, 24 * 3600 * 1000);
-    let _ = sqlx::query("DELETE FROM session_starts WHERE at < ?").bind(now - day).execute(&app.db).await;
+    let now = now_ms();
+    let _ = sqlx::query("DELETE FROM session_starts WHERE at < ?").bind(now - DAY_MS).execute(&app.db).await;
     let r = sqlx::query(
         "INSERT INTO session_starts (tenant, who, target, at) SELECT ?, ?, ?, ?
-         WHERE (SELECT COUNT(*) FROM session_starts WHERE who = ? AND at > ?) < ?
-           AND (SELECT COUNT(*) FROM session_starts WHERE who = ? AND at > ?) < ?",
+         WHERE (SELECT COUNT(*) FROM session_starts WHERE tenant = ? AND who = ? AND at > ?) < ?
+           AND (SELECT COUNT(*) FROM session_starts WHERE tenant = ? AND who = ? AND at > ?) < ?",
     )
     .bind(home)
     .bind(who)
     .bind(target)
     .bind(now)
+    .bind(home)
     .bind(who)
-    .bind(now - hour)
+    .bind(now - HOUR_MS)
     .bind(i64::from(per_hour.unwrap_or(u32::MAX)))
+    .bind(home)
     .bind(who)
-    .bind(now - day)
+    .bind(now - DAY_MS)
     .bind(i64::from(per_day.unwrap_or(u32::MAX)))
     .execute(&app.db)
     .await
     .map_err(|e| RpcError::internal(e.to_string()))?;
     if r.rows_affected() == 0 {
-        let (n, window) = match (per_hour, per_day) {
-            (Some(h), Some(d)) => (format!("{h} an hour or {d} a day"), "the last hour or day"),
-            (Some(h), None) => (format!("{h}"), "the last hour"),
-            (None, Some(d)) => (format!("{d}"), "the last 24 hours"),
-            (None, None) => unreachable!(),
-        };
-        crate::route::denied(app, home, who, target, "start (start limit)").await;
-        return Err(RpcError::refused(format!(
-            "{who} has started its limit of sessions in {window} ({n}, access policy `limits:`); try again later"
-        )));
+        return Err(start_limit_refusal(app, home, who, target, limits).await);
     }
     Ok(Some(r.last_insert_rowid()))
 }
 
-/// A start counted by [`reserve_start`] didn't happen: it no longer counts.
+/// A start counted by [`reserve_start`] that the node definitely didn't make: it no longer counts.
 pub async fn start_failed(app: &App, record: Option<i64>) {
     if let Some(id) = record {
         let _ = sqlx::query("DELETE FROM session_starts WHERE id = ?").bind(id).execute(&app.db).await;
