@@ -513,6 +513,11 @@ async fn sign_in(cfg: &Config, node: &str, dir: &Path) -> Result<Client, Restart
             tracing::info!(user = %cfg.user, device = %session.meta.device_id, "signed in to Matrix with a new device");
         }
     }
+    if !client.encryption().backups().are_enabled().await {
+        tracing::info!(
+            "room key backup is off for this device (the plugin doesn't set one up): keys stay in its own store"
+        );
+    }
     Ok(client)
 }
 

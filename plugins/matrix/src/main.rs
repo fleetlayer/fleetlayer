@@ -203,12 +203,17 @@ fn node_plugin_config(path: &Path, name: Option<&str>) -> anyhow::Result<Config>
     Ok(serde_json::from_value(entry["config"].clone())?)
 }
 
+/// The log filter when `RUST_LOG` isn't set. matrix-sdk tries to upload room keys to a key backup after every sync
+/// whether or not the device has a backup key, and warns each time it has none (every 30 seconds): the plugin never
+/// sets up key backup, so that warning is silenced here and `reader::sign_in` says it once instead.
+pub const LOG_FILTER: &str = "info,matrix_sdk_crypto::backups=error";
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| LOG_FILTER.into()))
         .init();
     let home = home();
     match args.command {
@@ -362,5 +367,13 @@ mod tests {
         let cfg = node_plugin_config(&p, None).unwrap();
         assert_eq!(cfg.rooms[0].room, "#alerts:m");
         assert!(node_plugin_config(&p, Some("nope")).is_err());
+    }
+
+    #[test]
+    fn the_default_log_filter_silences_only_the_key_backup_warning() {
+        let f = tracing_subscriber::EnvFilter::try_new(LOG_FILTER).expect("the default filter parses");
+        let shown = f.to_string();
+        assert!(shown.contains("matrix_sdk_crypto::backups=error"), "{shown}");
+        assert!(shown.starts_with("info") || shown.contains(",info") || shown.contains("info,"), "{shown}");
     }
 }
