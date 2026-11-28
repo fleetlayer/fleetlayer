@@ -299,7 +299,9 @@ through the control plane (`link/session_start` → `link/session_serve`, [link.
    isn't absolute, doesn't exist, or is the home folder;
 4. asks the harness plugins for that harness to get the folder ready (`_fleetlayer.dev/harness/prepare`);
 5. builds the agent's arguments: its own `harnesses.<harness>.args` from `node.yaml`, then Fleetlayer's
-   (`--name <tab>`, `--resume <id>` for Claude Code; `resume <id>` for Codex). A caller can't send arguments;
+   (`--name <tab>`, `--resume <id>` for Claude Code; `resume <id>` for Codex; `--name <tab>`, `--session <id>` for
+   pi; `--resume=<id>` for oh-my-pi; `--session <id>` for OpenCode; `--resume <id>` for Cursor and Gemini CLI). A
+   caller can't send arguments;
 6. asks the session manager to `open`, and answers once the session is listed (up to 15 seconds after it opened).
 
 A `prompt` from a session, or from another node, arrives rendered as a message from the caller (section 5's header and

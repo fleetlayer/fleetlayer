@@ -137,7 +137,9 @@ fleetlayer session resume <session-id> --prompt "Carry on from where you stopped
 
 The folder must be absolute, or start with `~/` for the home folder of the machine it runs on (not the home folder
 itself); a tab name already running is refused. `--model` and `--effort` (low, medium, high, xhigh, max) choose the
-agent's model and thinking effort, on start and resume; left out, the agent's own defaults. A resume that fails (the
+agent's model and thinking effort, on start and resume; left out, the agent's own defaults. `--harness` takes
+`claude` (the default), `codex`, `pi`, `omp`, `opencode`, `cursor` or `gemini` (docs/harnesses.md says what works with
+each); OpenCode, Cursor and Gemini take `--model` but refuse `--effort`. A resume that fails (the
 agent has no such session) closes the tab it opened and says the agent's own last line. It answers once the
 agent takes input and never takes focus from the person. The node adds the agent's permission flags from its own
 config: you can't pass any. Starting a session on another node asks the person first by default.

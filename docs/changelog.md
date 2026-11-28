@@ -30,6 +30,14 @@ Most releases need only the installer or a node's own update. These need more, o
   their laptop's screen lock and idle time, their looks at pages on the phone, what they told any session, planned
   absences and their night. Agents check `fleetlayer presence` before background work nobody may read, and record it
   when the person says they're going out. It ships in v0.4.2.
+- **pi, OpenCode, Gemini CLI and Cursor** (`fleetlayer-harness`): a harness plugin for each. pi and OpenCode take
+  messages through their own API, shown in the person's tab, and report permission prompts and questions as they
+  happen; Gemini CLI and Cursor report through their hooks and are typed into. All four get transcripts, folder trust
+  and resume by ID, and `fleetlayer session start --harness pi|omp|opencode|cursor|gemini` starts them with their own
+  flags. `fleetlayer up` adds a plugin for each one installed. What works with each: [Harnesses](harnesses.md). It
+  ships in v0.4.2.
+- A harness plugin that names the pane a session runs in joins that session to the session manager's unnamed entry
+  for the pane, and herdr's pi sessions are listed by their ID instead of their file's path.
 
 ## v0.4.1 (28 November 2026)
 

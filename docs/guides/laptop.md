@@ -26,7 +26,8 @@ Dashboard login key: ~/.local/state/fleetlayer/dashboard/login
 
 It also adds your sessions to the fleet: the herdr plugin when [herdr](https://herdr.dev) is installed, the
 [Rex](../plugins/rex.md) plugin when Rex is, the [tmux](../plugins/tmux.md) plugin when tmux is, and the Claude Code
-plugin when Claude Code is, and says which it added or skipped and why. Then `fleetlayer sessions` lists them, other
+plugin when Claude Code is, a [harness plugin](../harnesses.md) for each of pi, OpenCode, Gemini CLI and Cursor's CLI
+it finds, and says which it added or skipped and why. Then `fleetlayer sessions` lists them, other
 machines can message them, and `fleetlayer session start` opens new ones. Session summaries stay off, since
 each one runs Claude Code and spends tokens: `fleetlayer up --summaries` turns them on.
 

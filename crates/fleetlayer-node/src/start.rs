@@ -286,6 +286,12 @@ fn agent_args(harness: &str, own: &[String], tab: &str, resume: Option<&str>) ->
         ("claude", None) => a.extend(["--name".into(), tab.into()]),
         ("claude", Some(id)) => a.extend(["--name".into(), tab.into(), "--resume".into(), id.into()]),
         ("codex", Some(id)) => a.extend(["resume".into(), id.into()]),
+        // pi and oh-my-pi show the tab's name as the session's.
+        ("pi", None) => a.extend(["--name".into(), tab.into()]),
+        ("pi", Some(id)) => a.extend(["--name".into(), tab.into(), "--session".into(), id.into()]),
+        ("omp", Some(id)) => a.push(format!("--resume={id}")),
+        ("opencode", Some(id)) => a.extend(["--session".into(), id.into()]),
+        ("cursor" | "gemini", Some(id)) => a.extend(["--resume".into(), id.into()]),
         (_, None) => {}
         (h, Some(_)) => return Err(RpcError::refused(format!("Fleetlayer doesn't know how to resume a {h} session"))),
     }
@@ -326,6 +332,33 @@ fn model_args(harness: &str, model: Option<&str>, effort: Option<&str>) -> Resul
             }
             if let Some(e) = effort {
                 a.extend(["-c".into(), format!("model_reasoning_effort={e}")]);
+            }
+        }
+        // `--model X`, and pi's thinking level as the effort.
+        "pi" | "omp" => {
+            if let Some(m) = model {
+                a.extend(["--model".into(), m.into()]);
+            }
+            if let Some(e) = effort {
+                a.extend(["--thinking".into(), e.into()]);
+            }
+        }
+        // A model and no effort setting: OpenCode's TUI takes `provider/model`, Cursor's effort is part of some
+        // models' names, Gemini's thinking budget lives in its settings.
+        "opencode" | "cursor" | "gemini" if effort.is_some() => {
+            return Err(RpcError::refused(format!(
+                "Fleetlayer can't choose a {harness} session's effort: pick a model that has it, or set it in \
+                 {harness}'s own settings"
+            )));
+        }
+        "opencode" | "gemini" => {
+            if let Some(m) = model {
+                a.extend(["-m".into(), m.into()]);
+            }
+        }
+        "cursor" => {
+            if let Some(m) = model {
+                a.extend(["--model".into(), m.into()]);
             }
         }
         h if model.is_some() || effort.is_some() => {
@@ -411,6 +444,14 @@ mod tests {
         assert_eq!(agent_args("codex", &["--x".into()], "t", Some("s1")).unwrap().join(" "), "--x resume s1");
         assert!(agent_args("codex", &[], "t", None).unwrap().is_empty());
         assert!(agent_args("other", &[], "t", Some("s1")).is_err());
+        assert_eq!(agent_args("pi", &[], "t", None).unwrap().join(" "), "--name t");
+        assert_eq!(agent_args("pi", &[], "t", Some("s1")).unwrap().join(" "), "--name t --session s1");
+        assert_eq!(agent_args("omp", &[], "t", Some("s1")).unwrap().join(" "), "--resume=s1");
+        assert_eq!(agent_args("opencode", &[], "t", Some("ses_1")).unwrap().join(" "), "--session ses_1");
+        assert_eq!(agent_args("cursor", &[], "t", Some("c1")).unwrap().join(" "), "--resume c1");
+        assert_eq!(agent_args("gemini", &[], "t", Some("g1")).unwrap().join(" "), "--resume g1");
+        assert!(agent_args("gemini", &[], "t", None).unwrap().is_empty());
+        assert!(agent_args("omp", &[], "t", Some("--yolo")).is_err());
         // A session ID can't smuggle in a flag.
         assert!(agent_args("claude", &[], "t", Some("--dangerously-skip-permissions")).is_err());
         assert!(agent_args("claude", &[], "t", Some("a b")).is_err());
@@ -455,6 +496,12 @@ mod tests {
         assert!(model_args("codex", None, Some("high -c sandbox_mode=danger-full-access")).is_err());
         assert!(model_args("codex", None, Some("high\nx")).is_err());
         assert!(model_args("claude", Some("claude-opus-5-5[1m]"), None).is_ok());
+        assert_eq!(model_args("pi", Some("sonnet"), Some("high")).unwrap().join(" "), "--model sonnet --thinking high");
+        assert_eq!(model_args("opencode", Some("anthropic/x"), None).unwrap().join(" "), "-m anthropic/x");
+        assert_eq!(model_args("gemini", Some("gemini-3-pro"), None).unwrap().join(" "), "-m gemini-3-pro");
+        assert_eq!(model_args("cursor", Some("gpt-6"), None).unwrap().join(" "), "--model gpt-6");
+        assert!(model_args("cursor", None, Some("high")).is_err());
+        assert!(model_args("gemini", Some("x"), Some("high")).is_err());
     }
 
     #[test]

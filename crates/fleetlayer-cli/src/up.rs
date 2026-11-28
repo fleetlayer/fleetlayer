@@ -366,14 +366,25 @@ pub fn gateway_unit(gateway_bin: &Path, gateway_yaml: &Path) -> Unit {
 /// The session plugins `up` adds: herdr's when herdr is installed, Rex's when Rex is, tmux's when tmux is, Claude
 /// Code's when Claude Code is, summaries when asked for. herdr, Rex, tmux and summaries carry the absolute path of the
 /// program they run (herdr, rex, tmux, claude), so a service PATH that differs from the shell's can't hide it.
+/// `harnesses`: the other agents installed here that `fleetlayer-harness` speaks for (pi, opencode, gemini, cursor),
+/// each with its program.
 #[derive(Debug, Clone, Default)]
 pub struct SessionPlugins {
     pub herdr: Option<PathBuf>,
     pub rex: Option<PathBuf>,
     pub tmux: Option<PathBuf>,
     pub claude_code: bool,
+    pub harnesses: Vec<(&'static str, PathBuf)>,
     pub summaries: Option<PathBuf>,
 }
+
+/// The harnesses `fleetlayer-harness` speaks for: its name for each, the programs that run it, and a line for node.yaml.
+const HARNESSES: &[(&str, &[&str], &str)] = &[
+    ("pi", &["pi"], "pi: messages through pi's own API, its transcripts and dialogs"),
+    ("opencode", &["opencode"], "OpenCode: messages through its own API, its transcripts, permissions and questions"),
+    ("gemini", &["gemini"], "Gemini CLI: its transcripts and permission prompts, from its hooks"),
+    ("cursor", &["cursor-agent", "agent"], "Cursor's CLI: its transcripts, from its hooks"),
+];
 
 /// The dashboard's files, for `node_yaml_text`.
 pub struct DashboardFiles<'a> {
@@ -485,6 +496,15 @@ pub fn node_yaml_text(
     if sessions.claude_code {
         y.push_str("  # Claude Code's own view of each session (status, transcript), and starting sessions.\n  - name: claude-code\n    command: fleetlayer-claude-code\n");
     }
+    for (name, program) in &sessions.harnesses {
+        let about = HARNESSES.iter().find(|h| h.0 == *name).map_or("", |h| h.2);
+        y.push_str(&format!(
+            "  # {about} (docs/harnesses.md).\n  - name: {name}\n    command: fleetlayer-harness\n    args: [{name}]\n"
+        ));
+        if *name == "opencode" {
+            y.push_str(&format!("    config:\n      program: {}\n", yaml_str(&program.display().to_string())));
+        }
+    }
     let hint = if sessions.claude_code {
         "# Flags for every session `fleetlayer session start` opens here (left out: Claude Code's default mode).\n# harnesses:\n#   claude: { args: [--permission-mode, auto] }\n"
     } else {
@@ -560,7 +580,22 @@ fn detect_sessions(want_summaries: bool) -> (SessionPlugins, Vec<String>) {
     if want_summaries && summaries.is_none() {
         skipped.push("summaries: needs Claude Code and fleetlayer-summaries".into());
     }
-    (SessionPlugins { herdr, rex, tmux, claude_code, summaries }, skipped)
+    // pi, OpenCode, Gemini CLI, Cursor: added when installed; their absence isn't worth a line.
+    let harness_bin = find_bin("fleetlayer-harness").is_ok();
+    let mut harnesses = vec![];
+    for (name, programs, _) in HARNESSES {
+        // Cursor's `agent` is a common name: only Cursor's when `cursor-agent` sits beside it.
+        let found = programs
+            .iter()
+            .find_map(|p| on_path(p))
+            .filter(|p| *name != "cursor" || p.with_file_name("cursor-agent").exists());
+        match found {
+            Some(program) if harness_bin => harnesses.push((*name, program)),
+            Some(_) => skipped.push(format!("{name}: fleetlayer-harness isn't installed next to fleetlayer")),
+            None => {}
+        }
+    }
+    (SessionPlugins { herdr, rex, tmux, claude_code, harnesses, summaries }, skipped)
 }
 
 /// Whether a `rex` on PATH is Superlogical's: Debian, Ubuntu and Fedora have an unrelated Perl tool named rex.
@@ -741,6 +776,7 @@ pub async fn up(mut a: UpArgs) -> anyhow::Result<()> {
         ]
         .into_iter()
         .filter_map(|(n, on)| on.then_some(n))
+        .chain(sessions.harnesses.iter().map(|(n, _)| *n))
         .collect();
         if !added.is_empty() {
             println!("Session plugins: {}.", added.join(", "));
@@ -782,6 +818,10 @@ pub async fn up(mut a: UpArgs) -> anyhow::Result<()> {
             ("tmux", sessions.tmux.is_none()),
             ("claude-code", !sessions.claude_code),
             ("summaries", sessions.summaries.is_none()),
+            ("pi", !sessions.harnesses.iter().any(|h| h.0 == "pi")),
+            ("opencode", !sessions.harnesses.iter().any(|h| h.0 == "opencode")),
+            ("gemini", !sessions.harnesses.iter().any(|h| h.0 == "gemini")),
+            ("cursor", !sessions.harnesses.iter().any(|h| h.0 == "cursor")),
         ] {
             if !flag && !text.contains(&format!("name: {plugin}")) {
                 notes.push(format!(
@@ -989,6 +1029,7 @@ mod tests {
                 rex: Some("/h/.local/bin/rex".into()),
                 tmux: Some("/usr/bin/tmux".into()),
                 claude_code: true,
+                harnesses: vec![("pi", "/h/.npm/bin/pi".into()), ("opencode", "/h/.npm/bin/opencode".into())],
                 summaries: None,
             },
         );
@@ -1004,7 +1045,10 @@ mod tests {
         assert_eq!(v["plugins"][4]["name"], "tmux");
         assert_eq!(v["plugins"][4]["config"]["program"], "/usr/bin/tmux");
         assert_eq!(v["plugins"][5]["command"], "fleetlayer-claude-code");
-        assert!(v["plugins"].get(6).is_none(), "summaries only when asked for");
+        assert_eq!((v["plugins"][6]["name"].as_str(), v["plugins"][6]["args"][0].as_str()), (Some("pi"), Some("pi")));
+        assert_eq!(v["plugins"][7]["command"], "fleetlayer-harness");
+        assert_eq!(v["plugins"][7]["config"]["program"], "/h/.npm/bin/opencode");
+        assert!(v["plugins"].get(8).is_none(), "summaries only when asked for");
         assert!(y.contains("# harnesses:") && v.get("harnesses").is_none(), "a commented hint only");
         let y = node_yaml_text(
             "ws://x/v1/link",

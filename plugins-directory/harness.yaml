@@ -1,0 +1,32 @@
+name: harness
+summary: pi, OpenCode, Gemini CLI and Cursor's CLI as Fleetlayer harnesses - messages, transcripts, what a session waits on, starting sessions.
+kind: plugin
+roles: [harness]
+ships_with_fleetlayer: true
+status: in progress
+licence: FSL-1.1-ALv2
+maintainer: Fleetlayer
+source: https://github.com/fleetlayer/fleetlayer/tree/main/plugins/harness
+install: bundled
+command: fleetlayer-harness
+platforms: [linux, macos]
+min_fleetlayer: 0.4.2
+protocol: 1
+needs: [pi, OpenCode 1, Gemini CLI or Cursor's CLI]
+grants: []
+config: |
+  plugins:
+    - name: pi          # one entry per harness you use
+      command: fleetlayer-harness
+      args: [pi]        # pi, opencode, gemini or cursor
+security: >-
+  Installs a pi extension or an OpenCode plugin that opens a Unix socket (0600) inside each agent process, or adds hooks
+  to Gemini CLI's or Cursor's settings that pass events to the plugin's socket. Anything the node's Unix user runs can
+  deliver a message through those sockets, as it could type into the agents' terminals. It writes transcript copies
+  under ~/.local/state/fleetlayer/harness/, and trusts the folder a session is started in.
+docs: plugins/harness
+description: |
+  One binary, one plugin per harness. pi and OpenCode take messages through their own API, so a message shows in the
+  person's tab without anything typed into it, and report permission prompts and questions as they happen. Gemini
+  CLI and Cursor report through their hooks, and messages to them are typed in. All four get transcripts in one shape,
+  folder trust before a session starts there, and resume by session ID. Use it beside a session manager such as herdr.

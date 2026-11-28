@@ -69,11 +69,15 @@ pub enum Role {
 pub struct Registry {
     sessions: RwLock<BTreeMap<String, Session>>,
     changes: broadcast::Sender<Change>,
+    /// Sessions a session manager can't name (`@<address>`) that a harness plugin named by their address: the unnamed
+    /// ID, then the harness's ID and the plugin that said so. A harness whose agent the manager doesn't recognise (Gemini
+    /// CLI in herdr) knows its pane from the agent's environment, so the two reports join up.
+    aliases: std::sync::Mutex<std::collections::HashMap<String, (String, String)>>,
 }
 
 impl Default for Registry {
     fn default() -> Self {
-        Registry { sessions: RwLock::default(), changes: broadcast::channel(1024).0 }
+        Registry { sessions: RwLock::default(), changes: broadcast::channel(1024).0, aliases: Default::default() }
     }
 }
 
@@ -120,11 +124,56 @@ impl Registry {
         let _ = self.changes.send(c);
     }
 
+    /// The ID a session goes by: a harness's own for an unnamed one it named.
+    fn named(&self, id: &str) -> String {
+        if !id.starts_with('@') {
+            return id.to_string();
+        }
+        self.aliases.lock().expect("aliases").get(id).map(|(real, _)| real.clone()).unwrap_or_else(|| id.to_string())
+    }
+
+    /// Take a harness plugin's names for unnamed sessions (its entries that carry an address), and move each unnamed
+    /// session listed so far to its real ID.
+    fn take_names(&self, plugin: &str, list: &[SessionInfo], sessions: &mut BTreeMap<String, Session>) {
+        let mut aliases = self.aliases.lock().expect("aliases");
+        aliases.retain(|_, (_, p)| p != plugin);
+        for info in list {
+            let Some(address) = meta_of(info).address.filter(|_| !info.session_id.starts_with('@')) else { continue };
+            let unnamed = format!("@{address}");
+            aliases.insert(unnamed.clone(), (info.session_id.clone(), plugin.to_string()));
+            let Some(mut from) = sessions.remove(&unnamed) else { continue };
+            match sessions.get_mut(&info.session_id) {
+                Some(to) => {
+                    to.manager = from.manager.take();
+                    to.cwd = from.cwd.take().or(to.cwd.take());
+                    to.title = from.title.take().or(to.title.take());
+                    to.updated_at = from.updated_at.or(to.updated_at);
+                    let (prompt, background, deliverable, turn) =
+                        (to.meta.prompt.take(), to.meta.background.take(), to.meta.deliverable, to.meta.turn.take());
+                    to.meta = from.meta;
+                    take_turn(&mut to.meta.turn, turn);
+                    (to.meta.prompt, to.meta.background, to.meta.deliverable) = (prompt, background, deliverable);
+                    to.meta.named = Some(true);
+                    to.ended = from.ended;
+                }
+                None => {
+                    from.session_id = info.session_id.clone();
+                    from.meta.named = Some(true);
+                    sessions.insert(info.session_id.clone(), from);
+                }
+            }
+        }
+    }
+
     /// A plugin's full list: sessions it no longer lists are dropped from its role (and dropped entirely when no
     /// plugin reports them), except ended ones, which stay listed for a while.
-    pub async fn replace(&self, plugin: &str, role: Role, list: Vec<SessionInfo>) {
+    pub async fn replace(&self, plugin: &str, role: Role, mut list: Vec<SessionInfo>) {
         let now = Timestamp::now();
         let mut sessions = self.sessions.write().await;
+        match role {
+            Role::Manager => list.iter_mut().for_each(|i| i.session_id = self.named(&i.session_id)),
+            Role::Harness => self.take_names(plugin, &list, &mut sessions),
+        }
         let listed: std::collections::HashSet<String> = list.iter().map(|i| i.session_id.clone()).collect();
         for info in list {
             let meta = meta_of(&info);
@@ -151,13 +200,19 @@ impl Registry {
                     take_turn(&mut turn, meta.turn.clone());
                     entry.meta = meta;
                     entry.meta.turn = turn;
+                    if entry.meta.named == Some(false) && !entry.session_id.starts_with('@') {
+                        entry.meta.named = Some(true); // a harness named it (`take_names`)
+                    }
                     entry.meta.deliverable = entry.meta.deliverable.or(deliverable);
                     entry.meta.prompt = prompt;
                     entry.meta.background = background;
                     entry.ended = None;
                 }
                 Role::Harness => {
-                    entry.harness_plugin = meta.deliverable.unwrap_or(false).then(|| plugin.to_string());
+                    // The harness plugin knows this session (its transcript, its prompts) whether or not it has a
+                    // channel into it; one without (`deliverable: false`) answers a delivery with NO_CHANNEL, and the
+                    // node types the message in.
+                    entry.harness_plugin = Some(plugin.to_string());
                     entry.meta.deliverable = meta.deliverable;
                     // The harness's list is the whole truth about its prompt: absent there means none now.
                     entry.meta.prompt = meta.prompt.clone().flatten().map(Some);
@@ -213,6 +268,7 @@ impl Registry {
     /// then reads the plugin's list again).
     pub async fn update(&self, plugin: &str, session_id: &str, u: &SessionInfoUpdate) -> bool {
         let meta: SessionMeta = ext::get_meta(u.meta.as_ref(), meta_key::SESSION).ok().flatten().unwrap_or_default();
+        let session_id = &self.named(session_id);
         let mut sessions = self.sessions.write().await;
         let s = match sessions.get_mut(session_id) {
             Some(s) => s,
@@ -282,8 +338,9 @@ impl Registry {
     }
 
     pub async fn ended(&self, e: &SessionEnded) {
+        let id = self.named(&e.session_id);
         let mut sessions = self.sessions.write().await;
-        let Some(s) = sessions.get_mut(&e.session_id) else { return };
+        let Some(s) = sessions.get_mut(&id) else { return };
         s.ended = Some(Ended { at: e.at, how: e.how.clone() });
         s.meta.running = Some(false);
         if let How::AgentExited { final_status: Some(st), .. } = &e.how {
@@ -308,8 +365,9 @@ impl Registry {
 
     /// Running sessions matching a human address (`tab`) or a session ID.
     pub async fn find(&self, name: &str) -> Vec<Session> {
+        let named = self.named(name);
         let sessions = self.sessions.read().await;
-        if let Some(s) = sessions.get(name) {
+        if let Some(s) = sessions.get(&named) {
             return vec![s.clone()];
         }
         sessions.values().filter(|s| s.running() && s.tab() == Some(name)).cloned().collect()
@@ -405,6 +463,43 @@ mod tests {
             Some("claude"),
             "the manager's relist keeps the harness"
         );
+    }
+
+    #[tokio::test]
+    async fn a_harness_names_an_unnamed_session_by_its_address() {
+        let r = Registry::default();
+        let unnamed =
+            |status: &str| info("@w1:p5", "gem", json!({"harness": "gemini", "address": "w1:p5", "status": status}));
+        r.replace("herdr", Role::Manager, vec![unnamed("idle")]).await;
+        r.replace("gemini", Role::Harness, vec![info("g1", "", json!({"address": "w1:p5", "deliverable": false}))])
+            .await;
+        assert!(r.get("@w1:p5").await.is_none(), "moved to the harness's ID");
+        let g = r.get("g1").await.unwrap();
+        assert_eq!(
+            (g.tab(), g.manager.as_deref(), g.harness_plugin.as_deref()),
+            (Some("gem"), Some("herdr"), Some("gemini"))
+        );
+        assert_eq!(g.meta.named, Some(true));
+        assert_eq!(r.find("@w1:p5").await.len(), 1, "still found by its old name");
+        // The manager keeps listing it unnamed, and its updates and end land on the named session.
+        r.replace("herdr", Role::Manager, vec![unnamed("working")]).await;
+        assert!(r.get("@w1:p5").await.is_none());
+        assert_eq!(r.get("g1").await.unwrap().status(), Status::Working);
+        let e = SessionEnded { session_id: "@w1:p5".into(), at: Timestamp::now(), how: How::TabClosed };
+        r.ended(&e).await;
+        assert!(!r.get("g1").await.unwrap().running());
+    }
+
+    #[tokio::test]
+    async fn a_harness_without_a_channel_still_owns_its_sessions_transcripts() {
+        let r = Registry::default();
+        r.replace("herdr", Role::Manager, vec![info("g", "gem", json!({}))]).await;
+        r.replace("gemini", Role::Harness, vec![info("g", "", json!({"deliverable": false}))]).await;
+        let g = r.get("g").await.unwrap();
+        assert_eq!(g.harness_plugin.as_deref(), Some("gemini"), "asked for its transcript and prompts");
+        assert_eq!(g.meta.deliverable, Some(false), "and still typed into");
+        r.replace("gemini", Role::Harness, vec![]).await;
+        assert_eq!(r.get("g").await.unwrap().harness_plugin, None);
     }
 
     #[tokio::test]

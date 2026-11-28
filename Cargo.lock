@@ -1915,6 +1915,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "fleetlayer-harness"
+version = "0.4.1"
+dependencies = [
+ "async-trait",
+ "fleetlayer-plugin",
+ "fleetlayer-protocol",
+ "jiff 1.0.3",
+ "nix 0.32.0",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "fleetlayer-herdr"
 version = "0.4.1"
 dependencies = [

@@ -182,7 +182,8 @@ fleetlayer session start --on server --tab review --cwd /srv/app --prompt "revie
 
 The tab opens in the background: nobody's focus moves, and nothing is typed into a session already running. The
 command answers once the agent takes input and the session is listed, so a message sent straight after reaches it.
-`--harness codex` starts Codex instead of Claude Code. Leave out `--on` to start it on this machine. `--model` and
+`--harness codex` starts Codex instead of Claude Code (`pi`, `omp`, `opencode`, `cursor` and `gemini` work too: see
+[Harnesses](../harnesses.md)). Leave out `--on` to start it on this machine. `--model` and
 `--effort` choose the model and how hard it thinks (`--model opus --effort high` for Claude Code, `--model gpt-6
 --effort xhigh` for Codex); left out, the agent's own defaults. `--cwd ~/src/app` means that machine's home, whatever
 it is.

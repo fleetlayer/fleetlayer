@@ -30,7 +30,11 @@ their builds need far more than Fleetlayer does.
 |---|---|
 | **Claude Code** | Everything: listed with its status, messages through Claude Code's own channel, blocked prompts read from its hooks and answered from anywhere, sessions started, resumed and closed remotely, summaries, and [your own Claude accounts on every machine](guides/claude-accounts.md). |
 | **Codex** | Listed with its status, messages typed in by the session manager, sessions started, resumed and closed remotely, summaries, skills installed for it. |
-| **Cursor, OpenCode, Aider, pi, Gemini CLI** | Being added. Until then, an agent in a session manager's pane is listed, and the session manager can type a message into it, but Fleetlayer doesn't read its status or transcripts. |
+| **pi, OpenCode** | Listed with their status, messages through the agent's own API (shown in its tab), permission prompts and questions seen from anywhere, transcripts, sessions started and resumed remotely. |
+| **Gemini CLI, Cursor's CLI** | Listed with their status, messages typed in by the session manager (not yet into Gemini CLI where herdr doesn't recognise it), permission prompts seen from anywhere (Gemini CLI), transcripts, sessions started and resumed remotely. |
+| **Aider** | Not yet: an Aider in a session manager's pane can still be typed into by hand. |
+
+What each harness gets, and how, is in [Harnesses](harnesses.md).
 
 Any agent that can run a shell command can also use Fleetlayer itself: `fleetlayer msg send`, `fleetlayer mcp
 browser@laptop`, `fleetlayer secrets run`, pages. The table is about what Fleetlayer can see and do *to* a session.
@@ -55,7 +59,10 @@ removing those folders. Have your agent do it, or follow these steps on each mac
    plugin's `config:` in `~/.config/fleetlayer/node.yaml` and restart the node once: the plugin removes its hooks from
    `~/.claude/settings.json` and leaves every other setting alone. If you skip this, the leftover hooks do nothing
    (each exits at once when the plugin isn't there), but they stay in the file until you remove the entries whose
-   command contains `fleetlayer-claude-code`.
+   command contains `fleetlayer-claude-code`. The pi, OpenCode, Gemini CLI and Cursor plugins take theirs out with
+   `install: false` in their `config:` the same way (otherwise delete `fleetlayer.ts` in `~/.pi/agent/extensions`,
+   `fleetlayer.js` in `~/.config/opencode/plugins`, and the hooks whose command contains `fleetlayer-harness` in
+   `~/.gemini/settings.json` and `~/.cursor/hooks.json`).
 
 2. **Stop the services.** On the machine you ran `fleetlayer up` on, `fleetlayer down` stops the node, the control
    plane and the gateway and removes their service files. On a machine with only a node, `fleetlayer-node uninstall`

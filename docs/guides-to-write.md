@@ -986,3 +986,29 @@ managers, machines that sleep.
   laptop that sleeps stops reporting rather than reporting "away", so a desk report goes stale after 3 minutes and
   never leaves someone present. Written: `docs/plugins/presence.md`, the `fleetlayer-presence` skill. Home Assistant
   (home or out) is planned as another source.
+- **Running pi, OpenCode, Gemini CLI or Cursor beside Claude Code, and what each harness can do.** People asked which
+  harnesses Fleetlayer covers. Solved with `fleetlayer-harness` (one binary, one plugin per harness) and the node
+  learning each harness's start, resume and model flags. Footguns met on the way: herdr reports a pi session by its
+  file (`agent_session.kind: "path"`), not its ID, so the herdr plugin takes the ID from the file name or every pi
+  session would be listed under a path that `pi --session` can't resume; herdr doesn't recognise Gemini CLI's process
+  on every system (it runs as `node`), so the pane isn't listed at all, and herdr keeps a session ID reported for a
+  pane only from an integration it knows: the Gemini hook reports the pane's state to herdr (`pane report-agent`, which
+  makes herdr list it unnamed; only when herdr showed no agent at the session's start, since a report takes over
+  herdr's own detection, and herdr still refuses `agent prompt` there because Gemini CLI works in a second `node`
+  process that isn't the pane's foreground process) and passes on `HERDR_PANE_ID`, and the node joins a harness's session to the session
+  manager's unnamed `@<pane>` entry by its address (`take_names` in `crates/fleetlayer-node/src/sessions.rs`);
+  OpenCode 1's plugin `serverUrl` is in-process, not a port anything else can reach, so the message goes through the
+  plugin's own `client.session.promptAsync`; OpenCode keeps sessions in SQLite, read through `opencode export`; pi
+  needs `deliverAs: "steer"` to take a message while it works; Gemini CLI's hooks are on by default and its settings
+  may hold comments (such a file is left alone and reported); Gemini CLI refuses to run in a folder it doesn't trust
+  (`trustedFolders.json`), and Cursor checks for `~/.cursor/projects/<slug>/.workspace-trusted`; ACP reaches only the
+  sessions the ACP client starts, never a person's terminal session, so it's for headless sessions only. Where it
+  lives: `docs/harnesses.md`, `docs/plugins/harness.md`, `plugins/harness/`. Still to write: a guide per harness
+  (installing it, signing in, the node.yaml entry, what to expect).
+- **Testing an agent harness without an account.** pi and OpenCode take an OpenAI-compatible provider in their config
+  (`~/.pi/agent/models.json`, `provider` in `opencode.json`), and Gemini CLI follows `GOOGLE_GEMINI_BASE_URL` with
+  `GEMINI_API_KEY` and `security.auth.selectedType: gemini-api-key`, so a 100-line fake model server (answers "pong:
+  <text>", asks for a shell command on `RUN: <cmd>`, waits on `SLOW`) drives all three through real turns, tool calls
+  and permission prompts. Run them under a Unix user of their own on the build server, never with the real HOME (see
+  the sandboxed-HOME entry above). Cursor has no such switch: it needs a signed-in account. Where it lives:
+  `plugins/harness/e2e/fake-model.py`. Still to write: a script that runs the whole check in CI.

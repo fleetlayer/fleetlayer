@@ -39,7 +39,27 @@ pub struct Agent {
 
 #[derive(Debug, Deserialize)]
 struct AgentSession {
+    #[serde(default)]
+    kind: Option<String>,
     value: Option<String>,
+}
+
+impl AgentSession {
+    fn id(self) -> Option<String> {
+        session_id(self.kind.as_deref(), self.value?)
+    }
+}
+
+/// The harness's own session ID from herdr's session reference. Most integrations report the ID (`kind: "id"`); pi's
+/// and oh-my-pi's report the session file (`kind: "path"`, `…/2026-11-28T09-27-20-352Z_<id>.jsonl`), whose name ends
+/// in the ID, so the session keeps one ID whoever lists it and `pi --session <id>` resumes it.
+fn session_id(kind: Option<&str>, value: String) -> Option<String> {
+    if kind != Some("path") {
+        return Some(value);
+    }
+    let name = value.rsplit('/').next()?;
+    let stem = name.strip_suffix(".jsonl").unwrap_or(name);
+    Some(stem.rsplit_once('_').map_or(stem, |(_, id)| id).to_string()).filter(|id| !id.is_empty())
 }
 
 #[derive(Debug, Deserialize)]
@@ -131,7 +151,7 @@ pub fn join(agents: AgentList, tabs: TabList) -> Vec<Session> {
                 tabs.tabs.iter().find(|t| t.tab_id == id).and_then(|t| t.label.clone())
             });
             Some(Session {
-                session_id: a.agent_session.and_then(|s| s.value),
+                session_id: a.agent_session.and_then(AgentSession::id),
                 harness,
                 pane: a.pane_id,
                 tab_id: a.tab_id,
@@ -213,7 +233,8 @@ pub enum Event {
 }
 
 fn session_value(v: &Value) -> Option<String> {
-    v.get("agent_session")?.get("value")?.as_str().map(str::to_string)
+    let s = v.get("agent_session")?;
+    session_id(s.get("kind").and_then(Value::as_str), s.get("value")?.as_str()?.to_string())
 }
 
 fn str_field(v: &Value, key: &str) -> Option<String> {
@@ -629,6 +650,16 @@ mod tests {
         assert!(spawn_error("/opt/herdr", &gone).starts_with("there's no herdr at /opt/herdr: "));
         let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
         assert!(spawn_error("herdr", &denied).starts_with("running herdr: "));
+    }
+
+    #[test]
+    fn a_session_file_reference_names_the_session_by_its_id() {
+        let path = "/home/a/.pi/agent/sessions/--home-a-w--/2026-11-28T09-27-20-352Z_01a2217b-061f-76f0.jsonl";
+        assert_eq!(session_id(Some("path"), path.into()).as_deref(), Some("01a2217b-061f-76f0"));
+        assert_eq!(session_id(Some("id"), "4f20528f".into()).as_deref(), Some("4f20528f"));
+        assert_eq!(session_id(None, "s1".into()).as_deref(), Some("s1"));
+        let v = serde_json::json!({"agent_session": {"kind": "path", "value": path}});
+        assert_eq!(session_value(&v).as_deref(), Some("01a2217b-061f-76f0"));
     }
 
     #[test]

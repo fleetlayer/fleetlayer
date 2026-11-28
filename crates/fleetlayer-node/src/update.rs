@@ -47,6 +47,7 @@ pub const BINARIES: &[&str] = &[
     "fleetlayer-rex",
     "fleetlayer-tmux",
     "fleetlayer-claude-code",
+    "fleetlayer-harness",
     "fleetlayer-summaries",
     "fleetlayer-file-sync",
     "fleetlayer-claude-auth-manager",
