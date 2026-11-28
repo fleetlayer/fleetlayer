@@ -6,7 +6,7 @@
 [package]
 name = "fleetlayer-matrix"
 description = "fleetlayer-matrix: Matrix rooms as Fleetlayer channels, and a tool to post to them"
-version = "0.3.13"
+version = "0.4.0"
 edition = "2024"
 license = "FSL-1.1-ALv2"
 repository = "https://github.com/fleetlayer/fleetlayer"
